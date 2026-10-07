@@ -56,8 +56,9 @@ esac
 
 version="${1:-}"
 if [ -z "$version" ]; then
-  version=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-    sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+  # The same release feed Rubi uses to find updates (GitHub's "latest release" API skips pre-releases).
+  version=$(curl -fsSL "${RUBI_RELEASE_FEED:-https://rubi-panel.com/releases/latest.json}" |
+    sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$version" ] || fail "couldn't find the latest release"
 fi
 case "$version" in
