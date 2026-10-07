@@ -8,15 +8,19 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Deikus-LXXVII/rubi/internal/core"
 	"github.com/Deikus-LXXVII/rubi/internal/mcpserver"
+	"github.com/Deikus-LXXVII/rubi/internal/panelapi"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
+	"github.com/Deikus-LXXVII/rubi/internal/tunnel"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 
 	_ "github.com/Deikus-LXXVII/rubi/internal/integrations/icloudmail" // built-in integrations
@@ -57,6 +61,11 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		ln.Close()
 	}()
 
+	if err := startPanelTransport(ctx, c, layout); err != nil {
+		ln.Close()
+		return err
+	}
+
 	c.Audit.Record("daemon.started", nil)
 	log.Printf("rubi %s daemon started: state=%s instance=%s socket=%s", version.Version, c.State(),
 		c.ID.InstanceID, layout.Socket())
@@ -76,6 +85,43 @@ func Run(ctx context.Context, layout paths.Layout) error {
 	c.Lock()
 	_ = os.Remove(layout.Socket())
 	log.Printf("rubi daemon stopped")
+	return nil
+}
+
+// startPanelTransport serves the panel API on loopback and exposes it through the configured transport:
+// RUBI_PUBLIC_URL if set (e.g. Tailscale serve), otherwise a Cloudflare quick tunnel.
+func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout) error {
+	addr := "127.0.0.1:0"
+	if p := os.Getenv("RUBI_PANEL_API_PORT"); p != "" {
+		addr = "127.0.0.1:" + p
+	}
+	pln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("panel API listener: %w", err)
+	}
+	hs := &http.Server{Handler: panelapi.New(c).Handler(), ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
+	go func() { _ = hs.Serve(pln) }()
+	go func() {
+		<-ctx.Done()
+		_ = hs.Close()
+	}()
+	target := "http://" + pln.Addr().String()
+	log.Printf("panel API on %s", target)
+
+	if u := os.Getenv("RUBI_PUBLIC_URL"); u != "" {
+		c.SetEndpoint(u)
+		log.Printf("panel transport: fixed URL %s", u)
+		return nil
+	}
+	bin, err := tunnel.FindCloudflared(layout.Home)
+	if err != nil {
+		c.SetTransportError(err.Error())
+		log.Printf("panel transport unavailable: %v", err)
+		return nil
+	}
+	m := &tunnel.Manager{Binary: bin, Target: target, OnURL: c.SetEndpoint, Logf: log.Printf}
+	go m.Run(ctx)
 	return nil
 }
 

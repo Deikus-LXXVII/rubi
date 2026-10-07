@@ -32,7 +32,10 @@ const (
 // DefaultPanelOrigin is where the official static panel is served.
 const DefaultPanelOrigin = "https://rubi-panel.com"
 
-const pairingTTL = 15 * time.Minute
+const (
+	pairingTTL = 15 * time.Minute
+	ticketTTL  = 15 * time.Minute
+)
 
 var ErrNoTransport = errors.New("the panel connection is not available yet (Rubi is still opening its tunnel); " +
 	"try again in a few seconds")
@@ -49,8 +52,18 @@ type Core struct {
 	mu       sync.Mutex
 	paired   bool
 	endpoint string // current public URL of the panel API (set by the transport)
+	transErr string // why there is no endpoint, if the transport can't start
 	pairCode string
 	pairExp  time.Time
+	// tickets are short-lived random tokens embedded in panel links. The panel API serves anything
+	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
+	// can't even fetch the wrapped keys.
+	tickets map[string]ticket
+}
+
+type ticket struct {
+	purpose string
+	expires time.Time
 }
 
 func Open(layout paths.Layout) (*Core, error) {
@@ -68,6 +81,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		Events:      events.NewStore(),
 		Audit:       audit.Open(layout.Audit()),
 		PanelOrigin: DefaultPanelOrigin,
+		tickets:     map[string]ticket{},
 	}
 	if o := os.Getenv("RUBI_PANEL_ORIGIN"); o != "" {
 		c.PanelOrigin = strings.TrimRight(o, "/")
@@ -104,6 +118,13 @@ func (c *Core) SetEndpoint(u string) {
 	c.mu.Unlock()
 }
 
+// SetTransportError records why no panel connection can be offered (shown to the agent).
+func (c *Core) SetTransportError(msg string) {
+	c.mu.Lock()
+	c.transErr = msg
+	c.mu.Unlock()
+}
+
 // Link builds a panel URL. Purposes: "pair", "unlock", "settings", "setup:<integration>", "approve:<id>".
 // Everything after '#' stays in the user's browser and never reaches the panel's web server.
 func (c *Core) Link(purpose string) (string, error) {
@@ -113,6 +134,9 @@ func (c *Core) Link(purpose string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.endpoint == "" {
+		if c.transErr != "" {
+			return "", errors.New(c.transErr)
+		}
 		return "", ErrNoTransport
 	}
 	if purpose == "pair" && c.paired {
@@ -128,13 +152,45 @@ func (c *Core) Link(purpose string) (string, error) {
 	q.Set("a", purpose)
 	if purpose == "pair" {
 		if c.pairCode == "" || time.Now().After(c.pairExp) {
-			b := make([]byte, 16)
-			_, _ = rand.Read(b)
-			c.pairCode, c.pairExp = base64.RawURLEncoding.EncodeToString(b), time.Now().Add(pairingTTL)
+			c.pairCode, c.pairExp = randomToken(), time.Now().Add(pairingTTL)
 		}
 		q.Set("p", c.pairCode)
+	} else {
+		t := randomToken()
+		c.pruneTicketsLocked()
+		c.tickets[t] = ticket{purpose: purpose, expires: time.Now().Add(ticketTTL)}
+		q.Set("t", t)
 	}
 	return c.PanelOrigin + "/#" + q.Encode(), nil
+}
+
+// TicketPurpose returns the purpose of a valid ticket. Tickets stay valid for their whole lifetime
+// (the user may unlock and then change settings within one panel visit).
+func (c *Core) TicketPurpose(t string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneTicketsLocked()
+	for k, v := range c.tickets {
+		if subtle.ConstantTimeCompare([]byte(k), []byte(t)) == 1 {
+			return v.purpose, true
+		}
+	}
+	return "", false
+}
+
+func (c *Core) pruneTicketsLocked() {
+	now := time.Now()
+	for k, v := range c.tickets {
+		if now.After(v.expires) {
+			delete(c.tickets, k)
+		}
+	}
+}
+
+func randomToken() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func validPurpose(p string) error {
@@ -161,23 +217,54 @@ func (c *Core) Lock() {
 	c.Audit.Record("rubi.locked", nil)
 }
 
-// Unlock opens the vault with a DEK delivered by the panel.
-func (c *Core) Unlock(dek []byte, minVersion uint64, receipt map[string]any) error {
+// Unlock opens the vault with a DEK delivered by the panel and records a receipt.
+func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string) error {
+	if c.State() == Unpaired {
+		return errors.New("not paired")
+	}
 	if err := c.Vault.Unlock(dek, minVersion); err != nil {
 		c.Audit.Record("rubi.unlock_failed", nil)
 		return err
 	}
 	c.Audit.SetVaultKey(dek)
-	c.Audit.Record("rubi.unlocked", receipt)
+	c.addReceipt("unlocked", method, credentialID)
+	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
 	return nil
 }
 
+// Keys returns the wrapped data keys (non-secret: only the user's device can open them).
+func (c *Core) Keys() (*vault.Keys, error) {
+	return vault.LoadKeys(c.Layout.Keys())
+}
+
+func (c *Core) addReceipt(event, method, credentialID string) {
+	_ = c.Vault.Update(func(d *vault.Data) error {
+		d.Receipts = append(d.Receipts, vault.Receipt{At: time.Now().UTC(), Event: event, Method: method,
+			CredentialID: credentialID})
+		if n := len(d.Receipts); n > vault.MaxReceipts {
+			d.Receipts = d.Receipts[n-vault.MaxReceipts:]
+		}
+		return nil
+	})
+}
+
 // Pair creates the vault on first run. Called by the panel API after the pairing code is verified.
-func (c *Core) Pair(dek []byte, keys *vault.Keys, data *vault.Data) error {
+func (c *Core) Pair(dek []byte, keys *vault.Keys, data *vault.Data, method, credentialID string) error {
+	if err := c.pair(dek, keys, data); err != nil {
+		return err
+	}
+	c.addReceipt("paired", method, credentialID)
+	return nil
+}
+
+func (c *Core) pair(dek []byte, keys *vault.Keys, data *vault.Data) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.paired {
 		return errors.New("already paired")
+	}
+	if len(dek) != vault.KeySize {
+		return errors.New("bad data key")
 	}
 	keys.Instance = c.ID.InstanceID
 	if err := vault.SaveKeys(c.Layout.Keys(), keys); err != nil {

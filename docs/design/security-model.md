@@ -114,6 +114,9 @@ Properties:
 2. The agent sends the user a link:
    `https://rubi-panel.com/#v=1&e=<endpoint>&k=<IK public key>&p=<pairing code>`
    Everything after `#` stays in the browser and is never sent to `rubi-panel.com`.
+   Every other link carries a short-lived **ticket** instead of a pairing code. The panel API serves
+   nothing beyond a bare `hello` without a valid pairing code or ticket, so someone who discovers the
+   tunnel URL can't even fetch the wrapped keys. Wire details: [panel-protocol.md](panel-protocol.md).
 3. The panel connects to `<endpoint>`, verifies that Rubi proves possession of `k`, and pins `k`
    (trust on first use).
 4. The user creates a passkey (RP ID `rubi-panel.com`, PRF extension) and/or a password.

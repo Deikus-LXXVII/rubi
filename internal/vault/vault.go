@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -47,7 +48,19 @@ type Data struct {
 	Locale       string                  `json:"locale,omitempty"`
 	// Approvers are public keys of the user's passkeys, used to verify action approvals.
 	Approvers []Approver `json:"approvers,omitempty"`
+	// Receipts record recent unlocks so the user can spot unexpected ones (newest last, capped).
+	Receipts []Receipt `json:"receipts,omitempty"`
 }
+
+type Receipt struct {
+	At           time.Time `json:"at"`
+	Event        string    `json:"event"`  // "paired" | "unlocked"
+	Method       string    `json:"method"` // "passkey" | "password"
+	CredentialID string    `json:"credential_id,omitempty"`
+}
+
+// MaxReceipts bounds the receipt history kept in the vault.
+const MaxReceipts = 50
 
 type Integration struct {
 	Enabled  bool              `json:"enabled"`

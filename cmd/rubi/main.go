@@ -2,16 +2,21 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Deikus-LXXVII/rubi/internal/daemon"
 	"github.com/Deikus-LXXVII/rubi/internal/mcpproxy"
+	"github.com/Deikus-LXXVII/rubi/internal/panelclient"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
@@ -23,6 +28,10 @@ Usage:
   rubi daemon     run the daemon in the foreground
   rubi status     print Rubi's state
   rubi version    print the version
+
+Development:
+  rubi dev-panel <link> [--password-stdin]
+                  pair or unlock with a password from the terminal, standing in for the web panel
 
 Environment:
   RUBI_HOME          state directory (default ~/.rubi)
@@ -53,6 +62,10 @@ func main() {
 		}
 	case "status":
 		if err := status(layout); err != nil {
+			fail(err)
+		}
+	case "dev-panel":
+		if err := devPanel(os.Args[2:]); err != nil {
 			fail(err)
 		}
 	case "version", "--version", "-v":
@@ -90,4 +103,73 @@ func status(layout paths.Layout) error {
 func fail(err error) {
 	fmt.Fprintln(os.Stderr, "rubi:", err)
 	os.Exit(1)
+}
+
+// devPanel stands in for the web panel during development: it speaks the same protocol, with a password.
+func devPanel(args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: rubi dev-panel <link> [--password-stdin]")
+	}
+	l, err := panelclient.ParseLink(args[0])
+	if err != nil {
+		return err
+	}
+	c, err := panelclient.New(l)
+	if err != nil {
+		return err
+	}
+	var h panelclient.Hello
+	if err := c.Call("hello", nil, &h); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Connected to %s (fingerprint %s), state %s\n", h.Instance, h.Fingerprint, h.State)
+
+	fromStdin := len(args) > 1 && args[1] == "--password-stdin"
+	in := bufio.NewReader(os.Stdin)
+	read := func(prompt string) (string, error) {
+		if fromStdin {
+			line, err := in.ReadString('\n')
+			return strings.TrimRight(line, "\r\n"), err
+		}
+		fmt.Fprint(os.Stderr, prompt)
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		return string(b), err
+	}
+
+	switch {
+	case l.Pairing != "":
+		pw, err := read("New password: ")
+		if err != nil {
+			return err
+		}
+		if !fromStdin {
+			again, err := read("Repeat: ")
+			if err != nil {
+				return err
+			}
+			if again != pw {
+				return errors.New("passwords do not match")
+			}
+		}
+		if len(pw) < 12 {
+			return errors.New("use at least 12 characters")
+		}
+		v, err := c.PairWithPassword(pw)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Paired and unlocked (vault version %d)\n", v)
+	default:
+		pw, err := read("Password: ")
+		if err != nil {
+			return err
+		}
+		v, err := c.UnlockWithPassword(pw, 0)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Unlocked (vault version %d)\n", v)
+	}
+	return nil
 }

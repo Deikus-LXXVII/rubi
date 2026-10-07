@@ -12,7 +12,7 @@ with your consent.
 - **Agent-native.** Install and use it from the agent chat. The agent registers one MCP server:
   `rubi mcp`.
 
-> **Status: pre-alpha.** Milestone M1 (core daemon) is in progress. Nothing here is ready for real data yet.
+> **Status: pre-alpha.** M1 (core daemon) and M2 (panel API, encrypted channel, zero-config tunnel) are done; the web panel (M3) is next. Nothing here is ready for real data yet.
 
 ## Integrations
 
@@ -24,6 +24,7 @@ with your consent.
 
 - [Security model and protocol](docs/design/security-model.md)
 - [Agent interface and integration model](docs/design/agent-interface.md)
+- [Panel protocol](docs/design/panel-protocol.md)
 - [Implementation plan](docs/design/implementation-plan.md)
 
 ## Build
@@ -33,7 +34,11 @@ go build -o rubi ./cmd/rubi
 ./rubi status
 ```
 
-`RUBI_HOME` sets the state directory (default `~/.rubi`).
+`RUBI_HOME` sets the state directory (default `~/.rubi`). The panel transport needs
+[`cloudflared`](https://github.com/cloudflare/cloudflared/releases) on `PATH` (or `RUBI_CLOUDFLARED`);
+`RUBI_PUBLIC_URL` uses a fixed URL instead, e.g. with Tailscale.
+
+Until the web panel exists, `rubi dev-panel '<link>'` pairs or unlocks with a password from the terminal.
 
 ## License
 

@@ -60,7 +60,7 @@ func TestLifecycle(t *testing.T) {
 
 	dek := vault.NewKey()
 	keys := &vault.Keys{Wraps: []vault.Wrap{{ID: "w1", Kind: "password", Nonce: "n", Wrapped: "x", CreatedAt: time.Now()}}}
-	if err := c.Pair(dek, keys, vault.NewData("")); err != nil {
+	if err := c.Pair(dek, keys, vault.NewData(""), "password", ""); err != nil {
 		t.Fatal(err)
 	}
 	if c.State() != Unlocked || c.CheckPairingCode(f.Get("p")) {
@@ -69,17 +69,33 @@ func TestLifecycle(t *testing.T) {
 	if _, err := c.Link("pair"); err == nil {
 		t.Fatal("pair link after pairing")
 	}
+	ul, err := c.Link("unlock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := c.TicketPurpose(fragment(t, ul).Get("t")); !ok || p != "unlock" {
+		t.Fatalf("ticket: %q %v", p, ok)
+	}
+	if _, ok := c.TicketPurpose("forged"); ok {
+		t.Fatal("forged ticket accepted")
+	}
 
 	c.Lock()
 	if c.State() != Locked {
 		t.Fatalf("state %s", c.State())
 	}
-	if err := c.Unlock(vault.NewKey(), 0, nil); err == nil {
+	if err := c.Unlock(vault.NewKey(), 0, "password", ""); err == nil {
 		t.Fatal("unlocked with a wrong key")
 	}
-	if err := c.Unlock(dek, 1, nil); err != nil || c.State() != Unlocked {
+	if err := c.Unlock(dek, 1, "password", ""); err != nil || c.State() != Unlocked {
 		t.Fatalf("unlock: %v %s", err, c.State())
 	}
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if len(d.Receipts) != 2 || d.Receipts[0].Event != "paired" || d.Receipts[1].Event != "unlocked" {
+			t.Fatalf("receipts: %+v", d.Receipts)
+		}
+		return nil
+	})
 
 	// A reopened core (daemon restart) starts locked.
 	c2, err := Open(c.Layout)
