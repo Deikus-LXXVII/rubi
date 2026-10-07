@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"golang.org/x/term"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/mcpproxy"
 	"github.com/Deikus-LXXVII/rubi/internal/panelclient"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
+	"github.com/Deikus-LXXVII/rubi/internal/update"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -28,6 +32,10 @@ Usage:
   rubi daemon     run the daemon in the foreground
   rubi status     print Rubi's state
   rubi version    print the version
+  rubi update [--check | <version>]
+                  check for or install a signed release (the agent's rubi_update tool does this without
+                  locking Rubi; this command restarts it locked)
+  rubi rollback   go back to the previous version
 
 Development:
   rubi dev-panel <link> [--password-stdin]
@@ -68,6 +76,20 @@ func main() {
 		if err := devPanel(os.Args[2:]); err != nil {
 			fail(err)
 		}
+	case "update":
+		if err := updateCmd(layout, os.Args[2:]); err != nil {
+			fail(err)
+		}
+	case "rollback":
+		exe, err := selfPath()
+		if err == nil {
+			err = update.Rollback(exe)
+		}
+		if err != nil {
+			fail(err)
+		}
+		stopDaemon(layout)
+		fmt.Println("Rolled back. Rubi restarts locked on its next use.")
 	case "version", "--version", "-v":
 		fmt.Println(version.Version)
 	case "help", "--help", "-h":
@@ -172,4 +194,66 @@ func devPanel(args []string) error {
 		fmt.Printf("Unlocked (vault version %d)\n", v)
 	}
 	return nil
+}
+
+func selfPath() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	return exe, nil
+}
+
+// updateCmd is the manual update path. It verifies exactly like the in-daemon update, then restarts the
+// daemon, which comes back locked.
+func updateCmd(layout paths.Layout, args []string) error {
+	ctx := context.Background()
+	target := ""
+	if len(args) > 0 && args[0] != "--check" {
+		target = args[0]
+	}
+	if target == "" {
+		rel, err := update.Latest(ctx, version.Version)
+		if err != nil {
+			return err
+		}
+		if !update.Newer(rel.Version, version.Version) {
+			fmt.Printf("Rubi %s is up to date (latest: %s).\n", version.Version, rel.Version)
+			return nil
+		}
+		if len(args) > 0 && args[0] == "--check" {
+			fmt.Printf("Update available: %s -> %s\n", version.Version, rel.Version)
+			return nil
+		}
+		target = rel.Version
+	}
+	exe, err := selfPath()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "Downloading and verifying %s...\n", target)
+	v, err := update.Download(ctx, version.Version, target, filepath.Dir(exe))
+	if err != nil {
+		return err
+	}
+	if err := update.Install(v, exe); err != nil {
+		return err
+	}
+	stopDaemon(layout)
+	fmt.Printf("Updated to %s (signature and checksum verified). Rubi restarts on its next use and needs to be unlocked.\n", target)
+	return nil
+}
+
+// stopDaemon asks a running daemon to exit; the next `rubi mcp` starts the installed binary.
+func stopDaemon(layout paths.Layout) {
+	b, err := os.ReadFile(layout.Lock())
+	if err != nil {
+		return
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 {
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
 }

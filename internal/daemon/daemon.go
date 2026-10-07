@@ -4,13 +4,18 @@ package daemon
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -43,6 +48,9 @@ func Run(ctx context.Context, layout paths.Layout) error {
 	if err != nil {
 		return err
 	}
+	if err := receiveHandoff(c); err != nil {
+		log.Printf("update handoff: %v (starting locked)", err)
+	}
 	srv := mcpserver.New(c)
 
 	_ = os.Remove(layout.Socket()) // stale socket from a crashed run; the lock proves no one else owns it
@@ -55,6 +63,9 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		return err
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	c.SetShutdown(cancel)
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	go func() {
@@ -62,10 +73,12 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		ln.Close()
 	}()
 
-	if err := startPanelTransport(ctx, c, layout); err != nil {
+	tunnelDone, err := startPanelTransport(ctx, c, layout)
+	if err != nil {
 		ln.Close()
 		return err
 	}
+	go checkUpdates(ctx, c)
 
 	go func() {
 		r := integrity.Check(ctx, version.Version)
@@ -89,22 +102,141 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		go serve(ctx, srv.MCP(), conn)
 	}
 
+	if exe, ok := c.PendingHandoff(); ok {
+		err := handoff(c, layout, lock, tunnelDone, exe)
+		// Only reached if exec failed. The new binary is installed; the next start runs it, locked.
+		log.Printf("restart into the update failed: %v", err)
+	}
 	c.Lock()
 	_ = os.Remove(layout.Socket())
 	log.Printf("rubi daemon stopped")
 	return nil
 }
 
+// checkUpdates looks for new releases shortly after start and then every six hours.
+func checkUpdates(ctx context.Context, c *core.Core) {
+	if version.Version == "dev" {
+		return
+	}
+	delay := 30 * time.Second
+	if d, err := time.ParseDuration(os.Getenv("RUBI_UPDATE_CHECK_DELAY")); err == nil && strings.HasSuffix(version.Version, "-test") {
+		delay = d
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		info := c.CheckForUpdate(ctx)
+		if info.Available {
+			log.Printf("update available: %s -> %s", info.Current, info.Latest)
+		}
+		delay = 6 * time.Hour
+	}
+}
+
+type handoffPayload struct {
+	DEK          string `json:"dek"`
+	VaultVersion uint64 `json:"vault_version"`
+}
+
+// handoff replaces this process with the freshly installed, verified binary and passes it the open vault
+// key through an inherited pipe, so the update doesn't lock Rubi. The key never touches disk or the
+// environment; only the pipe's descriptor number is passed.
+func handoff(c *core.Core, layout paths.Layout, lock *os.File, tunnelDone <-chan struct{}, exe string) error {
+	select { // let the tunnel process exit so it isn't orphaned
+	case <-tunnelDone:
+	case <-time.After(5 * time.Second):
+	}
+	if c.State() != core.Unlocked {
+		return syscall.Exec(exe, []string{exe, "daemon"}, withoutHandoffEnv())
+	}
+	dek, err := c.Vault.Key()
+	if err != nil {
+		return err
+	}
+	ver, _ := c.Vault.Version()
+	payload, _ := json.Marshal(handoffPayload{DEK: base64.RawURLEncoding.EncodeToString(dek), VaultVersion: ver})
+	for i := range dek {
+		dek[i] = 0
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	if _, err := w.Write(payload); err != nil {
+		return err
+	}
+	w.Close()
+	if _, _, errno := syscall.Syscall(syscall.SYS_FCNTL, r.Fd(), syscall.F_SETFD, 0); errno != 0 {
+		return errno
+	}
+	_ = os.Remove(layout.Socket())
+	_ = lock.Close()
+	log.Printf("restarting into %s", exe)
+	env := append(withoutHandoffEnv(), "RUBI_HANDOFF_FD="+strconv.Itoa(int(r.Fd())))
+	return syscall.Exec(exe, []string{exe, "daemon"}, env)
+}
+
+func withoutHandoffEnv() []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "RUBI_HANDOFF_FD=") {
+			env = append(env, kv)
+		}
+	}
+	return env
+}
+
+// receiveHandoff unlocks with the key passed by the previous process after an update.
+func receiveHandoff(c *core.Core) error {
+	fdStr := os.Getenv("RUBI_HANDOFF_FD")
+	if fdStr == "" {
+		return nil
+	}
+	_ = os.Unsetenv("RUBI_HANDOFF_FD")
+	fd, err := strconv.Atoi(fdStr)
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(fd), "handoff")
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, 4096))
+	if err != nil {
+		return err
+	}
+	var p handoffPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return err
+	}
+	dek, err := base64.RawURLEncoding.DecodeString(p.DEK)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		for i := range dek {
+			dek[i] = 0
+		}
+	}()
+	if err := c.Unlock(dek, p.VaultVersion, "update", ""); err != nil {
+		return err
+	}
+	log.Printf("unlocked after update to %s", version.Version)
+	return nil
+}
+
 // startPanelTransport serves the panel API on loopback and exposes it through the configured transport:
 // RUBI_PUBLIC_URL if set (e.g. Tailscale serve), otherwise a Cloudflare quick tunnel.
-func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout) error {
+func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout) (<-chan struct{}, error) {
+	done := make(chan struct{})
 	addr := "127.0.0.1:0"
 	if p := os.Getenv("RUBI_PANEL_API_PORT"); p != "" {
 		addr = "127.0.0.1:" + p
 	}
 	pln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("panel API listener: %w", err)
+		return nil, fmt.Errorf("panel API listener: %w", err)
 	}
 	hs := &http.Server{Handler: panelapi.New(c).Handler(), ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
@@ -119,17 +251,22 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	if u := os.Getenv("RUBI_PUBLIC_URL"); u != "" {
 		c.SetEndpoint(u)
 		log.Printf("panel transport: fixed URL %s", u)
-		return nil
+		close(done)
+		return done, nil
 	}
 	bin, err := tunnel.FindCloudflared(layout.Home)
 	if err != nil {
 		c.SetTransportError(err.Error())
 		log.Printf("panel transport unavailable: %v", err)
-		return nil
+		close(done)
+		return done, nil
 	}
 	m := &tunnel.Manager{Binary: bin, Target: target, OnURL: c.SetEndpoint, Logf: log.Printf}
-	go m.Run(ctx)
-	return nil
+	go func() {
+		m.Run(ctx)
+		close(done)
+	}()
+	return done, nil
 }
 
 func serve(ctx context.Context, s *mcp.Server, conn net.Conn) {

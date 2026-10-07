@@ -41,6 +41,12 @@ Confirm with Face ID. The password is stored encrypted and never shown to your a
   **Send and notify on reply** and confirm with Face ID. Your agent can't send without you.
 - With **notify on reply**, Rubi watches for an answer and tells your agent, who tells you.
 
+## Updates
+
+Rubi checks for new versions on its own and your agent tells you when one is out. Say yes, approve with
+Face ID, and Rubi updates itself in a few seconds. It checks that the update is signed by the Rubi project,
+and stays unlocked through the restart, so you don't have to unlock it again.
+
 ## Settings
 
 Ask your agent for the settings link. There you can:

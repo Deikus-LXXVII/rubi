@@ -23,7 +23,17 @@ need the user's passwords.
    rubi_events, tell the user, then rubi_ack". Then give the user `rubi_link("settings")` so they paste the
    routine's URL and key under "Agent webhook". This lets Rubi wake you when, for example, a reply arrives.
 
-To upgrade, run the install command again.
+## Updates
+
+Rubi checks for new releases itself and sends an `update.available` event (through the routine webhook,
+or in `rubi_events`). Tell the user what's new (`notes_url`) and, if they want it, call `rubi_update`: it
+verifies the release signature and returns an approval link. After the user approves with Face ID, Rubi
+installs the update and restarts into it within seconds, **staying unlocked**; your MCP session keeps
+working (retry any call that failed with "Rubi restarted"). `rubi_status` shows `update` and the current
+`version`.
+
+Fallback without the panel: `~/.rubi/bin/rubi update` (verifies the same way, but Rubi restarts locked)
+and `~/.rubi/bin/rubi rollback`.
 
 ## Connect an integration
 

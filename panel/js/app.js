@@ -382,6 +382,7 @@ async function statusScreen(ctx, message) {
 const FIELD_LABELS = {
   from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", in_reply_to: "In reply to", body: "Message",
   integration: "Integration", account: "Account", connects_to: "Connects to", effect: "Effect", webhook: "Webhook",
+  current: "Current version", new_version: "New version", release_notes: "Release notes", verification: "Verification",
 };
 
 // splitAddresses turns `Anna <a@x>, b@y` into [{name, email}] for display.
@@ -470,6 +471,7 @@ function countdown(expiresAt, onExpire) {
 function titleFor(a) {
   if (a.kind.endsWith(".send")) return "Send this email?";
   if (a.kind.endsWith(".draft")) return "Save this draft?";
+  if (a.kind === "rubi.update") return "Update Rubi?";
   return a.summary;
 }
 
@@ -603,7 +605,8 @@ async function approveScreen(ctx, id, opts = {}) {
 
 // resultScreen shows how an approval ended. extra (optional) carries the preview and chosen option.
 function resultScreen(ctx, a, onDone, extra = {}) {
-  const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved" : "Done";
+  const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved"
+    : a.kind === "rubi.update" ? "Updating…" : "Done";
   const titles = {
     executed: executedTitle,
     denied: "Declined",
@@ -625,6 +628,8 @@ function resultScreen(ctx, a, onDone, extra = {}) {
     h("h1", { class: "center" }, titles[a.state] || a.state),
     h("p", { class: "center muted-strong" }, line),
     tracking ? h("p", { class: "center ok" }, "Rubi will tell your agent when a reply arrives.") : null,
+    a.state === "executed" && a.kind === "rubi.update"
+      ? h("p", { class: "center ok" }, "Rubi restarts into the new version in a few seconds and stays unlocked.") : null,
     a.error ? h("p", { class: "error center" }, a.error) : null,
     onDone
       ? h("button", { class: "primary", onclick: onDone }, "Back to settings")

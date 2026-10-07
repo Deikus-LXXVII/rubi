@@ -44,6 +44,7 @@ what to do.
 | `rubi_approval(approval_id, wait_seconds=0..25)` | Status of a pending approval (`pending`, `approved`, `denied`, `expired`, `executed`) and the action result. Long-polls up to `wait_seconds` (max 25). |
 | `rubi_confirm(approval_id, user_response)` | Only for `chat`-level approvals: the exact plain-text label the user pressed |
 | `rubi_events(include_acked=false)` / `rubi_ack(event_id)` | Pull and acknowledge events (e.g. a reply arrived) |
+| `rubi_update()` | Ask the user (strong approval) to update to the latest signed release; Rubi restarts into it and stays unlocked |
 
 Nothing here can change security settings, webhook targets, integrations, or secrets: those changes only
 happen in the panel (security model §8). The agent gets a `settings` link instead.

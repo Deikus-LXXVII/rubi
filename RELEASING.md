@@ -30,7 +30,9 @@ git push origin v0.1.0
 
 The `release` workflow tests, builds static binaries for linux/amd64, linux/arm64 and darwin/arm64, writes
 `SHA256SUMS` (archives and bare binaries), signs it, verifies the signature against
-`release-key.pub.pem`, adds a GitHub build-provenance attestation, and publishes the release.
+`release-key.pub.pem`, adds a GitHub build-provenance attestation, publishes the release, and re-runs the
+`pages` workflow, which regenerates `https://rubi-panel.com/releases/latest.json`. Installed Rubis read that
+file and offer the update to their users.
 
 ## Updating the pinned cloudflared
 

@@ -53,6 +53,8 @@ type Data struct {
 	PasswordApproveKey []byte `json:"password_approve_key,omitempty"`
 	// Receipts record recent unlocks so the user can spot unexpected ones (newest last, capped).
 	Receipts []Receipt `json:"receipts,omitempty"`
+	// UpdateNotified is the last release the agent was told about, so each one is announced once.
+	UpdateNotified string `json:"update_notified,omitempty"`
 }
 
 type Receipt struct {
@@ -241,6 +243,16 @@ func (s *Store) Lock() {
 		s.dek[i] = 0
 	}
 	s.dek, s.data = nil, nil
+}
+
+// Key returns a copy of the data key while unlocked (used only to hand Rubi over to a verified update).
+func (s *Store) Key() ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.data == nil {
+		return nil, ErrLocked
+	}
+	return append([]byte(nil), s.dek...), nil
 }
 
 func (s *Store) Unlocked() bool {

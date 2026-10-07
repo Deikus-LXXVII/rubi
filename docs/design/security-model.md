@@ -184,13 +184,31 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
 - Background work (e.g. watching for replies) runs only while Rubi is unlocked. When an event can't be
   checked because Rubi is locked, the agent tells the user on their next conversation.
 
-## 10. Recovery
+## 10. Updates
+
+- **Discovery:** Rubi reads `https://rubi-panel.com/releases/latest.json` (published by the Pages workflow on
+  every release) at start and every six hours, and tells the agent once per version
+  (`rubi.update.available`). The feed is only a hint; nothing in it is trusted.
+- **Approval:** updating changes the code that holds the user's key, so it's a strong action (`rubi.update`,
+  locked). Before asking, Rubi verifies the release's signed checksums, so the approval screen states a
+  checked fact.
+- **Install:** after approval Rubi downloads the archive, verifies `SHA256SUMS` against the embedded Ed25519
+  release key and the archive against its checksum, smoke-tests the binary, swaps it in, and keeps the old
+  one as `rubi.prev` (`rubi rollback`).
+- **Restart without re-unlocking:** the running daemon replaces itself with the verified binary (`exec`) and
+  passes the vault key through an inherited pipe; the key never touches disk or the environment. This
+  extends trust only to a binary that the running, trusted code has just verified. A deliberately malicious
+  agent with root could already read the key from memory (§3), so this adds no new exposure.
+- Test builds (version `dev` or `*-test`) may override the release key, download base and feed with
+  environment variables, for end-to-end tests. Official builds ignore these variables.
+
+## 11. Recovery
 
 If the user loses every passkey and the password, the vault is unrecoverable by design. They reset Rubi
 and pair again; service passwords such as iCloud app-specific passwords are re-issued by the service.
 Users are encouraged to register at least two credentials (e.g. a passkey and a password).
 
-## 11. Decisions and open questions
+## 12. Decisions and open questions
 
 Decided:
 - **Zero-config transport** (§6). Tailscale is optional.

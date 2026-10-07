@@ -24,6 +24,18 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Release feed
+        # rubi-panel.com/releases/latest.json is how installed Rubis discover updates (static, no API limits).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p panel/releases
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=20" \
+            --jq '[.[] | select(.draft == false)] | sort_by(.published_at) | last
+                  | {version: .tag_name, published_at: .published_at, notes_url: .html_url}' \
+            > panel/releases/latest.json
+          cat panel/releases/latest.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

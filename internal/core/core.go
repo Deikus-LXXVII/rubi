@@ -61,6 +61,7 @@ type Core struct {
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
 	running map[string]bool // integrations currently started
+	upd     updateState
 	integ   integrity.Result
 }
 
@@ -270,6 +271,7 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 	c.addReceipt("unlocked", method, credentialID)
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
 	c.startIntegrations()
+	c.maybeNotifyUpdate()
 	return nil
 }
 
@@ -295,6 +297,7 @@ func (c *Core) Pair(dek []byte, keys *vault.Keys, data *vault.Data, method, cred
 		return err
 	}
 	c.addReceipt("paired", method, credentialID)
+	c.maybeNotifyUpdate()
 	return nil
 }
 

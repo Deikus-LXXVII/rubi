@@ -35,6 +35,30 @@ MCowBQYDK2VwAyEAjH/Smxzuzy59qWgOAVCSSbeNFzaZFqnFTgVPKQlgMIU=
 
 const Repo = "Deikus-LXXVII/rubi"
 
+// TrustedKey returns the PEM key that release checksums must be signed with. Test builds (version "dev" or
+// ending in "-test") may point RUBI_TEST_RELEASE_KEY_FILE at a throwaway key so the update path can be
+// exercised end to end; official releases always use the embedded ReleaseKey.
+func TrustedKey(version string) []byte {
+	if version == "dev" || strings.HasSuffix(version, "-test") {
+		if p := os.Getenv("RUBI_TEST_RELEASE_KEY_FILE"); p != "" {
+			if b, err := os.ReadFile(p); err == nil {
+				return b
+			}
+		}
+	}
+	return []byte(ReleaseKey)
+}
+
+// ReleaseBase is where release files are downloaded from (overridable only for test builds).
+func ReleaseBase(version string) string {
+	if version == "dev" || strings.HasSuffix(version, "-test") {
+		if b := os.Getenv("RUBI_DOWNLOAD_BASE"); b != "" {
+			return strings.TrimRight(b, "/")
+		}
+	}
+	return "https://github.com/" + Repo + "/releases/download"
+}
+
 type Result struct {
 	Status  string `json:"status"` // "verified" | "modified" | "unknown"
 	Detail  string `json:"detail"`
@@ -53,19 +77,19 @@ func Check(ctx context.Context, version string) Result {
 		r.Detail = err.Error()
 		return r
 	}
-	self, err := hashFile(exe)
+	self, err := HashFile(exe)
 	if err != nil {
 		r.Detail = err.Error()
 		return r
 	}
-	base := "https://github.com/" + Repo + "/releases/download/" + version + "/"
-	sums, err1 := fetch(ctx, base+"SHA256SUMS")
-	sig, err2 := fetch(ctx, base+"SHA256SUMS.sig")
+	base := ReleaseBase(version) + "/" + version + "/"
+	sums, err1 := Fetch(ctx, base+"SHA256SUMS")
+	sig, err2 := Fetch(ctx, base+"SHA256SUMS.sig")
 	if err := errors.Join(err1, err2); err != nil {
 		r.Detail = "couldn't download release checksums: " + err.Error()
 		return r
 	}
-	return compare(r, []byte(ReleaseKey), sums, sig, self, "bin/rubi-"+runtime.GOOS+"-"+runtime.GOARCH)
+	return compare(r, TrustedKey(version), sums, sig, self, "bin/rubi-"+runtime.GOOS+"-"+runtime.GOARCH)
 }
 
 // compare is the offline part of Check (tested directly).
@@ -75,7 +99,7 @@ func compare(r Result, pubPEM, sums, sig []byte, self, name string) Result {
 		r.Status, r.Detail = "modified", "release checksums failed signature verification"
 		return r
 	}
-	want, ok := lookup(sums, name)
+	want, ok := Lookup(sums, name)
 	if !ok {
 		r.Detail = "no checksum for " + name + " in the release"
 		return r
@@ -108,7 +132,8 @@ func Verify(pubPEM, msg, sig []byte) error {
 	return nil
 }
 
-func lookup(sums []byte, name string) (string, bool) {
+// Lookup finds the checksum for name in a SHA256SUMS file.
+func Lookup(sums []byte, name string) (string, bool) {
 	sc := bufio.NewScanner(bytes.NewReader(sums))
 	for sc.Scan() {
 		f := strings.Fields(sc.Text())
@@ -119,7 +144,8 @@ func lookup(sums []byte, name string) (string, bool) {
 	return "", false
 }
 
-func hashFile(p string) (string, error) {
+// HashFile returns the hex SHA-256 of a file.
+func HashFile(p string) (string, error) {
 	f, err := os.Open(p)
 	if err != nil {
 		return "", err
@@ -132,7 +158,8 @@ func hashFile(p string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func fetch(ctx context.Context, url string) ([]byte, error) {
+// Fetch downloads a small file (up to 1 MiB).
+func Fetch(ctx context.Context, url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
