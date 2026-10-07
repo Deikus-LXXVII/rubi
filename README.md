@@ -18,7 +18,7 @@ with your consent.
 
 | Integration | Status |
 |---|---|
-| iCloud Mail: read, search, drafts, approved send, reply notifications | Implemented (M4); live iCloud test pending |
+| iCloud Mail: read, search, drafts, approved send, reply notifications | Works; verified live against iCloud |
 
 ## Design
 

@@ -304,21 +304,28 @@ func normSubject(s string) string {
 }
 
 func match(hd header, active []*tracked, ownAddress string) (*tracked, string) {
-	if hd.fromAddr != "" && hd.fromAddr == strings.ToLower(ownAddress) {
-		return nil, ""
+	own := strings.ToLower(ownAddress)
+	id := normID(hd.messageID)
+	// eligible rules out the tracked email itself (e.g. it lands in INBOX when sent to yourself) and the
+	// user's own messages, unless the user was a recipient of the tracked email (writing to yourself).
+	eligible := func(t *tracked) bool {
+		if id != "" && id == t.MessageID {
+			return false
+		}
+		return hd.fromAddr == "" || hd.fromAddr != own || contains(t.Recipients, own)
 	}
 	byID := map[string]*tracked{}
 	for _, t := range active {
 		byID[t.MessageID] = t
 	}
 	for _, ref := range reMsgID.FindAllString(hd.inReplyTo+" "+hd.references, -1) {
-		if t := byID[normID(ref)]; t != nil {
+		if t := byID[normID(ref)]; t != nil && eligible(t) {
 			return t, "headers"
 		}
 	}
 	subj := normSubject(hd.subject)
 	for _, t := range active {
-		if subj != "" && subj == normSubject(t.Subject) && contains(t.Recipients, hd.fromAddr) &&
+		if eligible(t) && subj != "" && subj == normSubject(t.Subject) && contains(t.Recipients, hd.fromAddr) &&
 			(hd.date.IsZero() || hd.date.After(t.SentAt.Add(-2*time.Minute))) {
 			return t, "subject"
 		}

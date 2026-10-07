@@ -300,3 +300,24 @@ func TestNormalizeSubject(t *testing.T) {
 		}
 	}
 }
+
+func TestSelfAddressedTracking(t *testing.T) {
+	own := "me@icloud.com"
+	now := time.Now()
+	toSelf := &tracked{ID: "t1", MessageID: "orig@icloud.com", Subject: "Test", Recipients: []string{own}, SentAt: now, ExpiresAt: now.Add(time.Hour)}
+	toAnna := &tracked{ID: "t2", MessageID: "orig2@icloud.com", Subject: "Plan", Recipients: []string{"anna@example.com"}, SentAt: now, ExpiresAt: now.Add(time.Hour)}
+	active := []*tracked{toSelf, toAnna}
+
+	// The original itself arriving in INBOX is never a reply, even though subject and sender match.
+	if tr, _ := match(header{messageID: "<orig@icloud.com>", fromAddr: own, subject: "Test"}, active, own); tr != nil {
+		t.Fatal("the tracked email itself counted as a reply")
+	}
+	// Replying to yourself counts when you wrote to yourself.
+	if tr, how := match(header{messageID: "<r@icloud.com>", fromAddr: own, subject: "Re: Test", inReplyTo: "<orig@icloud.com>"}, active, own); tr != toSelf || how != "headers" {
+		t.Fatalf("self reply: %v %s", tr, how)
+	}
+	// Your own follow-up in a thread with someone else is not their reply.
+	if tr, _ := match(header{messageID: "<f@icloud.com>", fromAddr: own, subject: "Re: Plan", inReplyTo: "<orig2@icloud.com>"}, active, own); tr != nil {
+		t.Fatal("own follow-up counted as a reply")
+	}
+}
