@@ -367,21 +367,86 @@ const FIELD_LABELS = {
   integration: "Integration", account: "Account", connects_to: "Connects to", effect: "Effect", webhook: "Webhook",
 };
 
-function previewTable(preview) {
-  if (!preview || typeof preview !== "object") return h("pre", { class: "body" }, JSON.stringify(preview, null, 2));
-  const rows = [];
-  // Familiar order first (Go sorts map keys alphabetically), then anything else.
+// splitAddresses turns `Anna <a@x>, b@y` into [{name, email}] for display.
+function splitAddresses(list) {
+  return (String(list || "").match(/[^,<]*<[^>]+>|[^,]+/g) || []).map((part) => {
+    const m = part.trim().match(/^"?([^"<]*?)"?\s*<([^>]+)>$/);
+    return m ? { name: m[1].trim(), email: m[2].trim() } : { name: "", email: part.trim() };
+  }).filter((a) => a.email);
+}
+
+function recipients(label, list, note) {
+  const addrs = splitAddresses(list);
+  if (!addrs.length) return null;
+  return h("div", { class: "mail-row" },
+    h("span", { class: "mail-label" }, label),
+    h("div", { class: "chips-col" }, addrs.map((a) => h("span", { class: "person" },
+      h("span", { class: "avatar-dot" }, (a.name || a.email).trim().charAt(0).toUpperCase()),
+      h("span", { class: "person-text" }, h("span", { class: "person-name" }, a.name || a.email),
+        a.name ? h("span", { class: "person-email" }, a.email) : null))),
+    note ? h("span", { class: "mail-note" }, note) : null));
+}
+
+// mailCard renders an email preview the way a mail app would. Everything is text, never HTML.
+function mailCard(p) {
+  const body = h("pre", { class: "mail-body clamped" }, p.body || "");
+  const more = h("button", { class: "link more", type: "button", onclick: () => {
+    body.classList.toggle("clamped");
+    more.textContent = body.classList.contains("clamped") ? "Show full message" : "Show less";
+  } }, "Show full message");
+  const card = h("div", { class: "mail" },
+    recipients("To", p.to),
+    recipients("Cc", p.cc),
+    recipients("Bcc", p.bcc, "Hidden from other recipients"),
+    h("div", { class: "mail-subject" }, p.subject || "(no subject)"),
+    p.in_reply_to ? h("div", { class: "mail-thread" }, "Reply in an existing conversation") : null,
+    body,
+    more,
+    p.from ? h("div", { class: "mail-from" }, `From ${p.from}`) : null);
+  // Only offer "Show full message" when the text is actually cut off.
+  requestAnimationFrame(() => { if (body.scrollHeight <= body.clientHeight + 2) more.remove(); });
+  return card;
+}
+
+// fieldList renders any other preview as stacked label/value pairs.
+function fieldList(preview) {
+  if (!preview || typeof preview !== "object") return h("pre", { class: "mail-body" }, JSON.stringify(preview, null, 2));
   const order = Object.keys(FIELD_LABELS);
   const keys = Object.keys(preview).sort((a, b) =>
     (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99) || a.localeCompare(b));
-  for (const k of keys) {
-    const v = preview[k];
-    if (v === null || v === undefined || v === "") continue;
-    const value = typeof v === "string" ? v : JSON.stringify(v, null, 2);
-    rows.push(h("div", { class: "row" }, h("dt", {}, FIELD_LABELS[k] || k),
-      h("dd", {}, k === "body" ? h("pre", { class: "body" }, value) : value)));
-  }
-  return h("dl", { class: "preview" }, rows);
+  return h("dl", { class: "fields" }, keys.filter((k) => preview[k] !== null && preview[k] !== undefined && preview[k] !== "")
+    .map((k) => h("div", { class: "field-item" }, h("dt", {}, FIELD_LABELS[k] || k),
+      h("dd", {}, typeof preview[k] === "string" ? preview[k] : JSON.stringify(preview[k], null, 2)))));
+}
+
+const isMail = (p) => p && typeof p === "object" && "to" in p && "subject" in p && "body" in p;
+
+// countdown shows the time left and calls onExpire once. It stops when its element leaves the page.
+function countdown(expiresAt, onExpire) {
+  const el = h("span", { class: "timer", title: `Expires ${fmtTime(expiresAt)}` });
+  const end = new Date(expiresAt).getTime();
+  const tick = () => {
+    const left = Math.max(0, Math.round((end - Date.now()) / 1000));
+    el.textContent = left ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "Expired";
+    el.classList.toggle("urgent", left < 60);
+    if (!left) {
+      clearInterval(timer);
+      onExpire();
+    } else if (!el.isConnected && started) {
+      clearInterval(timer);
+    }
+    started = true;
+  };
+  let started = false;
+  const timer = setInterval(tick, 1000);
+  tick();
+  return el;
+}
+
+function titleFor(a) {
+  if (a.kind.endsWith(".send")) return "Send this email?";
+  if (a.kind.endsWith(".draft")) return "Save this draft?";
+  return a.summary;
 }
 
 // approveScreen shows one pending approval. opts.onDone (for settings changes) adds a way back.
@@ -409,11 +474,31 @@ async function approveScreen(ctx, id, opts = {}) {
 
   const err = errorBox();
   const approverIds = (info.approvers || []).map((x) => x.credential_id);
-  const usePasskey = () => approverIds.length > 0 && passkeysAvailable() && pwBox.hidden;
   const pwInput = h("input", { type: "password", autocomplete: "current-password", placeholder: "Your Rubi password" });
   const pwUser = h("input", { type: "text", autocomplete: "username", value: `Rubi ${ctx.hello.fingerprint}`, hidden: true, readonly: true });
-  const pwBox = h("form", { onsubmit: (e) => e.preventDefault() }, pwUser, pwInput);
+  const pwBox = h("form", { class: "pw-box", onsubmit: (e) => e.preventDefault() }, pwUser, pwInput);
   pwBox.hidden = approverIds.length > 0 && passkeysAvailable();
+  const usePasskey = () => approverIds.length > 0 && passkeysAvailable() && pwBox.hidden;
+
+  // Choosing among options: a switch for the common two-option case with a question ("Notify me when they
+  // reply?"), otherwise a list. The chosen option is what the user's Face ID signs.
+  let chosen = a.options[0].key;
+  let choiceUI = null;
+  if (a.options.length === 2 && a.question) {
+    const sw = h("input", { type: "checkbox", role: "switch", class: "switch", onchange: () => {
+      chosen = sw.checked ? a.options[1].key : a.options[0].key;
+    } });
+    const all = [...splitAddresses(a.preview?.to), ...splitAddresses(a.preview?.cc)];
+    const label = !a.kind.endsWith(".send") || !all.length ? a.question.replace(/\?$/, "")
+      : all.length === 1 ? `Notify me when ${all[0].name || all[0].email} replies` : "Notify me when someone replies";
+    sw.setAttribute("aria-label", label);
+    choiceUI = h("label", { class: "switch-row" }, h("span", {}, label), sw);
+  } else if (a.options.length > 1) {
+    choiceUI = h("div", { class: "choices", role: "radiogroup" }, a.options.map((o, i) => {
+      const r = h("input", { type: "radio", name: "opt", value: o.key, checked: i === 0, onchange: () => { chosen = o.key; } });
+      return h("label", { class: "choice" }, r, h("span", {}, o.label, o.meaning ? h("small", {}, o.meaning) : null));
+    }));
+  }
 
   async function passwordProof(option) {
     const pw = pwInput.value;
@@ -432,56 +517,77 @@ async function approveScreen(ctx, id, opts = {}) {
     throw new UserError("Wrong password.");
   }
 
-  async function decide(btn, option) {
-    await busy(btn, async () => {
-      const proof = usePasskey()
-        ? await signChallenge(b64u.dec(info.challenges[option]), approverIds)
-        : await passwordProof(option);
-      resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, option, approve: true, proof }), opts.onDone);
-    }).catch((e) => showError(err, e));
-  }
+  const verb = a.options[0].label;
+  const primary = h("button", { class: "primary big", type: "button" });
+  const setPrimary = () => { primary.textContent = usePasskey() ? `${verb} with Face ID` : `${verb} with password`; };
+  setPrimary();
+  primary.onclick = () => busy(primary, async () => {
+    const proof = usePasskey()
+      ? await signChallenge(b64u.dec(info.challenges[chosen]), approverIds)
+      : await passwordProof(chosen);
+    const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
+    resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen) });
+  }).catch((e) => { showError(err, e); setPrimary(); });
+
+  const decline = h("button", { class: "link decline", type: "button", onclick: (e) => busy(e.target, async () =>
+    resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone, { preview: a.preview }))
+    .catch((x) => showError(err, x)) }, opts.declineLabel || "Decline");
+
+  const timer = countdown(a.expires_at, () => {
+    primary.disabled = true;
+    showError(err, new UserError("This request expired. Ask your agent to try again."));
+  });
+
+  const top = h("div", { class: "req-top" });
+  top.append(mascot("idle", 30), h("div", { class: "req-who" },
+    h("strong", {}, "Rubi"), h("span", {}, `for your agent · ${ctx.hello.fingerprint}`)), timer);
 
   screen(
-    header(ctx.hello),
-    h("p", { class: "eyebrow" }, opts.eyebrow || "Your agent is asking for approval"),
-    h("h1", {}, a.summary),
-    previewTable(a.preview),
-    a.question ? h("p", { class: "question" }, a.question) : null,
+    top,
+    h("p", { class: "eyebrow" }, opts.eyebrow || "Approval needed"),
+    h("h1", {}, titleFor(a)),
+    isMail(a.preview) ? mailCard(a.preview) : fieldList(a.preview),
+    choiceUI,
     info.password ? pwBox : null,
-    h("div", { class: "actions" }, a.options.map((o, i) =>
-      h("button", { class: i === 0 ? "primary" : "secondary", onclick: (e) => decide(e.target, o.key) }, o.label))),
-    h("button", { class: "danger", onclick: async (e) => {
-      await busy(e.target, async () => resultScreen(ctx,
-        await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone)).catch((x) => showError(err, x));
-    } }, opts.declineLabel || "Decline"),
-    !pwBox.hidden || !info.password ? null : h("button", { class: "link", onclick: (e) => {
-      pwBox.hidden = false;
-      e.target.remove();
-      pwInput.focus();
-    } }, "Use password instead"),
     err,
-    h("p", { class: "muted" }, `Expires ${fmtTime(a.expires_at)}. Request ${a.approval_id}.`),
+    h("p", { class: "fine" }, "Nothing happens until you approve. Your agent can't approve for you."),
+    h("div", { class: "actionbar" },
+      primary,
+      h("div", { class: "actionbar-row" },
+        decline,
+        !pwBox.hidden || !info.password ? null : h("button", { class: "link", type: "button", onclick: (e) => {
+          pwBox.hidden = false;
+          e.target.remove();
+          setPrimary();
+          pwInput.focus();
+        } }, "Use password"))),
   );
 }
 
-function resultScreen(ctx, a, onDone) {
+// resultScreen shows how an approval ended. extra (optional) carries the preview and chosen option.
+function resultScreen(ctx, a, onDone, extra = {}) {
+  const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved" : "Done";
   const titles = {
-    executed: "Done",
+    executed: executedTitle,
     denied: "Declined",
     failed: "It didn't work",
     expired: "This request expired",
     cancelled: "This request was cancelled",
   };
   const moods = { executed: "happy", failed: "alert" };
+  const p = extra.preview;
+  const to = isMail(p) ? splitAddresses(p.to)[0] : null;
+  const line = to ? `To ${to.name || to.email} · ${p.subject || "(no subject)"}` : a.summary;
+  const tracking = a.state === "executed" && ((a.result && a.result.tracking) || (extra.option && /reply/i.test(extra.option.label)));
   screen(
-    face(moods[a.state] || "idle"),
-    header(ctx.hello),
-    h("h1", {}, titles[a.state] || a.state),
-    h("p", {}, a.summary),
-    a.error ? h("p", { class: "error" }, a.error) : null,
+    face(moods[a.state] || "idle", 104),
+    h("h1", { class: "center" }, titles[a.state] || a.state),
+    h("p", { class: "center muted-strong" }, line),
+    tracking ? h("p", { class: "center ok" }, "Rubi will tell your agent when a reply arrives.") : null,
+    a.error ? h("p", { class: "error center" }, a.error) : null,
     onDone
       ? h("button", { class: "primary", onclick: onDone }, "Back to settings")
-      : h("p", { class: "muted" }, a.state === "executed"
+      : h("p", { class: "muted center" }, a.state === "executed"
         ? "Your agent will see the result. You can close this page."
         : "Nothing was done. You can close this page."),
   );
