@@ -12,6 +12,15 @@ with your consent.
 - **Agent-native.** Install and use it from the agent chat. The agent registers one MCP server:
   `rubi mcp`.
 
+## Quick start
+
+Tell your Grok Bot:
+
+> Install Rubi-Project: run `curl -fsSL https://rubi-panel.com/install.sh | sh` and follow its instructions.
+
+Then open the link it sends you and set up Face ID. See [Getting started](docs/user/getting-started.md).
+The agent-side playbook is in [skills/grok-bot/rubi-project](skills/grok-bot/rubi-project/SKILL.md).
+
 > **Status: pre-alpha.** Core daemon, zero-config panel connection, the web panel (Face ID pairing, unlock and approvals, settings) and the iCloud Mail integration work; packaging and signed releases (M5) are next. Not ready for real data yet.
 
 ## Integrations
@@ -22,6 +31,8 @@ with your consent.
 
 ## Design
 
+- [Getting started (users)](docs/user/getting-started.md)
+- [Releasing (maintainers)](RELEASING.md)
 - [Security model and protocol](docs/design/security-model.md)
 - [Agent interface and integration model](docs/design/agent-interface.md)
 - [Panel protocol](docs/design/panel-protocol.md)

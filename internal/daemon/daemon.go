@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Deikus-LXXVII/rubi/internal/core"
+	"github.com/Deikus-LXXVII/rubi/internal/integrity"
 	"github.com/Deikus-LXXVII/rubi/internal/mcpserver"
 	"github.com/Deikus-LXXVII/rubi/internal/panelapi"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
@@ -65,6 +66,12 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		ln.Close()
 		return err
 	}
+
+	go func() {
+		r := integrity.Check(ctx, version.Version)
+		c.SetIntegrity(r)
+		log.Printf("binary self-check: %s (%s)", r.Status, r.Detail)
+	}()
 
 	c.Audit.Record("daemon.started", nil)
 	log.Printf("rubi %s daemon started: state=%s instance=%s socket=%s", version.Version, c.State(),

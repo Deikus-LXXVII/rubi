@@ -310,7 +310,8 @@ func (s *Server) unlock(env Envelope) (any, error) {
 }
 
 func (s *Server) status(purpose string) any {
-	out := map[string]any{"state": s.core.State(), "purpose": purpose, "instance": s.core.ID.InstanceID}
+	out := map[string]any{"state": s.core.State(), "purpose": purpose, "instance": s.core.ID.InstanceID,
+		"version": version.Version, "integrity": s.core.Integrity()}
 	_ = s.core.Vault.View(func(d *vault.Data) error {
 		out["vault_version"] = d.Version
 		out["receipts"] = d.Receipts

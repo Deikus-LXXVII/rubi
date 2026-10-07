@@ -17,6 +17,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/events"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
 	"github.com/Deikus-LXXVII/rubi/internal/integrations"
+	"github.com/Deikus-LXXVII/rubi/internal/integrity"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
@@ -60,6 +61,24 @@ type Core struct {
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
 	running map[string]bool // integrations currently started
+	integ   integrity.Result
+}
+
+// SetIntegrity records the result of the binary self-check.
+func (c *Core) SetIntegrity(r integrity.Result) {
+	c.mu.Lock()
+	c.integ = r
+	c.mu.Unlock()
+}
+
+// Integrity returns the last self-check result.
+func (c *Core) Integrity() integrity.Result {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.integ.Status == "" {
+		return integrity.Result{Status: "unknown", Detail: "check not finished yet"}
+	}
+	return c.integ
 }
 
 type ticket struct {

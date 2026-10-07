@@ -220,6 +220,7 @@ func (s *Server) status() out {
 		"version":     version.Version,
 		"instance":    s.core.ID.InstanceID,
 		"fingerprint": s.core.ID.Fingerprint(),
+		"integrity":   s.core.Integrity(),
 	}
 	var installed []map[string]any
 	_ = s.core.Vault.View(func(d *vault.Data) error {

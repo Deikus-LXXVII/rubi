@@ -21,3 +21,6 @@ mail-bridge/
 
 # Local tooling
 .claude/
+
+# Release signing key (private) - never commit
+/.release-key/

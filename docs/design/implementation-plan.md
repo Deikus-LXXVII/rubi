@@ -39,6 +39,10 @@ internal/panelapi/        panel API (POST /v1/rpc)
 internal/panelclient/     reference panel client (tests, `rubi dev-panel`)
 internal/tunnel/          Cloudflare quick-tunnel supervisor
 internal/webauthn/        passkey assertion verification
+internal/integrity/       binary self-check against signed release checksums
+panel/install.sh          installer (served at rubi-panel.com/install.sh)
+skills/grok-bot/          agent playbook
+.github/workflows/        CI, signed releases, panel deployment
 internal/integrations/    integration API and built-in integrations
 panel/                    static web panel (M3)
 docs/design/              design documents

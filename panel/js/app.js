@@ -319,6 +319,7 @@ async function statusScreen(ctx, message) {
     receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) =>
       h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
     receipts.length ? h("p", { class: "muted" }, "Don't recognize one of these? Lock Rubi and tell your agent.") : null,
+    integrityLine(st),
     st?.state === "unlocked"
       ? h("button", { class: "secondary", onclick: async (e) => {
         await busy(e.target, () => ctx.client.call("lock"));
@@ -527,6 +528,15 @@ async function setupScreen(ctx, id, back) {
   );
 }
 
+// integrityLine shows whether the running Rubi binary matches the signed official release.
+function integrityLine(st) {
+  const i = st?.integrity;
+  if (!i) return null;
+  const text = { verified: `Official release ${i.version}, verified`, modified: `Warning: ${i.detail}`,
+    unknown: `Release check: ${i.detail}` }[i.status] || i.detail;
+  return h("p", { class: i.status === "modified" ? "error" : "muted" }, text);
+}
+
 const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Face ID / password" };
 
 async function settingsScreen(ctx) {
@@ -589,6 +599,7 @@ async function settingsScreen(ctx) {
     } }, "Send a test event") : null,
     hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null,
     h("h2", {}, "Security"),
+    integrityLine(st),
     receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) => h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
     h("button", { class: "danger", onclick: async (e) => {
       await busy(e.target, () => ctx.client.call("lock"));
