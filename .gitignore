@@ -1,0 +1,20 @@
+# Build output
+/rubi
+/dist/
+*.test
+*.out
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime state must never be committed
+.rubi/
+*.sealed
+*.sock
+audit.log
+daemon.log
+
+# Legacy single-user macOS prototype (kept locally until migration)
+mail-bridge/
