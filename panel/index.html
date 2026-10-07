@@ -5,16 +5,70 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; connect-src https: http://127.0.0.1:* http://localhost:*; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0f0d0d" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#faf7f5" media="(prefers-color-scheme: light)">
+  <meta name="description" content="Rubi lets your AI agent use your accounts, starting with iCloud Mail, only with your approval. Self-hosted, encrypted with a key only you hold.">
   <meta name="apple-mobile-web-app-title" content="Rubi">
-  <title>Rubi</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23c2185b'/%3E%3C/svg%3E">
+  <title>Rubi: your agent acts, you approve</title>
+  <link rel="icon" href="assets/rubi.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="vendor/hash-wasm/argon2.umd.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </head>
 <body>
-  <div id="app"><main class="card"><p class="muted">Loading…</p></main></div>
-  <noscript><main class="card"><p>Rubi's panel needs JavaScript.</p></main></noscript>
+  <!-- Shown when the page is opened without a Rubi link. Static so it works without JavaScript. -->
+  <div id="landing">
+    <header class="topbar">
+      <a class="brand" href="./"><img src="assets/rubi.svg" alt="" width="28" height="28"><span>Rubi</span></a>
+      <a class="toplink" href="https://github.com/Deikus-LXXVII/rubi" rel="noopener noreferrer">GitHub</a>
+    </header>
+
+    <section class="hero">
+      <img class="hero-mascot" src="assets/rubi.svg" alt="Rubi" width="132" height="132">
+      <h1>Your agent does the work.<br>You keep the keys.</h1>
+      <p class="lede">Rubi lets your AI agent use your accounts, starting with iCloud Mail. Everything is encrypted with a key only you hold, and anything sensitive waits for your Face ID.</p>
+      <div class="install">
+        <p class="install-label">Tell your Grok Bot:</p>
+        <div class="install-box">
+          <code id="install-cmd">Install Rubi-Project: run curl -fsSL https://rubi-panel.com/install.sh | sh</code>
+          <button type="button" id="copy-install" class="copy" hidden>Copy</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="steps">
+      <h2>How it works</h2>
+      <ol>
+        <li><span class="num">1</span><div><h3>Install from the chat</h3><p>Your agent installs Rubi on its own computer and sends you a link.</p></div></li>
+        <li><span class="num">2</span><div><h3>Set up Face ID</h3><p>Rubi is locked with a passkey on your phone. Your agent never sees your key or your passwords.</p></div></li>
+        <li><span class="num">3</span><div><h3>Approve what matters</h3><p>Reading and drafts can run freely. Sending waits for you: the panel shows the exact email, and your Face ID approves it.</p></div></li>
+      </ol>
+    </section>
+
+    <section class="features">
+      <div class="feature"><h3>Your key, not the agent's</h3><p>Rubi starts locked and opens only with your passkey or password. Nobody can recover your key.</p></div>
+      <div class="feature"><h3>Approvals you can trust</h3><p>Face ID signs the exact action. The agent can't approve, change the email after you see it, or change settings.</p></div>
+      <div class="feature"><h3>No servers of ours</h3><p>Rubi runs on your agent's machine. This page is static and stores nothing.</p></div>
+      <div class="feature"><h3>Open and verifiable</h3><p>MIT-licensed, signed releases with build provenance, and a binary that checks itself.</p></div>
+    </section>
+
+    <section class="integrations">
+      <h2>Integrations</h2>
+      <div class="chips">
+        <span class="chip on">iCloud Mail</span>
+        <span class="chip">More coming</span>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <img src="assets/rubi.svg" alt="" width="20" height="20">
+      <span>Rubi-Project · MIT · <a href="https://github.com/Deikus-LXXVII/rubi" rel="noopener noreferrer">Source on GitHub</a></span>
+    </footer>
+  </div>
+
+  <!-- The panel itself, used when the page is opened from a Rubi link. -->
+  <div id="app" hidden></div>
+  <noscript><main class="card"><p>Rubi's panel needs JavaScript. The page above works without it.</p></main></noscript>
 </body>
 </html>

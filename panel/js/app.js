@@ -5,6 +5,7 @@ import { RubiClient, UserError, parseLink } from "./api.js";
 import {
   approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
+import { mascot } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
 
 const root = document.getElementById("app");
@@ -27,12 +28,46 @@ function h(tag, attrs = {}, ...children) {
 }
 
 function screen(...children) {
+  showPanel();
   root.replaceChildren(h("main", { class: "card" }, ...children));
   root.querySelector("input")?.focus();
 }
 
+// face is the mascot at the top of a screen; its eyes show Rubi's state.
+function face(mood, size = 76) {
+  const wrap = h("div", { class: "screen-mascot" });
+  wrap.append(mascot(mood, size));
+  return wrap;
+}
+
 function header(hello) {
-  return h("div", { class: "instance" }, h("span", { class: "dot" }), `Rubi · ${hello.fingerprint}`);
+  const row = h("div", { class: "instance" });
+  row.append(mascot(hello.state === "unlocked" ? "idle" : "locked", 22), `Rubi · ${hello.fingerprint}`);
+  return row;
+}
+
+function showPanel() {
+  document.getElementById("landing").hidden = true;
+  root.hidden = false;
+}
+
+function showLanding() {
+  root.hidden = true;
+  document.getElementById("landing").hidden = false;
+  const btn = document.getElementById("copy-install");
+  const cmd = document.getElementById("install-cmd");
+  if (btn && cmd && navigator.clipboard) {
+    btn.hidden = false;
+    btn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(cmd.textContent);
+        btn.textContent = "Copied";
+        setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+      } catch {
+        /* clipboard blocked: the text is still selectable */
+      }
+    };
+  }
 }
 
 function errorBox() {
@@ -101,7 +136,7 @@ async function main() {
   const link = parseLink(location.hash);
   // Keep the one-time codes out of the address bar and history.
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
-  if (!link) return home();
+  if (!link) return showLanding();
   if (!(await supportsX25519())) {
     return fatal("This browser is too old for Rubi's encryption. Update it (Safari 17+, Chrome 133+, Firefox 130+).");
   }
@@ -131,16 +166,8 @@ async function main() {
   return statusScreen(ctx, "");
 }
 
-function home() {
-  screen(
-    h("h1", {}, "Rubi"),
-    h("p", {}, "This is the control panel for Rubi, which lets your AI agent use your accounts only with your approval."),
-    h("p", { class: "muted" }, "Open the link your agent sent you. This page stores nothing on any server."),
-  );
-}
-
 function fatal(message, danger = false) {
-  screen(h("h1", {}, danger ? "Stop" : "Something's wrong"), h("p", { class: danger ? "error" : "" }, message));
+  screen(face("alert"), h("h1", {}, danger ? "Stop" : "Something's wrong"), h("p", { class: danger ? "error" : "" }, message));
 }
 
 // ---------- pairing ----------
@@ -214,6 +241,7 @@ function pairScreen(ctx) {
     const res = await ctx.client.call("pair", args);
     savePin(hello.instance, ctx.link.k, res.vault_version);
     screen(
+      face("happy", 96),
       header(hello),
       h("h1", {}, "Rubi is set up"),
       h("p", {}, "It's unlocked and ready. You can close this page and go back to your agent."),
@@ -222,6 +250,7 @@ function pairScreen(ctx) {
   }
 
   screen(
+    face("idle", 96),
     header(hello),
     h("h1", {}, "Set up Rubi"),
     h("p", {}, "Rubi will be locked with a key only you hold. Choose how you'll unlock it and approve your agent's actions."),
@@ -282,6 +311,7 @@ async function unlockFlow(ctx, title, intro, onDone) {
   }, user, pw, go) : null;
 
   screen(
+    face("locked", 96),
     header(hello),
     h("h1", {}, title),
     h("p", {}, intro),
@@ -312,6 +342,7 @@ async function statusScreen(ctx, message) {
   }
   const receipts = (st?.receipts || []).slice(-5).reverse();
   screen(
+    face(st?.state === "unlocked" ? "happy" : "locked"),
     header(ctx.hello),
     h("h1", {}, st?.state === "unlocked" ? "Rubi is unlocked" : "Rubi"),
     h("p", {}, message),
@@ -441,7 +472,9 @@ function resultScreen(ctx, a, onDone) {
     expired: "This request expired",
     cancelled: "This request was cancelled",
   };
+  const moods = { executed: "happy", failed: "alert" };
   screen(
+    face(moods[a.state] || "idle"),
     header(ctx.hello),
     h("h1", {}, titles[a.state] || a.state),
     h("p", {}, a.summary),
