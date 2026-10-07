@@ -12,7 +12,7 @@ Companion to [security-model.md](security-model.md) and [agent-interface.md](age
 | M4 ✓ | **iCloud Mail integration** — port of the prototype: read/search/drafts, gated send with "send and notify on reply", reply tracking, events to the Grok Bot routine webhook | Mail works end to end with strong approvals |
 | M5 ✓ | **Distribution** — signed releases from GitHub Actions with provenance, `install.sh`, binary self-check, Grok Bot skill, user docs | A fresh Grok Bot installs Rubi from one chat message |
 | M6 ✓ | **Updates** — release feed, `update.available`, one-tap verified update with exec handoff that keeps Rubi unlocked, rollback | v0.2.0 updates a running Rubi without re-unlocking |
-| M7 | **Plugins and the store** — bare core, plugin protocol and Go SDK, signed catalog, install / update / remove with permission approvals, sideloading, iCloud Mail as the first plugin ([plugins.md](plugins.md)) | A bare Rubi installs iCloud Mail from the store and sends an approved email |
+| M7 ✓ | **Plugins and the store** — bare core, plugin protocol and Go SDK, signed catalog, install / update / remove with permission approvals, sideloading, iCloud Mail as the first plugin ([plugins.md](plugins.md)) | A bare Rubi installs iCloud Mail from the store and sends an approved email |
 
 M3 was verified on a real iPhone over HTTPS: pairing with Face ID (passkey with PRF) plus a backup
 password, approving an action with Face ID, and unlocking with Face ID after a restart. Settings, the
@@ -26,6 +26,11 @@ v0.1.0 was released through the pipeline (signed checksums, SLSA provenance atte
 was tested against it: signature verified, installed, and the binary's self-check reports "verified". The
 panel deploys to GitHub Pages; it goes live at https://rubi-panel.com once the domain's DNS points to
 GitHub Pages.
+
+M7 shipped in v0.3.0 with iCloud Mail v1.0.0 as the first reviewed plugin. A local Rubi installed it from
+the live store (signed catalog, publisher signature, reviewed checksum digest), started it, routed its tools,
+and ran the plugin's own setup validation. A live iCloud send through the plugin is the next check, on the
+Grok Bot machine.
 
 ## Repository layout
 
