@@ -50,6 +50,7 @@ export function mascot(mood = "idle", size = 48) {
   svg.append(defs);
   svg.append(el("path", { d: BODY_PATH, fill: `url(#${id})`, stroke: `url(#${id})`, "stroke-width": 1.5,
     "stroke-linejoin": "round", class: "mascot-body" }));
+  const gaze = el("g", { class: "mascot-gaze" });
   const eyes = el("g", { class: "mascot-eyes" });
   for (const e of EYES[mood] || EYES.idle) {
     const { tag, stroke, ...attrs } = e;
@@ -63,6 +64,7 @@ export function mascot(mood = "idle", size = 48) {
     }
     eyes.append(shape);
   }
-  svg.append(eyes);
+  gaze.append(eyes);
+  svg.append(gaze);
   return svg;
 }

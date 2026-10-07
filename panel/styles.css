@@ -217,7 +217,12 @@ a.button-link { color: var(--accent-2); font-weight: 600; font-size: 0.95rem; }
 .mail-subject { font-weight: 700; font-size: 1.08rem; padding-top: 10px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 .mail-thread { color: var(--muted); font-size: 0.82rem; }
 .mail-body { margin: 0; white-space: pre-wrap; font: inherit; line-height: 1.55; overflow-wrap: anywhere; }
-.mail-body.clamped { display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
+.mail-body { overflow: hidden; transition: max-height 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.mail-body.clamped {
+  max-height: 10.85em;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
 button.more { align-self: flex-start; width: auto; padding: 0; text-decoration: none; color: var(--accent-2); font-weight: 600; }
 .mail-from { color: var(--muted); font-size: 0.82rem; padding-top: 8px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
 
@@ -260,3 +265,96 @@ button.decline { color: var(--muted); text-decoration: none; font-weight: 600; w
 .center { text-align: center; }
 .muted-strong { color: var(--muted); }
 .pw-box input { text-align: center; }
+
+/* ---------- request page: desktop layout ---------- */
+
+.req-grid { display: flex; flex-direction: column; gap: 14px; }
+.req-main, .req-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+@media (min-width: 900px) {
+  #app { padding-top: 48px; }
+  .card.approve { max-width: 1000px; padding: 28px 32px 32px; }
+  .card.approve .req-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 32px; align-items: start; }
+  .card.approve .req-side {
+    position: sticky; top: 24px; padding: 20px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--bg-2);
+  }
+  .card.approve .req-main h1 { font-size: 1.9rem; }
+  .card.approve .actionbar { position: static; margin: 0; padding: 0; background: none; border-radius: 0; }
+  .card.approve .mail { padding: 20px 22px; }
+  .card.approve .mail-body.clamped { max-height: 16em; }
+  .card.approve .fine { text-align: left; }
+}
+
+/* ---------- motion ---------- */
+
+.rise { animation: rise 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; animation-delay: var(--d, 0ms); }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+
+.screen-mascot { position: relative; }
+.pop .mascot { animation: pop 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+@keyframes pop {
+  0% { transform: scale(0.4) rotate(-12deg); opacity: 0; }
+  60% { transform: scale(1.08) rotate(3deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0); }
+}
+.pop.mood-happy .mascot { animation: pop 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both, hop 0.9s ease-in-out 0.7s 2; }
+@keyframes hop {
+  0%, 100% { transform: translateY(0); }
+  35% { transform: translateY(-14px) scaleY(1.04); }
+  60% { transform: translateY(0) scaleY(0.94) scaleX(1.05); }
+}
+.sigh .mascot { animation: pop 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) both, sigh 1.2s ease-in-out 0.7s both; }
+@keyframes sigh {
+  0% { transform: none; }
+  50% { transform: translateY(6px) scaleY(0.94) scaleX(1.04); }
+  100% { transform: translateY(3px) scaleY(0.97); }
+}
+
+/* Idle eyes look around now and then, on top of blinking. */
+.mascot.mood-idle .mascot-gaze { animation: look 9s ease-in-out infinite; }
+@keyframes look {
+  0%, 18%, 100% { transform: none; }
+  24%, 40% { transform: translateX(-3px); }
+  48%, 62% { transform: translateX(3px) translateY(-1px); }
+  70% { transform: none; }
+}
+.mascot.nod { animation: nod 0.6s ease-in-out; }
+@keyframes nod {
+  0%, 100% { transform: none; }
+  30% { transform: translateY(3px) rotate(4deg); }
+  65% { transform: translateY(-2px) rotate(-3deg); }
+}
+
+.sparks { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+.sparks i {
+  position: absolute; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--accent);
+  opacity: 0; animation: spark 0.9s cubic-bezier(0.2, 0.8, 0.2, 1) 0.45s both;
+}
+.sparks i:nth-child(3n) { background: var(--ok); width: 6px; height: 6px; }
+.sparks i:nth-child(4n) { background: #f2c14e; }
+@keyframes spark {
+  0% { opacity: 0; transform: rotate(var(--a)) translateX(10px) scale(0.6); }
+  25% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--a)) translateX(var(--r)) scale(1); }
+}
+
+button.primary:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 35%, transparent); }
+button.is-busy {
+  background-image: linear-gradient(110deg, transparent 30%, rgba(255, 255, 255, 0.22) 50%, transparent 70%);
+  background-size: 250% 100%; animation: shimmer 1.2s linear infinite;
+}
+@keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+
+.timer.urgent { animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.55; } }
+
+.switch-row { transition: border-color 0.2s, background 0.2s; }
+.switch-row:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

@@ -27,15 +27,30 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// screen replaces the panel's content. An optional first argument {cls, focus} adds a class to the card
+// and controls autofocus (off for screens where a keyboard popping up would get in the way).
 function screen(...children) {
+  let opts = {};
+  if (children[0] && !(children[0] instanceof Node) && typeof children[0] === "object") opts = children.shift();
   showPanel();
-  root.replaceChildren(h("main", { class: "card" }, ...children));
-  root.querySelector("input")?.focus();
+  const main = h("main", { class: "card" + (opts.cls ? " " + opts.cls : "") }, ...children);
+  root.replaceChildren(main);
+  animateIn(main);
+  if (opts.focus !== false) root.querySelector("input:not([type=checkbox])")?.focus({ preventScroll: true });
+}
+
+// animateIn staggers the entrance of a screen's blocks.
+function animateIn(main) {
+  const items = main.querySelectorAll(":scope > *:not(.req-grid), .req-grid > section > *, .req-grid > aside > *");
+  items.forEach((el, i) => {
+    el.classList.add("rise");
+    el.style.setProperty("--d", `${Math.min(i, 9) * 55}ms`);
+  });
 }
 
 // face is the mascot at the top of a screen; its eyes show Rubi's state.
 function face(mood, size = 76) {
-  const wrap = h("div", { class: "screen-mascot" });
+  const wrap = h("div", { class: `screen-mascot pop mood-${mood}` });
   wrap.append(mascot(mood, size));
   return wrap;
 }
@@ -89,11 +104,13 @@ async function busy(button, fn) {
   for (const e of root.querySelectorAll(".error[role=alert]")) e.hidden = true;
   const label = button.textContent;
   button.disabled = true;
+  button.classList.add("is-busy");
   button.textContent = "Working…";
   try {
     return await fn();
   } finally {
     button.disabled = false;
+    button.classList.remove("is-busy");
     button.textContent = label;
   }
 }
@@ -390,9 +407,16 @@ function recipients(label, list, note) {
 // mailCard renders an email preview the way a mail app would. Everything is text, never HTML.
 function mailCard(p) {
   const body = h("pre", { class: "mail-body clamped" }, p.body || "");
-  const more = h("button", { class: "link more", type: "button", onclick: () => {
-    body.classList.toggle("clamped");
-    more.textContent = body.classList.contains("clamped") ? "Show full message" : "Show less";
+  const more = h("button", { class: "link more", type: "button", "aria-expanded": "false", onclick: () => {
+    const expand = body.classList.contains("clamped");
+    // Animate between the clamped height and the full height, then let it size naturally.
+    body.style.maxHeight = `${body.getBoundingClientRect().height}px`;
+    requestAnimationFrame(() => {
+      body.classList.toggle("clamped", !expand);
+      body.style.maxHeight = expand ? `${body.scrollHeight}px` : "";
+    });
+    more.textContent = expand ? "Show less" : "Show full message";
+    more.setAttribute("aria-expanded", String(expand));
   } }, "Show full message");
   const card = h("div", { class: "mail" },
     recipients("To", p.to),
@@ -492,6 +516,15 @@ async function approveScreen(ctx, id, opts = {}) {
     const label = !a.kind.endsWith(".send") || !all.length ? a.question.replace(/\?$/, "")
       : all.length === 1 ? `Notify me when ${all[0].name || all[0].email} replies` : "Notify me when someone replies";
     sw.setAttribute("aria-label", label);
+    sw.addEventListener("change", () => {
+      // Rubi nods when you ask to be notified.
+      const m = root.querySelector(".req-top .mascot");
+      if (m && sw.checked) {
+        m.classList.remove("nod");
+        void m.getBoundingClientRect();
+        m.classList.add("nod");
+      }
+    });
     choiceUI = h("label", { class: "switch-row" }, h("span", {}, label), sw);
   } else if (a.options.length > 1) {
     choiceUI = h("div", { class: "choices", role: "radiogroup" }, a.options.map((o, i) => {
@@ -543,15 +576,19 @@ async function approveScreen(ctx, id, opts = {}) {
     h("strong", {}, "Rubi"), h("span", {}, `for your agent · ${ctx.hello.fingerprint}`)), timer);
 
   screen(
+    { cls: "approve", focus: false },
     top,
-    h("p", { class: "eyebrow" }, opts.eyebrow || "Approval needed"),
-    h("h1", {}, titleFor(a)),
-    isMail(a.preview) ? mailCard(a.preview) : fieldList(a.preview),
-    choiceUI,
-    info.password ? pwBox : null,
-    err,
-    h("p", { class: "fine" }, "Nothing happens until you approve. Your agent can't approve for you."),
-    h("div", { class: "actionbar" },
+    h("div", { class: "req-grid" },
+      h("section", { class: "req-main" },
+        h("p", { class: "eyebrow" }, opts.eyebrow || "Approval needed"),
+        h("h1", {}, titleFor(a)),
+        isMail(a.preview) ? mailCard(a.preview) : fieldList(a.preview)),
+      h("aside", { class: "req-side" },
+        choiceUI,
+        info.password ? pwBox : null,
+        err,
+        h("p", { class: "fine" }, "Nothing happens until you approve. Your agent can't approve for you."),
+        h("div", { class: "actionbar" },
       primary,
       h("div", { class: "actionbar-row" },
         decline,
@@ -560,7 +597,7 @@ async function approveScreen(ctx, id, opts = {}) {
           e.target.remove();
           setPrimary();
           pwInput.focus();
-        } }, "Use password"))),
+        } }, "Use password"))))),
   );
 }
 
@@ -579,8 +616,12 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   const to = isMail(p) ? splitAddresses(p.to)[0] : null;
   const line = to ? `To ${to.name || to.email} · ${p.subject || "(no subject)"}` : a.summary;
   const tracking = a.state === "executed" && ((a.result && a.result.tracking) || (extra.option && /reply/i.test(extra.option.label)));
+  const mascotBlock = face(moods[a.state] || "idle", 104);
+  if (a.state === "executed") mascotBlock.append(sparks());
+  if (a.state === "denied" || a.state === "cancelled" || a.state === "expired") mascotBlock.classList.add("sigh");
   screen(
-    face(moods[a.state] || "idle", 104),
+    { cls: "result" },
+    mascotBlock,
     h("h1", { class: "center" }, titles[a.state] || a.state),
     h("p", { class: "center muted-strong" }, line),
     tracking ? h("p", { class: "center ok" }, "Rubi will tell your agent when a reply arrives.") : null,
@@ -591,6 +632,18 @@ function resultScreen(ctx, a, onDone, extra = {}) {
         ? "Your agent will see the result. You can close this page."
         : "Nothing was done. You can close this page."),
   );
+}
+
+// sparks returns a small burst of particles around the mascot for a successful result.
+function sparks() {
+  const wrap = h("span", { class: "sparks", "aria-hidden": "true" });
+  for (let i = 0; i < 10; i++) {
+    const sp = h("i", {});
+    sp.style.setProperty("--a", `${i * 36 + (i % 2) * 12}deg`);
+    sp.style.setProperty("--r", `${62 + (i % 3) * 12}px`);
+    wrap.append(sp);
+  }
+  return wrap;
 }
 
 // ---------- settings & integration setup ----------
