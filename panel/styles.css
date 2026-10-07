@@ -52,7 +52,6 @@ p { margin: 0; }
 
 /* ---------- mascot ---------- */
 
-.mascot-body { fill: var(--accent); stroke: var(--accent); }
 .mascot-eyes rect, .mascot-eyes path:not(.eye-stroke) { fill: var(--eye); }
 .mascot-eyes .eye-stroke { stroke: var(--eye); }
 .mascot.mood-idle .mascot-eyes { transform-origin: 50% 48%; animation: blink 5s infinite; }
