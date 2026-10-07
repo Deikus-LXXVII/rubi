@@ -92,6 +92,7 @@ type Detail struct {
 	Question string   `json:"question,omitempty"`
 	Preview  any      `json:"preview"`
 	Options  []Option `json:"options"`
+	Nonce    string   `json:"-"`
 }
 
 type Config struct {
@@ -118,6 +119,7 @@ type Hooks struct {
 type approval struct {
 	req      Request
 	id, code string
+	nonce    string // binds approval challenges to this exact approval
 	level    Level
 	created  time.Time
 	expires  time.Time
@@ -190,7 +192,7 @@ func (e *Engine) Submit(ctx context.Context, req Request) (map[string]any, error
 	}
 
 	now := e.now()
-	a := &approval{req: req, id: randomID("apr_", 12), code: randomCode(), level: level, created: now,
+	a := &approval{req: req, id: randomID("apr_", 12), code: randomCode(), nonce: randomID("", 16), level: level, created: now,
 		expires: now.Add(e.cfg.TTL), state: Pending, done: make(chan struct{})}
 	e.mu.Lock()
 	e.pruneLocked(now)
@@ -402,7 +404,7 @@ func (e *Engine) Detail(id string) (Detail, error) {
 		return Detail{}, err
 	}
 	return Detail{Snapshot: e.snapshotLocked(a), Question: a.req.Question, Preview: a.req.Preview,
-		Options: a.req.Options}, nil
+		Options: a.req.Options, Nonce: a.nonce}, nil
 }
 
 // Wait blocks until the approval reaches a terminal state, the timeout elapses, or ctx ends.

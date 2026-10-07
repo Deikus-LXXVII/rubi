@@ -18,3 +18,6 @@ daemon.log
 
 # Legacy single-user macOS prototype (kept locally until migration)
 mail-bridge/
+
+# Local tooling
+.claude/

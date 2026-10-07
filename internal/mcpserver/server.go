@@ -7,10 +7,12 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/core"
 	"github.com/Deikus-LXXVII/rubi/internal/integrations"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
@@ -50,7 +52,39 @@ func New(c *core.Core) *Server {
 		&mcp.ServerOptions{Instructions: Instructions},
 	)}
 	s.registerCoreTools()
+	if os.Getenv("RUBI_DEV") == "1" {
+		s.registerDevTools()
+	}
 	return s
+}
+
+type devApprovalIn struct {
+	To      string `json:"to"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
+}
+
+// registerDevTools adds tools for exercising the panel without a real integration. Never enabled unless
+// RUBI_DEV=1 is set for the daemon.
+func (s *Server) registerDevTools() {
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_dev_request_approval",
+		Description: "DEVELOPMENT ONLY: create a fake 'send email' approval that does nothing when approved."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in devApprovalIn) (*mcp.CallToolResult, out, error) {
+			if locked := s.lockedResponse(); locked != nil {
+				return nil, locked, nil
+			}
+			res, err := s.core.Approvals.Submit(ctx, approvals.Request{
+				Integration: "dev", Kind: "dev.send", Summary: "Send email to " + in.To + ": \"" + in.Subject + "\"",
+				Question: "Notify you when a reply arrives?",
+				Preview:  map[string]string{"from": "you@icloud.com", "to": in.To, "subject": in.Subject, "body": in.Body},
+				Options: []approvals.Option{{Key: "send", Label: "Send"},
+					{Key: "send_track", Label: "Send and notify on reply", Meaning: "send, then watch for replies"}},
+				Execute: func(_ context.Context, opt string) (any, error) {
+					return map[string]string{"status": "pretend-sent", "option": opt}, nil
+				},
+			})
+			return nil, res, err
+		})
 }
 
 func (s *Server) MCP() *mcp.Server { return s.mcp }

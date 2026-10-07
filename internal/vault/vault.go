@@ -48,6 +48,9 @@ type Data struct {
 	Locale       string                  `json:"locale,omitempty"`
 	// Approvers are public keys of the user's passkeys, used to verify action approvals.
 	Approvers []Approver `json:"approvers,omitempty"`
+	// PasswordApproveKey verifies password-based approvals (HMAC). It is derived on the user's device
+	// from the password; weaker than a passkey because Rubi has to hold it.
+	PasswordApproveKey []byte `json:"password_approve_key,omitempty"`
 	// Receipts record recent unlocks so the user can spot unexpected ones (newest last, capped).
 	Receipts []Receipt `json:"receipts,omitempty"`
 }
@@ -74,8 +77,9 @@ type Webhook struct {
 }
 
 type Approver struct {
-	CredentialID string `json:"credential_id"`
-	PublicKey    []byte `json:"public_key"` // COSE-encoded
+	CredentialID string `json:"credential_id"` // base64url
+	PublicKey    []byte `json:"public_key"`    // SubjectPublicKeyInfo DER
+	Alg          int    `json:"alg"`           // COSE algorithm (-7 ES256, -8 EdDSA, -257 RS256)
 	SignCount    uint32 `json:"sign_count"`
 	Label        string `json:"label"`
 }

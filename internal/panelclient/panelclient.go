@@ -5,15 +5,19 @@
 //
 // Key wrapping (performed only on the user's device):
 //
-//	password KEK = Argon2id(password, salt[16], time=3, memory=64 MiB, threads=1, 32 bytes)
-//	wrap         = AES-256-GCM(KEK, nonce[12], DEK, ad="rubi-wrap|v1|" + instance + "|" + wrap_id)
+//	password KEK  = Argon2id(password, salt[16], time=3, memory=64 MiB, threads=1, 32 bytes)
+//	wrap          = AES-256-GCM(KEK, nonce[12], DEK, ad="rubi-wrap|v1|" + instance + "|" + wrap_id)
+//	approve key   = HKDF-SHA256(ikm=password KEK, info="rubi approve v1", 32 bytes)
+//	password proof = HMAC-SHA256(approve key, approval challenge)
 package panelclient
 
 import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -23,11 +27,15 @@ import (
 	"strings"
 	"time"
 
+	"io"
+
 	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/hkdf"
 
 	"github.com/Deikus-LXXVII/rubi/internal/e2e"
 	"github.com/Deikus-LXXVII/rubi/internal/panelapi"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
+	"github.com/Deikus-LXXVII/rubi/internal/webauthn"
 )
 
 var b64 = base64.RawURLEncoding
@@ -163,16 +171,25 @@ func gcm(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(b)
 }
 
-// PasswordWrap wraps dek under a key derived from password.
-func PasswordWrap(instance, password string, dek []byte) (vault.Wrap, error) {
+// ApproveKey derives the password approval key from the password KEK.
+func ApproveKey(kek []byte) []byte {
+	k := make([]byte, 32)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, kek, nil, []byte("rubi approve v1")), k); err != nil {
+		panic(err)
+	}
+	return k
+}
+
+// PasswordWrap wraps dek under a key derived from password. It also returns the password KEK.
+func PasswordWrap(instance, password string, dek []byte) (vault.Wrap, []byte, error) {
 	kdf := DefaultKDF()
 	kek, err := kdf.derive(password)
 	if err != nil {
-		return vault.Wrap{}, err
+		return vault.Wrap{}, nil, err
 	}
 	aead, err := gcm(kek)
 	if err != nil {
-		return vault.Wrap{}, err
+		return vault.Wrap{}, nil, err
 	}
 	idb := make([]byte, 8)
 	_, _ = rand.Read(idb)
@@ -182,37 +199,43 @@ func PasswordWrap(instance, password string, dek []byte) (vault.Wrap, error) {
 	kdfJSON, _ := json.Marshal(kdf)
 	return vault.Wrap{ID: id, Kind: "password", KDF: kdfJSON, Label: "Password",
 		Nonce: b64.EncodeToString(nonce), Wrapped: b64.EncodeToString(aead.Seal(nil, nonce, dek, wrapAD(instance, id))),
-		CreatedAt: time.Now().UTC()}, nil
+		CreatedAt: time.Now().UTC()}, kek, nil
 }
 
 // UnwrapPassword recovers the DEK from a password wrap.
 func UnwrapPassword(instance string, w vault.Wrap, password string) ([]byte, error) {
+	dek, _, err := unwrapPassword(instance, w, password)
+	return dek, err
+}
+
+func unwrapPassword(instance string, w vault.Wrap, password string) (dek, kek []byte, err error) {
 	var kdf PasswordKDF
 	if err := json.Unmarshal(w.KDF, &kdf); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	kek, err := kdf.derive(password)
+	kek, err = kdf.derive(password)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	aead, err := gcm(kek)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	nonce, err1 := b64.DecodeString(w.Nonce)
 	ct, err2 := b64.DecodeString(w.Wrapped)
 	if err1 != nil || err2 != nil {
-		return nil, errors.New("corrupted key wrap")
+		return nil, nil, errors.New("corrupted key wrap")
 	}
-	dek, err := aead.Open(nil, nonce, ct, wrapAD(instance, w.ID))
+	dek, err = aead.Open(nil, nonce, ct, wrapAD(instance, w.ID))
 	if err != nil {
-		return nil, errors.New("wrong password")
+		return nil, nil, errors.New("wrong password")
 	}
-	return dek, nil
+	return dek, kek, nil
 }
 
-// PairWithPassword creates the vault key on this device and pairs Rubi. Returns the vault version.
-func (c *Client) PairWithPassword(password string) (uint64, error) {
+// PairWithPassword creates the vault key on this device and pairs Rubi, optionally registering passkey
+// approvers. Returns the vault version.
+func (c *Client) PairWithPassword(password string, approvers ...vault.Approver) (uint64, error) {
 	if c.Link.Pairing == "" {
 		return 0, errors.New("this is not a pairing link")
 	}
@@ -221,7 +244,7 @@ func (c *Client) PairWithPassword(password string) (uint64, error) {
 		return 0, err
 	}
 	dek := vault.NewKey()
-	w, err := PasswordWrap(h.Instance, password, dek)
+	w, kek, err := PasswordWrap(h.Instance, password, dek)
 	if err != nil {
 		return 0, err
 	}
@@ -229,8 +252,96 @@ func (c *Client) PairWithPassword(password string) (uint64, error) {
 		VaultVersion uint64 `json:"vault_version"`
 	}
 	err = c.Call("pair", map[string]any{"code": c.Link.Pairing, "dek": b64.EncodeToString(dek),
-		"wraps": []vault.Wrap{w}, "method": "password"}, &res)
+		"wraps": []vault.Wrap{w}, "approvers": approvers,
+		"password_approve_key": b64.EncodeToString(ApproveKey(kek)), "method": "password"}, &res)
 	return res.VaultVersion, err
+}
+
+// ApprovalInfo is what the panel shows before the user decides.
+type ApprovalInfo struct {
+	Approval struct {
+		ID       string           `json:"approval_id"`
+		Kind     string           `json:"kind"`
+		Summary  string           `json:"summary"`
+		State    string           `json:"state"`
+		Question string           `json:"question"`
+		Preview  json.RawMessage  `json:"preview"`
+		Options  []approvalOption `json:"options"`
+	} `json:"approval"`
+	Challenges map[string]string `json:"challenges"`
+	Password   bool              `json:"password"`
+	RPID       string            `json:"rp_id"`
+}
+
+type approvalOption struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+func (c *Client) ApprovalInfo(id string) (*ApprovalInfo, error) {
+	var info ApprovalInfo
+	err := c.Call("approval.get", map[string]string{"approval_id": id}, &info)
+	return &info, err
+}
+
+// ApproveWithPassword proves knowledge of the password for one approval and option.
+func (c *Client) ApproveWithPassword(id, option, password string) (map[string]any, error) {
+	info, err := c.ApprovalInfo(id)
+	if err != nil {
+		return nil, err
+	}
+	ch, err := b64.DecodeString(info.Challenges[option])
+	if err != nil || len(ch) == 0 {
+		return nil, fmt.Errorf("unknown option %q", option)
+	}
+	var keys struct {
+		Instance string       `json:"instance"`
+		Wraps    []vault.Wrap `json:"wraps"`
+	}
+	if err := c.Call("unlock.keys", nil, &keys); err != nil {
+		return nil, err
+	}
+	for _, w := range keys.Wraps {
+		if w.Kind != "password" {
+			continue
+		}
+		_, kek, err := unwrapPassword(keys.Instance, w, password)
+		if err != nil {
+			continue
+		}
+		m := hmac.New(sha256.New, ApproveKey(kek))
+		m.Write(ch)
+		return c.decide(id, option, map[string]any{"type": "password", "mac": b64.EncodeToString(m.Sum(nil))})
+	}
+	return nil, errors.New("wrong password")
+}
+
+// ApproveWithPasskey sends a WebAuthn assertion produced by sign over the option's challenge.
+func (c *Client) ApproveWithPasskey(id, option string, sign func(challenge []byte) webauthn.Assertion) (map[string]any, error) {
+	info, err := c.ApprovalInfo(id)
+	if err != nil {
+		return nil, err
+	}
+	ch, err := b64.DecodeString(info.Challenges[option])
+	if err != nil || len(ch) == 0 {
+		return nil, fmt.Errorf("unknown option %q", option)
+	}
+	a := sign(ch)
+	return c.decide(id, option, map[string]any{"type": "passkey", "credential_id": a.CredentialID,
+		"client_data_json": a.ClientDataJSON, "authenticator_data": a.AuthenticatorData, "signature": a.Signature})
+}
+
+func (c *Client) Deny(id string) (map[string]any, error) {
+	var out map[string]any
+	err := c.Call("approval.decide", map[string]any{"approval_id": id, "approve": false}, &out)
+	return out, err
+}
+
+func (c *Client) decide(id, option string, proof map[string]any) (map[string]any, error) {
+	var out map[string]any
+	err := c.Call("approval.decide", map[string]any{"approval_id": id, "option": option, "approve": true,
+		"proof": proof}, &out)
+	return out, err
 }
 
 // UnlockWithPassword unwraps the DEK locally and sends only the DEK. Returns the vault version.
@@ -251,6 +362,9 @@ func (c *Client) UnlockWithPassword(password string, minVersion uint64) (uint64,
 		if dek, lastErr = UnwrapPassword(keys.Instance, w, password); lastErr == nil {
 			break
 		}
+	}
+	if lastErr != nil {
+		dek = nil
 	}
 	if dek == nil {
 		return 0, lastErr
