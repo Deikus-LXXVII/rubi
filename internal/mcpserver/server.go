@@ -22,7 +22,8 @@ import (
 const Instructions = `Rubi-Project: self-hosted integrations that act for the user only with their consent.
 
 STATE. Call rubi_status first. If Rubi is "unpaired" or "locked", give the user the link it returns and
-explain in one sentence. Retry the user's request after they say it's done.
+explain in one sentence. Retry the user's request after they say it's done. If an integration tool answers
+"not_connected", tell the user what it needs (the "needs" field) and give them the setup link.
 
 APPROVALS. Some tools return status "awaiting_approval" instead of acting.
 - level "strong": send the user the approval_url with one sentence about what is waiting. They review and
@@ -52,6 +53,12 @@ func New(c *core.Core) *Server {
 		&mcp.ServerOptions{Instructions: Instructions},
 	)}
 	s.registerCoreTools()
+	reg := &integrations.Registrar{Server: s.mcp, Resolve: c.Host}
+	for _, i := range integrations.All() {
+		if rt, ok := i.(integrations.Runtime); ok {
+			rt.Tools(reg)
+		}
+	}
 	if os.Getenv("RUBI_DEV") == "1" {
 		s.registerDevTools()
 	}

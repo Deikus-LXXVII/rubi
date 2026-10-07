@@ -9,12 +9,16 @@ Companion to [security-model.md](security-model.md) and [agent-interface.md](age
 | M1 ✓ | **Core daemon** — vault, instance identity, state machine (`unpaired` / `locked` / `unlocked`), audit log, approvals engine, event store, MCP over a Unix socket, `rubi mcp` stdio proxy with lazy daemon start, core tools | An MCP client can run `rubi mcp`, see core tools, and get the correct state; vault and approvals have tests |
 | M2 ✓ | **Panel API and transport** — cloudflared supervisor, end-to-end channel (X25519/HKDF/AES-GCM), pairing, unlock, credential management, unlock receipts | Pair and unlock work end to end from a test client through a quick tunnel |
 | M3 ✓ | **Panel web app** (static, `rubi-panel.com`) — pairing with passkey (WebAuthn PRF) or password (Argon2id), unlock, approvals, settings, policy editor, integration setup forms | A real iPhone pairs, unlocks, and approves |
-| M4 | **iCloud Mail integration** — port of the prototype: read/search/drafts, gated send with "send and notify on reply", reply tracking, events to the Grok Bot routine webhook | Mail works end to end with strong approvals |
+| M4 ✓* | **iCloud Mail integration** — port of the prototype: read/search/drafts, gated send with "send and notify on reply", reply tracking, events to the Grok Bot routine webhook | Mail works end to end with strong approvals |
 | M5 | **Distribution** — signed releases from GitHub Actions with provenance, `install.sh`, binary self-check, Grok Bot skill, user docs | A fresh Grok Bot installs Rubi from one chat message |
 
 M3 was verified on a real iPhone over HTTPS: pairing with Face ID (passkey with PRF) plus a backup
 password, approving an action with Face ID, and unlocking with Face ID after a restart. Settings, the
 policy editor and integration setup forms move to M4, together with the first integration that needs them.
+
+\* M4 status: works end to end against an in-memory IMAP server (connect in the panel, search/read
+without marking mail read, drafts, Face ID-approved send with "notify on reply", reply detection, webhook
+delivery with the routine key, lock stops everything). Still to do: one live test against real iCloud.
 
 ## Repository layout
 

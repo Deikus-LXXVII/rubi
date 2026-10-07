@@ -126,7 +126,9 @@ async function main() {
   if (hello.state === "unpaired") return fatal("This Rubi hasn't been set up yet. Ask your agent for a setup link.");
   if (link.a.startsWith("approve:")) return approveScreen(ctx, link.a.slice("approve:".length));
   if (link.a === "unlock") return unlockScreen(ctx);
-  return statusScreen(ctx, "Settings and integration setup arrive in the next version of the panel.");
+  if (link.a.startsWith("setup:")) return whenUnlocked(ctx, () => setupScreen(ctx, link.a.slice("setup:".length)));
+  if (link.a === "settings") return whenUnlocked(ctx, () => settingsScreen(ctx));
+  return statusScreen(ctx, "");
 }
 
 function home() {
@@ -328,7 +330,10 @@ async function statusScreen(ctx, message) {
 
 // ---------- approvals ----------
 
-const FIELD_LABELS = { from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", body: "Message" };
+const FIELD_LABELS = {
+  from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", in_reply_to: "In reply to", body: "Message",
+  integration: "Integration", account: "Account", connects_to: "Connects to", effect: "Effect", webhook: "Webhook",
+};
 
 function previewTable(preview) {
   if (!preview || typeof preview !== "object") return h("pre", { class: "body" }, JSON.stringify(preview, null, 2));
@@ -347,13 +352,14 @@ function previewTable(preview) {
   return h("dl", { class: "preview" }, rows);
 }
 
-async function approveScreen(ctx, id) {
+// approveScreen shows one pending approval. opts.onDone (for settings changes) adds a way back.
+async function approveScreen(ctx, id, opts = {}) {
   if (ctx.hello.state !== "unlocked") {
     try {
       return await unlockFlow(ctx, "Unlock Rubi to review", "Rubi is locked. Unlock it first, then review the request.",
         async () => {
           ctx.hello = await ctx.client.call("hello");
-          approveScreen(ctx, id);
+          approveScreen(ctx, id, opts);
         });
     } catch (e) {
       return fatal(e instanceof UserError ? e.message : friendly(e));
@@ -367,7 +373,7 @@ async function approveScreen(ctx, id) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
   const a = info.approval;
-  if (a.state !== "pending") return resultScreen(ctx, a);
+  if (a.state !== "pending") return resultScreen(ctx, a, opts.onDone);
 
   const err = errorBox();
   const approverIds = (info.approvers || []).map((x) => x.credential_id);
@@ -399,13 +405,13 @@ async function approveScreen(ctx, id) {
       const proof = usePasskey()
         ? await signChallenge(b64u.dec(info.challenges[option]), approverIds)
         : await passwordProof(option);
-      resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, option, approve: true, proof }));
+      resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, option, approve: true, proof }), opts.onDone);
     }).catch((e) => showError(err, e));
   }
 
   screen(
     header(ctx.hello),
-    h("p", { class: "eyebrow" }, "Your agent is asking for approval"),
+    h("p", { class: "eyebrow" }, opts.eyebrow || "Your agent is asking for approval"),
     h("h1", {}, a.summary),
     previewTable(a.preview),
     a.question ? h("p", { class: "question" }, a.question) : null,
@@ -414,8 +420,8 @@ async function approveScreen(ctx, id) {
       h("button", { class: i === 0 ? "primary" : "secondary", onclick: (e) => decide(e.target, o.key) }, o.label))),
     h("button", { class: "danger", onclick: async (e) => {
       await busy(e.target, async () => resultScreen(ctx,
-        await ctx.client.call("approval.decide", { approval_id: id, approve: false }))).catch((x) => showError(err, x));
-    } }, "Decline"),
+        await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone)).catch((x) => showError(err, x));
+    } }, opts.declineLabel || "Decline"),
     !pwBox.hidden || !info.password ? null : h("button", { class: "link", onclick: (e) => {
       pwBox.hidden = false;
       e.target.remove();
@@ -426,7 +432,7 @@ async function approveScreen(ctx, id) {
   );
 }
 
-function resultScreen(ctx, a) {
+function resultScreen(ctx, a, onDone) {
   const titles = {
     executed: "Done",
     denied: "Declined",
@@ -439,9 +445,155 @@ function resultScreen(ctx, a) {
     h("h1", {}, titles[a.state] || a.state),
     h("p", {}, a.summary),
     a.error ? h("p", { class: "error" }, a.error) : null,
-    h("p", { class: "muted" }, a.state === "executed"
-      ? "Your agent will see the result. You can close this page."
-      : "Nothing was done. You can close this page."),
+    onDone
+      ? h("button", { class: "primary", onclick: onDone }, "Back to settings")
+      : h("p", { class: "muted" }, a.state === "executed"
+        ? "Your agent will see the result. You can close this page."
+        : "Nothing was done. You can close this page."),
+  );
+}
+
+// ---------- settings & integration setup ----------
+
+async function whenUnlocked(ctx, next) {
+  if (ctx.hello.state === "unlocked") return next();
+  try {
+    await unlockFlow(ctx, "Unlock Rubi", "Rubi is locked. Unlock it first to change its settings.", async () => {
+      ctx.hello = await ctx.client.call("hello");
+      next();
+    });
+  } catch (e) {
+    fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+}
+
+// confirmChange takes the {approval_id, ticket} a settings operation returns and asks for Face ID or the
+// password, using a client bound to that approval's ticket.
+function confirmChange(ctx, res, onDone) {
+  const approvalCtx = { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
+  return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone });
+}
+
+async function setupScreen(ctx, id, back) {
+  const err = errorBox();
+  let entry;
+  try {
+    entry = (await ctx.client.call("integration.catalog")).integrations.find((i) => i.id === id);
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  if (!entry) return fatal("Unknown integration.");
+  const done = back || (() => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
+    h("p", {}, "You can close this page and go back to your agent.")));
+
+  const inputs = {};
+  const fieldEls = (entry.fields || []).map((f) => {
+    inputs["f:" + f.key] = h("input", { type: f.type === "email" ? "email" : "text", placeholder: f.placeholder || "",
+      autocomplete: f.type === "email" ? "email" : "off", required: f.required, autocapitalize: "none" });
+    return h("label", { class: "field" }, h("span", {}, f.label), inputs["f:" + f.key], f.help ? h("small", {}, f.help) : null);
+  });
+  const secretEls = (entry.secrets || []).map((sec) => {
+    inputs["s:" + sec.key] = h("input", { type: "password", autocomplete: "off", required: true, autocapitalize: "none", spellcheck: "false" });
+    return h("label", { class: "field" }, h("span", {}, sec.label), inputs["s:" + sec.key],
+      sec.help ? h("small", {}, sec.help) : null,
+      sec.help_url ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, "Open account.apple.com") : null);
+  });
+  const go = h("button", { class: "primary", type: "submit" }, `Connect ${entry.name}`);
+  const form = h("form", {
+    onsubmit: (e) => {
+      e.preventDefault();
+      busy(go, async () => {
+        const fields = {}, secrets = {};
+        for (const [k, el] of Object.entries(inputs)) {
+          (k.startsWith("f:") ? fields : secrets)[k.slice(2)] = el.value;
+        }
+        go.textContent = "Checking your login…";
+        const res = await ctx.client.call("integration.setup", { id, fields, secrets });
+        for (const el of Object.values(inputs)) el.value = "";
+        confirmChange(ctx, res, done);
+      }).catch((x) => showError(err, x));
+    },
+  }, ...fieldEls, ...secretEls, go);
+
+  screen(
+    header(ctx.hello),
+    h("h1", {}, `Connect ${entry.name}`),
+    entry.connected ? h("p", { class: "ok" }, `Connected as ${entry.account}. Connecting again replaces it.`) : null,
+    h("p", {}, entry.needs),
+    form,
+    err,
+    h("p", { class: "muted" }, `Rubi will connect only to ${(entry.egress || []).join(", ")}. The password is stored encrypted on your Rubi and never shown to your agent.`),
+    back ? h("button", { class: "link", onclick: back }, "Back to settings") : null,
+  );
+}
+
+const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Face ID / password" };
+
+async function settingsScreen(ctx) {
+  const err = errorBox();
+  let catalog, policy, hook, st;
+  try {
+    [catalog, policy, hook, st] = await Promise.all([
+      ctx.client.call("integration.catalog"), ctx.client.call("policy.get"),
+      ctx.client.call("webhook.get"), ctx.client.call("status"),
+    ]);
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  const back = () => settingsScreen(ctx);
+  const change = (op, args) => async (e) => {
+    await busy(e.target, async () => confirmChange(ctx, await ctx.client.call(op, args()), back)).catch((x) => showError(err, x));
+  };
+
+  const integrationsList = h("div", { class: "list" }, catalog.integrations.map((i) => h("div", { class: "item" },
+    h("div", {}, h("strong", {}, i.name), h("div", { class: "muted" }, i.connected ? `Connected: ${i.account}` : "Not connected")),
+    i.connected
+      ? h("button", { class: "secondary small", onclick: change("integration.disconnect", () => ({ id: i.id })) }, "Disconnect")
+      : h("button", { class: "secondary small", onclick: () => setupScreen(ctx, i.id, back) }, "Connect"))));
+
+  const selects = {};
+  const policyRows = policy.actions.map((a) => {
+    const sel = h("select", { disabled: a.locked }, policy.levels.map((l) =>
+      h("option", { value: l, selected: l === a.level }, LEVEL_LABELS[l] + (l === a.default ? " (default)" : ""))));
+    selects[a.kind] = { sel, current: a.level };
+    return h("label", { class: "field row-field" }, h("span", {}, `${a.title}`, h("small", {}, a.integration)), sel);
+  });
+  const savePolicy = h("button", { class: "secondary", onclick: change("policy.set", () => {
+    const levels = {};
+    for (const [kind, { sel, current }] of Object.entries(selects)) if (sel.value !== current) levels[kind] = sel.value;
+    return { levels };
+  }) }, "Save approval levels");
+
+  const hookUrl = h("input", { type: "url", placeholder: "https://… (from your Grok Bot routine)", autocomplete: "off", autocapitalize: "none" });
+  const hookKey = h("input", { type: "password", placeholder: "Routine key (crsr_…)", autocomplete: "off", autocapitalize: "none" });
+
+  const receipts = (st.receipts || []).slice(-5).reverse();
+  screen(
+    header(ctx.hello),
+    h("h1", {}, "Rubi settings"),
+    err,
+    h("h2", {}, "Integrations"),
+    integrationsList,
+    h("h2", {}, "Approval levels"),
+    h("p", { class: "muted" }, "How each action is approved. Changing these always needs Face ID or your password."),
+    ...policyRows,
+    savePolicy,
+    h("h2", {}, "Agent webhook"),
+    h("p", { class: "muted" }, hook.configured
+      ? `Events go to ${hook.url}`
+      : "Not set. Create a routine with a webhook trigger in Grok Bot and paste its URL and key here, so Rubi can wake your agent when something happens (e.g. a reply arrives)."),
+    hookUrl, hookKey,
+    h("button", { class: "secondary", onclick: change("webhook.set", () => ({ url: hookUrl.value.trim(), key: hookKey.value.trim() })) }, "Save webhook"),
+    hook.configured ? h("button", { class: "link", onclick: async (e) => {
+      await busy(e.target, () => ctx.client.call("webhook.test")).then(() => { e.target.textContent = "Test event sent"; }).catch((x) => showError(err, x));
+    } }, "Send a test event") : null,
+    hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null,
+    h("h2", {}, "Security"),
+    receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) => h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
+    h("button", { class: "danger", onclick: async (e) => {
+      await busy(e.target, () => ctx.client.call("lock"));
+      statusScreen(ctx, "Rubi is locked.");
+    } }, "Lock Rubi now"),
   );
 }
 

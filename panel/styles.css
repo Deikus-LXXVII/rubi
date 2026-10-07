@@ -114,3 +114,19 @@ button.link { background: none; color: var(--muted); font-weight: 400; padding: 
 pre.body { margin: 0; white-space: pre-wrap; font: inherit; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; }
 
 .receipts { margin: 0; padding-left: 18px; color: var(--muted); font-size: 0.9rem; }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span { font-weight: 600; font-size: 0.95rem; }
+.field small, .field span small { color: var(--muted); font-weight: 400; font-size: 0.85rem; display: block; }
+.row-field { flex-direction: row; align-items: center; justify-content: space-between; gap: 12px; }
+.row-field select { max-width: 55%; }
+select {
+  font: inherit; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg); color: var(--text);
+}
+.list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; }
+.item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border-top: 1px solid var(--line); }
+.item:first-child { border-top: 0; }
+button.small { width: auto; padding: 8px 12px; font-size: 0.9rem; }
+a.button-link { color: var(--accent); font-weight: 600; font-size: 0.95rem; }
+.ok { color: var(--ok); }

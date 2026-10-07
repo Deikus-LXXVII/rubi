@@ -74,6 +74,21 @@ registered as an approver. Without PRF, a password is required for unlocking.
 | `approval.get` | ticket for `approve:<id>` | `approval_id` | `approval` (summary, preview, question, options, state), `challenges` (per option), `approvers[]`, `password`, `rp_id` |
 | `approval.decide` | ticket for `approve:<id>` | `approval_id`, `option`, `approve`, `proof` | the approval's new state and result |
 
+### Settings
+
+Need a `settings` ticket (a `setup:<id>` ticket allows only `integration.catalog` and `integration.setup` for
+that integration) and an unlocked Rubi. Reads return data; every change returns
+`{"approval_id", "ticket"}` for a strong approval that the panel confirms right away with `approval.get` /
+`approval.decide` using that ticket.
+
+| op | args | effect |
+|---|---|---|
+| `integration.catalog` | — | manifests (fields, secrets, egress) and connection status |
+| `integration.setup` | `id`, `fields`, `secrets` | validates (e.g. logs in), then asks to store and start it |
+| `integration.disconnect` | `id` | asks to stop it and erase its secrets and state |
+| `policy.get` / `policy.set` | — / `levels: {kind: level}` | read / ask to change approval levels (locked kinds refused) |
+| `webhook.get` / `webhook.set` / `webhook.test` | — / `url`, `key` / — | read / ask to change the agent webhook / send a test event |
+
 ### Approval proofs
 
 The challenge for an option is

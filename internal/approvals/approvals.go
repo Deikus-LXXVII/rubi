@@ -114,6 +114,8 @@ type Hooks struct {
 	Label func(string) string
 	// Audit records approval lifecycle events (no secrets).
 	Audit func(event string, fields map[string]any)
+	// OnFinish is called (asynchronously) when a gated approval reaches a terminal state.
+	OnFinish func(Snapshot)
 }
 
 type approval struct {
@@ -367,6 +369,9 @@ func (e *Engine) run(ctx context.Context, a *approval) Snapshot {
 		a.result = res
 		e.finishLocked(a, Executed)
 	}
+	if e.hooks.OnFinish != nil {
+		go e.hooks.OnFinish(e.snapshotLocked(a))
+	}
 	e.hooks.Audit("approval."+string(a.state), map[string]any{"approval_id": a.id, "kind": a.req.Kind,
 		"option": a.chosen})
 	return e.snapshotLocked(a)
@@ -453,6 +458,9 @@ func (e *Engine) finishLocked(a *approval, s State) {
 	}
 	a.state = s
 	close(a.done)
+	if e.hooks.OnFinish != nil && s != Executed && s != Failed {
+		go e.hooks.OnFinish(e.snapshotLocked(a))
+	}
 }
 
 func (e *Engine) snapshotLocked(a *approval) Snapshot {

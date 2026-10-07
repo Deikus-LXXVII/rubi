@@ -12,13 +12,13 @@ with your consent.
 - **Agent-native.** Install and use it from the agent chat. The agent registers one MCP server:
   `rubi mcp`.
 
-> **Status: pre-alpha.** Core daemon (M1), panel API with zero-config tunnel (M2) and the web panel (M3: pair, unlock, approve) work. iCloud Mail (M4) is next. Nothing here is ready for real data yet.
+> **Status: pre-alpha.** Core daemon, zero-config panel connection, the web panel (Face ID pairing, unlock and approvals, settings) and the iCloud Mail integration work; packaging and signed releases (M5) are next. Not ready for real data yet.
 
 ## Integrations
 
 | Integration | Status |
 |---|---|
-| iCloud Mail: read, search, drafts, approved send, reply notifications | Planned (M4); a working single-user prototype exists |
+| iCloud Mail: read, search, drafts, approved send, reply notifications | Implemented (M4); live iCloud test pending |
 
 ## Design
 

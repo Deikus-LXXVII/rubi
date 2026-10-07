@@ -39,6 +39,7 @@ type Manifest struct {
 	Version     string      `json:"version"`
 	Description string      `json:"description"`
 	Needs       string      `json:"needs"` // one sentence for the agent to tell the user before setup
+	Fields      []Field     `json:"fields,omitempty"`
 	Secrets     []Secret    `json:"secrets"`
 	Actions     []Action    `json:"actions"`
 	Events      []EventType `json:"events,omitempty"`

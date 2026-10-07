@@ -59,6 +59,7 @@ type Core struct {
 	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
+	running map[string]bool // integrations currently started
 }
 
 type ticket struct {
@@ -82,6 +83,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		Audit:       audit.Open(layout.Audit()),
 		PanelOrigin: DefaultPanelOrigin,
 		tickets:     map[string]ticket{},
+		running:     map[string]bool{},
 	}
 	if o := os.Getenv("RUBI_PANEL_ORIGIN"); o != "" {
 		c.PanelOrigin = strings.TrimRight(o, "/")
@@ -93,7 +95,15 @@ func Open(layout paths.Layout) (*Core, error) {
 		Link:  func(id string) (string, error) { return c.Link("approve:" + id) },
 		Label: c.Label,
 		Audit: func(ev string, f map[string]any) { c.Audit.Record(ev, f) },
+		OnFinish: func(s approvals.Snapshot) {
+			// Tell the agent how a panel approval ended, even if its turn is over.
+			if s.Level == approvals.Strong && c.State() == Unlocked {
+				c.Events.Emit("rubi", "approval.decided", map[string]any{"approval_id": s.ID, "kind": s.Kind,
+					"state": s.State, "summary": s.Summary, "option": s.Chosen, "error": s.Error}, nil)
+			}
+		},
 	})
+	c.Events.OnEmit(c.deliverEvent)
 	return c, nil
 }
 
@@ -164,6 +174,16 @@ func (c *Core) Link(purpose string) (string, error) {
 	return c.PanelOrigin + "/#" + q.Encode(), nil
 }
 
+// MintTicket issues a ticket without a link, for handing to an already authenticated panel session.
+func (c *Core) MintTicket(purpose string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t := randomToken()
+	c.pruneTicketsLocked()
+	c.tickets[t] = ticket{purpose: purpose, expires: time.Now().Add(ticketTTL)}
+	return t
+}
+
 // TicketPurpose returns the purpose of a valid ticket. Tickets stay valid for their whole lifetime
 // (the user may unlock and then change settings within one panel visit).
 func (c *Core) TicketPurpose(t string) (string, bool) {
@@ -210,6 +230,7 @@ func validPurpose(p string) error {
 
 // Lock wipes keys and private data from memory and cancels pending approvals. Always allowed.
 func (c *Core) Lock() {
+	c.stopIntegrations()
 	c.Approvals.CancelAll()
 	c.Events.Clear()
 	c.Vault.Lock()
@@ -229,6 +250,7 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 	c.Audit.SetVaultKey(dek)
 	c.addReceipt("unlocked", method, credentialID)
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
+	c.startIntegrations()
 	return nil
 }
 
@@ -290,6 +312,9 @@ func (c *Core) CheckPairingCode(code string) bool {
 // PolicyLevel resolves the approval level for an action kind: locked manifest levels win, then the
 // user's policy from the vault, then the manifest default. Unknown kinds are strong.
 func (c *Core) PolicyLevel(kind string) approvals.Level {
+	if strings.HasPrefix(kind, "rubi.") {
+		return approvals.Strong
+	}
 	def, locked, ok := integrations.DefaultLevel(kind)
 	if !ok {
 		return approvals.Strong

@@ -67,8 +67,11 @@ const MaxReceipts = 50
 
 type Integration struct {
 	Enabled  bool              `json:"enabled"`
+	Account  string            `json:"account,omitempty"` // e.g. the connected email address
 	Settings json.RawMessage   `json:"settings,omitempty"`
 	Secrets  map[string]string `json:"secrets,omitempty"`
+	// State is integration-private runtime state (e.g. tracked messages), kept encrypted with the rest.
+	State json.RawMessage `json:"state,omitempty"`
 }
 
 type Webhook struct {

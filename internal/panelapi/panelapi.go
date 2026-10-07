@@ -25,6 +25,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/core"
 	"github.com/Deikus-LXXVII/rubi/internal/e2e"
+	"github.com/Deikus-LXXVII/rubi/internal/integrations"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 	"github.com/Deikus-LXXVII/rubi/internal/webauthn"
@@ -212,6 +213,9 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		return s.approvalGet(purpose, env)
 	case "approval.decide":
 		return s.approvalDecide(ctx, purpose, env)
+	case "integration.catalog", "integration.setup", "integration.disconnect",
+		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test":
+		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
 }
@@ -480,4 +484,107 @@ func (s *Server) rpID() string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// ---- settings ----
+//
+// Settings operations need a "settings" or "setup:<id>" ticket and an unlocked Rubi. Reading is free;
+// every change becomes a strong approval. The response carries a fresh ticket for that approval so the
+// panel can ask for Face ID (or the password) right away.
+
+func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (any, error) {
+	if purpose != "settings" && !strings.HasPrefix(purpose, "setup:") {
+		return nil, errors.New("this link can't change settings; ask your agent for a settings link")
+	}
+	if s.core.State() != core.Unlocked {
+		return nil, errors.New("Rubi is locked; unlock it first")
+	}
+	var args struct {
+		ID      string            `json:"id"`
+		Fields  map[string]string `json:"fields"`
+		Secrets map[string]string `json:"secrets"`
+		Levels  map[string]string `json:"levels"`
+		URL     string            `json:"url"`
+		Key     string            `json:"key"`
+	}
+	if len(env.Args) > 0 {
+		if err := json.Unmarshal(env.Args, &args); err != nil {
+			return nil, errors.New("bad arguments")
+		}
+	}
+	if strings.HasPrefix(purpose, "setup:") {
+		// A setup link connects one integration and nothing else.
+		if env.Op != "integration.catalog" && env.Op != "integration.setup" {
+			return nil, errors.New("this link only sets up an integration; ask your agent for a settings link")
+		}
+		if env.Op == "integration.setup" && args.ID != strings.TrimPrefix(purpose, "setup:") {
+			return nil, errors.New("this link is for setting up a different integration")
+		}
+	}
+
+	var approvalID string
+	var err error
+	switch env.Op {
+	case "integration.catalog":
+		return s.catalog(), nil
+	case "policy.get":
+		return s.policy(), nil
+	case "webhook.get":
+		out := map[string]any{"configured": false}
+		_ = s.core.Vault.View(func(d *vault.Data) error {
+			if d.Webhook != nil {
+				out["configured"], out["url"] = true, d.Webhook.URL
+			}
+			return nil
+		})
+		return out, nil
+	case "webhook.test":
+		ev := s.core.TestWebhook()
+		return map[string]any{"event_id": ev.ID}, nil
+	case "integration.setup":
+		approvalID, err = s.core.ConnectIntegration(ctx, args.ID, args.Fields, args.Secrets)
+	case "integration.disconnect":
+		approvalID, err = s.core.DisconnectIntegration(ctx, args.ID)
+	case "policy.set":
+		approvalID, err = s.core.SetPolicy(ctx, args.Levels)
+	case "webhook.set":
+		approvalID, err = s.core.SetWebhook(ctx, args.URL, args.Key)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"approval_id": approvalID, "ticket": s.core.MintTicket("approve:" + approvalID)}, nil
+}
+
+func (s *Server) catalog() any {
+	installed := map[string]*vault.Integration{}
+	_ = s.core.Vault.View(func(d *vault.Data) error {
+		for id, i := range d.Integrations {
+			installed[id] = &vault.Integration{Enabled: i.Enabled, Account: i.Account}
+		}
+		return nil
+	})
+	var list []map[string]any
+	for _, i := range integrations.All() {
+		m := i.Manifest()
+		entry := map[string]any{"id": m.ID, "name": m.Name, "description": m.Description, "needs": m.Needs,
+			"fields": m.Fields, "secrets": m.Secrets, "egress": m.Egress, "connected": false}
+		if in := installed[m.ID]; in != nil {
+			entry["connected"], entry["account"] = in.Enabled, in.Account
+		}
+		list = append(list, entry)
+	}
+	return map[string]any{"integrations": list}
+}
+
+func (s *Server) policy() any {
+	var actions []map[string]any
+	for _, i := range integrations.All() {
+		m := i.Manifest()
+		for _, a := range m.Actions {
+			actions = append(actions, map[string]any{"integration": m.Name, "kind": a.Kind, "title": a.Title,
+				"default": a.DefaultLevel, "level": s.core.PolicyLevel(a.Kind), "locked": a.Locked})
+		}
+	}
+	return map[string]any{"actions": actions, "levels": []approvals.Level{approvals.None, approvals.Chat, approvals.Strong}}
 }
