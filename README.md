@@ -1,7 +1,7 @@
 # Rubi-Project
 
 Self-hosted integrations for AI agents (starting with Grok Bot), where the agent acts on your behalf only
-with your consent.
+with your consent. Rubi starts bare; integrations are plugins from the Rubi store.
 
 - **Decentralized.** No project servers. Rubi runs on your agent's machine; the panel at
   `rubi-panel.com` is a static site.
@@ -11,6 +11,9 @@ with your consent.
   with your passkey. You choose the level per action; security settings always need your approval.
 - **Agent-native.** Install and use it from the agent chat. The agent registers one MCP server:
   `rubi mcp`.
+- **A store, not a monolith.** Plugins are separate signed packages with their own updates. Store plugins
+  are reviewed; installing one shows its permissions and needs your approval. Anyone can build one, in any
+  language ([plugin design](docs/design/plugins.md), Go SDK in `sdk/rubiplugin`).
 
 ## Quick start
 
@@ -21,20 +24,21 @@ Tell your Grok Bot:
 Then open the link it sends you and set up Face ID. See [Getting started](docs/user/getting-started.md).
 The agent-side playbook is in [skills/grok-bot/rubi-project](skills/grok-bot/rubi-project/SKILL.md).
 
-> **Status: pre-alpha.** Core daemon, zero-config panel connection, the web panel (Face ID pairing, unlock and approvals, settings) and the iCloud Mail integration work; packaging and signed releases (M5) are next. Not ready for real data yet.
+> **Status: pre-alpha.** The core, the panel, signed releases with one-tap updates, and the plugin store work. Not ready for real data yet.
 
-## Integrations
+## Plugins
 
-| Integration | Status |
-|---|---|
-| iCloud Mail: read, search, drafts, approved send, reply notifications | Works; verified live against iCloud |
+| Plugin | Repository | Status |
+|---|---|---|
+| iCloud Mail: read, search, drafts, approved send, reply notifications | [rubi-icloud-mail](https://github.com/Deikus-LXXVII/rubi-icloud-mail) | Reviewed; verified live against iCloud |
 
 ## Design
 
 - [Getting started (users)](docs/user/getting-started.md)
 - [Releasing (maintainers)](RELEASING.md)
 - [Security model and protocol](docs/design/security-model.md)
-- [Agent interface and integration model](docs/design/agent-interface.md)
+- [Agent interface](docs/design/agent-interface.md)
+- [Plugins and the store](docs/design/plugins.md)
 - [Panel protocol](docs/design/panel-protocol.md)
 - [Implementation plan](docs/design/implementation-plan.md)
 
@@ -49,7 +53,7 @@ go build -o rubi ./cmd/rubi
 [`cloudflared`](https://github.com/cloudflare/cloudflared/releases) on `PATH` (or `RUBI_CLOUDFLARED`);
 `RUBI_PUBLIC_URL` uses a fixed URL instead, e.g. with Tailscale.
 
-Until the web panel exists, `rubi dev-panel '<link>'` pairs or unlocks with a password from the terminal.
+`rubi dev-panel '<link>'` pairs or unlocks with a password from the terminal (for development).
 
 ## License
 

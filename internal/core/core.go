@@ -2,10 +2,12 @@
 package core
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -16,10 +18,11 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
 	"github.com/Deikus-LXXVII/rubi/internal/events"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
-	"github.com/Deikus-LXXVII/rubi/internal/integrations"
 	"github.com/Deikus-LXXVII/rubi/internal/integrity"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
+	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
+	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
 type State string
@@ -48,6 +51,8 @@ type Core struct {
 	Approvals   *approvals.Engine
 	Events      *events.Store
 	Audit       *audit.Log
+	Store       *plugins.Store
+	Runner      *plugins.Runner
 	PanelOrigin string
 
 	mu       sync.Mutex
@@ -60,8 +65,8 @@ type Core struct {
 	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
-	running map[string]bool // integrations currently started
 	upd     updateState
+	mkt     marketState
 	integ   integrity.Result
 }
 
@@ -95,16 +100,22 @@ func Open(layout paths.Layout) (*Core, error) {
 	if err != nil {
 		return nil, err
 	}
+	store, err := plugins.OpenStore(layout.Plugins())
+	if err != nil {
+		return nil, err
+	}
 	c := &Core{
 		Layout:      layout,
 		ID:          id,
 		Vault:       vault.NewStore(layout.Vault(), id.InstanceID),
 		Events:      events.NewStore(),
 		Audit:       audit.Open(layout.Audit()),
+		Store:       store,
 		PanelOrigin: DefaultPanelOrigin,
 		tickets:     map[string]ticket{},
-		running:     map[string]bool{},
 	}
+	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
+		Handler: c.pluginHandler, Launched: c.pluginLaunched, Crashed: c.pluginCrashed, Logf: log.Printf}}
 	if o := os.Getenv("RUBI_PANEL_ORIGIN"); o != "" {
 		c.PanelOrigin = strings.TrimRight(o, "/")
 	}
@@ -158,7 +169,7 @@ func (c *Core) SetTransportError(msg string) {
 // Link builds a panel URL. Purposes: "pair", "unlock", "settings", "setup:<integration>", "approve:<id>".
 // Everything after '#' stays in the user's browser and never reaches the panel's web server.
 func (c *Core) Link(purpose string) (string, error) {
-	if err := validPurpose(purpose); err != nil {
+	if err := c.validPurpose(purpose); err != nil {
 		return "", err
 	}
 	c.mu.Lock()
@@ -233,24 +244,24 @@ func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func validPurpose(p string) error {
+func (c *Core) validPurpose(p string) error {
 	switch {
 	case p == "pair", p == "unlock", p == "settings":
 		return nil
 	case strings.HasPrefix(p, "setup:"):
-		if _, ok := integrations.Get(strings.TrimPrefix(p, "setup:")); ok {
+		if _, ok := c.Store.Get(strings.TrimPrefix(p, "setup:")); ok {
 			return nil
 		}
-		return errors.New("unknown integration in purpose " + p)
+		return errors.New("plugin " + strings.TrimPrefix(p, "setup:") + " is not installed; see rubi_store")
 	case strings.HasPrefix(p, "approve:"):
 		return nil
 	}
-	return errors.New(`purpose must be "pair", "unlock", "settings" or "setup:<integration id>"`)
+	return errors.New(`purpose must be "pair", "unlock", "settings" or "setup:<plugin id>"`)
 }
 
 // Lock wipes keys and private data from memory and cancels pending approvals. Always allowed.
 func (c *Core) Lock() {
-	c.stopIntegrations()
+	c.stopPlugins()
 	c.Approvals.CancelAll()
 	c.Events.Clear()
 	c.Vault.Lock()
@@ -270,8 +281,9 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 	c.Audit.SetVaultKey(dek)
 	c.addReceipt("unlocked", method, credentialID)
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
-	c.startIntegrations()
+	c.startPlugins()
 	c.maybeNotifyUpdate()
+	go c.CheckPluginUpdates(context.Background())
 	return nil
 }
 
@@ -331,20 +343,17 @@ func (c *Core) CheckPairingCode(code string) bool {
 		subtle.ConstantTimeCompare([]byte(code), []byte(c.pairCode)) == 1
 }
 
-// PolicyLevel resolves the approval level for an action kind: locked manifest levels win, then the
-// user's policy from the vault, then the manifest default. Unknown kinds are strong.
+// PolicyLevel resolves the approval level for an action kind: the user's policy from the vault, then the
+// plugin's default. Core (rubi.*) and unknown kinds are always strong.
 func (c *Core) PolicyLevel(kind string) approvals.Level {
 	if strings.HasPrefix(kind, "rubi.") {
 		return approvals.Strong
 	}
-	def, locked, ok := integrations.DefaultLevel(kind)
+	a, _, ok := c.action(kind)
 	if !ok {
 		return approvals.Strong
 	}
-	if locked {
-		return def
-	}
-	level := def
+	level := approvals.Level(a.DefaultLevel)
 	_ = c.Vault.View(func(d *vault.Data) error {
 		if l, ok := approvals.ParseLevel(d.Policy[kind]); ok {
 			level = l

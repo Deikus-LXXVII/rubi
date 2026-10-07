@@ -4,7 +4,7 @@ name: pages
 on:
   push:
     branches: [main]
-    paths: ["panel/**"]
+    paths: ["panel/**", "marketplace/**"]
   workflow_dispatch:
 
 permissions:
@@ -36,6 +36,24 @@ jobs:
                   | {version: .tag_name, published_at: .published_at, notes_url: .html_url}' \
             > panel/releases/latest.json
           cat panel/releases/latest.json
+      - name: Plugin catalog
+        # rubi-panel.com/marketplace/catalog.json lists the reviewed plugins. Rubi trusts it only with a valid
+        # signature from the release key, so it is signed here, from the reviewed file in the repository.
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_SIGNING_KEY" || { echo "RELEASE_SIGNING_KEY secret is not set"; exit 1; }
+          python3 -c 'import json,sys; c=json.load(open("marketplace/catalog.json")); assert c["schema"]==1'
+          mkdir -p panel/marketplace
+          cp marketplace/catalog.json panel/marketplace/catalog.json
+          umask 077
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in panel/marketplace/catalog.json \
+            -out panel/marketplace/catalog.json.sig
+          rm -f "$RUNNER_TEMP/key.pem"
+          openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in panel/marketplace/catalog.json \
+            -sigfile panel/marketplace/catalog.json.sig
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

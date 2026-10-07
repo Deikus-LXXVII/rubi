@@ -25,7 +25,6 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/core"
 	"github.com/Deikus-LXXVII/rubi/internal/e2e"
-	"github.com/Deikus-LXXVII/rubi/internal/integrations"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 	"github.com/Deikus-LXXVII/rubi/internal/webauthn"
@@ -214,7 +213,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	case "approval.decide":
 		return s.approvalDecide(ctx, purpose, env)
 	case "integration.catalog", "integration.setup", "integration.disconnect",
-		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test":
+		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
+		"store.list", "plugin.install", "plugin.update", "plugin.remove":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -311,7 +311,7 @@ func (s *Server) unlock(env Envelope) (any, error) {
 
 func (s *Server) status(purpose string) any {
 	out := map[string]any{"state": s.core.State(), "purpose": purpose, "instance": s.core.ID.InstanceID,
-		"version": version.Version, "integrity": s.core.Integrity()}
+		"version": version.Version, "integrity": s.core.Integrity(), "update": s.core.UpdateInfo()}
 	_ = s.core.Vault.View(func(d *vault.Data) error {
 		out["vault_version"] = d.Version
 		out["receipts"] = d.Receipts
@@ -502,6 +502,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	}
 	var args struct {
 		ID      string            `json:"id"`
+		Plugin  string            `json:"plugin"`
 		Fields  map[string]string `json:"fields"`
 		Secrets map[string]string `json:"secrets"`
 		Levels  map[string]string `json:"levels"`
@@ -528,6 +529,26 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	switch env.Op {
 	case "integration.catalog":
 		return s.catalog(), nil
+	case "store.list":
+		return s.core.StoreList(ctx)
+	case "plugin.install", "plugin.update", "plugin.remove":
+		var res map[string]any
+		switch env.Op {
+		case "plugin.install":
+			res, err = s.core.RequestPluginInstall(ctx, args.Plugin)
+		case "plugin.update":
+			res, err = s.core.RequestPluginUpdate(ctx, args.ID)
+		default:
+			res, err = s.core.RequestPluginRemove(ctx, args.ID)
+		}
+		if err != nil {
+			return nil, err
+		}
+		id, ok := res["approval_id"].(string)
+		if !ok {
+			return res, nil // e.g. already up to date
+		}
+		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
 	case "policy.get":
 		return s.policy(), nil
 	case "webhook.get":
@@ -566,8 +587,7 @@ func (s *Server) catalog() any {
 		return nil
 	})
 	var list []map[string]any
-	for _, i := range integrations.All() {
-		m := i.Manifest()
+	for _, m := range s.core.Store.Installed() {
 		entry := map[string]any{"id": m.ID, "name": m.Name, "description": m.Description, "needs": m.Needs,
 			"fields": m.Fields, "secrets": m.Secrets, "egress": m.Egress, "connected": false}
 		if in := installed[m.ID]; in != nil {
@@ -580,11 +600,10 @@ func (s *Server) catalog() any {
 
 func (s *Server) policy() any {
 	var actions []map[string]any
-	for _, i := range integrations.All() {
-		m := i.Manifest()
+	for _, m := range s.core.Store.Installed() {
 		for _, a := range m.Actions {
 			actions = append(actions, map[string]any{"integration": m.Name, "kind": a.Kind, "title": a.Title,
-				"default": a.DefaultLevel, "level": s.core.PolicyLevel(a.Kind), "locked": a.Locked})
+				"default": a.DefaultLevel, "level": s.core.PolicyLevel(a.Kind), "locked": false})
 		}
 	}
 	return map[string]any{"actions": actions, "levels": []approvals.Level{approvals.None, approvals.Chat, approvals.Strong}}

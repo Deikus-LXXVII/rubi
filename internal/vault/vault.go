@@ -55,6 +55,22 @@ type Data struct {
 	Receipts []Receipt `json:"receipts,omitempty"`
 	// UpdateNotified is the last release the agent was told about, so each one is announced once.
 	UpdateNotified string `json:"update_notified,omitempty"`
+	// Plugins records what the user approved installing. A plugin only starts if its files still match.
+	Plugins map[string]*Plugin `json:"plugins,omitempty"`
+}
+
+// Plugin is the trusted record of an installed plugin.
+type Plugin struct {
+	Version       string    `json:"version"`
+	Source        string    `json:"source"`
+	Reviewed      bool      `json:"reviewed"`
+	PublisherName string    `json:"publisher_name"`
+	PublisherKey  string    `json:"publisher_key"`
+	SumsSHA256    string    `json:"sums_sha256"`
+	Tree          string    `json:"tree"`
+	InstalledAt   time.Time `json:"installed_at"`
+	// Notified is the last update the agent was told about.
+	Notified string `json:"notified,omitempty"`
 }
 
 type Receipt struct {
@@ -89,8 +105,22 @@ type Approver struct {
 	Label        string `json:"label"`
 }
 
+// normalize makes sure every map is usable (empty maps don't survive a JSON round trip with omitempty).
+func (d *Data) normalize() {
+	if d.Policy == nil {
+		d.Policy = map[string]string{}
+	}
+	if d.Integrations == nil {
+		d.Integrations = map[string]*Integration{}
+	}
+	if d.Plugins == nil {
+		d.Plugins = map[string]*Plugin{}
+	}
+}
+
 func NewData(instance string) *Data {
-	return &Data{Instance: instance, Policy: map[string]string{}, Integrations: map[string]*Integration{}}
+	return &Data{Instance: instance, Policy: map[string]string{}, Integrations: map[string]*Integration{},
+		Plugins: map[string]*Plugin{}}
 }
 
 type envelope struct {
@@ -159,12 +189,7 @@ func Open(dek []byte, expectInstance string, blob []byte) (*Data, error) {
 	if d.Version != env.Version || d.Instance != env.Instance {
 		return nil, ErrVersion
 	}
-	if d.Policy == nil {
-		d.Policy = map[string]string{}
-	}
-	if d.Integrations == nil {
-		d.Integrations = map[string]*Integration{}
-	}
+	d.normalize()
 	return &d, nil
 }
 
@@ -286,6 +311,7 @@ func (s *Store) Update(fn func(*Data) error) error {
 	if err := json.Unmarshal(raw, &next); err != nil {
 		return err
 	}
+	next.normalize()
 	if err := fn(&next); err != nil {
 		return err
 	}

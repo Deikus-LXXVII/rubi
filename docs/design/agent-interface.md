@@ -1,16 +1,21 @@
 # Rubi-Project — Agent Interface and Integration Model
 
-Status: **draft for discussion** (v0.1, 2026-10-07). Companion to [security-model.md](security-model.md).
+Status: **accepted** (v0.3, 2026-10-07). Companion to [security-model.md](security-model.md) and
+[plugins.md](plugins.md).
 
 This document defines what the agent (Grok Bot) sees and does, how setup works end to end through chat,
-and how integrations plug into the core.
+and how plugins plug into the core.
 
 ## 1. Processes
 
 ```
  Grok Bot ──stdio──▶ rubi mcp ──unix socket──▶ rubi daemon ──tunnel──▶ panel (rubi-panel.com)
  (agent)            (thin proxy,               (state, vault, approvals,
-                     no state)                  integrations, event bus)
+                     no state)                  event bus, store)
+                                                      │ stdio JSON-RPC
+                                                      ▼
+                                                plugin processes
+                                                (iCloud Mail, …)
 ```
 
 - **`rubi daemon`** is the long-running process. It owns all state and starts in the `unpaired` or
@@ -27,31 +32,34 @@ and how integrations plug into the core.
 | State | Meaning | What tools do |
 |---|---|---|
 | `unpaired` | Fresh install, no key yet | Core tools only; `rubi_status` returns a pairing link |
-| `locked` | Paired, waiting for the user's key (after every restart) | Integration tools return `{"status": "locked", "unlock_url": …}` |
-| `unlocked` | Vault open, integrations running | Normal operation; gated actions go through approvals |
+| `locked` | Paired, waiting for the user's key (after every restart) | Plugin tools return `{"status": "locked", "link": …}` |
+| `unlocked` | Vault open, plugins running | Normal operation; gated actions go through approvals |
 
-Integration tools stay listed in every state, so the agent always knows what exists and can tell the user
+Plugin tools stay listed in every state, so the agent always knows what exists and can tell the user
 what to do.
 
 ## 3. Core tools (always available)
 
 | Tool | Purpose |
 |---|---|
-| `rubi_status()` | State, version, binary integrity result, installed integrations, and a pairing or unlock link when one is needed |
-| `rubi_link(purpose)` | Fresh panel link for `pair`, `unlock`, `settings`, or `setup:<integration>`. Links embed the current tunnel endpoint and expire. |
+| `rubi_status()` | State, version, binary integrity result, installed plugins, and a pairing or unlock link when one is needed |
+| `rubi_link(purpose)` | Fresh panel link for `pair`, `unlock`, `settings` (which includes the store), or `setup:<plugin>`. Links embed the current tunnel endpoint and expire. |
 | `rubi_lock()` | Lock immediately. Always allowed. |
-| `rubi_catalog()` | Integrations available to install, with what each needs (e.g. "an iCloud app-specific password") |
+| `rubi_store()` | Plugins in the store (reviewed) and installed ones: versions, connection state, updates |
+| `rubi_plugin_install(plugin)` | Install from the store by id, or sideload from a source URL. Verifies the package, then returns a strong approval |
+| `rubi_plugin_update(id)` / `rubi_plugin_remove(id)` | Update or remove a plugin (strong approval) |
+| `rubi_call(tool, arguments)` | Call a plugin tool by name, for agents that don't refresh their tool list |
 | `rubi_approval(approval_id, wait_seconds=0..25)` | Status of a pending approval (`pending`, `approved`, `denied`, `expired`, `executed`) and the action result. Long-polls up to `wait_seconds` (max 25). |
 | `rubi_confirm(approval_id, user_response)` | Only for `chat`-level approvals: the exact plain-text label the user pressed |
 | `rubi_events(include_acked=false)` / `rubi_ack(event_id)` | Pull and acknowledge events (e.g. a reply arrived) |
 | `rubi_update()` | Ask the user (strong approval) to update to the latest signed release; Rubi restarts into it and stays unlocked |
 
-Nothing here can change security settings, webhook targets, integrations, or secrets: those changes only
-happen in the panel (security model §8). The agent gets a `settings` link instead.
+Nothing here can change security settings, webhook targets, plugins, or secrets on its own: those changes
+need the user's strong approval in the panel (security model §8). The agent gets a link instead.
 
 ## 4. Gated actions
 
-An integration tool whose action kind has level `strong` or `chat` doesn't act. It returns:
+A plugin tool whose action kind has level `strong` or `chat` doesn't act. It returns:
 
 ```json
 {
@@ -84,11 +92,13 @@ An integration tool whose action kind has level `strong` or `chat` doesn't act. 
 3. The agent registers the MCP server (`rubi mcp`) and calls `rubi_status`, which returns a pairing link.
 4. The user opens the link, creates a passkey (or password), and Rubi is unlocked.
 
-**Add an integration**
+**Add a plugin**
 1. User: "Connect my iCloud Mail."
-2. The agent calls `rubi_catalog`, then `rubi_link("setup:icloud-mail")`, and sends the link with a short
-   explanation of what will be asked (and where to create an app-specific password).
-3. In the panel the user enters the address and the app password, Rubi tests the login, and the user
+2. The agent calls `rubi_store`, then `rubi_plugin_install("icloud-mail")`, and sends the approval link. The
+   panel shows what the plugin gets (secrets it will ask for, actions and their levels, hosts it connects
+   to); the user approves with Face ID.
+3. The agent sends `rubi_link("setup:icloud-mail")` with a short explanation of what will be asked. In the
+   panel the user enters the address and the app password, the plugin tests the login, and the user
    approves with Face ID. The agent learns the outcome from `rubi_status` or an `integration.ready` event.
 
 **After a restart**
@@ -102,32 +112,15 @@ Any tool call returns `locked` with an unlock link. The agent sends it; the user
 - **A Grok Bot skill** "Rubi-Project" packages the same rules plus setup playbooks. It ships with the
   repo, so it can later be published to the Marketplace.
 
-## 7. Integrations
+## 7. Plugins
 
-**v1: built in.** Integrations are compiled into the signed binary. They run with access to their own
-vault entries only, through a core API:
+Rubi ships bare. Integrations are plugins: separate signed packages from the store (or sideloaded), each
+running as its own process and speaking JSON-RPC with the core. A plugin's manifest declares its fields,
+secrets, actions and default levels, events, egress hosts and tools; the panel shows it as permissions on
+install. Plugins reach their own settings, secrets and state only through the core, and gated actions run
+in the plugin only after the user's approval, with exactly the payload that was approved.
 
-```
-Integration manifest (declared in code, shown in the panel):
-  id, name, version, description
-  secrets:     [{key, label, help, help_url}]        e.g. app-specific password
-  settings:    schema with defaults                  e.g. folders, tracking days
-  actions:     [{kind, title, default_level, options}]  e.g. send → strong, options: send / send+track
-  events:      [{type, untrusted_fields}]             e.g. reply → [from, subject]
-  egress:      ["imap.mail.me.com:993", "smtp.mail.me.com:587"]   (declared, shown to the user)
-  background:  workers started on unlock, stopped on lock
-
-Core API available to an integration:
-  vault.get/put (own namespace)   approvals.request(kind, preview, options, execute)
-  events.emit(type, data)         audit.record(...)        config (own section)
-```
-
-**Later: third-party plugins** for the marketplace. They would be separate signed binaries talking to
-the core over a local RPC with the same API. On installation, the panel shows the manifest (secrets,
-actions and their levels, egress hosts) for approval with Face ID, like app permissions. Process
-separation keeps a plugin away from the vault key and from other integrations' secrets. It doesn't
-protect against the agent, which has root (security model §3). The plugin format is deferred until the
-core is stable.
+The full design (package format, trust, store, protocol) is in [plugins.md](plugins.md).
 
 ## 8. Platform facts and decisions
 

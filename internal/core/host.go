@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,174 +14,10 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
 	"github.com/Deikus-LXXVII/rubi/internal/events"
-	"github.com/Deikus-LXXVII/rubi/internal/integrations"
+	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
+	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
-
-// host implements integrations.Host for one integration.
-type host struct {
-	c  *Core
-	id string
-}
-
-func (h host) ID() string { return h.id }
-
-func (h host) Settings(v any) error {
-	return h.c.Vault.View(func(d *vault.Data) error {
-		i := d.Integrations[h.id]
-		if i == nil || len(i.Settings) == 0 {
-			return errors.New("integration is not set up")
-		}
-		return json.Unmarshal(i.Settings, v)
-	})
-}
-
-func (h host) Secret(key string) (string, error) {
-	var s string
-	err := h.c.Vault.View(func(d *vault.Data) error {
-		i := d.Integrations[h.id]
-		if i == nil || i.Secrets[key] == "" {
-			return fmt.Errorf("secret %q is not set", key)
-		}
-		s = i.Secrets[key]
-		return nil
-	})
-	return s, err
-}
-
-func (h host) Level(kind string) approvals.Level { return h.c.PolicyLevel(kind) }
-
-func (h host) Submit(ctx context.Context, req approvals.Request) (map[string]any, error) {
-	req.Integration = h.id
-	return h.c.Approvals.Submit(ctx, req)
-}
-
-func (h host) Emit(typ string, data map[string]any, untrusted []string) {
-	h.c.Events.Emit(h.id, typ, data, untrusted)
-}
-
-func (h host) Audit(event string, fields map[string]any) {
-	if fields == nil {
-		fields = map[string]any{}
-	}
-	fields["integration"] = h.id
-	h.c.Audit.Record(h.id+"."+event, fields)
-}
-
-func (h host) LoadState(v any) error {
-	return h.c.Vault.View(func(d *vault.Data) error {
-		if i := d.Integrations[h.id]; i != nil && len(i.State) > 0 {
-			return json.Unmarshal(i.State, v)
-		}
-		return nil
-	})
-}
-
-func (h host) SaveState(v any) error {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return h.c.Vault.Update(func(d *vault.Data) error {
-		i := d.Integrations[h.id]
-		if i == nil {
-			return errors.New("integration is not set up")
-		}
-		i.State = raw
-		return nil
-	})
-}
-
-func (h host) Logf(format string, args ...any) { log.Printf("["+h.id+"] "+format, args...) }
-
-// ---- integration lifecycle ----
-
-func runtimes() map[string]integrations.Runtime {
-	out := map[string]integrations.Runtime{}
-	for _, i := range integrations.All() {
-		if rt, ok := i.(integrations.Runtime); ok {
-			out[i.Manifest().ID] = rt
-		}
-	}
-	return out
-}
-
-func (c *Core) enabled(id string) bool {
-	on := false
-	_ = c.Vault.View(func(d *vault.Data) error {
-		i := d.Integrations[id]
-		on = i != nil && i.Enabled
-		return nil
-	})
-	return on
-}
-
-// startIntegrations starts every enabled integration that isn't running yet.
-func (c *Core) startIntegrations() {
-	for id, rt := range runtimes() {
-		c.mu.Lock()
-		running := c.running[id]
-		c.mu.Unlock()
-		if running || !c.enabled(id) {
-			continue
-		}
-		if err := rt.Start(host{c: c, id: id}); err != nil {
-			log.Printf("[%s] start failed: %v", id, err)
-			continue
-		}
-		c.mu.Lock()
-		c.running[id] = true
-		c.mu.Unlock()
-	}
-}
-
-func (c *Core) stopIntegration(id string) {
-	c.mu.Lock()
-	running := c.running[id]
-	delete(c.running, id)
-	c.mu.Unlock()
-	if running {
-		if rt, ok := runtimes()[id]; ok {
-			rt.Stop()
-		}
-	}
-}
-
-func (c *Core) stopIntegrations() {
-	for id := range runtimes() {
-		c.stopIntegration(id)
-	}
-}
-
-// Host returns a Host for a connected integration, or a ready-made explanation for the agent.
-func (c *Core) Host(id string) (integrations.Host, map[string]any) {
-	st := c.State()
-	if st != Unlocked {
-		purpose := "unlock"
-		if st == Unpaired {
-			purpose = "pair"
-		}
-		out := map[string]any{"status": st, "message": "Rubi is " + string(st) + "; give the user the link below first."}
-		if u, err := c.Link(purpose); err == nil {
-			out["link"] = u
-		} else {
-			out["link_error"] = err.Error()
-		}
-		return nil, out
-	}
-	if !c.enabled(id) {
-		out := map[string]any{"status": "not_connected",
-			"message": "This integration isn't connected yet. Give the user the setup link; they enter their details in the Rubi panel, never in the chat."}
-		if u, err := c.Link("setup:" + id); err == nil {
-			out["link"] = u
-		}
-		if i, ok := integrations.Get(id); ok {
-			out["needs"] = i.Manifest().Needs
-		}
-		return nil, out
-	}
-	return host{c: c, id: id}, nil
-}
 
 // ---- settings changes (always strong) ----
 
@@ -210,51 +45,77 @@ func (c *Core) RequestChange(ctx context.Context, summary string, preview map[st
 	return id, nil
 }
 
-// ConnectIntegration validates setup values and requests approval to store them.
+// ConnectIntegration asks the plugin to validate setup values and requests approval to store them.
 func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secrets map[string]string) (string, error) {
-	rt, ok := runtimes()[id]
+	m, ok := c.Store.Get(id)
 	if !ok {
-		return "", fmt.Errorf("unknown integration %q", id)
+		return "", fmt.Errorf("plugin %q is not installed", id)
 	}
 	if c.State() != Unlocked {
 		return "", errors.New("Rubi is locked")
 	}
-	settings, account, err := rt.Validate(ctx, fields, secrets)
-	if err != nil {
+	in := rubiplugin.ValidateParams{Fields: map[string]string{}, Secrets: map[string]string{}}
+	for _, f := range m.Fields {
+		in.Fields[f.Key] = fields[f.Key]
+	}
+	for _, sec := range m.Secrets {
+		in.Secrets[sec.Key] = secrets[sec.Key]
+	}
+	var res rubiplugin.ValidateResult
+	if err := c.Runner.Call(ctx, id, "validate", in, &res); err != nil {
+		if errors.Is(err, plugins.ErrNotRunning) {
+			return "", errors.New(m.Name + " isn't running; ask your agent to check rubi_status")
+		}
 		return "", err
 	}
-	m := rt.Manifest()
-	return c.RequestChange(ctx, "Connect "+m.Name+" ("+account+")",
+	stored := in.Secrets
+	if res.Secrets != nil {
+		stored = map[string]string{}
+		for _, sec := range m.Secrets { // keep only declared secrets
+			stored[sec.Key] = res.Secrets[sec.Key]
+		}
+	}
+	account := res.Account
+	summary := "Connect " + m.Name
+	if account != "" {
+		summary += " (" + account + ")"
+	}
+	return c.RequestChange(ctx, summary,
 		map[string]any{"integration": m.Name, "account": account, "connects_to": strings.Join(m.Egress, ", ")},
 		func(d *vault.Data) error {
 			prev := d.Integrations[id]
-			i := &vault.Integration{Enabled: true, Account: account, Settings: settings, Secrets: secrets}
+			i := &vault.Integration{Enabled: true, Account: account, Settings: res.Settings, Secrets: stored}
 			if prev != nil && prev.Account == account {
-				i.State = prev.State // reconnecting the same account keeps tracking state
+				i.State = prev.State // reconnecting the same account keeps the plugin's state
 			}
 			d.Integrations[id] = i
 			return nil
 		},
 		func() {
-			c.stopIntegration(id)
-			c.startIntegrations()
+			c.restartPluginWork(id)
 			c.Audit.Record("integration.connected", audit.Fields{"integration": id, "account": account})
+			c.Events.Emit("rubi", "integration.ready", map[string]any{"plugin": id, "name": m.Name, "account": account}, nil)
 		})
 }
 
-// DisconnectIntegration requests approval to stop an integration and erase its secrets and state.
+// DisconnectIntegration requests approval to stop a plugin's work and erase its secrets and state. The
+// plugin stays installed.
 func (c *Core) DisconnectIntegration(ctx context.Context, id string) (string, error) {
-	i, ok := integrations.Get(id)
+	m, ok := c.Store.Get(id)
 	if !ok {
-		return "", fmt.Errorf("unknown integration %q", id)
+		return "", fmt.Errorf("plugin %q is not installed", id)
 	}
-	return c.RequestChange(ctx, "Disconnect "+i.Manifest().Name, map[string]any{"integration": i.Manifest().Name,
-		"effect": "Stops it and erases its stored password and state from Rubi."},
+	return c.RequestChange(ctx, "Disconnect "+m.Name, map[string]any{"integration": m.Name,
+		"effect": "Stops it and erases its stored passwords, settings and state from Rubi. The plugin stays installed."},
 		func(d *vault.Data) error {
 			delete(d.Integrations, id)
 			return nil
 		},
-		func() { c.stopIntegration(id) })
+		func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = c.Runner.Call(sctx, id, "stop", nil, nil)
+		})
 }
 
 // SetPolicy requests approval to change approval levels. Locked and core kinds can't be changed.
@@ -264,8 +125,8 @@ func (c *Core) SetPolicy(ctx context.Context, levels map[string]string) (string,
 		if _, ok := approvals.ParseLevel(l); !ok {
 			return "", fmt.Errorf("invalid level %q for %s", l, kind)
 		}
-		_, locked, known := integrations.DefaultLevel(kind)
-		if !known || locked || strings.HasPrefix(kind, "rubi.") {
+		_, _, known := c.action(kind)
+		if !known || strings.HasPrefix(kind, "rubi.") {
 			return "", fmt.Errorf("the approval level of %s can't be changed", kind)
 		}
 		clean[kind] = l
@@ -277,12 +138,8 @@ func (c *Core) SetPolicy(ctx context.Context, levels map[string]string) (string,
 	preview := map[string]any{}
 	for k, v := range clean {
 		name := k
-		for _, i := range integrations.All() {
-			for _, a := range i.Manifest().Actions {
-				if a.Kind == k {
-					name = a.Title + " (" + i.Manifest().Name + ")"
-				}
-			}
+		if a, m, ok := c.action(k); ok {
+			name = a.Title + " (" + m.Name + ")"
 		}
 		preview[name] = labels[v]
 	}

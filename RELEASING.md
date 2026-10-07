@@ -34,6 +34,26 @@ The `release` workflow tests, builds static binaries for linux/amd64, linux/arm6
 `pages` workflow, which regenerates `https://rubi-panel.com/releases/latest.json`. Installed Rubis read that
 file and offer the update to their users.
 
+## Plugins and the store
+
+**First-party plugins** (like `rubi-icloud-mail`) live in their own repositories and are signed with the
+*plugin* key, not the release key, so a plugin compromise can't sign Rubi itself.
+
+- One-time: `openssl genpkey -algorithm ed25519 -out plugins-key.pem`, store it as the secret
+  `PLUGIN_SIGNING_KEY` in each plugin repository, and commit the public half as `publisher-key.pub.pem`.
+  Its base64 body is the plugin manifest's `publisher.key`.
+- Release: tag `vX.Y.Z` in the plugin repository. Its workflow builds, writes `rubi-plugin.json` from
+  `<plugin> --manifest`, signs `SHA256SUMS`, attests and publishes a (non-pre-)release, and prints the
+  SHA-256 of `SHA256SUMS`.
+
+**Listing a version in the store.** Review the release (see `marketplace/README.md`), add it to
+`marketplace/catalog.json` with that SHA-256, and merge to `main`. The `pages` workflow signs the catalog
+with `RELEASE_SIGNING_KEY` and publishes it at `https://rubi-panel.com/marketplace/catalog.json`. Installed
+Rubis see the new version within six hours.
+
+The Go SDK ships with Rubi (`sdk/rubiplugin`): a plugin built against SDK vX works with every Rubi that
+supports its `api`.
+
 ## Updating the pinned cloudflared
 
 Bump `CLOUDFLARED_VERSION` in `panel/install.sh` and the three checksums. Use the SHA-256 GitHub shows

@@ -163,7 +163,8 @@ against a deliberately malicious agent, which is out of scope (§3).
 | Action | Default level | User can change |
 |---|---|---|
 | Unlock after restart | strong | **No** |
-| Change approval levels, integrations, service passwords, webhook target | strong | **No** |
+| Change approval levels, plugins, service passwords, webhook target | strong | **No** |
+| Install, update or remove a plugin | strong | **No** |
 | Send email | strong | Yes (`chat` or `none`) |
 | Create draft | none | Yes |
 | Read / search | none | Yes |
@@ -176,7 +177,7 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
 
 ## 9. Events and waking the agent
 
-- Integrations emit events (e.g. "reply received"). Rubi delivers them to the configured Grok Bot routine
+- Plugins emit events (e.g. "reply received"). Rubi delivers them to the configured Grok Bot routine
   webhook (`POST`, `Authorization: Bearer crsr_…`), with metadata only and fields from third parties
   marked as untrusted.
 - The webhook URL and key are stored in the vault; changing them needs a strong approval, so a manipulated
@@ -201,6 +202,23 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   agent with root could already read the key from memory (§3), so this adds no new exposure.
 - Test builds (version `dev` or `*-test`) may override the release key, download base and feed with
   environment variables, for end-to-end tests. Official builds ignore these variables.
+
+## 10a. Plugins
+
+Integrations are plugins with their own signed releases (design in [plugins.md](plugins.md)):
+
+- **Two signatures for the store.** The catalog is signed with the release key, and pins each reviewed
+  version's publisher key and `SHA256SUMS` digest. The publisher's signature over `SHA256SUMS` is checked as
+  well. Sideloaded plugins pin their publisher key on first install, and the approval screen says they
+  weren't reviewed.
+- **Installed files are re-checked.** The vault records a tree hash of each installed plugin. Rubi
+  recomputes it before every start and refuses to run a plugin whose files changed.
+- **Least privilege by construction.** A plugin process gets its own settings, secrets and state on
+  request, and nothing else. Every action kind, event and tool must be in its own namespace and declared
+  in the manifest. A plugin can't create `rubi.*` approvals or approve anything.
+- **Limits.** Egress hosts are declared, not enforced. A plugin runs as the same user as the daemon. On
+  Linux the daemon is non-dumpable, so plugins can't read its memory; still, review is what protects
+  against a malicious plugin (§3: the agent has root anyway).
 
 ## 11. Recovery
 

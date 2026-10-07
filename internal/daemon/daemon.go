@@ -28,8 +28,6 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/tunnel"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
-
-	_ "github.com/Deikus-LXXVII/rubi/internal/integrations/icloudmail" // built-in integrations
 )
 
 var ErrAlreadyRunning = errors.New("rubi daemon is already running")
@@ -43,6 +41,7 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		return err
 	}
 	defer lock.Close()
+	harden()
 
 	c, err := core.Open(layout)
 	if err != nil {
@@ -132,6 +131,7 @@ func checkUpdates(ctx context.Context, c *core.Core) {
 		if info.Available {
 			log.Printf("update available: %s -> %s", info.Current, info.Latest)
 		}
+		c.CheckPluginUpdates(ctx) // plugins update separately from Rubi itself
 		delay = 6 * time.Hour
 	}
 }

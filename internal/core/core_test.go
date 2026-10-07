@@ -1,17 +1,38 @@
 package core
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
-	_ "github.com/Deikus-LXXVII/rubi/internal/integrations/icloudmail"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
+	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
+
+// installManifest puts a plugin manifest in place without the package (enough for policy lookups).
+func installManifest(t *testing.T, c *Core, raw string) {
+	t.Helper()
+	var m plugins.Manifest
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatal(err)
+	}
+	if err := plugins.Check(&m); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "stage")
+	_ = os.MkdirAll(dir, 0o700)
+	tree, _ := plugins.TreeHash(dir)
+	if err := c.Store.Commit(&plugins.Candidate{Manifest: m, Dir: dir, Tree: tree}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func fragment(t *testing.T, link string) url.Values {
 	t.Helper()
@@ -109,6 +130,13 @@ func TestLifecycle(t *testing.T) {
 
 func TestPolicyLevel(t *testing.T) {
 	c, _ := Open(paths.Layout{Home: t.TempDir()})
+	installManifest(t, c, `{"schema":1,"id":"icloud-mail","name":"iCloud Mail","version":"v1.0.0","api":1,
+		"entry":"icloud-mail","publisher":{"name":"x","key":"MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="},
+		"actions":[{"kind":"icloud-mail.read","title":"Read","default_level":"none"},
+		           {"kind":"icloud-mail.send","title":"Send","default_level":"strong"}]}`)
+	if got := c.PolicyLevel("rubi.plugin.install"); got != approvals.Strong {
+		t.Fatalf("core kinds must be strong, got %s", got)
+	}
 	if got := c.PolicyLevel("icloud-mail.send"); got != approvals.Strong {
 		t.Fatalf("default send level %s", got)
 	}

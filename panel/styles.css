@@ -229,6 +229,17 @@ button.more { align-self: flex-start; width: auto; padding: 0; text-decoration: 
 .fields { margin: 0; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); }
 .field-item { padding: 11px 14px; border-top: 1px solid var(--line); }
 .field-item:first-child { border-top: 0; }
+.field-item.attention { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.field-item.attention dd { color: var(--text); font-weight: 500; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.75rem; color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent); vertical-align: 1px; white-space: nowrap; }
+.tag.warn { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, transparent); }
+.item.plugin { align-items: flex-start; }
+.item .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; flex-shrink: 0; }
+.muted.small { font-size: 0.8rem; }
+.sideload { margin-top: 18px; }
+.sideload summary { cursor: pointer; color: var(--muted); }
+.sideload[open] summary { margin-bottom: 8px; }
 .field-item dt { color: var(--muted); font-size: 0.8rem; }
 .field-item dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 

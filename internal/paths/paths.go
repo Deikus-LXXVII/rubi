@@ -51,3 +51,5 @@ func (l Layout) Socket() string {
 func (l Layout) Lock() string      { return filepath.Join(l.Home, "daemon.lock") }
 func (l Layout) DaemonLog() string { return filepath.Join(l.Home, "daemon.log") }
 func (l Layout) Audit() string     { return filepath.Join(l.Home, "audit.log") }
+func (l Layout) Plugins() string   { return filepath.Join(l.Home, "plugins") }
+func (l Layout) Logs() string      { return filepath.Join(l.Home, "logs") }

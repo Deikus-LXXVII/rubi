@@ -134,7 +134,8 @@ func TestDownloadRejectsTampering(t *testing.T) {
 }
 
 func TestOfficialBuildsIgnoreTestOverrides(t *testing.T) {
-	base, key := fakeRelease(t, "v0.2.0", nil)
+	// A version that has no official release, so the result can't depend on what is published on GitHub.
+	base, key := fakeRelease(t, "v9.9.9", nil)
 	t.Setenv("RUBI_DOWNLOAD_BASE", base)
 	t.Setenv("RUBI_TEST_RELEASE_KEY_FILE", key)
 	t.Setenv("RUBI_UPDATE_FEED", base+"/feed.json")
@@ -143,7 +144,7 @@ func TestOfficialBuildsIgnoreTestOverrides(t *testing.T) {
 	}
 	// An official build downloads from GitHub and trusts only the embedded key, so the fake release (signed
 	// with a throwaway key and served locally) must never be accepted.
-	if _, err := Download(context.Background(), "v0.1.0", "v0.2.0", t.TempDir()); err == nil {
+	if _, err := Download(context.Background(), "v0.1.0", "v9.9.9", t.TempDir()); err == nil {
 		t.Fatal("official build accepted a release signed with a test key")
 	}
 }

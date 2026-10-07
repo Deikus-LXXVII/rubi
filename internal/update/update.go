@@ -112,6 +112,18 @@ func Newer(candidate, current string) bool {
 	return c.pre > cur.pre
 }
 
+// Compatible reports whether a build of version current satisfies a minimum version (empty means any).
+// Development and test builds satisfy every minimum.
+func Compatible(current, minimum string) bool {
+	if minimum == "" || current == "dev" || strings.HasSuffix(current, "-test") {
+		return true
+	}
+	return !Newer(minimum, current)
+}
+
+// ValidVersion reports whether v looks like a release version (v1.2.3 or v1.2.3-rc1).
+func ValidVersion(v string) bool { return validVersion(v) }
+
 // Verified is a downloaded, checked release ready to install.
 type Verified struct {
 	Version string
@@ -150,7 +162,7 @@ func Download(ctx context.Context, current, version, dir string) (*Verified, err
 	}
 	archive := filepath.Join(dir, ".rubi-update.tar.gz")
 	defer os.Remove(archive)
-	if err := downloadFile(ctx, integrity.ReleaseBase(current)+"/"+version+"/"+name, archive); err != nil {
+	if err := DownloadFile(ctx, integrity.ReleaseBase(current)+"/"+version+"/"+name, archive); err != nil {
 		return nil, err
 	}
 	got, err := integrity.HashFile(archive)
@@ -193,7 +205,8 @@ func Rollback(exe string) error {
 	return os.Rename(prev, exe)
 }
 
-func downloadFile(ctx context.Context, url, dst string) error {
+// DownloadFile saves url to dst (up to 200 MiB).
+func DownloadFile(ctx context.Context, url, dst string) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

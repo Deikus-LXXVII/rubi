@@ -381,9 +381,15 @@ async function statusScreen(ctx, message) {
 
 const FIELD_LABELS = {
   from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", in_reply_to: "In reply to", body: "Message",
-  integration: "Integration", account: "Account", connects_to: "Connects to", effect: "Effect", webhook: "Webhook",
-  current: "Current version", new_version: "New version", release_notes: "Release notes", verification: "Verification",
+  plugin: "Plugin", warning: "Warning", review: "Review", publisher: "Publisher", source: "Installed from",
+  integration: "Integration", account: "Account", current: "Current version", new_version: "New version",
+  new_permissions: "New permissions", will_ask_for: "Will ask you for", can: "Can", connects_to: "Connects to",
+  can_notify_about: "Can notify your agent about", effect: "Effect", webhook: "Webhook",
+  release_notes: "Release notes", verification: "Verification",
 };
+
+// Preview fields that need the user's attention.
+const ATTENTION = new Set(["warning", "new_permissions"]);
 
 // splitAddresses turns `Anna <a@x>, b@y` into [{name, email}] for display.
 function splitAddresses(list) {
@@ -440,7 +446,7 @@ function fieldList(preview) {
   const keys = Object.keys(preview).sort((a, b) =>
     (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99) || a.localeCompare(b));
   return h("dl", { class: "fields" }, keys.filter((k) => preview[k] !== null && preview[k] !== undefined && preview[k] !== "")
-    .map((k) => h("div", { class: "field-item" }, h("dt", {}, FIELD_LABELS[k] || k),
+    .map((k) => h("div", { class: ATTENTION.has(k) ? "field-item attention" : "field-item" }, h("dt", {}, FIELD_LABELS[k] || k),
       h("dd", {}, typeof preview[k] === "string" ? preview[k] : JSON.stringify(preview[k], null, 2)))));
 }
 
@@ -472,6 +478,10 @@ function titleFor(a) {
   if (a.kind.endsWith(".send")) return "Send this email?";
   if (a.kind.endsWith(".draft")) return "Save this draft?";
   if (a.kind === "rubi.update") return "Update Rubi?";
+  const name = a.preview?.plugin;
+  if (a.kind === "rubi.plugin.install" && name) return `Install ${name}?`;
+  if (a.kind === "rubi.plugin.update" && name) return `Update ${name}?`;
+  if (a.kind === "rubi.plugin.remove" && name) return `Remove ${name}?`;
   return a.summary;
 }
 
@@ -606,7 +616,8 @@ async function approveScreen(ctx, id, opts = {}) {
 // resultScreen shows how an approval ended. extra (optional) carries the preview and chosen option.
 function resultScreen(ctx, a, onDone, extra = {}) {
   const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved"
-    : a.kind === "rubi.update" ? "Updating…" : "Done";
+    : a.kind === "rubi.update" ? "Updating…" : a.kind === "rubi.plugin.install" ? "Installed"
+    : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed" : "Done";
   const titles = {
     executed: executedTitle,
     denied: "Declined",
@@ -630,6 +641,8 @@ function resultScreen(ctx, a, onDone, extra = {}) {
     tracking ? h("p", { class: "center ok" }, "Rubi will tell your agent when a reply arrives.") : null,
     a.state === "executed" && a.kind === "rubi.update"
       ? h("p", { class: "center ok" }, "Rubi restarts into the new version in a few seconds and stays unlocked.") : null,
+    a.state === "executed" && a.result?.next_step && !onDone
+      ? h("p", { class: "center ok" }, "Your agent will send you a link to set it up.") : null,
     a.error ? h("p", { class: "error center" }, a.error) : null,
     onDone
       ? h("button", { class: "primary", onclick: onDone }, "Back to settings")
@@ -680,7 +693,7 @@ async function setupScreen(ctx, id, back) {
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
-  if (!entry) return fatal("Unknown integration.");
+  if (!entry) return fatal("This plugin isn't installed. Ask your agent to install it from the store first.");
   const done = back || (() => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
     h("p", {}, "You can close this page and go back to your agent.")));
 
@@ -738,10 +751,10 @@ const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Fa
 
 async function settingsScreen(ctx) {
   const err = errorBox();
-  let catalog, policy, hook, st;
+  let store, policy, hook, st;
   try {
-    [catalog, policy, hook, st] = await Promise.all([
-      ctx.client.call("integration.catalog"), ctx.client.call("policy.get"),
+    [store, policy, hook, st] = await Promise.all([
+      ctx.client.call("store.list"), ctx.client.call("policy.get"),
       ctx.client.call("webhook.get"), ctx.client.call("status"),
     ]);
   } catch (e) {
@@ -752,11 +765,19 @@ async function settingsScreen(ctx) {
     await busy(e.target, async () => confirmChange(ctx, await ctx.client.call(op, args()), back)).catch((x) => showError(err, x));
   };
 
-  const integrationsList = h("div", { class: "list" }, catalog.integrations.map((i) => h("div", { class: "item" },
-    h("div", {}, h("strong", {}, i.name), h("div", { class: "muted" }, i.connected ? `Connected: ${i.account}` : "Not connected")),
-    i.connected
-      ? h("button", { class: "secondary small", onclick: change("integration.disconnect", () => ({ id: i.id })) }, "Disconnect")
-      : h("button", { class: "secondary small", onclick: () => setupScreen(ctx, i.id, back) }, "Connect"))));
+  const installed = (store.plugins || []).filter((p) => p.installed);
+  const pluginsList = installed.length ? h("div", { class: "list" }, installed.map((p) => h("div", { class: "item plugin" },
+    h("div", {},
+      h("strong", {}, p.name), " ", h("span", { class: p.reviewed ? "tag" : "tag warn" }, p.reviewed ? "Reviewed" : "Not reviewed"),
+      h("div", { class: "muted" }, `${p.version}${p.connected ? ` · ${p.account || "connected"}` : " · not connected"}${p.running === false ? " · not running" : ""}`)),
+    h("div", { class: "actions" },
+      p.update_available
+        ? h("button", { class: "primary small", onclick: change("plugin.update", () => ({ id: p.id })) }, `Update to ${p.update_available}`) : null,
+      p.connected
+        ? h("button", { class: "secondary small", onclick: change("integration.disconnect", () => ({ id: p.id })) }, "Disconnect")
+        : h("button", { class: "secondary small", onclick: () => setupScreen(ctx, p.id, back) }, "Connect"),
+      h("button", { class: "link small", onclick: change("plugin.remove", () => ({ id: p.id })) }, "Remove")))))
+    : h("p", { class: "muted" }, "No plugins yet. Rubi starts bare; add what you need from the store.");
 
   const selects = {};
   const policyRows = policy.actions.map((a) => {
@@ -779,8 +800,9 @@ async function settingsScreen(ctx) {
     header(ctx.hello),
     h("h1", {}, "Rubi settings"),
     err,
-    h("h2", {}, "Integrations"),
-    integrationsList,
+    h("h2", {}, "Plugins"),
+    pluginsList,
+    h("button", { class: "secondary", onclick: () => storeScreen(ctx, back) }, "Open the store"),
     h("h2", {}, "Approval levels"),
     h("p", { class: "muted" }, "How each action is approved. Changing these always needs Face ID or your password."),
     ...policyRows,
@@ -802,6 +824,59 @@ async function settingsScreen(ctx) {
       await busy(e.target, () => ctx.client.call("lock"));
       statusScreen(ctx, "Rubi is locked.");
     } }, "Lock Rubi now"),
+  );
+}
+
+// ---------- store ----------
+
+async function storeScreen(ctx, back) {
+  const err = errorBox();
+  let store;
+  try {
+    store = await ctx.client.call("store.list");
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  const again = () => storeScreen(ctx, back);
+  const install = (plugin) => async (e) => {
+    await busy(e.target, async () => {
+      e.target.textContent = "Verifying…";
+      confirmChange(ctx, await ctx.client.call("plugin.install", { plugin }), again);
+    }).catch((x) => showError(err, x));
+  };
+  const reviewed = (store.plugins || []).filter((p) => p.reviewed && (p.latest || p.requires_newer_rubi));
+  const cards = reviewed.map((p) => h("div", { class: "item plugin" },
+    h("div", {},
+      h("strong", {}, p.name),
+      h("div", { class: "muted" }, p.summary),
+      h("div", { class: "muted small" }, `${p.publisher}${p.latest ? ` · ${p.latest}` : ""}`)),
+    h("div", { class: "actions" },
+      p.installed
+        ? (p.update_available
+          ? h("button", { class: "primary small", onclick: async (e) => {
+            await busy(e.target, async () => confirmChange(ctx, await ctx.client.call("plugin.update", { id: p.id }), again)).catch((x) => showError(err, x));
+          } }, "Update")
+          : h("span", { class: "tag" }, "Installed"))
+        : p.requires_newer_rubi
+          ? h("span", { class: "tag warn" }, "Needs a newer Rubi")
+          : h("button", { class: "primary small", onclick: install(p.id) }, "Install"))));
+
+  const url = h("input", { type: "url", placeholder: "https://github.com/owner/repo", autocomplete: "off", autocapitalize: "none" });
+  const sideload = h("details", { class: "sideload" },
+    h("summary", {}, "Install from a link"),
+    h("p", { class: "muted" }, "Plugins outside the store are not reviewed by Rubi-Project. Install one only if you trust who made it: it runs on your agent's computer with access to what you enter for it."),
+    url,
+    h("button", { class: "secondary", onclick: (e) => install(url.value.trim())(e) }, "Check and install"));
+
+  screen(
+    header(ctx.hello),
+    h("h1", {}, "Store"),
+    h("p", { class: "muted" }, "Plugins reviewed by Rubi-Project. Installing one shows what it can do and needs Face ID or your password."),
+    err,
+    store.catalog_error ? h("p", { class: "error" }, `The store is unavailable right now: ${store.catalog_error}`) : null,
+    cards.length ? h("div", { class: "list" }, cards) : (store.catalog_error ? null : h("p", { class: "muted" }, "The store is empty.")),
+    sideload,
+    back ? h("button", { class: "link", onclick: back }, "Back to settings") : null,
   );
 }
 
