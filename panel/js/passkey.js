@@ -54,15 +54,22 @@ export async function createPasskey({ instance, fingerprint, prfSalt }) {
 
 // evalPrf asks for one of the given passkeys and returns which one answered plus its PRF output.
 export async function evalPrf(entries) {
-  const evalByCredential = {};
-  for (const e of entries) evalByCredential[e.credentialId] = { first: e.prfSalt };
+  // With a single passkey use plain `eval`: Safari supports it, but not `evalByCredential`.
+  let prf;
+  if (entries.length === 1) {
+    prf = { eval: { first: entries[0].prfSalt } };
+  } else {
+    const evalByCredential = {};
+    for (const e of entries) evalByCredential[e.credentialId] = { first: e.prfSalt };
+    prf = { evalByCredential };
+  }
   const cred = await navigator.credentials.get({
     publicKey: {
       rpId: rpId(),
       challenge: rand(32),
       allowCredentials: entries.map((e) => ({ type: "public-key", id: b64u.dec(e.credentialId) })),
       userVerification: "required",
-      extensions: { prf: { evalByCredential } },
+      extensions: { prf },
       timeout: 120000,
     },
   });
