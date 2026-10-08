@@ -7,7 +7,7 @@ import {
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
 import { icon } from "./icons.js";
-import { mascot, react, setMood } from "./mascot.js";
+import { lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
 
 const root = document.getElementById("app");
@@ -72,6 +72,20 @@ function screen(...children) {
 
 const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+// Rubi's attention, page-wide: it closes its eyes while you type a password, and looks at the primary
+// button you're about to press.
+const screenMascot = () => root.querySelector(".screen-mascot .mascot, .req-top .mascot, .instance .mascot");
+root.addEventListener("focusin", (e) => { if (e.target.matches?.("input[type=password]")) shy(screenMascot(), true); });
+root.addEventListener("focusout", (e) => { if (e.target.matches?.("input[type=password]")) shy(screenMascot(), false); });
+root.addEventListener("pointerover", (e) => {
+  const b = e.target.closest?.("button.primary");
+  if (b && !reducedMotion()) lookAt(screenMascot(), b);
+});
+root.addEventListener("pointerout", (e) => {
+  const b = e.target.closest?.("button.primary");
+  if (b && !b.contains(e.relatedTarget)) lookAt(screenMascot(), null);
+});
+
 // animateIn staggers the entrance of a screen's blocks.
 function animateIn(main) {
   const items = main.querySelectorAll(":scope > *:not(.req-grid):not(.screen-mascot), .req-grid > section > *, .req-grid > aside > *");
@@ -89,7 +103,10 @@ function face(mood, size = 76, then) {
   const svg = mascot(mood, size);
   svg.enter = async (morphed) => {
     if (!morphed) await react(svg, "pop");
-    else await new Promise((r) => setTimeout(r, 380));
+    else {
+      await new Promise((r) => setTimeout(r, 420));
+      await react(svg, "land");
+    }
     if (mood === "happy") {
       await react(svg, "hop");
       await react(svg, "hop", 120);

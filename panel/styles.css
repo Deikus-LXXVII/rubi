@@ -1087,3 +1087,9 @@ button.primary.is-busy::before { display: none; }
   background-size: 300% 100%; animation: shimmer 1.6s linear infinite; }
 .skeleton i.w80 { width: 80%; } .skeleton i.w60 { width: 60%; height: 16px; } .skeleton i.w40 { width: 40%; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* mascot attention (iteration 17): shy while a password is typed */
+.mascot.shy .eye-pill, .mascot.shy .eye-glint { opacity: 0; scale: 1 0.12; }
+.mascot.shy .eye-lid { opacity: 1; scale: 1; }
+.mascot.shy .mascot-gaze { translate: -2.5px 1px; }
+.mascot.shy .mascot-body { rotate: -6deg; }

@@ -153,6 +153,16 @@ const REACTIONS = {
     duration: 560,
     easing: "cubic-bezier(.65, 0, .35, 1)",
   },
+  land: {
+    body: [
+      { transform: "translateY(0) scale(1.06, 0.93)" },
+      { transform: "translateY(-3%) scale(0.98, 1.03)", offset: 0.45 },
+      { transform: "none" },
+    ],
+    floor: [{ transform: "scale(1.1)" }, { transform: "scale(0.94)", offset: 0.45 }, { transform: "scale(1)" }],
+    duration: 520,
+    easing: "cubic-bezier(.34, 1.4, .64, 1)",
+  },
   pop: {
     body: [
       { transform: "scale(0.4) rotate(-12deg)", opacity: 0 },
@@ -251,4 +261,30 @@ function follow(svg) {
     target = { x: (dx / d) * k, y: (dy / d) * k };
     if (!raf) raf = requestAnimationFrame(step);
   }, { passive: true });
+}
+
+// lookAt turns Rubi's eyes toward an element (or back to the front with null), e.g. the button the user is
+// about to press.
+export function lookAt(svg, target) {
+  if (!svg || svg.classList.contains("following")) return;
+  if (!target) {
+    svg.style.removeProperty("--gx");
+    svg.style.removeProperty("--gy");
+    svg.style.removeProperty("--lean");
+    return;
+  }
+  const a = svg.getBoundingClientRect();
+  const b = target.getBoundingClientRect();
+  const dx = b.left + b.width / 2 - (a.left + a.width / 2);
+  const dy = b.top + b.height / 2 - (a.top + a.height / 2);
+  const d = Math.hypot(dx, dy) || 1;
+  svg.style.setProperty("--gx", `${((dx / d) * 3.5).toFixed(2)}px`);
+  svg.style.setProperty("--gy", `${((dy / d) * 3).toFixed(2)}px`);
+  svg.style.setProperty("--lean", `${((dx / d) * 3).toFixed(2)}deg`);
+}
+
+// shy makes Rubi close its eyes and turn a little away (while the user types a password), or not.
+export function shy(svg, on) {
+  if (!svg) return;
+  svg.classList.toggle("shy", on);
 }
