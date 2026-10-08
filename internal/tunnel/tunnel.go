@@ -106,6 +106,9 @@ func (m *Manager) setError(msg string) {
 
 func (m *Manager) runOnce(ctx context.Context) error {
 	cmd := exec.CommandContext(ctx, m.Binary, "tunnel", "--no-autoupdate", "--url", m.Target)
+	// Only what cloudflared needs: the agent platform puts its stored secrets in every process's
+	// environment, and a helper has no business seeing them.
+	cmd.Env = minimalEnv()
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err
@@ -214,4 +217,15 @@ func sleep(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-time.After(d):
 	}
+}
+
+func minimalEnv() []string {
+	var env []string
+	for _, k := range []string{"PATH", "HOME", "LANG", "TZ", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
+		"HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"} {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }

@@ -183,7 +183,7 @@ func Fetch(ctx context.Context, url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := Client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -193,3 +193,15 @@ func Fetch(ctx context.Context, url string) ([]byte, error) {
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 }
+
+// Client downloads release files. Redirects (GitHub sends downloads to its file host) may change host
+// but never leave https once on it; everything downloaded is verified against signatures anyway.
+var Client = &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("too many redirects")
+	}
+	if via[0].URL.Scheme == "https" && req.URL.Scheme != "https" {
+		return errors.New("refusing a redirect away from https")
+	}
+	return nil
+}}

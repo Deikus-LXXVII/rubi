@@ -174,8 +174,11 @@ func (r *Runner) launch(s *slot, initial bool) (err error) {
 }
 
 func pluginEnv(id, home string) []string {
-	env := []string{"HOME=" + home, "RUBI_PLUGIN_ID=" + id, pluginAPIEnv + "=" + strconv.Itoa(rubiplugin.API)}
-	for _, k := range []string{"PATH", "LANG", "TZ", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+	// Temporary files go in the plugin's own directory, not a /tmp shared with every other process.
+	tmp := filepath.Join(home, "tmp")
+	_ = os.MkdirAll(tmp, 0o700)
+	env := []string{"HOME=" + home, "TMPDIR=" + tmp, "RUBI_PLUGIN_ID=" + id, pluginAPIEnv + "=" + strconv.Itoa(rubiplugin.API)}
+	for _, k := range []string{"PATH", "LANG", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}

@@ -67,10 +67,16 @@ type Conn struct {
 	pending map[string]chan message
 	closed  bool
 	done    chan struct{}
+	busy    chan struct{} // bounds requests handled at once
 }
 
+// MaxInFlight is how many incoming requests a connection handles at once; more are answered with an
+// error right away, so a peer can't make the other side start unbounded work.
+const MaxInFlight = 32
+
 func NewConn(r io.Reader, w io.Writer, h Handler) *Conn {
-	return &Conn{r: r, w: bufio.NewWriter(w), handler: h, pending: map[string]chan message{}, done: make(chan struct{})}
+	return &Conn{r: r, w: bufio.NewWriter(w), handler: h, pending: map[string]chan message{}, done: make(chan struct{}),
+		busy: make(chan struct{}, MaxInFlight)}
 }
 
 // Done is closed when the connection ends.
@@ -88,7 +94,17 @@ func (c *Conn) Run(ctx context.Context) error {
 		}
 		switch {
 		case m.Method != "":
-			go c.serve(ctx, m)
+			select {
+			case c.busy <- struct{}{}:
+				go func() {
+					defer func() { <-c.busy }()
+					c.serve(ctx, m)
+				}()
+			default:
+				if len(m.ID) > 0 {
+					go func() { _ = c.write(message{ID: m.ID, Error: &Error{Code: -32000, Message: "too many requests at once"}}) }()
+				}
+			}
 		case len(m.ID) > 0:
 			c.mu.Lock()
 			ch := c.pending[string(m.ID)]

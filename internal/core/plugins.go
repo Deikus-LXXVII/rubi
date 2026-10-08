@@ -373,6 +373,9 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			}
 			return map[string]any{"level": c.PolicyLevel(in.Kind)}, nil
 		case "approval.submit":
+			if !c.allow("submit:"+id, pluginApprovalsPerMinute) {
+				return nil, errors.New("too many approval requests; slow down")
+			}
 			return c.pluginSubmit(ctx, m, params)
 		case "home.devices":
 			if len(m.Home) == 0 {
@@ -429,6 +432,10 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			if !ok {
 				return nil, fmt.Errorf("event type %q is not declared in the manifest", in.Type)
 			}
+			// Every event may wake the user's agent, which costs their quota: a plugin gets a budget.
+			if !c.allow("emit:"+id, pluginEventsPerMinute) {
+				return nil, errors.New("too many events; slow down")
+			}
 			target := ""
 			if in.Agent != "" && c.HasAgent(in.Agent) {
 				target = in.Agent
@@ -453,6 +460,11 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 }
 
 // pluginSubmit gates a plugin action. The approved action runs in the plugin with the submitted payload.
+const (
+	pluginEventsPerMinute    = 30
+	pluginApprovalsPerMinute = 10
+)
+
 func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json.RawMessage) (any, error) {
 	var in struct {
 		Kind     string              `json:"kind"`

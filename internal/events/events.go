@@ -56,6 +56,7 @@ func (s *Store) EmitFor(target string, quiet bool, integration, typ string, data
 	e := &Event{ID: "evt_" + base64.RawURLEncoding.EncodeToString(b), Integration: integration, Type: typ,
 		Data: data, UntrustedFields: untrusted, CreatedAt: time.Now().UTC(), Quiet: quiet, Target: target}
 	s.mu.Lock()
+	s.pruneLocked(e.CreatedAt)
 	s.events[e.ID] = e
 	fn := s.notify
 	s.mu.Unlock()
@@ -93,4 +94,25 @@ func (s *Store) Clear() {
 	s.mu.Lock()
 	s.events = map[string]*Event{}
 	s.mu.Unlock()
+}
+
+// Events are private and only useful for a while: acknowledged ones go after an hour, others after a
+// day, and the list never holds more than maxEvents (the oldest go first).
+const maxEvents = 1000
+
+func (s *Store) pruneLocked(now time.Time) {
+	for id, e := range s.events {
+		if e.Acked && now.Sub(e.CreatedAt) > time.Hour || now.Sub(e.CreatedAt) > 24*time.Hour {
+			delete(s.events, id)
+		}
+	}
+	for len(s.events) >= maxEvents {
+		var oldest *Event
+		for _, e := range s.events {
+			if oldest == nil || e.CreatedAt.Before(oldest.CreatedAt) {
+				oldest = e
+			}
+		}
+		delete(s.events, oldest.ID)
+	}
 }

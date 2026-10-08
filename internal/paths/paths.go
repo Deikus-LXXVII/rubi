@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 type Layout struct {
@@ -39,17 +40,39 @@ func (l Layout) Keys() string     { return filepath.Join(l.Home, "keys.json") }
 
 // PanelOrigin records the panel origin this instance was paired with (see core.Open).
 func (l Layout) PanelOrigin() string { return filepath.Join(l.Home, "panel-origin") }
-func (l Layout) Vault() string    { return filepath.Join(l.Home, "vault.sealed") }
+func (l Layout) Vault() string       { return filepath.Join(l.Home, "vault.sealed") }
 
 // Socket is the daemon's Unix socket. Unix socket paths are limited to ~104 bytes, so a long $RUBI_HOME
-// falls back to a short per-user, per-home path in /tmp (the socket itself is mode 0600).
+// falls back to a short per-home name in a private per-user directory ($XDG_RUNTIME_DIR, or
+// /tmp/rubi-<uid> created 0700 and checked to be ours). A shared, predictable path in /tmp could be taken
+// first by someone else, who would then pose as Rubi to the agent.
 func (l Layout) Socket() string {
 	p := filepath.Join(l.Home, "rubi.sock")
 	if len(p) <= 100 {
 		return p
 	}
 	sum := sha256.Sum256([]byte(l.Home))
-	return fmt.Sprintf("/tmp/rubi-%d-%x.sock", os.Getuid(), sum[:6])
+	name := fmt.Sprintf("rubi-%x.sock", sum[:6])
+	if d := os.Getenv("XDG_RUNTIME_DIR"); d != "" && privateDir(d) && len(filepath.Join(d, name)) <= 100 {
+		return filepath.Join(d, name)
+	}
+	dir := fmt.Sprintf("/tmp/rubi-%d", os.Getuid())
+	_ = os.Mkdir(dir, 0o700)
+	if !privateDir(dir) {
+		return p // too long to bind: the daemon fails loudly instead of using a directory others control
+	}
+	return filepath.Join(dir, name)
+}
+
+// privateDir reports whether dir is a real directory (not a link) owned by this user with no access for
+// anyone else.
+func privateDir(dir string) bool {
+	fi, err := os.Lstat(dir)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o077 != 0 {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && int(st.Uid) == os.Getuid()
 }
 func (l Layout) Lock() string      { return filepath.Join(l.Home, "daemon.lock") }
 func (l Layout) DaemonLog() string { return filepath.Join(l.Home, "daemon.log") }

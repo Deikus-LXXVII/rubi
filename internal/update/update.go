@@ -213,7 +213,7 @@ func DownloadFile(ctx context.Context, url, dst string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := integrity.Client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -268,7 +268,9 @@ func extractBinary(archive, dst string) error {
 func smokeTest(ctx context.Context, bin, version string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, bin, "version").Output()
+	cmd := exec.CommandContext(ctx, bin, "version")
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")} // it only prints its version: it needs nothing else
+	out, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("the new binary doesn't run on this machine: %w", err)
 	}

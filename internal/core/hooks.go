@@ -21,7 +21,10 @@ import (
 // are random; anyone holding the address can trigger the hook, so plugins treat what arrives as untrusted
 // and the user can replace an address at any time. Hook requests reach the plugin as a "hook" call.
 
-const hooksPerMinute = 20
+const (
+	hooksPerMinute = 20
+	hooksPerPlugin = 20 // so one plugin can't take every address
+)
 
 var errNoHooks = errors.New("hook addresses need Rubi Gateway or Tailscale as Rubi's transport (see `rubi transport`)")
 
@@ -81,7 +84,13 @@ func (c *Core) HookURL(plugin, account, name string, rotate bool) (string, error
 		}
 		d.Hooks.List = kept
 		if id == "" {
-			if len(d.Hooks.List) >= 200 {
+			mine := 0
+			for _, h := range d.Hooks.List {
+				if h.Plugin == plugin {
+					mine++
+				}
+			}
+			if len(d.Hooks.List) >= 200 || mine >= hooksPerPlugin {
 				return errors.New("too many hook addresses")
 			}
 			id, created = randomID(), true
@@ -147,24 +156,27 @@ func (c *Core) DeliverHook(id string, body []byte) bool {
 	return true
 }
 
-func (c *Core) hookAllowed(id string) bool {
+func (c *Core) hookAllowed(id string) bool { return c.allow("hook:"+id, hooksPerMinute) }
+
+// allow is a sliding one-minute window per key: true while key was used fewer than perMinute times.
+func (c *Core) allow(key string, perMinute int) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.hookHit == nil {
+	now := time.Now()
+	if c.hookHit == nil || len(c.hookHit) > 10000 {
 		c.hookHit = map[string][]time.Time{}
 	}
-	now := time.Now()
-	recent := c.hookHit[id][:0]
-	for _, t := range c.hookHit[id] {
+	recent := c.hookHit[key][:0]
+	for _, t := range c.hookHit[key] {
 		if now.Sub(t) < time.Minute {
 			recent = append(recent, t)
 		}
 	}
-	if len(recent) >= hooksPerMinute {
-		c.hookHit[id] = recent
+	if len(recent) >= perMinute {
+		c.hookHit[key] = recent
 		return false
 	}
-	c.hookHit[id] = append(recent, now)
+	c.hookHit[key] = append(recent, now)
 	return true
 }
 
