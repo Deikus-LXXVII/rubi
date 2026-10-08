@@ -2,14 +2,16 @@
 //
 // It is an optional transport for people who'd rather not depend on public relays. It forwards Rubi's
 // ephemeral panel events (kind 21777) between a Rubi and its panel, and keeps the latest release
-// announcement (kind 30078, d=rubi-releases) from the announcement key. Nothing else is accepted and nothing
-// is stored on disk. The panel protocol is end-to-end encrypted, so the gateway only sees ciphertext,
+// announcement (kind 30078, d=rubi-releases) from the announcement key. It also accepts web requests at
+// hook addresses (POST /h/<route>/<id>, e.g. from iPhone Shortcuts) and hands them to the Rubi that
+// subscribed to that route (kind 21779). Nothing else is accepted and nothing is stored on disk. The panel protocol is end-to-end encrypted, so the gateway only sees ciphertext,
 // sizes and timing, like any relay.
 package gateway
 
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -41,6 +43,7 @@ type filter struct {
 	Authors []string `json:"authors"`
 	P       []string `json:"#p"`
 	D       []string `json:"#d"`
+	H       []string `json:"#h"`
 }
 
 type conn struct {
@@ -60,16 +63,26 @@ type Server struct {
 	conns    map[*conn]bool
 	perIP    map[string]int
 	announce *relay.Event // latest announcement
+	hookKey  *relay.Key   // signs hook events
+	hookRate map[string]*bucket
 }
 
 func New(announceKey string) *Server {
+	key, err := relay.NewKey()
+	if err != nil {
+		panic(err)
+	}
 	return &Server{AnnounceKey: announceKey, Limits: DefaultLimits(), Logf: log.Printf,
-		conns: map[*conn]bool{}, perIP: map[string]int{}}
+		conns: map[*conn]bool{}, perIP: map[string]int{}, hookKey: key, hookRate: map[string]*bucket{}}
 }
 
 // Handler serves WebSocket connections at any path, and a plain health check for GET without upgrade.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/h/") {
+			s.serveHook(w, r)
+			return
+		}
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			_, _ = w.Write([]byte("Rubi Gateway: a relay for Rubi's end-to-end encrypted panel traffic.\n"))
@@ -241,13 +254,15 @@ func (s *Server) event(ctx context.Context, c *conn, raw json.RawMessage) {
 	s.broadcast(ctx, &e)
 }
 
-func (s *Server) broadcast(ctx context.Context, e *relay.Event) {
+// broadcast sends an event to every matching subscription and returns how many connections got it.
+func (s *Server) broadcast(ctx context.Context, e *relay.Event) int {
 	s.mu.Lock()
 	conns := make([]*conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
 	}
 	s.mu.Unlock()
+	n := 0
 	for _, c := range conns {
 		c.mu.Lock()
 		var ids []string
@@ -263,7 +278,11 @@ func (s *Server) broadcast(ctx context.Context, e *relay.Event) {
 		for _, id := range ids {
 			c.write(ctx, []any{"EVENT", id, e})
 		}
+		if len(ids) > 0 {
+			n++
+		}
 	}
+	return n
 }
 
 func (c *conn) write(ctx context.Context, v any) {
@@ -289,6 +308,9 @@ func matches(f filter, e *relay.Event) bool {
 		return false
 	}
 	if len(f.D) > 0 && !containsStr(f.D, tagValue(e, "d")) {
+		return false
+	}
+	if len(f.H) > 0 && !containsStr(f.H, tagValue(e, "h")) {
 		return false
 	}
 	return true
@@ -321,4 +343,91 @@ func containsStr(l []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// ---- hooks ----
+
+// A hook address is /h/<route>/<id>: the route says which Rubi gets it (only that Rubi subscribes to
+// it, and only here, never on public relays), the id which of its hooks. Both are random and secret.
+// The request body (at most 4 KB) goes to the Rubi as is; Rubi checks the id.
+
+const maxHookBody = 4 << 10
+
+type bucket struct {
+	tokens float64
+	last   time.Time
+}
+
+// allow is a token bucket: burst requests at once, refilled at perMinute.
+func (s *Server) allow(key string, burst, perMinute float64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	b := s.hookRate[key]
+	if b == nil {
+		if len(s.hookRate) > 10000 {
+			for k, v := range s.hookRate {
+				if now.Sub(v.last) > 10*time.Minute {
+					delete(s.hookRate, k)
+				}
+			}
+		}
+		b = &bucket{tokens: burst, last: now}
+		s.hookRate[key] = b
+	}
+	b.tokens = min(burst, b.tokens+now.Sub(b.last).Minutes()*perMinute)
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+func validHookPart(p string) bool {
+	if len(p) < 16 || len(p) > 64 {
+		return false
+	}
+	for _, r := range p {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) serveHook(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/h/"), "/")
+	if len(parts) != 2 || !validHookPart(parts[0]) || !validHookPart(parts[1]) {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allow("ip:"+clientIP(r), 60, 60) || !s.allow("route:"+parts[0], 30, 30) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxHookBody))
+	if err != nil {
+		http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	content, _ := json.Marshal(map[string]string{"id": parts[1], "body": string(body)})
+	e := &relay.Event{CreatedAt: time.Now().Unix(), Kind: relay.HookKind, Tags: [][]string{{"h", parts[0]}}, Content: string(content)}
+	if err := s.hookKey.Sign(e); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if s.broadcast(r.Context(), e) == 0 {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"Rubi isn't connected right now"}` + "\n"))
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
 }

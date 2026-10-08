@@ -88,11 +88,15 @@ func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secret
 		}
 	}
 	account := res.Account
+	acctKey := res.AccountID
+	if acctKey == "" {
+		acctKey = account
+	}
 	summary := "Connect " + m.Name
 	if account != "" {
 		summary += " (" + account + ")"
 	}
-	acctID := vault.AccountID(account)
+	acctID := vault.AccountID(acctKey)
 	approvalID, err = c.RequestChange(ctx, summary,
 		map[string]any{"integration": m.Name, "account": account, "connects_to": strings.Join(m.Egress, ", ")},
 		func(d *vault.Data) error {

@@ -42,9 +42,22 @@ func main() {
 				Options: []rubiplugin.Option{{Key: "all", Label: "All folders"}, {Key: "selected", Label: "Only the folders checked below"}}},
 			{Key: "folders", Label: "Allowed folders", Type: "list", Dynamic: true, PerAccount: true, Default: []string{"INBOX"}},
 		},
-		Events: []rubiplugin.EventType{{Type: "ping", Untrusted: []string{"from"}}},
+		Events: []rubiplugin.EventType{{Type: "ping", Untrusted: []string{"from"}}, {Type: "hooked", Untrusted: []string{"body"}}},
 		Egress: []string{"example.com:443"},
+		Hooks:  true,
 	})
+	p.OnHook = func(ctx context.Context, h *rubiplugin.Host, ev rubiplugin.HookEvent) error {
+		_, err := h.Emit("hooked", map[string]any{"name": ev.Name, "account": ev.Account, "body": ev.Body})
+		return err
+	}
+	rubiplugin.AddTool(p, "demo_hook", "The address of a hook.",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			Name   string `json:"name"`
+			Rotate bool   `json:"rotate,omitempty"`
+		}) (any, error) {
+			u, err := h.HookURL("", in.Name, in.Rotate)
+			return map[string]any{"url": u}, err
+		})
 	p.Validate = func(_ context.Context, fields, secrets map[string]string) (any, string, error) {
 		if secrets["token"] == "2fa" { // a two-step login: the code comes in a second step
 			if fields[rubiplugin.StepField] != "code-sent" {

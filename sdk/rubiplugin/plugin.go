@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
@@ -28,6 +29,12 @@ type Plugin struct {
 	// ConfigOptions supplies the options of Dynamic config fields (e.g. the folders of one mailbox).
 	// account is set for PerAccount fields.
 	ConfigOptions func(ctx context.Context, h *Host, account, key string) ([]Option, error)
+	// OnHook receives requests made to the plugin's hook addresses (see Host.HookURL). The body is
+	// untrusted: anyone holding the address can send anything.
+	OnHook func(ctx context.Context, h *Host, ev HookEvent) error
+	// OnConfigChanged is called after the user changed the plugin's settings (account is set when they
+	// were one account's settings).
+	OnConfigChanged func(h *Host, account string)
 
 	m     Manifest
 	tools map[string]func(ctx context.Context, h *Host, args json.RawMessage) (any, error)
@@ -138,7 +145,11 @@ func (p *Plugin) handle(ctx context.Context, method string, params json.RawMessa
 		if err != nil {
 			return nil, err
 		}
-		return ValidateResult{Settings: raw, Account: account, Secrets: in.Secrets}, nil
+		res := ValidateResult{Settings: raw, Account: account, Secrets: in.Secrets}
+		if a, ok := settings.(AccountIDer); ok {
+			res.AccountID = a.RubiAccountID()
+		}
+		return res, nil
 	case "start":
 		p.mu.Lock()
 		defer p.mu.Unlock()
@@ -155,6 +166,24 @@ func (p *Plugin) handle(ctx context.Context, method string, params json.RawMessa
 	case "stop":
 		p.stop()
 		return nil, nil
+	case "config.changed":
+		var in struct {
+			Account string `json:"account"`
+		}
+		_ = json.Unmarshal(params, &in)
+		if p.OnConfigChanged != nil {
+			p.OnConfigChanged(p.host, in.Account)
+		}
+		return nil, nil
+	case "hook":
+		var ev HookEvent
+		if err := json.Unmarshal(params, &ev); err != nil {
+			return nil, err
+		}
+		if p.OnHook == nil {
+			return nil, nil
+		}
+		return nil, p.OnHook(ctx, p.host, ev)
 	case "config.options":
 		var in struct {
 			Key     string `json:"key"`
@@ -235,7 +264,8 @@ func (h *Host) SettingsFor(account string, v any) error {
 // Secret returns a secret of the default account.
 func (h *Host) Secret(key string) (string, error) { return h.SecretFor("", key) }
 
-// SecretFor returns a secret declared in the manifest, for one account ("" = the default account).
+// SecretFor returns a secret declared in the manifest, for one account ("" = the default account). An
+// Optional or Internal secret that isn't set comes back empty, without an error.
 func (h *Host) SecretFor(account, key string) (string, error) {
 	var out struct {
 		Value string `json:"value"`
@@ -332,4 +362,29 @@ func (h *Host) Audit(event string, fields map[string]any) {
 // Logf writes to the plugin's log (stderr, which Rubi saves to logs/plugin-<id>.log).
 func (h *Host) Logf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
+// HookEvent is one request to a hook address.
+type HookEvent struct {
+	Name       string    `json:"name"`
+	Account    string    `json:"account,omitempty"`
+	Body       string    `json:"body"`
+	ReceivedAt time.Time `json:"received_at"`
+}
+
+// HookURL returns the private web address of one of the plugin's hooks (created on first use; the
+// manifest must set Hooks). Requests to it reach OnHook. rotate replaces the address, so the old one
+// stops working. account ties the hook to one account ("" = none).
+func (h *Host) HookURL(account, name string, rotate bool) (string, error) {
+	var out struct {
+		URL string `json:"url"`
+	}
+	err := h.conn.Call(context.Background(), "hook.url", map[string]any{"account": account, "name": name, "rotate": rotate}, &out)
+	return out.URL, err
+}
+
+// AccountIDer can be implemented by the settings Validate returns, to give the account a stable id
+// apart from its display name (e.g. a numeric user id). Without it the id is the lowercased name.
+type AccountIDer interface {
+	RubiAccountID() string
 }

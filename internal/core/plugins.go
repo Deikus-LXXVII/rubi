@@ -276,9 +276,11 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 		case "secret.get":
 			var in struct{ Key, Account string }
 			_ = json.Unmarshal(params, &in)
-			declared := false
+			declared, optional := false, false
 			for _, s := range m.Secrets {
-				declared = declared || s.Key == in.Key
+				if s.Key == in.Key {
+					declared, optional = true, s.Optional || s.Internal
+				}
 			}
 			if !declared {
 				return nil, fmt.Errorf("secret %q is not declared in the manifest", in.Key)
@@ -289,7 +291,7 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 				if err != nil {
 					return err
 				}
-				if a.Secrets[in.Key] == "" {
+				if a.Secrets[in.Key] == "" && !optional {
 					return fmt.Errorf("secret %q is not set", in.Key)
 				}
 				v = a.Secrets[in.Key]
@@ -339,6 +341,29 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			return map[string]any{"level": c.PolicyLevel(in.Kind)}, nil
 		case "approval.submit":
 			return c.pluginSubmit(ctx, m, params)
+		case "hook.url":
+			if !m.Hooks {
+				return nil, errors.New("the manifest doesn't declare hooks")
+			}
+			var in struct {
+				Account, Name string
+				Rotate        bool
+			}
+			_ = json.Unmarshal(params, &in)
+			var acct string
+			if in.Account != "" {
+				if err := c.Vault.View(func(d *vault.Data) error {
+					a, err := accountOf(d, id, in.Account)
+					if a != nil {
+						acct = a.ID
+					}
+					return err
+				}); err != nil {
+					return nil, err
+				}
+			}
+			u, err := c.HookURL(id, acct, in.Name, in.Rotate)
+			return map[string]any{"url": u}, err
 		case "event.emit":
 			var in struct {
 				Type  string         `json:"type"`

@@ -35,7 +35,7 @@ func Dial(ctx context.Context, rubiPub string, relays []string) (*Client, error)
 	}
 	c := &Client{key: key, rubi: rubiPub, asm: newAssembler(), waits: map[string]chan reply{}}
 	ready := make(chan struct{}, 1)
-	c.pool = newPool(relays, func() []map[string]any {
+	c.pool = newPool(relays, func(string) []map[string]any {
 		return []map[string]any{{"kinds": []int{Kind}, "authors": []string{rubiPub}, "#p": []string{key.Public()},
 			"since": time.Now().Add(-time.Minute).Unix()}}
 	}, c.onEvent, nil)

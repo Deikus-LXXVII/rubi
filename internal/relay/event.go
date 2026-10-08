@@ -27,6 +27,10 @@ import (
 // Kind is the ephemeral event kind Rubi uses.
 const Kind = 21777
 
+// HookKind carries a web request that Rubi Gateway received at a hook address (see hooks.go). Only the
+// gateway publishes these; clients can't.
+const HookKind = 21779
+
 type Event struct {
 	ID        string     `json:"id"`
 	PubKey    string     `json:"pubkey"`

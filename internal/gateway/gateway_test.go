@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -115,5 +116,78 @@ func TestGatewayLimitsConnectionsPerAddress(t *testing.T) {
 	}
 	for _, ws := range open {
 		ws.CloseNow()
+	}
+}
+
+func TestGatewayHooks(t *testing.T) {
+	ann, _ := relay.NewKey()
+	g := New(ann.Public())
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+	url := wsURL(srv)
+
+	const route, id = "route_0123456789abcdef", "hook_0123456789abcdef"
+	got := make(chan string, 4)
+	ready := make(chan int, 10)
+	rubiKey, _ := relay.NewKey()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go (&relay.Server{Key: rubiKey, Relays: []string{url}, Ready: func(n int) { ready <- n },
+		Handle: func(_ context.Context, b []byte) (int, []byte) { return 200, nil },
+		Hooks: &relay.Hooks{Relays: []string{url}, Route: func() string { return route },
+			On: func(hid string, body []byte) { got <- hid + ":" + string(body) }}}).Run(ctx)
+	<-ready
+	time.Sleep(100 * time.Millisecond) // the subscription reaches the gateway
+
+	post := func(path, method string) int {
+		req, _ := http.NewRequest(method, srv.URL+path, strings.NewReader(`{"event":"arrive"}`))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := post("/h/"+route+"/"+id, http.MethodPost); code != http.StatusAccepted {
+		t.Fatalf("post: %d", code)
+	}
+	select {
+	case v := <-got:
+		if v != id+`:{"event":"arrive"}` {
+			t.Fatalf("delivered %q", v)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("hook not delivered")
+	}
+	if code := post("/h/"+route+"/"+id, http.MethodGet); code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET: %d", code)
+	}
+	if code := post("/h/other_route_0123456789/"+id, http.MethodPost); code != http.StatusServiceUnavailable {
+		t.Fatalf("unknown route: %d", code)
+	}
+	if code := post("/h/short/"+id, http.MethodPost); code != http.StatusNotFound {
+		t.Fatalf("bad route: %d", code)
+	}
+
+	// Clients can't publish hook events themselves.
+	ws, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.CloseNow()
+	forged := &relay.Event{CreatedAt: time.Now().Unix(), Kind: relay.HookKind, Tags: [][]string{{"h", route}},
+		Content: `{"id":"` + id + `","body":"forged"}`}
+	k, _ := relay.NewKey()
+	_ = k.Sign(forged)
+	b, _ := json.Marshal([]any{"EVENT", forged})
+	_ = ws.Write(ctx, websocket.MessageText, b)
+	_, reply, _ := ws.Read(ctx)
+	if !strings.Contains(string(reply), "false") {
+		t.Fatalf("forged hook accepted: %s", reply)
+	}
+	select {
+	case v := <-got:
+		t.Fatalf("forged hook delivered: %q", v)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

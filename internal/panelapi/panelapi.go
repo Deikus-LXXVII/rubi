@@ -80,6 +80,19 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST "+RPCPath, s.rpc)
+	// Hook addresses, when Rubi is reached directly (Tailscale); through Rubi Gateway they arrive as events.
+	mux.HandleFunc("POST /h/{route}/{id}", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<10))
+		if err != nil {
+			http.Error(w, "body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if !s.core.DeliverHookAt(r.PathValue("route"), r.PathValue("id"), body) {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
 	return mux
 }
 

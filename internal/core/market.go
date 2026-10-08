@@ -538,7 +538,9 @@ func permissions(m plugins.Manifest, reviewed bool, source string) map[string]an
 		asks = append(asks, f.Label)
 	}
 	for _, s := range m.Secrets {
-		asks = append(asks, s.Label)
+		if !s.Internal {
+			asks = append(asks, s.Label)
+		}
 	}
 	if len(asks) > 0 {
 		p["will_ask_for"] = strings.Join(asks, ", ")
@@ -552,6 +554,9 @@ func permissions(m plugins.Manifest, reviewed bool, source string) map[string]an
 	}
 	if len(m.Egress) > 0 {
 		p["connects_to"] = strings.Join(m.Egress, ", ")
+	}
+	if m.Hooks {
+		p["web_addresses"] = "Can give you private web addresses (for example for iPhone Shortcuts) that pass requests to it"
 	}
 	var evs []string
 	for _, e := range m.Events {

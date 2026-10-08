@@ -128,7 +128,7 @@ func (c *relayConn) send(ctx context.Context, msg []any) error {
 // pool keeps connections to several relays, each subscribed with the same filter, and reconnects.
 type pool struct {
 	relays  []string
-	filter  func() []map[string]any
+	filter  func(url string) []map[string]any
 	onEvent func(*Event)
 	logf    func(string, ...any)
 	ready   func(n int)
@@ -138,7 +138,7 @@ type pool struct {
 	seen  map[string]time.Time
 }
 
-func newPool(relays []string, filter func() []map[string]any, onEvent func(*Event), logf func(string, ...any)) *pool {
+func newPool(relays []string, filter func(url string) []map[string]any, onEvent func(*Event), logf func(string, ...any)) *pool {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -211,11 +211,7 @@ func (p *pool) session(ctx context.Context, url string) error {
 	defer ws.CloseNow()
 	ws.SetReadLimit(readLimit)
 	c := &relayConn{url: url, ws: ws}
-	req := []any{"REQ", "rubi"}
-	for _, f := range p.filter() {
-		req = append(req, f)
-	}
-	if err := c.send(ctx, req); err != nil {
+	if err := c.send(ctx, p.req(url)); err != nil {
 		return err
 	}
 	p.setConn(url, c)
@@ -266,6 +262,10 @@ func (p *pool) session(ctx context.Context, url string) error {
 					continue
 				}
 			case AnnounceKind: // stored, so possibly old; the receiver compares versions
+			case HookKind: // only from relays we asked for hooks (Rubi Gateway)
+				if !fresh(&e, time.Now()) || !p.hookRelay(url) {
+					continue
+				}
 			default:
 				continue
 			}
@@ -276,6 +276,38 @@ func (p *pool) session(ctx context.Context, url string) error {
 		case "CLOSED":
 			return errors.New("subscription closed by relay: " + string(data))
 		}
+	}
+}
+
+func (p *pool) req(url string) []any {
+	req := []any{"REQ", "rubi"}
+	for _, f := range p.filter(url) {
+		req = append(req, f)
+	}
+	return req
+}
+
+// hookRelay reports whether this relay's filter asks for hook events.
+func (p *pool) hookRelay(url string) bool {
+	for _, f := range p.filter(url) {
+		if kinds, ok := f["kinds"].([]int); ok && len(kinds) == 1 && kinds[0] == HookKind {
+			return true
+		}
+	}
+	return false
+}
+
+// resubscribe sends the current filters on every open connection (the same subscription id replaces
+// the old one).
+func (p *pool) resubscribe(ctx context.Context) {
+	p.mu.Lock()
+	conns := make(map[string]*relayConn, len(p.conns))
+	for u, c := range p.conns {
+		conns[u] = c
+	}
+	p.mu.Unlock()
+	for u, c := range conns {
+		_ = c.send(ctx, p.req(u))
 	}
 }
 

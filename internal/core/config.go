@@ -154,7 +154,13 @@ func (c *Core) SetPluginConfig(ctx context.Context, id, account string, values m
 			i.Config[k] = ch.raw
 		}
 		return nil
-	}, nil)
+	}, func() {
+		go func() { // let the plugin react now (e.g. start watching), not at its next check
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = c.Runner.Call(ctx, id, "config.changed", map[string]string{"account": acctID}, nil)
+		}()
+	})
 }
 
 func describeConfig(f rubiplugin.ConfigField, v any) string {

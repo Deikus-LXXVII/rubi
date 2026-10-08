@@ -64,6 +64,22 @@ type Data struct {
 	QuietUpdates []string `json:"quiet_updates,omitempty"`
 	// Plugins records what the user approved installing. A plugin only starts if its files still match.
 	Plugins map[string]*Plugin `json:"plugins,omitempty"`
+	// Hooks are the private web addresses plugins handed out (see core/hooks.go).
+	Hooks *Hooks `json:"hooks,omitempty"`
+}
+
+// Hooks: Route picks this Rubi on Rubi Gateway; each hook's ID picks the plugin, account and name.
+type Hooks struct {
+	Route string  `json:"route"`
+	List  []*Hook `json:"list,omitempty"`
+}
+
+type Hook struct {
+	ID      string    `json:"id"`
+	Plugin  string    `json:"plugin"`
+	Account string    `json:"account,omitempty"`
+	Name    string    `json:"name"`
+	Created time.Time `json:"created"`
 }
 
 // Plugin is the trusted record of an installed plugin.

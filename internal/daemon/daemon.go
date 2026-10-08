@@ -242,8 +242,20 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	cfg := LoadTransport(layout)
 	c.SetTransportName(cfg.Transport)
 	log.Printf("panel transport: %s", cfg.Transport)
-	if relays := relaysFor(cfg.Transport); len(relays) > 0 {
+	relays := relaysFor(cfg.Transport)
+	if len(relays) > 0 {
 		startRelays(ctx, c, api, relays)
+	}
+	c.HookBase = func() string {
+		for _, r := range relays {
+			if r == relay.GatewayURL {
+				return "https://" + strings.TrimPrefix(relay.GatewayURL, "wss://")
+			}
+		}
+		if cfg.Transport == TransportTailscale {
+			return c.Endpoint()
+		}
+		return ""
 	}
 	addr := "127.0.0.1:0"
 	if p := os.Getenv("RUBI_PANEL_API_PORT"); p != "" {
@@ -313,7 +325,14 @@ func startRelays(ctx context.Context, c *core.Core, api *panelapi.Server, relays
 	}
 	c.SetRelay(key.Public(), relays)
 	last := -1
+	var hookRelays []string
+	for _, r := range relays {
+		if r == relay.GatewayURL { // hook routes go only to Rubi Gateway, never to public relays
+			hookRelays = append(hookRelays, r)
+		}
+	}
 	srv := &relay.Server{Key: key, Relays: relays, Handle: api.HandleRPC, Logf: log.Printf,
+		Hooks: &relay.Hooks{Relays: hookRelays, Route: c.HookRoute, On: func(id string, body []byte) { c.DeliverHook(id, body) }},
 		Announce: &relay.Announcements{Key: relay.AnnouncerKey(version.Version), On: c.OnAnnouncement},
 		Ready: func(n int) {
 			c.SetRelaysConnected(n)
@@ -322,6 +341,7 @@ func startRelays(ctx context.Context, c *core.Core, api *panelapi.Server, relays
 			}
 			last = n
 		}}
+	c.OnHookRoute = srv.Resubscribe
 	go srv.Run(ctx)
 }
 

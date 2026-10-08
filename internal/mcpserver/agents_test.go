@@ -360,3 +360,46 @@ func TestSetupSteps(t *testing.T) {
 		t.Fatalf("connected: %v", out)
 	}
 }
+
+// TestHooks: a plugin hands out a private web address; a request to it reaches the plugin, which can
+// wake the agent. A rotated address replaces the old one.
+func TestHooks(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+
+	if out := r.ag.call("demo_hook", map[string]any{"name": "home:arrive"}); !strings.Contains(toString(out["tool_error"]), "Rubi Gateway or Tailscale") {
+		t.Fatalf("no hook base: %v", out)
+	}
+	r.c.HookBase = func() string { return "https://gw.example" }
+	u := r.ag.call("demo_hook", map[string]any{"name": "home:arrive"})["url"].(string)
+	if again := r.ag.call("demo_hook", map[string]any{"name": "home:arrive"})["url"].(string); again != u {
+		t.Fatalf("the address changed: %s %s", u, again)
+	}
+	parts := strings.Split(strings.TrimPrefix(u, "https://gw.example/h/"), "/")
+	if len(parts) != 2 || r.c.HookRoute() != parts[0] {
+		t.Fatalf("address %s, route %s", u, r.c.HookRoute())
+	}
+	if r.c.DeliverHookAt("wrong_route_000000000", parts[1], nil) || r.c.DeliverHook("nope", nil) {
+		t.Fatal("delivered to a wrong address")
+	}
+	if !r.c.DeliverHookAt(parts[0], parts[1], []byte(`{"x":1}`)) {
+		t.Fatal("not delivered")
+	}
+	r.waitFor("event", func() bool {
+		for _, e := range r.c.Events.List(true) {
+			if e.Type == "hooked" && e.Data["name"] == "home:arrive" && e.Data["body"] == `{"x":1}` {
+				return true
+			}
+		}
+		return false
+	})
+	// Rotating: the old address stops working.
+	nu := r.ag.call("demo_hook", map[string]any{"name": "home:arrive", "rotate": true})["url"].(string)
+	if nu == u || r.c.DeliverHook(parts[1], nil) {
+		t.Fatalf("rotate: %s %s", u, nu)
+	}
+}

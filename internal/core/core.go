@@ -55,6 +55,10 @@ type Core struct {
 	Store       *plugins.Store
 	Runner      *plugins.Runner
 	PanelOrigin string
+	// HookBase is the public base URL of hook addresses ("" = none on this transport), and
+	// OnHookRoute applies a new hook route to the transport. Both are set by the daemon.
+	HookBase    func() string
+	OnHookRoute func()
 
 	mu       sync.Mutex
 	paired   bool
@@ -76,6 +80,7 @@ type Core struct {
 	upd     updateState
 	mkt     marketState
 	integ   integrity.Result
+	hookHit map[string][]time.Time // recent deliveries per hook, for rate limiting
 }
 
 // SetIntegrity records the result of the binary self-check.
@@ -374,6 +379,9 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 	c.addReceipt("unlocked", method, credentialID)
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
 	c.startPlugins()
+	if c.OnHookRoute != nil {
+		c.OnHookRoute()
+	}
 	c.maybeNotifyUpdate()
 	go c.CheckPluginUpdates(context.Background())
 	return nil
@@ -460,3 +468,10 @@ func (c *Core) PolicyLevel(kind string) approvals.Level {
 
 // Label localizes button texts. English only for now; the user's locale lives in the vault.
 func (c *Core) Label(s string) string { return s }
+
+// Endpoint is the current public URL of the panel API ("" when Rubi is reached only through relays).
+func (c *Core) Endpoint() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.endpoint
+}

@@ -52,6 +52,9 @@ type Manifest struct {
 	// Config are settings only the user can change, in the Rubi panel and with their approval (for example
 	// a privacy filter). The agent can't read or change them through Rubi; the plugin reads them.
 	Config []ConfigField `json:"config,omitempty"`
+	// Hooks lets the plugin hand out private web addresses (e.g. for iPhone Shortcuts) whose requests
+	// Rubi passes to it. Shown to the user before install.
+	Hooks bool `json:"hooks,omitempty"`
 }
 
 // ConfigField is one user-only setting.
@@ -189,6 +192,8 @@ type ValidateParams struct {
 type ValidateResult struct {
 	Settings json.RawMessage `json:"settings"`
 	Account  string          `json:"account"`
+	// AccountID, if set, identifies the account instead of its name (two accounts may share a name).
+	AccountID string `json:"account_id,omitempty"`
 	// Secrets, if set, replaces what is stored (for example trimmed of whitespace).
 	Secrets map[string]string `json:"secrets,omitempty"`
 	// NeedMore, if set, means the account isn't connected yet: the user must enter more (see NeedMore).
