@@ -26,15 +26,15 @@ adds a service with no public port, a tunnel, and the Tailscale-only SSH rule.
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /tmp/rubi-gateway ./cmd/rubi-gateway
-scp /tmp/rubi-gateway deploy/gateway/rubi-gateway.service usa-vps:/tmp/
-ssh usa-vps 'install -m 0755 /tmp/rubi-gateway /usr/local/bin/ && install -m 0644 /tmp/rubi-gateway.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart rubi-gateway'
+scp /tmp/rubi-gateway deploy/gateway/rubi-gateway.service gateway-host:/tmp/
+ssh gateway-host 'install -m 0755 /tmp/rubi-gateway /usr/local/bin/ && install -m 0644 /tmp/rubi-gateway.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart rubi-gateway'
 ```
 
 ## Cloudflare Tunnel (once the domain is on Cloudflare)
 
 ```bash
-ssh usa-vps 'cloudflared tunnel login'                       # prints a URL; the owner authorizes rubi-panel.com
-ssh usa-vps 'cloudflared tunnel create rubi-gateway && cloudflared tunnel route dns rubi-gateway gateway.rubi-panel.com'
+ssh gateway-host 'cloudflared tunnel login'                       # prints a URL; the owner authorizes rubi-panel.com
+ssh gateway-host 'cloudflared tunnel create rubi-gateway && cloudflared tunnel route dns rubi-gateway gateway.rubi-panel.com'
 ```
 
 Then `/etc/cloudflared/config.yml` routes `gateway.rubi-panel.com` to `http://127.0.0.1:7447` (WebSockets
