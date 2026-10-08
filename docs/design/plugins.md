@@ -247,8 +247,10 @@ and for pressing a device's pairing button.
 
 **Hooks.** A plugin with `"hooks": true` can hand out private web addresses (`hook.url`), for things that can
 only send a plain web request, like an iPhone Shortcut. An address is `https://gateway.rubi-panel.com/h/<route>/<id>`
-(or the Tailscale address). Rubi subscribes to its random route only on Rubi Gateway, never on public
-relays; the gateway turns a POST into an event only it can publish. Anyone holding an address can call it,
+(or the Tailscale address). The route in the URL is a hash of a random secret that only Rubi holds; Rubi
+subscribes with the secret only on Rubi Gateway, never on public relays, so someone holding one address can
+call that hook but can't listen for the others. The gateway turns a POST into an event only it can publish
+and answers every well-formed POST the same way, so an address doesn't reveal whether Rubi is online. Anyone holding an address can call it,
 so the body is untrusted and the plugin can replace (`rotate`) an address. At most 20 requests per minute
 per hook, 4 KB each.
 

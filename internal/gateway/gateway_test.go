@@ -148,7 +148,8 @@ func TestGatewayHooks(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	if code := post("/h/"+route+"/"+id, http.MethodPost); code != http.StatusAccepted {
+	addr := relay.HookAddress(route)
+	if code := post("/h/"+addr+"/"+id, http.MethodPost); code != http.StatusAccepted {
 		t.Fatalf("post: %d", code)
 	}
 	select {
@@ -159,10 +160,11 @@ func TestGatewayHooks(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("hook not delivered")
 	}
-	if code := post("/h/"+route+"/"+id, http.MethodGet); code != http.StatusMethodNotAllowed {
+	if code := post("/h/"+addr+"/"+id, http.MethodGet); code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET: %d", code)
 	}
-	if code := post("/h/other_route_0123456789/"+id, http.MethodPost); code != http.StatusServiceUnavailable {
+	// Unknown routes get the same answer: nobody learns whether a Rubi is online.
+	if code := post("/h/other_route_0123456789/"+id, http.MethodPost); code != http.StatusAccepted {
 		t.Fatalf("unknown route: %d", code)
 	}
 	if code := post("/h/short/"+id, http.MethodPost); code != http.StatusNotFound {
@@ -175,7 +177,7 @@ func TestGatewayHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ws.CloseNow()
-	forged := &relay.Event{CreatedAt: time.Now().Unix(), Kind: relay.HookKind, Tags: [][]string{{"h", route}},
+	forged := &relay.Event{CreatedAt: time.Now().Unix(), Kind: relay.HookKind, Tags: [][]string{{"h", addr}},
 		Content: `{"id":"` + id + `","body":"forged"}`}
 	k, _ := relay.NewKey()
 	_ = k.Sign(forged)
@@ -212,11 +214,13 @@ func TestGatewayHooksNeedRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer spy.CloseNow()
-	for _, f := range []string{`{}`, `{"kinds":[21779]}`} {
+	// Someone holding a hook URL knows only the address: subscribing with it gets nothing either.
+	addr := relay.HookAddress(route)
+	for _, f := range []string{`{}`, `{"kinds":[21779]}`, `{"#h":["` + addr + `"]}`, `{"#hs":["` + addr + `"]}`} {
 		_ = spy.Write(ctx, websocket.MessageText, []byte(`["REQ","s`+f[1:2]+`",`+f+`]`))
 	}
 	time.Sleep(150 * time.Millisecond)
-	resp, err := http.Post(srv.URL+"/h/"+route+"/"+id, "application/json", strings.NewReader(`{"secret":1}`))
+	resp, err := http.Post(srv.URL+"/h/"+addr+"/"+id, "application/json", strings.NewReader(`{"secret":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,8 +232,74 @@ func TestGatewayHooksNeedRoute(t *testing.T) {
 		if err != nil {
 			return // nothing leaked
 		}
-		if strings.Contains(string(msg), route) || strings.Contains(string(msg), "secret") {
+		if strings.Contains(string(msg), "secret") {
 			t.Fatalf("hook event leaked to an open subscription: %s", msg)
 		}
+	}
+}
+
+// Panel traffic is visible only to its own sender and recipient, and the gateway carries nothing else.
+func TestGatewayPanelTrafficIsNotAFirehose(t *testing.T) {
+	g := New("")
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	spy, _, err := websocket.Dial(ctx, wsURL(srv), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spy.CloseNow()
+	_ = spy.Write(ctx, websocket.MessageText, []byte(`["REQ","a",{},{"kinds":[21777]}]`))
+	_, _, _ = spy.Read(ctx) // EOSE
+
+	pub, _, err := websocket.Dial(ctx, wsURL(srv), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pub.CloseNow()
+	k, _ := relay.NewKey()
+	to, _ := relay.NewKey()
+	send := func(tags [][]string, content string) string {
+		e := &relay.Event{CreatedAt: time.Now().Unix(), Kind: relay.Kind, Tags: tags, Content: content}
+		_ = k.Sign(e)
+		b, _ := json.Marshal([]any{"EVENT", e})
+		_ = pub.Write(ctx, websocket.MessageText, b)
+		_, reply, _ := pub.Read(ctx)
+		return string(reply)
+	}
+	if r := send([][]string{{"p", to.Public()}}, "x"); !strings.Contains(r, "true") {
+		t.Fatalf("panel event refused: %s", r)
+	}
+	if r := send([][]string{{"p", to.Public()}, {"p", k.Public()}}, "x"); !strings.Contains(r, "false") {
+		t.Fatalf("two recipients accepted: %s", r)
+	}
+	if r := send([][]string{{"p", "not-a-key"}}, "x"); !strings.Contains(r, "false") {
+		t.Fatalf("bad recipient accepted: %s", r)
+	}
+	if r := send([][]string{{"p", to.Public()}}, strings.Repeat("x", 40<<10)); !strings.Contains(r, "false") {
+		t.Fatalf("oversized event accepted: %s", r)
+	}
+	rctx, rcancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer rcancel()
+	if _, msg, err := spy.Read(rctx); err == nil {
+		t.Fatalf("open subscription saw panel traffic: %s", msg)
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	g := New("")
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "127.0.0.1:5000"
+	if ip := g.clientIP(r); ip != "unknown" {
+		t.Fatalf("loopback without header: %q", ip)
+	}
+	r.Header.Set("CF-Connecting-IP", "2001:db8:1:2:3:4:5:6")
+	if ip := g.clientIP(r); ip != "2001:db8:1:2::/64" {
+		t.Fatalf("v6: %q", ip)
+	}
+	r.RemoteAddr = "203.0.113.9:1"
+	if ip := g.clientIP(r); ip != "203.0.113.9" {
+		t.Fatalf("direct client trusted a header: %q", ip)
 	}
 }

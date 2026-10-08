@@ -10,6 +10,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -26,7 +28,8 @@ import (
 
 // Limits protect the gateway from abuse.
 type Limits struct {
-	MaxConnsPerIP   int           // concurrent connections from one address
+	MaxConns        int           // concurrent connections in all
+	MaxConnsPerIP   int           // concurrent connections from one address (an IPv6 /64 counts as one)
 	MaxSubsPerConn  int           // subscriptions per connection
 	MaxEventBytes   int64         // largest message accepted
 	EventsPerMinute int           // per connection
@@ -34,23 +37,34 @@ type Limits struct {
 }
 
 func DefaultLimits() Limits {
-	return Limits{MaxConnsPerIP: 64, MaxSubsPerConn: 8, MaxEventBytes: 128 << 10, EventsPerMinute: 600,
+	return Limits{MaxConns: 2000, MaxConnsPerIP: 64, MaxSubsPerConn: 8, MaxEventBytes: 64 << 10, EventsPerMinute: 600,
 		IdleTimeout: 10 * time.Minute}
 }
+
+const (
+	maxFiltersPerReq = 4
+	maxFilterValues  = 8
+	maxPanelContent  = 32 << 10 // one relay chunk and its envelope
+	sendQueue        = 64       // messages waiting for a slow reader before it is dropped
+)
 
 type filter struct {
 	Kinds   []int    `json:"kinds"`
 	Authors []string `json:"authors"`
 	P       []string `json:"#p"`
 	D       []string `json:"#d"`
-	H       []string `json:"#h"`
+	// HS holds hook route secrets. The gateway matches hook events by the address derived from each
+	// (relay.HookAddress), so knowing a hook's URL is not enough to subscribe to that Rubi's hooks.
+	HS    []string `json:"#hs"`
+	hooks []string
 }
 
 type conn struct {
-	ws   *websocket.Conn
-	wmu  sync.Mutex
-	mu   sync.Mutex
-	subs map[string][]filter
+	ws     *websocket.Conn
+	out    chan []byte
+	mu     sync.Mutex
+	subs   map[string][]filter
+	active atomic.Int64 // unix time of the last message or ping from the client
 }
 
 // Server is the gateway.
@@ -58,6 +72,10 @@ type Server struct {
 	AnnounceKey string // only announcements signed by this key are kept and forwarded
 	Limits      Limits
 	Logf        func(string, ...any)
+	// ClientIPHeader names the header that carries the client's address when requests come from a
+	// local proxy (Cloudflare Tunnel: CF-Connecting-IP). Requests from loopback without it share one
+	// bucket, so a proxy that doesn't set it can't be used to dodge the per-address limits.
+	ClientIPHeader string
 
 	mu       sync.Mutex
 	conns    map[*conn]bool
@@ -72,7 +90,7 @@ func New(announceKey string) *Server {
 	if err != nil {
 		panic(err)
 	}
-	return &Server{AnnounceKey: announceKey, Limits: DefaultLimits(), Logf: log.Printf,
+	return &Server{AnnounceKey: announceKey, Limits: DefaultLimits(), Logf: log.Printf, ClientIPHeader: "CF-Connecting-IP",
 		conns: map[*conn]bool{}, perIP: map[string]int{}, hookKey: key, hookRate: map[string]*bucket{}}
 }
 
@@ -92,20 +110,26 @@ func (s *Server) Handler() http.Handler {
 	})
 }
 
-func clientIP(r *http.Request) string {
-	// Behind the tunnel the address is in CF-Connecting-IP (set by Cloudflare), else the last hop of
-	// X-Forwarded-For (earlier entries come from the client and can be forged).
+// clientIP is the key for per-address limits: the client's IPv4 address, or its IPv6 /64 (one
+// subscriber usually has a whole /64).
+func (s *Server) clientIP(r *http.Request) string {
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	if isLoopback(r.RemoteAddr) {
-		if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
-			return ip
-		}
-		if f := r.Header.Get("X-Forwarded-For"); f != "" {
-			parts := strings.Split(f, ",")
-			return strings.TrimSpace(parts[len(parts)-1])
+		host = "unknown"
+		if s.ClientIPHeader != "" {
+			if v := strings.TrimSpace(r.Header.Get(s.ClientIPHeader)); v != "" {
+				host = v
+			}
 		}
 	}
-	host, _, _ := net.SplitHostPort(r.RemoteAddr)
-	return host
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if ip.To4() == nil {
+		return ip.Mask(net.CIDRMask(64, 128)).String() + "/64"
+	}
+	return ip.String()
 }
 
 func isLoopback(addr string) bool {
@@ -115,9 +139,9 @@ func isLoopback(addr string) bool {
 }
 
 func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := s.clientIP(r)
 	s.mu.Lock()
-	if s.perIP[ip] >= s.Limits.MaxConnsPerIP {
+	if s.perIP[ip] >= s.Limits.MaxConnsPerIP || s.Limits.MaxConns > 0 && len(s.conns) >= s.Limits.MaxConns {
 		s.mu.Unlock()
 		http.Error(w, "too many connections", http.StatusTooManyRequests)
 		return
@@ -132,31 +156,53 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}()
 
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true}) // any web origin: the panel's encryption, not CORS, protects the traffic
+	c := &conn{out: make(chan []byte, sendQueue), subs: map[string][]filter{}}
+	c.active.Store(time.Now().UnixMilli())
+	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true, // any web origin: the panel's encryption, not CORS, protects the traffic
+		// Rubi keeps idle connections open with pings; they count as activity.
+		OnPingReceived: func(context.Context, []byte) bool { c.active.Store(time.Now().UnixMilli()); return true },
+	})
 	if err != nil {
 		return
 	}
+	c.ws = ws
 	ws.SetReadLimit(s.Limits.MaxEventBytes)
-	c := &conn{ws: ws, subs: map[string][]filter{}}
 	s.mu.Lock()
 	s.conns[c] = true
 	s.mu.Unlock()
+	ctx, stop := context.WithCancel(r.Context())
 	defer func() {
+		stop()
 		s.mu.Lock()
 		delete(s.conns, c)
 		s.mu.Unlock()
 		ws.CloseNow()
 	}()
+	go c.writer(ctx)
+	go func() { // drop connections that stay silent (no messages, no pings)
+		t := time.NewTicker(max(s.Limits.IdleTimeout/4, 10*time.Millisecond))
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if time.Since(time.UnixMilli(c.active.Load())) > s.Limits.IdleTimeout {
+					ws.CloseNow()
+					return
+				}
+			}
+		}
+	}()
 
-	ctx := r.Context()
 	window, count := time.Now(), 0
 	for {
-		rctx, cancel := context.WithTimeout(ctx, s.Limits.IdleTimeout)
-		_, data, err := ws.Read(rctx)
-		cancel()
+		_, data, err := ws.Read(ctx)
 		if err != nil {
 			return
 		}
+		c.active.Store(time.Now().UnixMilli())
 		var msg []json.RawMessage
 		if json.Unmarshal(data, &msg) != nil || len(msg) < 2 {
 			continue
@@ -177,7 +223,7 @@ func (s *Server) serveWS(w http.ResponseWriter, r *http.Request) {
 				window, count = time.Now(), 0
 			}
 			if count++; count > s.Limits.EventsPerMinute {
-				c.write(ctx, []any{"NOTICE", "rate limited"})
+				c.write([]any{"NOTICE", "rate limited"})
 				continue
 			}
 			s.event(ctx, c, msg[1])
@@ -191,17 +237,27 @@ func (s *Server) req(ctx context.Context, c *conn, msg []json.RawMessage) {
 	if id == "" || len(id) > 64 {
 		return
 	}
+	if len(msg)-2 > maxFiltersPerReq {
+		c.write([]any{"CLOSED", id, "too many filters"})
+		return
+	}
 	var fs []filter
 	for _, raw := range msg[2:] {
 		var f filter
-		if json.Unmarshal(raw, &f) == nil && len(f.H) <= 2 {
-			fs = append(fs, f)
+		if json.Unmarshal(raw, &f) != nil || len(f.Kinds) > maxFilterValues || len(f.Authors) > maxFilterValues ||
+			len(f.P) > maxFilterValues || len(f.D) > maxFilterValues || len(f.HS) > 2 {
+			continue
 		}
+		for _, secret := range f.HS {
+			f.hooks = append(f.hooks, relay.HookAddress(secret))
+		}
+		f.HS = nil
+		fs = append(fs, f)
 	}
 	c.mu.Lock()
 	if _, exists := c.subs[id]; !exists && len(c.subs) >= s.Limits.MaxSubsPerConn {
 		c.mu.Unlock()
-		c.write(ctx, []any{"CLOSED", id, "too many subscriptions"})
+		c.write([]any{"CLOSED", id, "too many subscriptions"})
 		return
 	}
 	c.subs[id] = fs
@@ -212,12 +268,12 @@ func (s *Server) req(ctx context.Context, c *conn, msg []json.RawMessage) {
 	if ann != nil {
 		for _, f := range fs {
 			if matches(f, ann) {
-				c.write(ctx, []any{"EVENT", id, ann})
+				c.write([]any{"EVENT", id, ann})
 				break
 			}
 		}
 	}
-	c.write(ctx, []any{"EOSE", id})
+	c.write([]any{"EOSE", id})
 }
 
 func (s *Server) event(ctx context.Context, c *conn, raw json.RawMessage) {
@@ -225,7 +281,7 @@ func (s *Server) event(ctx context.Context, c *conn, raw json.RawMessage) {
 	if json.Unmarshal(raw, &e) != nil {
 		return
 	}
-	reject := func(why string) { c.write(ctx, []any{"OK", e.ID, false, "blocked: " + why}) }
+	reject := func(why string) { c.write([]any{"OK", e.ID, false, "blocked: " + why}) }
 	if err := relay.Verify(&e); err != nil {
 		reject("invalid event")
 		return
@@ -233,8 +289,14 @@ func (s *Server) event(ctx context.Context, c *conn, raw json.RawMessage) {
 	now := time.Now()
 	switch e.Kind {
 	case relay.Kind:
-		if !hasTag(&e, "p") {
-			reject("panel events must name a recipient")
+		// Exactly one recipient key and a payload the size of one chunk: the gateway carries Rubi's
+		// panel traffic, not anyone's messages.
+		if !onlyRecipient(&e) {
+			reject("panel events must name one recipient")
+			return
+		}
+		if len(e.Content) > maxPanelContent {
+			reject("too large")
 			return
 		}
 		t := time.Unix(e.CreatedAt, 0)
@@ -257,12 +319,12 @@ func (s *Server) event(ctx context.Context, c *conn, raw json.RawMessage) {
 		reject("this gateway only carries Rubi traffic")
 		return
 	}
-	c.write(ctx, []any{"OK", e.ID, true, ""})
-	s.broadcast(ctx, &e)
+	c.write([]any{"OK", e.ID, true, ""})
+	s.broadcast(&e)
 }
 
 // broadcast sends an event to every matching subscription and returns how many connections got it.
-func (s *Server) broadcast(ctx context.Context, e *relay.Event) int {
+func (s *Server) broadcast(e *relay.Event) int {
 	s.mu.Lock()
 	conns := make([]*conn, 0, len(s.conns))
 	for c := range s.conns {
@@ -283,7 +345,7 @@ func (s *Server) broadcast(ctx context.Context, e *relay.Event) int {
 		}
 		c.mu.Unlock()
 		for _, id := range ids {
-			c.write(ctx, []any{"EVENT", id, e})
+			c.write([]any{"EVENT", id, e})
 		}
 		if len(ids) > 0 {
 			n++
@@ -292,21 +354,43 @@ func (s *Server) broadcast(ctx context.Context, e *relay.Event) int {
 	return n
 }
 
-func (c *conn) write(ctx context.Context, v any) {
+// write queues a message for the connection. A reader too slow to keep up is disconnected rather than
+// allowed to hold up everyone else's traffic.
+func (c *conn) write(v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	_ = c.ws.Write(wctx, websocket.MessageText, b)
+	select {
+	case c.out <- b:
+	default:
+		c.ws.CloseNow()
+	}
+}
+
+func (c *conn) writer(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case b := <-c.out:
+			wctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := c.ws.Write(wctx, websocket.MessageText, b)
+			cancel()
+			if err != nil {
+				c.ws.CloseNow()
+				return
+			}
+		}
+	}
 }
 
 func matches(f filter, e *relay.Event) bool {
-	if e.Kind == relay.HookKind && len(f.H) == 0 {
-		return false // hook events go only to whoever names their (secret) route
+	if e.Kind == relay.HookKind && !containsStr(f.hooks, tagValue(e, "h")) {
+		return false // hook events go only to whoever holds their route's secret
+	}
+	if e.Kind == relay.Kind && len(f.P) == 0 && len(f.Authors) == 0 {
+		return false // panel traffic only for its sender or recipient: no watching everyone's
 	}
 	if len(f.Kinds) > 0 && !containsInt(f.Kinds, e.Kind) {
 		return false
@@ -320,13 +404,28 @@ func matches(f filter, e *relay.Event) bool {
 	if len(f.D) > 0 && !containsStr(f.D, tagValue(e, "d")) {
 		return false
 	}
-	if len(f.H) > 0 && !containsStr(f.H, tagValue(e, "h")) {
-		return false
-	}
 	return true
 }
 
-func hasTag(e *relay.Event, name string) bool { return tagValue(e, name) != "" }
+func onlyRecipient(e *relay.Event) bool {
+	n := 0
+	for _, t := range e.Tags {
+		if len(t) >= 1 && t[0] == "p" {
+			if n++; n > 1 || len(t) < 2 || !hex64(t[1]) {
+				return false
+			}
+		}
+	}
+	return n == 1
+}
+
+func hex64(v string) bool {
+	if len(v) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(v)
+	return err == nil
+}
 
 func tagValue(e *relay.Event, name string) string {
 	for _, t := range e.Tags {
@@ -357,8 +456,9 @@ func containsStr(l []string, v string) bool {
 
 // ---- hooks ----
 
-// A hook address is /h/<route>/<id>: the route says which Rubi gets it (only that Rubi subscribes to
-// it, and only here, never on public relays), the id which of its hooks. Both are random and secret.
+// A hook address is /h/<route>/<id>: the route says which Rubi gets it, the id which of its hooks. The
+// route in the URL is derived from a secret only that Rubi holds and subscribes with (only here, never
+// on public relays), so a URL holder can trigger its hook but can't listen for the others.
 // The request body (at most 4 KB) goes to the Rubi as is; Rubi checks the id.
 
 const maxHookBody = 4 << 10
@@ -380,6 +480,9 @@ func (s *Server) allow(key string, burst, perMinute float64) bool {
 				if now.Sub(v.last) > 10*time.Minute {
 					delete(s.hookRate, k)
 				}
+			}
+			if len(s.hookRate) > 10000 { // under a flood of new keys: refuse rather than grow
+				return false
 			}
 		}
 		b = &bucket{tokens: burst, last: now}
@@ -417,7 +520,8 @@ func (s *Server) serveHook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "use POST", http.StatusMethodNotAllowed)
 		return
 	}
-	if !s.allow("ip:"+clientIP(r), 60, 60) || !s.allow("route:"+parts[0], 30, 30) {
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(15 * time.Second)) // no trickled bodies
+	if !s.allow("ip:"+s.clientIP(r), 60, 60) || !s.allow("route:"+parts[0], 30, 30) {
 		http.Error(w, "too many requests", http.StatusTooManyRequests)
 		return
 	}
@@ -432,12 +536,10 @@ func (s *Server) serveHook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// The same answer whether or not the Rubi is connected: a URL holder learns nothing about when its
+	// owner's Rubi is online or unlocked.
+	s.broadcast(e)
 	w.Header().Set("Content-Type", "application/json")
-	if s.broadcast(r.Context(), e) == 0 {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"ok":false,"error":"Rubi isn't connected right now"}` + "\n"))
-		return
-	}
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
 }

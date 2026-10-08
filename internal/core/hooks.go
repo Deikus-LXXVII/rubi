@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
+	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
 
@@ -98,13 +99,13 @@ func (c *Core) HookURL(plugin, account, name string, rotate bool) (string, error
 			c.OnHookRoute()
 		}
 	}
-	return base + "/h/" + route + "/" + id, nil
+	return base + "/h/" + relay.HookAddress(route) + "/" + id, nil
 }
 
 // DeliverHookAt handles a request that arrived directly at this Rubi (Tailscale transport).
 func (c *Core) DeliverHookAt(route, id string, body []byte) bool {
 	mine := c.HookRoute()
-	if mine == "" || subtle.ConstantTimeCompare([]byte(route), []byte(mine)) != 1 {
+	if mine == "" || subtle.ConstantTimeCompare([]byte(route), []byte(relay.HookAddress(mine))) != 1 {
 		return false
 	}
 	return c.DeliverHook(id, body)

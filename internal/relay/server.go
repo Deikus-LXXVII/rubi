@@ -2,6 +2,8 @@ package relay
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -29,10 +31,10 @@ type Server struct {
 	ctx  context.Context
 }
 
-// Hooks connects Rubi's hook addresses (/h/<route>/<id> on Rubi Gateway) to their handler.
+// Hooks connects Rubi's hook addresses (/h/<address>/<id> on Rubi Gateway) to their handler.
 type Hooks struct {
 	Relays []string
-	Route  func() string // "" while there are none (e.g. Rubi is locked)
+	Route  func() string // the route secret; "" while there are no hooks (e.g. Rubi is locked)
 	On     func(id string, body []byte)
 }
 
@@ -58,7 +60,7 @@ func (s *Server) Run(ctx context.Context) {
 		}
 		if s.Hooks != nil && contains(s.Hooks.Relays, url) {
 			if route := s.Hooks.Route(); route != "" {
-				filters = append(filters, map[string]any{"kinds": []int{HookKind}, "#h": []string{route},
+				filters = append(filters, map[string]any{"kinds": []int{HookKind}, "#hs": []string{route},
 					"since": time.Now().Add(-time.Minute).Unix()})
 			}
 		}
@@ -107,9 +109,10 @@ func (s *Server) hook(e *Event) {
 	if route == "" {
 		return
 	}
+	addr := HookAddress(route)
 	var tagged bool
 	for _, t := range e.Tags {
-		tagged = tagged || len(t) >= 2 && t[0] == "h" && t[1] == route
+		tagged = tagged || len(t) >= 2 && t[0] == "h" && t[1] == addr
 	}
 	var in struct {
 		ID   string `json:"id"`
@@ -169,4 +172,11 @@ func hookID(id string) bool {
 		}
 	}
 	return true
+}
+
+// HookAddress is the route part of hook URLs, derived from the route secret. Rubi subscribes with the
+// secret; the gateway derives the address to match hook events, so a URL reveals only the address.
+func HookAddress(secret string) string {
+	sum := sha256.Sum256([]byte("rubi-hook-route-v1\n" + secret))
+	return base64.RawURLEncoding.EncodeToString(sum[:16])
 }

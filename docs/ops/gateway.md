@@ -6,7 +6,7 @@ it only by name, `wss://gateway.rubi-panel.com`; nothing about the machine behin
 or needed by the installer.
 
 It also accepts hook requests (`POST /h/<route>/<id>`, at most 4 KB, rate-limited per address and per
-route) and hands each to the Rubi subscribed to that route; see `docs/design/plugins.md` (Hooks). The
+route) and hands each to the Rubi subscribed with that route's secret; see `docs/design/plugins.md` (Hooks). The
 tunnel already routes every path to the gateway, so nothing changes in the deployment.
 
 ## Layout
