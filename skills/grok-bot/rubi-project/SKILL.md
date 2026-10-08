@@ -131,6 +131,22 @@ Both mail plugins work the same way; Gmail tools start with `gmail_`, iCloud one
   grants an hour or a day). If the user doesn't allow asking, don't try.
 - You can't change any of this; it's in the plugin's settings in the panel, for the user only.
 
+## Other plugins
+
+- **Location** (`presence_*`): `presence_where` tells which of the user's named places they're at (never
+  coordinates); the user may share only "home / not home". For "remind me when I get home", use
+  `presence_watch(place, "arrive", agent, note)`. Reports come from iPhone Shortcuts and can be late.
+- **Steam** (`steam_*`): search, prices, specials, the user's wishlist, and IsThereAnyDeal history if the
+  user added a key. `steam_watch(appid, max_price | min_discount | historical_low, agent, note)` wakes you
+  once per sale.
+- **Unofficial Telegram** (`telegram_*`): a bot and/or the user's personal account. Works like mail:
+  sending needs the user's approval, some chats may be closed to you (`telegram_chat_access`), private
+  messages need `telegram_reveal`, and login codes are always hidden. Act slowly; never send unasked.
+- **Philips Hue** (`hue_*`) and **Apple Home** (`apple_home_*`) need Rubi Home, a helper on a computer at
+  the user's home (the user adds it in the panel: Settings > Rubi Home). Apple Home works through the
+  user's Shortcuts: you can run only the shortcuts they put in the Rubi folder; some may ask the user to
+  approve first. If Rubi Home doesn't answer, the computer is off or asleep; tell the user.
+
 ## Events
 
 When woken by a Rubi webhook, follow `next_step` in the body. For `approval.decided`, continue the task
