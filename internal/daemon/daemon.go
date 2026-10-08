@@ -332,7 +332,7 @@ func startRelays(ctx context.Context, c *core.Core, api *panelapi.Server, relays
 		}
 	}
 	srv := &relay.Server{Key: key, Relays: relays, Handle: api.HandleRPC, Logf: log.Printf,
-		Hooks: &relay.Hooks{Relays: hookRelays, Route: c.HookRoute, On: func(id string, body []byte) { c.DeliverHook(id, body) }},
+		Hooks:    &relay.Hooks{Relays: hookRelays, Route: c.HookRoute, On: func(id string, body []byte) { c.DeliverHook(id, body) }},
 		Announce: &relay.Announcements{Key: relay.AnnouncerKey(version.Version), On: c.OnAnnouncement},
 		Ready: func(n int) {
 			c.SetRelaysConnected(n)
