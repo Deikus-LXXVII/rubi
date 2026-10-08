@@ -103,6 +103,9 @@ warns that it isn't reviewed.
   words). It shows up only as `private` with the sender. Don't try to find its content another way. If the
   user needs you to use one (e.g. "log in with the code I just got"), call `icloud_mail_reveal(uid, reason)`;
   they approve with Face ID, and you see it once. Never repeat codes back or store them.
+- **Security alerts.** Sign-in and suspicious-activity alerts are visible unless the user hides them. If
+  the user wants to be warned, set a watch with words like "new sign-in", "suspicious", "unusual
+  activity", "новый вход", "подозрительн" and a note to tell them right away.
 - **Folders.** The user may close some folders to you. `icloud_mail_list_mailboxes` lists what you can
   read and, if allowed, the `closed` ones; ask with `icloud_mail_folder_access(mailbox, reason)` (the user
   grants an hour or a day). If the user doesn't allow asking, don't try.
