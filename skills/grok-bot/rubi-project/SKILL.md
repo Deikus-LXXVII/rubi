@@ -17,13 +17,21 @@ need the user's passwords.
    user; don't try to work around a failed signature check.
 2. Add a custom MCP server named `rubi` that runs `~/.rubi/bin/rubi mcp` (use the absolute path the
    installer prints).
-3. Create a routine named "Rubi events" with a **webhook trigger** (no schedule) whose instruction is
-   "A Rubi event arrived. Follow next_step in the JSON body." This is how Rubi wakes you when the user
-   approves something or a reply arrives; it runs only when something happens.
-4. Call `rubi_status`. It returns a link: send it to the user with one sentence, and tell them that after
-   Face ID the panel will ask for the webhook URL and key of the "Rubi events" routine (shown in the routine
-   on desktop). Setup is finished when `rubi_status` shows `webhook.configured: true`; plugins can't be
-   installed before that. You'll get a test event through the webhook when it's connected.
+3. Call `rubi_status`. It returns a link: send it to the user with one sentence ("Open this to set up
+   Rubi with Face ID"). Wait until they say it's done.
+4. Connect yourself so Rubi can wake you: create a routine named "Rubi events" with a **webhook trigger**
+   (no schedule) whose instruction is "A Rubi event arrived. Follow next_step in the JSON body." Then send
+   `rubi_link("agent:<your Bot name>")` and ask the user to open it in the **Grok Bot desktop app**, next
+   to the routine: its webhook URL and key are only shown there, and they paste them into the page. You get
+   a test event when it works. Setup is finished when `rubi_status` shows `webhook.configured: true`;
+   plugins can't be installed before that.
+
+## Several Bots
+
+All Bots on the account share this computer and this Rubi. Each Bot that should be woken connects itself
+as above, under its own name. Pass your Bot's name as `agent` to `rubi_continue_after`, so the outcome
+wakes you and not another Bot. `rubi_status` (field `webhook.agents`) lists the connected Bots. The user
+chooses in Rubi's settings which Bot hears about each plugin's events (e.g. replies to tracked emails).
 
 ## Updates
 
@@ -71,7 +79,7 @@ warns that it isn't reviewed.
     `plugin.failed`) and tell the user;
   - `awaiting_approval`:
     - level `strong`: send the `approval_url` with one sentence about what is waiting. Call
-      `rubi_continue_after(approval_id, plan)` with what you'll do once the user decides (include the
+      `rubi_continue_after(approval_id, plan, agent=<your Bot name>)` with what you'll do once the user decides (include the
       context you'll need, like their original request), then `rubi_approval(approval_id, wait_seconds=25)`.
       If it's still pending when your turn ends, tell the user you'll continue on your own: Rubi wakes you
       with an `approval.decided` event carrying the outcome and your plan;

@@ -44,7 +44,10 @@ type Data struct {
 	Policy map[string]string `json:"policy"`
 	// Integrations holds per-integration settings and secrets, namespaced by integration id.
 	Integrations map[string]*Integration `json:"integrations"`
-	Webhook      *Webhook                `json:"webhook,omitempty"`
+	// Webhook is the single agent webhook of v0.3.1 and earlier, migrated into Agents on load.
+	Webhook *Webhook `json:"webhook,omitempty"`
+	// Agents are the user's Grok Bots that Rubi can wake, each through its own routine webhook.
+	Agents []*Agent `json:"agents,omitempty"`
 	Locale       string                  `json:"locale,omitempty"`
 	// Approvers are public keys of the user's passkeys, used to verify action approvals.
 	Approvers []Approver `json:"approvers,omitempty"`
@@ -90,6 +93,16 @@ type Integration struct {
 	Secrets  map[string]string `json:"secrets,omitempty"`
 	// State is integration-private runtime state (e.g. tracked messages), kept encrypted with the rest.
 	State json.RawMessage `json:"state,omitempty"`
+	// Agent receives this plugin's events (e.g. replies); "" means the default agent.
+	Agent string `json:"agent,omitempty"`
+}
+
+// Agent is one Bot Rubi can wake. Events for it go to its routine webhook.
+type Agent struct {
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	Key     string `json:"key"`
+	Default bool   `json:"default,omitempty"` // gets events that belong to no particular agent
 }
 
 type Webhook struct {
@@ -116,6 +129,10 @@ func (d *Data) normalize() {
 	if d.Plugins == nil {
 		d.Plugins = map[string]*Plugin{}
 	}
+	if d.Webhook != nil && len(d.Agents) == 0 && d.Webhook.URL != "" {
+		d.Agents = []*Agent{{Name: "Main", URL: d.Webhook.URL, Key: d.Webhook.Key, Default: true}}
+	}
+	d.Webhook = nil
 }
 
 func NewData(instance string) *Data {

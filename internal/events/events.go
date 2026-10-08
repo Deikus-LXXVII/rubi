@@ -21,6 +21,8 @@ type Event struct {
 	Acked           bool      `json:"acked"`
 	// Quiet events wait in the list for the agent's next turn instead of waking it (a wake costs quota).
 	Quiet bool `json:"-"`
+	// Target is the agent this event is for ("" = the default agent).
+	Target string `json:"for_agent,omitempty"`
 }
 
 type Store struct {
@@ -39,19 +41,20 @@ func (s *Store) OnEmit(fn func(Event)) {
 }
 
 func (s *Store) Emit(integration, typ string, data map[string]any, untrusted []string) Event {
-	return s.emit(integration, typ, data, untrusted, false)
+	return s.EmitFor("", false, integration, typ, data, untrusted)
 }
 
 // EmitQuiet records an event without waking the agent.
 func (s *Store) EmitQuiet(integration, typ string, data map[string]any, untrusted []string) Event {
-	return s.emit(integration, typ, data, untrusted, true)
+	return s.EmitFor("", true, integration, typ, data, untrusted)
 }
 
-func (s *Store) emit(integration, typ string, data map[string]any, untrusted []string, quiet bool) Event {
+// EmitFor records an event for a particular agent ("" = the default one); quiet events don't wake it.
+func (s *Store) EmitFor(target string, quiet bool, integration, typ string, data map[string]any, untrusted []string) Event {
 	b := make([]byte, 9)
 	_, _ = rand.Read(b)
 	e := &Event{ID: "evt_" + base64.RawURLEncoding.EncodeToString(b), Integration: integration, Type: typ,
-		Data: data, UntrustedFields: untrusted, CreatedAt: time.Now().UTC(), Quiet: quiet}
+		Data: data, UntrustedFields: untrusted, CreatedAt: time.Now().UTC(), Quiet: quiet, Target: target}
 	s.mu.Lock()
 	s.events[e.ID] = e
 	fn := s.notify

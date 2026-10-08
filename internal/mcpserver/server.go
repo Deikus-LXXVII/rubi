@@ -21,10 +21,15 @@ import (
 
 const Instructions = `Rubi-Project: self-hosted integrations that act for the user only with their consent.
 
-SETUP. Before giving the user the pairing link, create a routine with a webhook trigger whose instruction is
-"A Rubi event arrived. Follow next_step in the JSON body." Right after setting up Face ID, the panel asks
-the user for that routine's webhook URL and key (shown in the routine on desktop). Setup isn't finished,
-and plugins can't be installed, until the webhook is connected.
+SETUP. Rubi wakes you through a routine webhook. Create a routine named "Rubi events" with a webhook
+trigger (no schedule) whose instruction is "A Rubi event arrived. Follow next_step in the JSON body."
+Then send the user rubi_link("agent:<your Bot name>") and ask them to open it in the Grok Bot desktop app:
+the routine's webhook URL and key are visible only there. Setup isn't finished, and plugins can't be
+installed, until at least one agent is connected (rubi_status, field webhook).
+
+SEVERAL BOTS. Bots on the same account share Rubi. Each Bot that wants to be woken registers itself the
+same way, under its own name. Pass your Bot's name as "agent" where tools take one, so Rubi wakes you and
+not another Bot. The user chooses in settings which agent gets each plugin's events (e.g. replies).
 
 STATE. Call rubi_status first. If Rubi is "unpaired" or "locked", give the user the link it returns and
 explain in one sentence. Retry the user's request after they say it's done. If a plugin tool answers
@@ -180,7 +185,7 @@ func toolResult(out map[string]any, err error) (*mcp.CallToolResult, error) {
 type empty struct{}
 
 type linkIn struct {
-	Purpose string `json:"purpose" jsonschema:"one of: pair, unlock, settings, setup:<plugin id>"`
+	Purpose string `json:"purpose" jsonschema:"one of: pair, unlock, settings, setup:<plugin id>, agent:<your Bot name>"`
 }
 
 type approvalIn struct {
@@ -210,6 +215,7 @@ type out = map[string]any
 type planIn struct {
 	ApprovalID string `json:"approval_id"`
 	Plan       string `json:"plan" jsonschema:"what you will do once the user decides, with the context you need (e.g. the user's original request)"`
+	Agent      string `json:"agent,omitempty" jsonschema:"your Bot's name as registered with Rubi, so Rubi wakes you and not another Bot"`
 }
 
 type pluginRefIn struct {
@@ -233,7 +239,7 @@ func (s *Server) registerCoreTools() {
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_link",
-		Description: "A fresh Rubi panel link for the user: pair, unlock, settings (includes the store), or setup:<plugin id>."},
+		Description: "A fresh Rubi panel link for the user: pair, unlock, settings (includes the store), setup:<plugin id>, or agent:<your Bot name> (connects your routine webhook so Rubi can wake you; the user opens it in the Grok Bot desktop app)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in linkIn) (*mcp.CallToolResult, out, error) {
 			u, err := s.core.Link(in.Purpose)
 			if err != nil {
@@ -314,7 +320,7 @@ func (s *Server) registerCoreTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_continue_after",
 		Description: "Leave yourself a note for when the user decides a pending approval: what to do next and what for. Rubi sends it back with the decision through the webhook, so you can continue even in a new run."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in planIn) (*mcp.CallToolResult, out, error) {
-			if err := s.core.SetPlan(in.ApprovalID, in.Plan); err != nil {
+			if err := s.core.SetPlan(in.ApprovalID, in.Plan, in.Agent); err != nil {
 				return nil, nil, err
 			}
 			o := out{"saved": true}

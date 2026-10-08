@@ -180,6 +180,7 @@ async function main() {
   if (link.a === "unlock") return unlockScreen(ctx);
   if (link.a.startsWith("setup:")) return whenUnlocked(ctx, () => setupScreen(ctx, link.a.slice("setup:".length)));
   if (link.a === "settings") return whenUnlocked(ctx, () => settingsScreen(ctx));
+  if (link.a.startsWith("agent:")) return whenUnlocked(ctx, () => agentScreen(ctx, link.a.slice("agent:".length)));
   return statusScreen(ctx, "");
 }
 
@@ -276,43 +277,99 @@ function pairScreen(ctx) {
   );
 }
 
-// connectAgentScreen is the last setup step: the agent's routine webhook, so Rubi can wake the agent when the
-// user approves something or a reply arrives. Setup isn't finished without it.
-function connectAgentScreen(ctx) {
-  const err = errorBox();
-  const url = h("input", { type: "url", placeholder: "Webhook URL", autocomplete: "off", autocapitalize: "none", required: true });
-  const key = h("input", { type: "password", placeholder: "Webhook key", autocomplete: "off", autocapitalize: "none", required: true });
-  const go = h("button", { class: "primary", type: "submit" }, "Connect my agent");
-  const done = async () => {
-    try {
-      await ctx.client.call("webhook.test");
-    } catch (_) { /* the test event is a courtesy; setup is complete either way */ }
-    screen(
-      face("happy", 96),
-      header(ctx.hello),
-      h("h1", {}, "Rubi is set up"),
-      h("p", {}, "Your agent just got a test event from Rubi and will confirm in the chat. You can close this page."),
-      h("p", { class: "muted" }, "After a restart Rubi locks itself again, and your agent will send you an unlock link."),
-    );
+// parseWebhook pulls the routine's webhook URL and key out of whatever the user pasted: the "POST to" and
+// "key" fields, the "header" field, or all of them at once, in any order.
+function parseWebhook(text) {
+  const t = String(text || "");
+  const url = (t.match(/https?:\/\/[^\s"'<>]+/) || [])[0] || "";
+  let key = (t.match(/Bearer\s+([^\s"']+)/i) || [])[1] || "";
+  if (!key) {
+    key = t.replace(url, " ").split(/\s+/).map((w) => w.replace(/^(authorization|key|post|to):?$/i, ""))
+      .filter((w) => w.length >= 16 && !/^https?:/i.test(w))[0] || "";
+  }
+  return { url, key };
+}
+
+// agentForm asks for an agent's routine webhook in one paste box. fixedName locks the name (agent links).
+function agentForm(ctx, { fixedName, onSaved, err }) {
+  const name = h("input", { type: "text", placeholder: "Bot name, e.g. Main", autocomplete: "off", value: fixedName || "", required: true });
+  if (fixedName) name.readOnly = true;
+  const paste = h("textarea", { rows: "4", placeholder: "Paste here: the \u201cPOST to\u201d address and the \u201cheader\u201d (or \u201ckey\u201d)", autocapitalize: "none", spellcheck: "false", required: true });
+  const parsed = h("p", { class: "muted small" });
+  const show = () => {
+    const w = parseWebhook(paste.value);
+    parsed.textContent = !paste.value.trim() ? ""
+      : `${w.url ? "Address: " + w.url.replace(/^(https?:\/\/[^/]+).*$/, "$1/\u2026") : "Address: not found yet"} \u00b7 ${w.key ? "Key: \u2022\u2022\u2022\u2022" + w.key.slice(-4) : "Key: not found yet"}`;
   };
+  paste.addEventListener("input", show);
+  const go = h("button", { class: "primary", type: "submit" }, "Connect");
   const form = h("form", {
     onsubmit: (e) => {
       e.preventDefault();
+      const w = parseWebhook(paste.value);
+      if (!w.url) return showError(err, new UserError("Paste the webhook address (\u201cPOST to\u201d) as well."));
+      if (!w.key) return showError(err, new UserError("Paste the webhook key or header as well."));
       busy(go, async () => {
-        const res = await ctx.client.call("webhook.set", { url: url.value.trim(), key: key.value.trim() });
-        key.value = "";
-        confirmChange(ctx, res, done, "Finish");
+        const res = await ctx.client.call("agent.add", { name: name.value.trim(), url: w.url, key: w.key });
+        paste.value = "";
+        confirmChange(ctx, res, () => onSaved(name.value.trim()), "Finish");
       }).catch((x) => showError(err, x));
     },
-  }, url, key, go);
+  }, fixedName ? null : h("label", { class: "field" }, h("span", {}, "Bot name"), name),
+  h("label", { class: "field" }, h("span", {}, "Webhook"), paste), parsed, go);
+  return form;
+}
+
+function agentHowTo(name) {
+  return h("ol", { class: "steps-list" },
+    h("li", {}, "Open the Grok Bot app on your computer (these values are only shown there)."),
+    h("li", {}, `Open ${name ? name + "\u2019s" : "your Bot\u2019s"} routine \u201cRubi events\u201d. Its Webhook section shows \u201cPOST to\u201d, \u201ckey\u201d and \u201cheader\u201d.`),
+    h("li", {}, "Copy \u201cPOST to\u201d and \u201cheader\u201d and paste both into the box below."));
+}
+
+async function agentConnected(ctx, name) {
+  try {
+    await ctx.client.call("webhook.test", { name });
+  } catch (_) { /* the test event is a courtesy */ }
+  screen(
+    face("happy", 96),
+    header(ctx.hello),
+    h("h1", {}, `${name} is connected`),
+    h("p", {}, "Rubi just sent it a test event; it will confirm in the chat. From now on it continues on its own after you approve something, and hears about replies right away."),
+    h("p", { class: "muted" }, "You can close this page."),
+  );
+}
+
+// agentScreen is opened from rubi_link("agent:<name>"), ideally in the Grok Bot desktop app.
+function agentScreen(ctx, name) {
+  const err = errorBox();
   screen(
     face("idle", 96),
     header(ctx.hello),
+    h("h1", {}, `Connect ${name}`),
+    h("p", {}, "So Rubi can tell this Bot when you approve something or a reply arrives. The routine runs only when something happens, never on a schedule."),
+    agentHowTo(name),
+    agentForm(ctx, { fixedName: name, err, onSaved: (n) => agentConnected(ctx, n) }),
+    err,
+  );
+}
+
+// connectAgentScreen is the last step after pairing. The webhook values are only visible in the Grok Bot
+// desktop app, so on a phone the usual path is the link the agent sends.
+function connectAgentScreen(ctx) {
+  const err = errorBox();
+  const here = h("details", { class: "sideload" },
+    h("summary", {}, "I have the routine open here"),
+    agentHowTo(""),
+    agentForm(ctx, { err, onSaved: (n) => agentConnected(ctx, n) }));
+  screen(
+    face("happy", 96),
+    header(ctx.hello),
     h("p", { class: "eyebrow" }, "Last step"),
     h("h1", {}, "Connect your agent"),
-    h("p", {}, "Your agent created a routine called \u201cRubi events\u201d. Open it in Grok Bot on a computer: its Webhook section shows a URL and a key. Paste both here."),
-    h("p", { class: "muted" }, "This is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without you writing to it. The routine runs only when something happens, never on a schedule."),
-    form,
+    h("p", {}, "Rubi is set up and unlocked. One more thing: let Rubi wake your agent when you approve something or a reply arrives."),
+    h("p", {}, "Your agent sent you a link called \u201cConnect\u201d. Open it in the Grok Bot app on your computer, next to its \u201cRubi events\u201d routine: the routine\u2019s webhook is only shown there."),
+    here,
     err,
   );
 }
@@ -794,7 +851,7 @@ async function settingsScreen(ctx) {
   try {
     [store, policy, hook, st] = await Promise.all([
       ctx.client.call("store.list"), ctx.client.call("policy.get"),
-      ctx.client.call("webhook.get"), ctx.client.call("status"),
+      ctx.client.call("agents.get").catch(() => ctx.client.call("webhook.get")), ctx.client.call("status"),
     ]);
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
@@ -846,7 +903,8 @@ async function settingsScreen(ctx) {
     h("p", { class: "muted" }, "How each action is approved. Changing these always needs Face ID or your password."),
     ...policyRows,
     savePolicy,
-    h("h2", {}, "Agent webhook"),
+    ...(hook.agents ? agentsSection(ctx, hook, change, err, back) : [h("h2", {}, "Agent webhook")]),
+    ...(hook.agents ? [] : [
     h("p", { class: "muted" }, hook.configured
       ? `Events go to ${hook.url}`
       : "Not set. Create a routine with a webhook trigger in Grok Bot and paste its URL and key here, so Rubi can wake your agent when something happens (e.g. a reply arrives)."),
@@ -855,7 +913,7 @@ async function settingsScreen(ctx) {
     hook.configured ? h("button", { class: "link", onclick: async (e) => {
       await busy(e.target, () => ctx.client.call("webhook.test")).then(() => { e.target.textContent = "Test event sent"; }).catch((x) => showError(err, x));
     } }, "Send a test event") : null,
-    hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null,
+    hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null]),
     h("h2", {}, "Security"),
     integrityLine(st),
     receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) => h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
@@ -864,6 +922,44 @@ async function settingsScreen(ctx) {
       statusScreen(ctx, "Rubi is locked.");
     } }, "Lock Rubi now"),
   );
+}
+
+// agentsSection lists the Bots Rubi can wake and where each plugin's events go.
+function agentsSection(ctx, data, change, err, back) {
+  const agents = data.agents || [];
+  const list = agents.length ? h("div", { class: "list" }, agents.map((a) => h("div", { class: "item plugin" },
+    h("div", {}, h("strong", {}, a.name), " ", a.default ? h("span", { class: "tag" }, "Default") : null,
+      h("div", { class: "muted small" }, a.host)),
+    h("div", { class: "actions" },
+      h("button", { class: "secondary small", onclick: async (e) => {
+        await busy(e.target, () => ctx.client.call("webhook.test", { name: a.name }))
+          .then(() => { e.target.textContent = "Sent"; }).catch((x) => showError(err, x));
+      } }, "Test"),
+      a.default ? null : h("button", { class: "link small", onclick: change("agent.default", () => ({ name: a.name })) }, "Make default"),
+      h("button", { class: "link small", onclick: change("agent.remove", () => ({ name: a.name })) }, "Remove")))))
+    : h("p", { class: "error" }, "No agent is connected, so Rubi can't wake your Bots. Setup isn't finished.");
+  const routes = (data.plugins || []).map((p) => {
+    const sel = h("select", {}, h("option", { value: "", selected: !p.agent }, "Default agent"),
+      agents.map((a) => h("option", { value: a.name, selected: p.agent && p.agent.toLowerCase() === a.name.toLowerCase() }, a.name)));
+    sel.addEventListener("change", async () => {
+      try {
+        confirmChange(ctx, await ctx.client.call("plugin.route", { id: p.id, agent: sel.value }), back);
+      } catch (x) {
+        showError(err, x);
+      }
+    });
+    return h("label", { class: "field row-field" }, h("span", {}, `${p.name} events`, h("small", {}, "e.g. replies")), sel);
+  });
+  const add = h("details", { class: "sideload" }, h("summary", {}, "Connect another Bot"),
+    h("p", { class: "muted" }, "Easiest: ask that Bot to connect itself to Rubi; it sends you a link. Or do it here:"),
+    agentHowTo(""), agentForm(ctx, { err, onSaved: () => back() }));
+  return [
+    h("h2", {}, "Agents"),
+    h("p", { class: "muted" }, "Your Grok Bots that Rubi can wake through their \u201cRubi events\u201d routine. Each one gets the results of what it asked for."),
+    list,
+    ...(routes.length && agents.length > 1 ? [h("p", { class: "muted" }, "Who hears about each plugin:"), ...routes] : []),
+    add,
+  ];
 }
 
 // ---------- store ----------

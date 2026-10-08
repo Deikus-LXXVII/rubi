@@ -65,7 +65,7 @@ type Core struct {
 	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
-	plans   map[string]string // approval id -> what the agent will do once it's decided
+	plans   map[string]pendingPlan // approval id -> what the agent will do once it is decided
 	seen    map[string]bool   // approvals whose outcome the agent already got from rubi_approval
 	upd     updateState
 	mkt     marketState
@@ -115,7 +115,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		Store:       store,
 		PanelOrigin: DefaultPanelOrigin,
 		tickets:     map[string]ticket{},
-		plans:       map[string]string{},
+		plans:       map[string]pendingPlan{},
 		seen:        map[string]bool{},
 	}
 	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
@@ -136,7 +136,7 @@ func Open(layout paths.Layout) (*Core, error) {
 			//
 			// Waking the agent costs the user's quota, so Rubi only does it when the agent asked (it left a
 			// plan) and hasn't already seen the outcome itself while waiting in rubi_approval.
-			plan := c.takePlan(s.ID)
+			p := c.takePlan(s.ID)
 			if s.Level != approvals.Strong || c.State() != Unlocked {
 				return
 			}
@@ -146,12 +146,10 @@ func Open(layout paths.Layout) (*Core, error) {
 			}
 			data := map[string]any{"approval_id": s.ID, "kind": s.Kind, "state": s.State,
 				"summary": s.Summary, "option": s.Chosen, "error": s.Error, "result": s.Result}
-			if plan == "" {
-				c.Events.EmitQuiet("rubi", "approval.decided", data, []string{"result"})
-				return
+			if p.plan != "" {
+				data["your_plan"] = p.plan
 			}
-			data["your_plan"] = plan
-			c.Events.Emit("rubi", "approval.decided", data, []string{"result"})
+			c.Events.EmitFor(p.agent, p.plan == "", "rubi", "approval.decided", data, []string{"result"})
 		},
 	})
 	c.Events.OnEmit(c.deliverEvent)
@@ -275,8 +273,11 @@ func (c *Core) validPurpose(p string) error {
 		return errors.New("plugin " + strings.TrimPrefix(p, "setup:") + " is not installed; see rubi_store")
 	case strings.HasPrefix(p, "approve:"):
 		return nil
+	case strings.HasPrefix(p, "agent:"):
+		_, err := CleanAgentName(strings.TrimPrefix(p, "agent:"))
+		return err
 	}
-	return errors.New(`purpose must be "pair", "unlock", "settings" or "setup:<plugin id>"`)
+	return errors.New(`purpose must be "pair", "unlock", "settings", "setup:<plugin id>" or "agent:<your Bot name>"`)
 }
 
 // Lock wipes keys and private data from memory and cancels pending approvals. Always allowed.

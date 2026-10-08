@@ -306,7 +306,7 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			if !ok {
 				return nil, fmt.Errorf("event type %q is not declared in the manifest", in.Type)
 			}
-			ev := c.Events.Emit(id, in.Type, in.Data, et.Untrusted)
+			ev := c.Events.EmitFor(c.pluginAgent(id), false, id, in.Type, in.Data, et.Untrusted)
 			return map[string]any{"event_id": ev.ID}, nil
 		case "audit":
 			var in struct {

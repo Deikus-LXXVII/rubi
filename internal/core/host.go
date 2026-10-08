@@ -151,25 +151,12 @@ func (c *Core) SetPolicy(ctx context.Context, levels map[string]string) (string,
 	}, nil)
 }
 
-// SetWebhook requests approval to change where events are delivered (empty URL removes it).
+// SetWebhook is the single-webhook setting of older panels: it manages the agent named "Main".
 func (c *Core) SetWebhook(ctx context.Context, rawURL, key string) (string, error) {
-	if rawURL != "" {
-		if err := validWebhookURL(rawURL); err != nil {
-			return "", err
-		}
+	if rawURL == "" {
+		return c.RemoveAgent(ctx, "Main")
 	}
-	summary, target := "Remove the agent webhook", "none"
-	if rawURL != "" {
-		summary, target = "Send events to the agent webhook", redactURL(rawURL)
-	}
-	return c.RequestChange(ctx, summary, map[string]any{"webhook": target}, func(d *vault.Data) error {
-		if rawURL == "" {
-			d.Webhook = nil
-		} else {
-			d.Webhook = &vault.Webhook{URL: rawURL, Key: key}
-		}
-		return nil
-	}, nil)
+	return c.AddAgent(ctx, "Main", rawURL, key)
 }
 
 func validWebhookURL(raw string) error {
@@ -202,14 +189,7 @@ func (c *Core) deliverEvent(ev events.Event) {
 	if ev.Quiet {
 		return
 	}
-	var hook *vault.Webhook
-	_ = c.Vault.View(func(d *vault.Data) error {
-		if d.Webhook != nil {
-			w := *d.Webhook
-			hook = &w
-		}
-		return nil
-	})
+	hook := c.agentFor(ev.Target)
 	if hook == nil {
 		return
 	}
@@ -247,16 +227,17 @@ func (c *Core) deliverEvent(ev events.Event) {
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				c.Audit.Record("webhook.delivered", audit.Fields{"event_id": ev.ID, "attempt": attempt + 1})
+				c.Audit.Record("webhook.delivered", audit.Fields{"event_id": ev.ID, "agent": hook.Name, "attempt": attempt + 1})
 				return
 			}
 			err = fmt.Errorf("HTTP %d", resp.StatusCode)
 		}
-		c.Audit.Record("webhook.failed", audit.Fields{"event_id": ev.ID, "attempt": attempt + 1, "error": err.Error()})
+		c.Audit.Record("webhook.failed", audit.Fields{"event_id": ev.ID, "agent": hook.Name, "attempt": attempt + 1, "error": err.Error()})
 	}
 }
 
-// TestWebhook sends a test event to the configured webhook.
-func (c *Core) TestWebhook() events.Event {
-	return c.Events.Emit("rubi", "webhook.test", map[string]any{"message": "Test event from Rubi. Tell the user it arrived."}, nil)
+// TestWebhook sends a test event to an agent ("" = the default one).
+func (c *Core) TestWebhook(agent string) events.Event {
+	return c.Events.EmitFor(agent, false, "rubi", "webhook.test", map[string]any{"agent": agent,
+		"message": "Test event from Rubi: the webhook works. Tell the user it arrived."}, nil)
 }

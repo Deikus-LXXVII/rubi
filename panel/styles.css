@@ -148,11 +148,11 @@ button.copy { width: auto; padding: 8px 14px; font-size: 0.85rem; background: va
 
 form { display: flex; flex-direction: column; gap: 10px; }
 
-input, select {
+input, select, textarea {
   font: inherit; padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm);
   background: var(--bg-2); color: var(--text); width: 100%;
 }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 button {
   font: inherit; font-weight: 650; padding: 14px 16px; border-radius: var(--radius-sm);
@@ -369,3 +369,7 @@ button.is-busy {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+textarea { width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+.steps-list { margin: 8px 0 14px; padding-left: 20px; color: var(--muted); }
+.steps-list li { margin: 4px 0; }

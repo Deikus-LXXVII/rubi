@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -34,9 +35,18 @@ func (c *Core) takeSeen(approvalID string) bool {
 	return s
 }
 
+type pendingPlan struct {
+	plan, agent string
+}
+
 // SetPlan stores what the agent intends to do once a pending approval is decided. Rubi sends it back with
-// the approval.decided event, so the agent can continue even if it is woken in a fresh run.
-func (c *Core) SetPlan(approvalID, plan string) error {
+// the approval.decided event, so the agent can continue even if it is woken in a fresh run. agent names
+// the Bot to wake ("" = the default agent).
+func (c *Core) SetPlan(approvalID, plan, agent string) error {
+	if agent != "" && !c.HasAgent(agent) {
+		return fmt.Errorf("no agent %q is registered (agents: %s). Pass your Bot's name as registered, or register "+
+			"yourself first: send the user rubi_link(\"agent:<your Bot name>\")", agent, c.agentNames())
+	}
 	plan = strings.TrimSpace(plan)
 	if plan == "" {
 		return errors.New("describe what you'll do after the decision")
@@ -52,12 +62,12 @@ func (c *Core) SetPlan(approvalID, plan string) error {
 		return errors.New("this approval is already " + string(d.State) + "; continue now")
 	}
 	c.mu.Lock()
-	c.plans[approvalID] = plan
+	c.plans[approvalID] = pendingPlan{plan: plan, agent: agent}
 	c.mu.Unlock()
 	return nil
 }
 
-func (c *Core) takePlan(approvalID string) string {
+func (c *Core) takePlan(approvalID string) pendingPlan {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	p := c.plans[approvalID]
@@ -69,7 +79,7 @@ func (c *Core) takePlan(approvalID string) string {
 func (c *Core) WebhookConfigured() bool {
 	on := false
 	_ = c.Vault.View(func(d *vault.Data) error {
-		on = d.Webhook != nil && d.Webhook.URL != ""
+		on = len(d.Agents) > 0
 		return nil
 	})
 	return on
@@ -78,7 +88,7 @@ func (c *Core) WebhookConfigured() bool {
 // AfterApproval tells the agent how it will learn about a decision, depending on whether Rubi can wake it.
 func (c *Core) AfterApproval() string {
 	if c.WebhookConfigured() {
-		return "After sending the link, call rubi_continue_after(approval_id, plan) with what you'll do once the " +
+		return "After sending the link, call rubi_continue_after(approval_id, plan, agent=<your Bot name>) with what you'll do once the " +
 			"user decides. Then wait with rubi_approval(approval_id, wait_seconds=25). If it is still pending, end " +
 			"your turn and tell the user you'll continue on your own: Rubi wakes you through the webhook with the " +
 			"decision and your plan. (Without a plan Rubi doesn't wake you; the outcome waits in rubi_events.)"
@@ -103,15 +113,20 @@ func (c *Core) WakeUp() string {
 		"(see rubi_status, field webhook.how)."
 }
 
-// WebhookHint explains how to set up the webhook, or nil if it is set up.
+const agentHow = "Create a routine named \"Rubi events\" with a webhook trigger (no schedule) whose instruction " +
+	"is: \"A Rubi event arrived. Follow next_step in the JSON body.\" Then send the user " +
+	"rubi_link(\"agent:<your Bot name>\") and tell them to open it in the Grok Bot desktop app, next to the routine: " +
+	"its Webhook section shows the URL and key (only on desktop), which they paste into the page."
+
+// WebhookHint describes the registered agents, or how to register.
 func (c *Core) WebhookHint() map[string]any {
 	if c.WebhookConfigured() {
-		return map[string]any{"configured": true}
+		return map[string]any{"configured": true, "agents": c.Agents(),
+			"note": "Several Bots can share Rubi. Identify yourself with your Bot's name where tools take an agent. " +
+				"A Bot that isn't listed can register itself the same way: " + agentHow}
 	}
 	return map[string]any{"configured": false,
 		"why": "Without it you only learn about approvals and events (like replies) when the user writes to you. " +
 			"Don't work around it with scheduled routines: they cost the user's quota on every run.",
-		"how": "Create a routine with a webhook trigger whose instruction is: \"A Rubi event arrived. Follow " +
-			"next_step in the JSON body.\" Then send the user rubi_link(\"settings\") and ask them to paste the " +
-			"routine's webhook URL and key (shown in the routine on desktop) under Agent webhook."}
+		"how": agentHow}
 }

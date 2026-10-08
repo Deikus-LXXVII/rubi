@@ -214,7 +214,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		return s.approvalDecide(ctx, purpose, env)
 	case "integration.catalog", "integration.setup", "integration.disconnect",
 		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
-		"store.list", "plugin.install", "plugin.update", "plugin.remove":
+		"store.list", "plugin.install", "plugin.update", "plugin.remove",
+		"agents.get", "agent.add", "agent.remove", "agent.default", "plugin.route":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -496,7 +497,7 @@ func (s *Server) rpID() string {
 // panel can ask for Face ID (or the password) right away.
 
 func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (any, error) {
-	if purpose != "settings" && !strings.HasPrefix(purpose, "setup:") {
+	if purpose != "settings" && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
 		return nil, errors.New("this link can't change settings; ask your agent for a settings link")
 	}
 	if s.core.State() != core.Unlocked {
@@ -510,10 +511,25 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Levels  map[string]string `json:"levels"`
 		URL     string            `json:"url"`
 		Key     string            `json:"key"`
+		Name    string            `json:"name"`
+		Agent   string            `json:"agent"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
 			return nil, errors.New("bad arguments")
+		}
+	}
+	if strings.HasPrefix(purpose, "agent:") {
+		// An agent link registers that one Bot's webhook and nothing else.
+		name := strings.TrimPrefix(purpose, "agent:")
+		switch env.Op {
+		case "agents.get":
+		case "agent.add", "webhook.test":
+			if !strings.EqualFold(strings.TrimSpace(args.Name), strings.TrimSpace(name)) {
+				return nil, errors.New("this link is for connecting " + name)
+			}
+		default:
+			return nil, errors.New("this link only connects an agent; ask your agent for a settings link")
 		}
 	}
 	if strings.HasPrefix(purpose, "setup:") {
@@ -553,18 +569,43 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
 	case "policy.get":
 		return s.policy(), nil
-	case "webhook.get":
-		out := map[string]any{"configured": false}
+	case "webhook.get": // older panels
+		agents := s.core.Agents()
+		out := map[string]any{"configured": len(agents) > 0}
+		for _, a := range agents {
+			if a.Default {
+				out["url"] = a.Host
+			}
+		}
+		return out, nil
+	case "agents.get":
+		out := map[string]any{"agents": s.core.Agents()}
+		if strings.HasPrefix(purpose, "agent:") {
+			out["name"] = strings.TrimPrefix(purpose, "agent:")
+			return out, nil
+		}
+		var routes []map[string]any
 		_ = s.core.Vault.View(func(d *vault.Data) error {
-			if d.Webhook != nil {
-				out["configured"], out["url"] = true, d.Webhook.URL
+			for _, m := range s.core.Store.Installed() {
+				if i := d.Integrations[m.ID]; i != nil && i.Enabled {
+					routes = append(routes, map[string]any{"id": m.ID, "name": m.Name, "agent": i.Agent})
+				}
 			}
 			return nil
 		})
+		out["plugins"] = routes
 		return out, nil
 	case "webhook.test":
-		ev := s.core.TestWebhook()
+		ev := s.core.TestWebhook(args.Name)
 		return map[string]any{"event_id": ev.ID}, nil
+	case "agent.add":
+		approvalID, err = s.core.AddAgent(ctx, args.Name, args.URL, args.Key)
+	case "agent.remove":
+		approvalID, err = s.core.RemoveAgent(ctx, args.Name)
+	case "agent.default":
+		approvalID, err = s.core.SetDefaultAgent(ctx, args.Name)
+	case "plugin.route":
+		approvalID, err = s.core.RoutePlugin(ctx, args.ID, args.Agent)
 	case "integration.setup":
 		approvalID, err = s.core.ConnectIntegration(ctx, args.ID, args.Fields, args.Secrets)
 	case "integration.disconnect":

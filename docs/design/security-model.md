@@ -182,6 +182,12 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   marked as untrusted.
 - The webhook URL and key are stored in the vault; changing them needs a strong approval, so a manipulated
   agent can't redirect events elsewhere.
+- Several Bots can share one Rubi (they share the computer and the MCP server). Each registered agent has
+  its own webhook; an approval's outcome goes to the agent that asked for it, a plugin's events to the agent
+  the user assigned, and everything else to the default agent. Agents name themselves, so this is routing,
+  not access control: all Bots on the account can already use the same tools.
+- Waking an agent costs the user's Grok Bot quota, so Rubi wakes only when needed: when an agent left a plan
+  for an approval it hasn't seen decided, and for plugin events such as replies.
 - Background work (e.g. watching for replies) runs only while Rubi is unlocked. When an event can't be
   checked because Rubi is locked, the agent tells the user on their next conversation.
 

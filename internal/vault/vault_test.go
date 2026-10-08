@@ -117,3 +117,21 @@ func TestSaveKeysRefusesEmpty(t *testing.T) {
 		t.Fatal("saved keys without wraps")
 	}
 }
+
+func TestMigrateSingleWebhookToAgent(t *testing.T) {
+	dek := NewKey()
+	d := NewData("inst")
+	d.Webhook = &Webhook{URL: "https://example.com/hook", Key: "k1"}
+	blob, err := Seal(dek, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := Open(dek, "inst", blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Webhook != nil || len(got.Agents) != 1 || got.Agents[0].Name != "Main" || !got.Agents[0].Default ||
+		got.Agents[0].Key != "k1" {
+		t.Fatalf("migration: %+v %+v", got.Webhook, got.Agents)
+	}
+}
