@@ -12,7 +12,11 @@ need the user's passwords.
 
 ## Install (once)
 
-1. Run: `curl -fsSL https://rubi-panel.com/install.sh | sh`
+1. Ask the user how the panel should reach Rubi, in one short question:
+   - **Rubi Gateway** (recommended): a relay run for Rubi, with public relays as a fallback;
+   - **public relays** only;
+   - **their own Tailscale** network: the panel then opens only on their Tailscale devices.
+   Then run: `curl -fsSL https://rubi-panel.com/install.sh | RUBI_TRANSPORT=<gateway|relays|tailscale> sh`
    It verifies the release signature and installs to `~/.rubi`. If it reports an error, stop and tell the
    user; don't try to work around a failed signature check.
 2. Add a custom MCP server named `rubi` that runs `~/.rubi/bin/rubi mcp` (use the absolute path the

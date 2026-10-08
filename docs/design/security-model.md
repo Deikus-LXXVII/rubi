@@ -89,7 +89,13 @@ Properties:
 
 ## 6. Transport
 
-- **The user configures nothing.** Rubi offers the panel API over these transports:
+- **The user picks one option at install** (the agent asks; `rubi transport` changes it later):
+  - **Rubi Gateway** (default): `wss://gateway.rubi-panel.com`, a relay that carries only Rubi's traffic
+    (`internal/gateway`), with the public relays below as a fallback. Only its name is built into Rubi.
+  - **Public relays** only.
+  - **The user's own Tailscale**: Rubi runs `tailscale serve` on this machine, and the panel opens only on
+    the user's Tailscale devices. No relays are used.
+- With relays, Rubi offers the panel API over these transports:
   1. **Public Nostr relays (default).** Rubi and the panel both connect out to several public relays and
      exchange ephemeral events (kind 21777, which relays forward but don't store). Each event carries a
      chunk of an already encrypted panel request or response. No inbound address, no account, nothing to

@@ -239,10 +239,17 @@ func receiveHandoff(c *core.Core) error {
 func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout) (<-chan struct{}, error) {
 	done := make(chan struct{})
 	api := panelapi.New(c)
-	startRelays(ctx, c, api)
+	cfg := LoadTransport(layout)
+	c.SetTransportName(cfg.Transport)
+	log.Printf("panel transport: %s", cfg.Transport)
+	if relays := relaysFor(cfg.Transport); len(relays) > 0 {
+		startRelays(ctx, c, api, relays)
+	}
 	addr := "127.0.0.1:0"
 	if p := os.Getenv("RUBI_PANEL_API_PORT"); p != "" {
 		addr = "127.0.0.1:" + p
+	} else if cfg.Transport == TransportTailscale {
+		addr = "127.0.0.1:" + tailscalePort
 	}
 	pln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -261,6 +268,20 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	if u := os.Getenv("RUBI_PUBLIC_URL"); u != "" {
 		c.SetEndpoint(u)
 		log.Printf("panel transport: fixed URL %s", u)
+		close(done)
+		return done, nil
+	}
+	if cfg.Transport == TransportTailscale {
+		_, port, _ := net.SplitHostPort(pln.Addr().String())
+		u, err := setupTailscale(ctx, port)
+		if err != nil {
+			c.SetTransportError("Panel over Tailscale isn't working: " + err.Error() +
+				". Fix Tailscale on this machine, or switch transport: ~/.rubi/bin/rubi transport gateway")
+			log.Printf("panel transport: %v", err)
+		} else {
+			c.SetEndpoint(u)
+			log.Printf("panel transport: Tailscale at %s", u)
+		}
 		close(done)
 		return done, nil
 	}
@@ -283,12 +304,8 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	return done, nil
 }
 
-// startRelays serves the panel through public relays.
-func startRelays(ctx context.Context, c *core.Core, api *panelapi.Server) {
-	relays := relay.DefaultRelays
-	if r := os.Getenv("RUBI_RELAYS"); r != "" {
-		relays = strings.Split(r, ",")
-	}
+// startRelays serves the panel through relays (Rubi Gateway and/or public ones).
+func startRelays(ctx context.Context, c *core.Core, api *panelapi.Server, relays []string) {
 	key, err := relay.NewKey()
 	if err != nil {
 		log.Printf("relay key: %v", err)

@@ -24,6 +24,10 @@ const (
 	AnnounceTag  = "rubi-releases"
 )
 
+// GatewayURL is Rubi Gateway, the relay run for Rubi only (see internal/gateway). Only its name is
+// built in; nothing about the machine behind it.
+const GatewayURL = "wss://gateway.rubi-panel.com"
+
 // AnnouncePub is the public key the site signs announcements with (x-only secp256k1, hex).
 const AnnouncePub = "bd5b70c28e0f8fe748503ffcbb3407112fb3b597d9275573f40ad53807b99eb8"
 

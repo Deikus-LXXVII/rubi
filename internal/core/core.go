@@ -61,10 +61,12 @@ type Core struct {
 	endpoint string // current public URL of the panel API (set by the tunnel or RUBI_PUBLIC_URL)
 	relayPub string // Rubi's routing key on the relays ("" = relay transport off)
 	relays   []string
-	relayUp  int    // relays currently connected
-	transErr string // why there is no endpoint, if the transport can't start
-	pairCode string
-	pairExp  time.Time
+	relayUp  int // relays currently connected
+	// transport is the user's chosen transport (gateway, relays, tailscale).
+	transport string
+	transErr  string // why there is no endpoint, if the transport can't start
+	pairCode  string
+	pairExp   time.Time
 	// tickets are short-lived random tokens embedded in panel links. The panel API serves anything
 	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
 	// can't even fetch the wrapped keys.
@@ -196,6 +198,27 @@ func (c *Core) SetRelaysConnected(n int) {
 	c.mu.Lock()
 	c.relayUp = n
 	c.mu.Unlock()
+}
+
+// SetTransportName records the user's chosen transport (shown in rubi_status).
+func (c *Core) SetTransportName(t string) {
+	c.mu.Lock()
+	c.transport = t
+	c.mu.Unlock()
+}
+
+// TransportInfo describes how the panel is reached right now.
+func (c *Core) TransportInfo() map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	info := map[string]any{"transport": c.transport, "relays_connected": c.relayUp, "relays": len(c.relays)}
+	if c.endpoint != "" {
+		info["https"] = true
+	}
+	if c.transErr != "" && c.endpoint == "" && c.relayUp == 0 {
+		info["problem"] = c.transErr
+	}
+	return info
 }
 
 // RelaysConnected reports how many relays carry the panel right now.

@@ -116,14 +116,25 @@ if pkill -f "$RUBI_HOME/bin/rubi daemon" 2>/dev/null; then
   restarted=1
 fi
 
-say "installed Rubi $version to $RUBI_HOME/bin/rubi"
+# How the user's browser reaches the panel: RUBI_TRANSPORT=gateway (default), relays or tailscale.
+if [ -n "${RUBI_TRANSPORT:-}" ]; then
+  "$RUBI_HOME/bin/rubi" transport "$RUBI_TRANSPORT" >/dev/null || fail "unknown RUBI_TRANSPORT: $RUBI_TRANSPORT"
+fi
+transport=$("$RUBI_HOME/bin/rubi" transport 2>/dev/null | sed -n 's/^transport: //p')
+
+say "installed Rubi $version to $RUBI_HOME/bin/rubi (panel connection: ${transport:-gateway})"
 cat <<EOF
 
 Next steps for the agent:
   1. Add a custom MCP server named "rubi" that runs:
        $RUBI_HOME/bin/rubi mcp
   2. Call the rubi_status tool and give the user the link it returns.
-     The user finishes setup in the Rubi panel with Face ID or a password.
+     The user finishes setup in the Rubi panel with a passkey or a password.
+
+Panel connection (ask the user if they haven't chosen): $RUBI_HOME/bin/rubi transport gateway|relays|tailscale
+  gateway    Rubi Gateway, with public relays as a fallback (default, recommended)
+  relays     public Nostr relays only
+  tailscale  the user's own Tailscale network; the panel opens only on their Tailscale devices
 EOF
 if [ -n "$restarted" ]; then
   echo

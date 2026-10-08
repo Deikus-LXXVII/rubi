@@ -454,6 +454,7 @@ func (s *Server) status() out {
 		"fingerprint": s.core.ID.Fingerprint(),
 		"integrity":   s.core.Integrity(),
 		"update":      s.core.UpdateInfo(),
+		"panel":       s.core.TransportInfo(),
 	}
 	if st == core.Unlocked {
 		o["webhook"] = s.core.WebhookHint()

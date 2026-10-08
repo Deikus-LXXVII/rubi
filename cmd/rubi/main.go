@@ -36,6 +36,9 @@ Usage:
                   check for or install a signed release (the agent's rubi_update tool does this without
                   locking Rubi; this command restarts it locked)
   rubi rollback   go back to the previous version
+  rubi transport [gateway | relays | tailscale]
+                  show or choose how the panel reaches Rubi (Rubi Gateway, public relays, or your own
+                  Tailscale network); Rubi restarts locked to apply a change
 
 Development:
   rubi dev-panel <link> [--password-stdin]
@@ -80,6 +83,16 @@ func main() {
 		if err := updateCmd(layout, os.Args[2:]); err != nil {
 			fail(err)
 		}
+	case "transport":
+		if len(os.Args) < 3 {
+			fmt.Println("transport: " + daemon.LoadTransport(layout).Transport)
+			return
+		}
+		if err := daemon.SaveTransport(layout, os.Args[2]); err != nil {
+			fail(err)
+		}
+		stopDaemon(layout)
+		fmt.Println("transport: " + os.Args[2] + " (Rubi restarts locked on its next use; give the user the new unlock link)")
 	case "rollback":
 		exe, err := selfPath()
 		if err == nil {
