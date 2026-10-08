@@ -1212,6 +1212,11 @@ function integrityLine(st) {
 
 // ---------- small components ----------
 
+// backBar is the way back, at the top of a screen that was opened from another one.
+function backBar(label, onBack) {
+  return h("button", { class: "back", type: "button", onclick: onBack }, icon("back", 18), label);
+}
+
 // badge is a plugin's mark: its initials on a hexagon, like Rubi.
 function badge(name, size = 40) {
   const words = String(name || "?").replace(/^Unofficial /, "").split(/\s+/).filter(Boolean);
@@ -1620,6 +1625,10 @@ async function pluginConfigScreen(ctx, id, opts = {}) {
     }
     return h("label", { class: "field" }, h("span", {}, f.label), el, f.help ? h("small", {}, f.help) : null);
   });
+  const snapshot = () => JSON.stringify(Object.fromEntries(Object.entries(inputs).map(([k, get]) => [k, get()])));
+  let initial = "";
+  const bar = h("div", { class: "savebar" + (opts.done ? " always" : "") });
+  const markDirty = () => bar.classList.toggle("dirty", snapshot() !== initial);
   const save = h("button", { class: "primary", onclick: async (e) => {
     const values = {};
     for (const [k, get] of Object.entries(inputs)) values[k] = get();
@@ -1634,17 +1643,25 @@ async function pluginConfigScreen(ctx, id, opts = {}) {
       confirmChange(ctx, res, opts.done || (() => pluginConfigScreen(ctx, id, opts)), opts.done ? "Finish" : undefined);
     }).catch((x) => showError(err, x));
   } }, opts.done ? "Save and finish" : "Save");
+  bar.append(h("span", { class: "savebar-note" }, opts.done ? "You can change these later in Settings." : "Unsaved changes"),
+    opts.done ? h("button", { class: "link", type: "button", onclick: back }, "Keep the defaults") : null, save);
+  const account = ((cfg.accounts || []).find((a) => a.id === cfg.account) || {}).label || cfg.account;
   screen(
+    { focus: false },
     header(ctx.hello),
+    opts.done ? null : backBar("Settings", back),
     opts.intro ? h("p", { class: "eyebrow" }, "Last step") : null,
-    h("h1", {}, opts.intro ? `What can your agent see in ${cfg.name}?` : `${cfg.name} settings`),
-    (cfg.accounts || []).length > 1 || opts.intro ? h("p", { class: "muted" }, `Account: ${((cfg.accounts || []).find((a) => a.id === cfg.account) || {}).label || cfg.account}`) : null,
-    h("p", { class: "muted" }, "Only you can change these, with your passkey or password. Your agent can't read or change them."),
+    h("div", { class: "title-row" }, badge(cfg.name, 44), h("div", {},
+      h("h1", {}, opts.intro ? `What can your agent see in ${cfg.name}?` : `${cfg.name} settings`),
+      (cfg.accounts || []).length > 1 || opts.intro ? h("p", { class: "muted" }, account) : null)),
+    h("p", { class: "note" }, icon("lock", 16), "Only you can change these, with your passkey or password. Your agent can't read or change them."),
     err,
-    ...rows,
-    save,
-    h("button", { class: "link", onclick: back }, opts.done ? "Keep the defaults" : "Back to settings"),
+    h("div", { class: "cfg" }, rows),
+    bar,
   );
+  initial = snapshot();
+  root.querySelector(".cfg")?.addEventListener("input", markDirty);
+  root.querySelector(".cfg")?.addEventListener("change", markDirty);
 }
 
 // ---------- store ----------
@@ -1660,45 +1677,63 @@ async function storeScreen(ctx, back) {
   }
   const again = () => storeScreen(ctx, back);
   const install = (plugin) => async (e) => {
-    await busy(e.target, async () => {
-      e.target.textContent = "Verifying…";
+    const target = e.target.closest("button") || e.target;
+    await busy(target, async () => {
       confirmChange(ctx, await ctx.client.call("plugin.install", { plugin }), again);
     }).catch((x) => showError(err, x));
   };
   const reviewed = (store.plugins || []).filter((p) => p.reviewed && (p.latest || p.requires_newer_rubi));
-  const cards = reviewed.map((p) => h("div", { class: "item plugin" },
-    h("div", {},
-      h("strong", {}, p.name),
-      h("div", { class: "muted" }, p.summary),
-      h("div", { class: "muted small" }, `${p.publisher}${p.latest ? ` · ${p.latest}` : ""}`)),
-    h("div", { class: "actions" },
-      p.installed
-        ? (p.update_available
-          ? h("button", { class: "primary small", onclick: async (e) => {
-            await busy(e.target, async () => confirmChange(ctx, await ctx.client.call("plugin.update", { id: p.id }), again)).catch((x) => showError(err, x));
-          } }, "Update")
-          : h("span", { class: "tag" }, "Installed"))
-        : p.requires_newer_rubi
-          ? h("span", { class: "tag warn" }, "Needs a newer Rubi")
-          : h("button", { class: "primary small", onclick: install(p.id) }, "Install"))));
+  const tiles = reviewed.map((p) => {
+    const action = p.installed
+      ? (p.update_available
+        ? h("button", { class: "primary small", onclick: async (e) => {
+          await busy(e.target, async () => confirmChange(ctx, await ctx.client.call("plugin.update", { id: p.id }), again)).catch((x) => showError(err, x));
+        } }, icon("download", 16), "Update")
+        : h("span", { class: "tag" }, icon("check", 12), "Installed"))
+      : p.requires_newer_rubi
+        ? h("span", { class: "tag warn" }, "Needs a newer Rubi")
+        : h("button", { class: "secondary small", onclick: install(p.id) }, icon("plus", 16), "Install");
+    return h("article", { class: "stile", "data-q": `${p.name} ${p.summary || ""} ${p.publisher || ""}`.toLowerCase() },
+      badge(p.name, 48),
+      h("div", { class: "stile-text" },
+        h("strong", {}, p.name),
+        h("p", { class: "muted" }, p.summary || ""),
+        h("span", { class: "muted small" }, icon("shield", 12), ` ${p.publisher || "Rubi-Project"}${p.latest ? ` · ${p.latest}` : ""}`)),
+      h("div", { class: "stile-action" }, action));
+  });
+  const grid = h("div", { class: "sgrid" }, tiles);
+  const none = h("p", { class: "muted center", hidden: true }, "No plugin matches.");
+  const search = h("input", { type: "search", placeholder: "Search plugins", "aria-label": "Search plugins", autocomplete: "off",
+    oninput: () => {
+      const q = search.value.trim().toLowerCase();
+      let shown = 0;
+      for (const t of tiles) {
+        const hit = !q || t.dataset.q.includes(q);
+        t.classList.toggle("is-hidden", !hit);
+        shown += hit;
+      }
+      none.hidden = shown > 0;
+    } });
 
   const url = h("input", { type: "url", placeholder: "https://github.com/owner/repo", autocomplete: "off", autocapitalize: "none" });
   const sideload = h("details", { class: "sideload" },
-    h("summary", {}, "Install from a link"),
+    h("summary", {}, icon("link", 16), "Install from a link"),
     h("p", { class: "muted" }, "Plugins outside the store are not reviewed by Rubi-Project. Install one only if you trust who made it: it runs on your agent's computer with access to what you enter for it."),
     url,
     h("button", { class: "secondary", onclick: (e) => install(url.value.trim())(e) }, "Check and install"));
 
   screen(
-    { cls: "wide" },
+    { cls: "wide", focus: false },
     header(ctx.hello),
-    h("h1", {}, "Store"),
+    back ? backBar("Settings", back) : null,
+    h("h1", {}, "Plugin store"),
     h("p", { class: "muted" }, "Plugins reviewed by Rubi-Project. Installing one shows what it can do and needs your passkey or password."),
     err,
     store.catalog_error ? h("p", { class: "error" }, `The store is unavailable right now: ${store.catalog_error}`) : null,
-    cards.length ? h("div", { class: "list" }, cards) : (store.catalog_error ? null : h("p", { class: "muted" }, "The store is empty.")),
+    tiles.length > 4 ? h("div", { class: "search" }, icon("search", 18), search) : null,
+    tiles.length ? grid : (store.catalog_error ? null : h("p", { class: "muted" }, "The store is empty.")),
+    none,
     sideload,
-    back ? h("button", { class: "link", onclick: back }, "Back to settings") : null,
   );
 }
 

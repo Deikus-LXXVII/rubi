@@ -57,17 +57,17 @@ function approval(id) {
 }
 
 const PLUGINS = [
-  { id: "icloud-mail", name: "iCloud Mail", version: "v2.0.0", installed: true, reviewed: true, connected: true, has_config: true,
+  { id: "icloud-mail", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Read, search and draft; send after your approval.", name: "iCloud Mail", version: "v2.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     accounts: [{ id: "alex@icloud.com", label: "alex@icloud.com", default: true }, { id: "work@icloud.com", label: "work@icloud.com" }],
     previous_version: "v1.2.0" },
-  { id: "gmail", name: "Gmail", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
+  { id: "gmail", latest: "v1.0.0", publisher: "Rubi-Project", summary: "The same, for Gmail. Several accounts.", name: "Gmail", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     accounts: [{ id: "alex.k@gmail.com", label: "alex.k@gmail.com", default: true }] },
-  { id: "steam", name: "Steam", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
+  { id: "steam", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Prices, sales and your wishlist; deal alerts.", name: "Steam", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     update_available: "v1.1.0", accounts: [{ id: "76561198000000000", label: "Alex", default: true }] },
-  { id: "presence", name: "Location", version: "v1.0.0", installed: true, reviewed: true, connected: false, has_config: true },
-  { id: "hue", name: "Philips Hue", version: "v1.0.0", installed: false, reviewed: true, description: "Lights and scenes through Rubi Home." },
-  { id: "telegram", name: "Unofficial Telegram", version: "v1.0.0", installed: false, reviewed: true, description: "A bot or your personal account, with approvals." },
-  { id: "apple-home", name: "Apple Home", version: "v1.0.0", installed: false, reviewed: true, description: "Your Shortcuts, run by your agent with your say." },
+  { id: "presence", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Home or away, from your iPhone. Never coordinates.", name: "Location", version: "v1.0.0", installed: true, reviewed: true, connected: false, has_config: true },
+  { id: "hue", name: "Philips Hue", latest: "v1.0.0", installed: false, reviewed: true, publisher: "Rubi-Project", summary: "Lights and scenes, through Rubi Home." },
+  { id: "telegram", name: "Unofficial Telegram", latest: "v1.0.0", installed: false, reviewed: true, publisher: "Rubi-Project", summary: "A bot or your personal account. Sending waits for you." },
+  { id: "apple-home", name: "Apple Home", latest: "v1.0.0", installed: false, reviewed: true, publisher: "Rubi-Project", summary: "Your Shortcuts, run by your agent with your say." },
 ];
 
 export class DemoClient {
