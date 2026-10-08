@@ -51,6 +51,10 @@ export function mascot(mood = "idle", size = 48, opts = {}) {
       ...stops(["0%", "#ffffff", 0.55], ["38%", "#ffffff", 0], ["86%", "#000000", 0], ["100%", "#000000", 0.28])),
     el("radialGradient", { id: `${id}-spec`, cx: "50%", cy: "50%", r: "50%" },
       ...stops(["0%", "#ffffff", 0.55], ["100%", "#ffffff", 0])),
+    el("linearGradient", { id: `${id}-shine`, x1: "0", y1: "0", x2: "1", y2: "0" },
+      ...stops(["0%", "#ffffff", 0], ["45%", "#ffffff", 0.45], ["52%", "#ffffff", 0.7], ["60%", "#ffffff", 0.45], ["100%", "#ffffff", 0])),
+    el("radialGradient", { id: `${id}-cheek`, cx: "50%", cy: "50%", r: "50%" },
+      ...stops(["0%", "#ff9aa6", 0.95], ["100%", "#ff9aa6", 0])),
     el("radialGradient", { id: `${id}-floor`, cx: "50%", cy: "50%", r: "50%" },
       ...stops(["0%", "#000000", 0.42], ["100%", "#000000", 0])),
     el("clipPath", { id: `${id}-clip` }, el("path", { d: BODY_PATH })),
@@ -61,7 +65,9 @@ export function mascot(mood = "idle", size = 48, opts = {}) {
   body.append(
     el("path", { class: "mascot-skin", d: BODY_PATH, fill: `url(#${id}-body)` }),
     el("g", { "clip-path": `url(#${id}-clip)` },
-      el("ellipse", { class: "mascot-spec", cx: 30, cy: 22, rx: 17, ry: 9, transform: "rotate(-24 30 22)", fill: `url(#${id}-spec)` })),
+      el("ellipse", { class: "mascot-spec", cx: 30, cy: 22, rx: 17, ry: 9, transform: "rotate(-24 30 22)", fill: `url(#${id}-spec)` }),
+      // A band of light that can sweep across the body, like a gem catching the light.
+      el("g", { transform: "skewX(-18)" }, el("rect", { class: "mascot-shine", x: -44, y: -10, width: 34, height: 120, fill: `url(#${id}-shine)`, opacity: 0 }))),
     el("path", { class: "mascot-rim", d: BODY_PATH, fill: "none", stroke: `url(#${id}-rim)`, "stroke-width": 1.4 }),
   );
 
@@ -80,6 +86,11 @@ export function mascot(mood = "idle", size = 48, opts = {}) {
     );
     blinkers.append(eye);
   });
+  // Cheeks, shown when Rubi is pleased (the "blush" reaction).
+  gaze.append(
+    el("ellipse", { class: "mascot-cheek", cx: 36, cy: 66, rx: 6, ry: 3.4, fill: `url(#${id}-cheek)`, opacity: 0 }),
+    el("ellipse", { class: "mascot-cheek", cx: 68, cy: 64.4, rx: 6, ry: 3.4, fill: `url(#${id}-cheek)`, opacity: 0 }),
+  );
   gaze.append(blinkers);
   body.append(gaze);
   svg.append(body);
@@ -154,6 +165,34 @@ const REACTIONS = {
     duration: 560,
     easing: "cubic-bezier(.65, 0, .35, 1)",
   },
+  // Success, without a jump: a sweep of light across the body, like a cut gem.
+  shine: {
+    body: [{ transform: "none" }, { transform: "translateY(-1.5%)", offset: 0.5 }, { transform: "none" }],
+    parts: [[".mascot-shine", [{ transform: "translateX(0)", opacity: 0 }, { opacity: 1, offset: 0.2 }, { opacity: 1, offset: 0.75 },
+      { transform: "translateX(160px)", opacity: 0 }]]],
+    duration: 1300,
+    easing: "cubic-bezier(.65, 0, .35, 1)",
+  },
+  // Pleased: cheeks warm up while Rubi rises a little and settles.
+  blush: {
+    body: [{ transform: "none" }, { transform: "translateY(-3%) scale(1.01)", offset: 0.35 }, { transform: "translateY(-3%) scale(1.01)", offset: 0.7 }, { transform: "none" }],
+    parts: [[".mascot-cheek", [{ opacity: 0 }, { opacity: 0.9, offset: 0.25 }, { opacity: 0.9, offset: 0.8 }, { opacity: 0 }]]],
+    duration: 1900,
+    easing: "cubic-bezier(.65, 0, .35, 1)",
+  },
+  // Content: a slow sway from side to side.
+  sway: {
+    body: [{ transform: "none" }, { transform: "rotate(-5deg)", offset: 0.25 }, { transform: "rotate(5deg)", offset: 0.6 }, { transform: "none" }],
+    duration: 1500,
+    easing: "cubic-bezier(.65, 0, .35, 1)",
+  },
+  // Light: floats up and back down; its shadow shrinks and returns.
+  rise: {
+    body: [{ transform: "none" }, { transform: "translateY(-9%)", offset: 0.5 }, { transform: "none" }],
+    floor: [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(0.78)", opacity: 0.55, offset: 0.5 }, { transform: "scale(1)", opacity: 1 }],
+    duration: 1500,
+    easing: "cubic-bezier(.65, 0, .35, 1)",
+  },
   land: {
     body: [{ transform: "scale(1.03, 0.97)" }, { transform: "none" }],
     floor: [{ transform: "scale(1.05)" }, { transform: "scale(1)" }],
@@ -181,6 +220,9 @@ export function react(svg, kind, delay = 0) {
   const opts = { duration: r.duration, easing: r.easing, delay, fill: r.fill || "both" };
   const anims = [body.animate(r.body, opts)];
   if (r.floor) anims.push(floor.animate(r.floor, opts));
+  for (const [sel, frames] of r.parts || []) {
+    for (const part of svg.querySelectorAll(sel)) anims.push(part.animate(frames, { ...opts, fill: "none" }));
+  }
   return Promise.all(anims.map((a) => a.finished.catch(() => {})));
 }
 
@@ -284,4 +326,12 @@ export function lookAt(svg, target) {
 export function shy(svg, on) {
   if (!svg) return;
   svg.classList.toggle("shy", on);
+}
+
+// celebrate is Rubi's reaction to a success: it smiles (^ ^) and a band of light sweeps across it, like
+// a cut ruby turning in the light. No jump. One place, so it can be changed everywhere at once.
+export async function celebrate(svg, delay = 0) {
+  if (!svg) return;
+  setMood(svg, "happy");
+  await react(svg, "shine", delay);
 }

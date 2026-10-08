@@ -7,7 +7,7 @@ import {
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
 import { icon } from "./icons.js";
-import { lookAt, mascot, react, setMood, shy } from "./mascot.js";
+import { celebrate, lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
 
 const root = document.getElementById("app");
@@ -97,7 +97,7 @@ function animateIn(main) {
 
 // face is the mascot at the top of a screen; its eyes show Rubi's state.
 // face is the mascot at the top of a screen. It pops in (or, when it flew in from the last screen, just
-// lands), then plays the mood's reaction: a double hop when happy, `then` otherwise (a sigh, a shake).
+// lands), then plays the mood's reaction: the smile and shine when happy, `then` otherwise (a sigh, a shake).
 function face(mood, size = 76, then) {
   const wrap = h("div", { class: `screen-mascot mood-${mood}` });
   const svg = mascot(mood, size);
@@ -107,10 +107,7 @@ function face(mood, size = 76, then) {
       await new Promise((r) => setTimeout(r, 420));
       await react(svg, "land");
     }
-    if (mood === "happy") {
-      await react(svg, "hop");
-      await react(svg, "hop", 120);
-    }
+    if (mood === "happy") await celebrate(svg);
     if (then) react(svg, then);
   };
   wrap.append(svg);
@@ -341,15 +338,15 @@ function enhanceLanding() {
   landingDone = true;
   document.documentElement.classList.add("js");
 
-  // Rubi, alive, watching the pointer. Clicking it makes it hop.
+  // Rubi, alive, watching the pointer. Clicking it makes it smile and shine.
   const img = document.getElementById("hero-mascot");
   if (img) {
     const svg = mascot("idle", 240, { follow: true });
     svg.classList.add("hero-mascot");
     svg.addEventListener("click", async () => {
       setMood(svg, "happy");
-      await react(svg, "hop");
-      setTimeout(() => setMood(svg, "idle"), 500);
+      await celebrate(svg);
+      setMood(svg, "idle");
     });
     img.replaceWith(svg);
     react(svg, "pop", 200);
@@ -401,7 +398,7 @@ function startStory(story) {
     card.replaceChildren(next);
     if (landingMascot) {
       setMood(landingMascot, step.who === "rubi" ? "happy" : step.who === "you" ? "alert" : "idle");
-      if (step.who === "rubi") react(landingMascot, "hop");
+      if (step.who === "rubi") celebrate(landingMascot);
       if (step.who === "agent") react(landingMascot, "nod");
     }
     i = (i + 1) % STORY.length;

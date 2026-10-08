@@ -32,7 +32,7 @@ face is two dark eyes; the eyes carry nearly all emotion.
 | idle | waiting, settings | upright pills, blink every few seconds, glance aside | slow breathing |
 | locked | Rubi is locked | closed, gentle curves | slower, deeper breathing, slight droop |
 | thinking | connecting, working | small, looking up and around | gentle sway |
-| happy | approved, connected | ^ ^ arcs | hop with squash and stretch |
+| happy | approved, connected | ^ ^ arcs | a band of light sweeps across the body, like a cut ruby turning; a slight lift |
 | alert | something needs attention | tall, wide open | quick double nudge |
 | concern | an error | slanted, a little lower | small sigh (sink and recover) |
 
@@ -40,7 +40,7 @@ Attention (the mascot shows it is paying attention to the user, not to itself):
 
 - While a password is typed, Rubi closes its eyes and turns a little away.
 - Pointing at the primary button makes Rubi look at it.
-- On the landing page Rubi follows the pointer and hops when clicked.
+- On the landing page Rubi follows the pointer and smiles with a shine when clicked.
 - Between screens Rubi flies from its old place and size to the new one, then lands with a small squash.
 
 Rules:
@@ -111,7 +111,7 @@ Motion explains what happened and where things went. It is quick, soft and never
 - `--ease-in` cubic-bezier(.7, 0, .84, 0): things leaving (shorter than arriving).
 - `--ease-in-out` cubic-bezier(.65, 0, .35, 1): moving in place.
 - No bounce: transitions never overshoot. Even Rubi's entrances and the switch knob use `--ease-out`;
-  only Rubi's own hop on success is a jump (a character action, not a transition).
+  nothing jumps.
 
 **Patterns:**
 
@@ -119,7 +119,8 @@ Motion explains what happened and where things went. It is quick, soft and never
   clearing (420 ms), its blocks staggered 40 ms apart.
 - Press: buttons scale to 0.97 on press and ease back.
 - Waiting: the button keeps its size and shows three soft dots; after 1.5 s the mascot starts "thinking".
-- Success: the mascot hops (squash, stretch, land), a ring of ruby sparks, the title rises.
+- Success: Rubi smiles (^ ^) and a band of light sweeps across it like a ruby catching the light (no
+  jump); hexagon confetti and a ring of ruby light; the title rises.
 - Decline / expired: the mascot sighs; no sparks.
 - Error: the message slides down; the field shakes twice, small (6 px).
 - Expand / collapse: height and opacity together, 420 ms.

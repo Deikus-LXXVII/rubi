@@ -1,7 +1,7 @@
 // The living brand book: renders the real mascot, tokens, components and icons (see brand.html).
 
 import { ICONS, icon } from "./icons.js";
-import { MOODS, mascot, react, setMood } from "./mascot.js";
+import { MOODS, celebrate, mascot, react, setMood } from "./mascot.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -23,10 +23,15 @@ for (const m of MOODS) moods.append(h("figure", {}, mascot(m, 110), h("figcaptio
 const big = mascot("idle", 140);
 const reactions = $("reactions");
 reactions.append(big);
-for (const r of ["pop", "hop", "nod", "sigh", "shake"]) {
-  reactions.append(h("button", { class: "secondary small", onclick: () => react(big, r) }, r));
-}
 const moodSel = h("select", { onchange: (e) => setMood(big, e.target.value), "aria-label": "Mood" }, MOODS.map((m) => h("option", { value: m }, m)));
+const happy = new Set(["celebrate"]);
+for (const r of ["celebrate", "nod", "sigh", "shake", "pop"]) {
+  reactions.append(h("button", { class: "secondary small", onclick: async () => {
+    if (happy.has(r)) setMood(big, "happy");
+    await (r === "celebrate" ? celebrate(big) : react(big, r));
+    setMood(big, moodSel.value);
+  } }, r));
+}
 reactions.append(moodSel);
 
 // Colour: read the live tokens.
