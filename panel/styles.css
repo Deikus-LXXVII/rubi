@@ -814,3 +814,44 @@ a.btn:active { transform: scale(0.97); }
   .story { bottom: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { #landing::before { animation: none; } .reveal { opacity: 1; transform: none; } }
+
+/* ============================================================ landing sections (iteration 9) */
+
+.steps, .features, .integrations, .closer { padding: 44px 0; }
+.steps .eyebrow, .integrations .eyebrow { margin-bottom: 8px; }
+.steps h2, .integrations h2, .closer h2 { font-size: clamp(1.6rem, 4vw, 2.3rem); letter-spacing: -0.03em; margin-bottom: 22px; font-weight: 700; }
+.integrations .muted { margin: -10px 0 20px; font-size: 1rem; }
+.steps ol { position: relative; }
+.steps li { flex-direction: column; gap: 14px; padding: 22px; }
+.num { width: 44px; height: 44px; border-radius: 0; font-size: 1.05rem;
+  background: radial-gradient(circle at 32% 24%, var(--ruby-400), var(--ruby-500) 55%, var(--ruby-800));
+  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%); }
+.steps h3 { font-size: 1.12rem; }
+
+.feature { display: flex; flex-direction: column; gap: 6px; transition: border-color var(--t-base), translate var(--t-base) var(--ease-out); }
+.feature:hover { border-color: var(--line-2); translate: 0 -2px; }
+.feature-icon { width: 42px; height: 42px; display: grid; place-items: center; border-radius: var(--r-sm); margin-bottom: 8px;
+  color: var(--accent-2); background: color-mix(in srgb, var(--accent) 13%, transparent); }
+
+.plugin-chips { gap: 10px; }
+.plugin-chips .chip { display: inline-flex; align-items: center; gap: 10px; padding: 6px 16px 6px 6px; color: var(--text); background: var(--card); border-color: var(--line); }
+.plugin-chips .chip b { width: 30px; height: 30px; display: grid; place-items: center; font-size: 0.72rem; color: #fff;
+  background: radial-gradient(circle at 32% 24%, var(--ruby-400), var(--ruby-500) 55%, var(--ruby-800));
+  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%); }
+.plugin-chips .chip::before { display: none; }
+
+.closer { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 14px; margin: 24px 0 8px; padding: 56px 24px;
+  border: 1px solid var(--line); border-radius: 28px;
+  background: radial-gradient(80% 120% at 50% 0%, color-mix(in srgb, var(--ruby-500) 16%, transparent), transparent 70%), var(--card); }
+.closer h2 { margin: 0; }
+.footer { justify-content: center; }
+
+@media (min-width: 1000px) {
+  .steps ol::before { /* a line that draws itself across the three steps */
+    content: ""; position: absolute; left: 44px; right: 44px; top: 44px; height: 2px; z-index: 0;
+    background: linear-gradient(90deg, var(--ruby-500), color-mix(in srgb, var(--ruby-500) 20%, transparent));
+    transform: scaleX(0); transform-origin: left; transition: transform 1.4s var(--ease-out) 0.2s; }
+  .steps.seen ol::before { transform: scaleX(1); }
+  .steps li { position: relative; z-index: 1; }
+}
+.steps .eyebrow { color: var(--accent-2); }

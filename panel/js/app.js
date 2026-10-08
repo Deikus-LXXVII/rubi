@@ -337,6 +337,8 @@ function enhanceLanding() {
     title.replaceChildren(...words.flatMap((w, i) => [h("span", { class: "word", style: `--w:${i}` }, w), " "]));
   }
 
+  for (const f of document.querySelectorAll(".feature[data-icon]")) f.prepend(h("span", { class: "feature-icon" }, icon(f.dataset.icon, 22)));
+
   // A small story of what Rubi does, on a loop: the agent asks, you approve, it's done.
   const story = document.getElementById("story");
   if (story) startStory(story);
@@ -344,9 +346,9 @@ function enhanceLanding() {
   // Blocks below the fold rise as they scroll into view.
   if ("IntersectionObserver" in window && !reducedMotion()) {
     const io = new IntersectionObserver((entries) => {
-      for (const e of entries) if (e.isIntersecting) { e.target.classList.add("seen"); io.unobserve(e.target); }
+      for (const e of entries) if (e.isIntersecting) { e.target.classList.add("seen"); e.target.closest(".steps")?.classList.add("seen"); io.unobserve(e.target); }
     }, { threshold: 0.15 });
-    document.querySelectorAll(".steps li, .feature, .integrations .chip").forEach((el, i) => {
+    document.querySelectorAll(".steps li, .feature, .integrations .chip, .closer").forEach((el, i) => {
       el.classList.add("reveal");
       el.style.setProperty("--d", `${(i % 4) * 70}ms`);
       io.observe(el);
