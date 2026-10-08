@@ -240,6 +240,9 @@ func (s *Server) fresh(env Envelope) error {
 	if _, dup := s.seen[env.RID]; dup || env.RID == "" {
 		return errors.New("replayed request")
 	}
+	if len(s.seen) >= 10000 { // a flood within the replay window: refuse rather than grow
+		return errors.New("busy; try again in a minute")
+	}
 	s.seen[env.RID] = now.Add(2 * clockSkew)
 	return nil
 }

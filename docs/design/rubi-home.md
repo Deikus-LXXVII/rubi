@@ -25,13 +25,19 @@ things on Rubi's request.
 3. Rubi calls `pair` with the secret and a new token, then asks the user to approve adding the computer
    (passkey or password). Removing it later also tells the helper to forget the token.
 
+A new pairing replaces every earlier one on that computer: codes are made there by its owner, so a pairing
+someone obtained from an older code ends at the next `rubi-home pair`. `rubi-home status` lists the
+pairing with its time. The helper introduces itself by its model ("MacBook Pro"), not by a hostname that
+often carries its owner's name.
+
 ## What it does
 
 The helper does only what it was built for, whatever Rubi asks:
 
 - **Philips Hue** (`hue.discover`, `hue.pair`, `hue.request`): finds bridges (mDNS, then Signify's
   discovery service), pairs when the user presses the link button, and passes GET and PUT requests to the
-  bridge's resource API (`/clip/v2/resource/…`) only. The bridge's certificate is recorded at pairing
+  bridge's resource API (`/clip/v2/resource/…`) only. Bridge addresses must be on the home network
+  (private or link-local), and no request follows a redirect. The bridge's certificate is recorded at pairing
   (its name must be the bridge id) and must match on every later connection. The application key stays in
   Rubi's vault and comes with each request. Requests to one bridge are at least 100 ms apart.
 - **Shortcuts** (`shortcuts.list`, `shortcuts.run`): lists and runs only the shortcuts in one folder (Rubi,

@@ -52,11 +52,17 @@ func main() {
 		sum := sha256.Sum256([]byte(h.ID.PublicBundle()))
 		fmt.Printf("Fingerprint: %s\n", base64.RawURLEncoding.EncodeToString(sum[:6]))
 		fmt.Printf("Paired with %d Rubi\n", len(cfg.Paired))
+		for _, p := range cfg.Paired {
+			fmt.Printf("  %s, since %s\n", p.Label, p.At.Local().Format("2006-01-02 15:04"))
+		}
 		fmt.Printf("Shortcuts folder: %s\n", cfg.ShortcutsFolder)
 		fmt.Printf("Hue Bridges paired: %d\n", len(cfg.HuePins))
 	case "folder":
-		if len(os.Args) != 3 || os.Args[2] == "" {
+		if len(os.Args) != 3 || strings.TrimSpace(os.Args[2]) == "" {
 			usage()
+		}
+		if strings.EqualFold(strings.TrimSpace(os.Args[2]), "none") { // the Shortcuts CLI reads it as "no folder": every loose shortcut
+			log.Fatal(`choose a real folder name, not "none"`)
 		}
 		if err := h.Update(func(c *home.Config) { c.ShortcutsFolder = os.Args[2] }); err != nil {
 			log.Fatal(err)

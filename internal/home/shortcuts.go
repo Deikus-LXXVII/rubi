@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -107,7 +108,11 @@ func (h *Helper) runShortcut(ctx context.Context, name, input string) (any, erro
 	if _, err := h.Shortcuts(rctx, args...); err != nil {
 		return nil, fmt.Errorf("the shortcut %q failed: %w", name, err)
 	}
-	out, _ := os.ReadFile(filepath.Join(tmp, "out.txt"))
+	var out []byte
+	if f, err := os.Open(filepath.Join(tmp, "out.txt")); err == nil {
+		out, _ = io.ReadAll(io.LimitReader(f, maxOutput+1)) // a runaway shortcut can't fill the memory
+		f.Close()
+	}
 	text := string(out)
 	truncated := len(text) > maxOutput
 	if truncated {

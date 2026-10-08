@@ -132,7 +132,7 @@ func (h *Hue) bridgeID(ctx context.Context, ip string) (string, error) {
 		host = h.configHost
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+host+"/api/config", nil)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{CheckRedirect: noRedirect}).Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -154,7 +154,8 @@ func (h *Hue) bridgeID(ctx context.Context, ip string) (string, error) {
 func (h *Hue) Pair(ctx context.Context, ip string) (any, error) {
 	id, err := h.bridgeID(ctx, ip)
 	if err != nil {
-		return nil, fmt.Errorf("no Hue Bridge at %s: %w", ip, err)
+		// No detail: what a device at some address answered must not turn Rubi Home into a network scanner.
+		return nil, fmt.Errorf("no Hue Bridge answered at %s", ip)
 	}
 	var pin string
 	client := h.client(func(cert *x509.Certificate) error {
@@ -209,18 +210,24 @@ func (h *Hue) url(ip, path string) string {
 	return (&url.URL{Scheme: "https", Host: ip, Path: path}).String()
 }
 
-// validAddr accepts only an IP address (tests may add a port).
+// validAddr accepts only an IP address on the home network (tests may add a port and use loopback): a
+// bridge is never on the internet, on this computer itself, or a broadcast address.
 func (h *Hue) validAddr(ip string) bool {
 	if h.Insecure {
 		host, _, err := net.SplitHostPort(ip)
 		return err == nil && net.ParseIP(host) != nil
 	}
-	return net.ParseIP(ip) != nil
+	a := net.ParseIP(ip)
+	return a != nil && (a.IsPrivate() || a.IsLinkLocalUnicast()) && !a.IsLoopback()
 }
+
+// noRedirect keeps requests at the address they were sent to: a redirect could send them anywhere on
+// the home network, or downgrade them to plain http and skip the certificate check.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // client returns an HTTP client that checks the bridge certificate with check (instead of a CA).
 func (h *Hue) client(check func(*x509.Certificate) error) *http.Client {
-	return &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{
+	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: noRedirect, Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12,
 			VerifyConnection: func(cs tls.ConnectionState) error {
 				if len(cs.PeerCertificates) == 0 {

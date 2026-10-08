@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -126,7 +128,7 @@ func (h *Helper) loadLocked() error {
 	}
 	if cfg.Name == "" {
 		n, _ := os.Hostname()
-		cfg.Name, changed = n, true
+		cfg.Name, changed = computerName(n), true
 	}
 	h.cfg = cfg
 	if changed {
@@ -275,18 +277,27 @@ func (h *Helper) pair(args json.RawMessage) (any, error) {
 		Token  string `json:"token"`
 		Label  string `json:"label"`
 	}
-	if err := json.Unmarshal(args, &in); err != nil || len(in.Token) < 32 {
+	if err := json.Unmarshal(args, &in); err != nil || len(in.Token) < 32 || len(in.Token) > 256 {
 		return nil, errors.New("bad arguments")
+	}
+	if r := []rune(in.Label); len(r) > 64 {
+		in.Label = string(r[:64])
+	}
+	expired := errors.New("this pairing code has expired or was already used; run `rubi-home pair` again")
+	if p := h.Fresh().Pending; p == nil || time.Now().After(p.Expires) {
+		return nil, expired // nothing to change: no write to disk for a stranger's guess
 	}
 	var err error
 	uerr := h.Update(func(c *Config) {
 		p := c.Pending
 		if p == nil || time.Now().After(p.Expires) || subtle.ConstantTimeCompare([]byte(p.Secret), []byte(in.Secret)) != 1 {
-			err = errors.New("this pairing code has expired or was already used; run `rubi-home pair` again")
+			err = expired
 			return
 		}
 		c.Pending = nil
-		c.Paired = append(c.Paired, Pairing{TokenHash: tokenHash(in.Token), Label: in.Label, At: time.Now().UTC()})
+		// A new pairing replaces every earlier one. Codes are made on this computer by its owner, so a new
+		// one means "this Rubi, from now on": a pairing someone got from an earlier code ends here.
+		c.Paired = []Pairing{{TokenHash: tokenHash(in.Token), Label: in.Label, At: time.Now().UTC()}}
 	})
 	if uerr != nil {
 		return nil, uerr
@@ -307,3 +318,23 @@ func (h *Helper) setHuePin(bridge, pin string) error {
 		c.HuePins[bridge] = pin
 	})
 }
+
+// computerName is how this computer introduces itself to Rubi (and through it to plugins and the
+// agent): the hostname without ".local" and without an owner's name ("Annas-MacBook-Pro" -> "MacBook Pro").
+func computerName(host string) string {
+	n := strings.TrimSpace(strings.ReplaceAll(strings.TrimSuffix(strings.TrimSpace(host), ".local"), "-", " "))
+	if m := macModel.FindString(n); m != "" {
+		return m
+	}
+	if i := strings.Index(strings.ToLower(n), "'s "); i >= 0 {
+		n = strings.TrimSpace(n[i+3:])
+	} else if i := strings.Index(n, "’s "); i >= 0 {
+		n = strings.TrimSpace(n[i+len("’s "):])
+	}
+	if n == "" {
+		return "Home computer"
+	}
+	return n
+}
+
+var macModel = regexp.MustCompile(`(?i)(MacBook( (Air|Pro))?|Mac mini|Mac Studio|Mac Pro|iMac)( \d+)?$`)

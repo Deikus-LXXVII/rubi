@@ -254,3 +254,14 @@ func selfSigned(t *testing.T) tls.Certificate {
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
+
+func TestComputerNameHasNoOwner(t *testing.T) {
+	for host, want := range map[string]string{
+		"Annas-MacBook-Pro.local": "MacBook Pro", "Anna's MacBook Air": "MacBook Air", "Mac-mini": "Mac mini",
+		"studio-server": "studio server", "Bob’s Desktop": "Desktop", "": "Home computer",
+	} {
+		if got := computerName(host); got != want {
+			t.Errorf("%q: %q, want %q", host, got, want)
+		}
+	}
+}
