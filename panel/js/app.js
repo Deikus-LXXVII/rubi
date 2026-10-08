@@ -6,6 +6,7 @@ import {
   approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
+import { icon } from "./icons.js";
 import { mascot, react, setMood } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
 
@@ -254,7 +255,7 @@ function friendly(err) {
 async function busy(button, fn) {
   for (const e of root.querySelectorAll(".error[role=alert]")) e.hidden = true;
   // The label stays (so the button keeps its size); CSS covers it with three moving dots.
-  const label = button.textContent;
+  const label = [...button.childNodes];
   button.disabled = true;
   button.classList.add("is-busy");
   button.setAttribute("aria-busy", "true");
@@ -270,7 +271,7 @@ async function busy(button, fn) {
     button.disabled = false;
     button.classList.remove("is-busy");
     button.removeAttribute("aria-busy");
-    if (button.isConnected) button.textContent = label;
+    if (button.isConnected && !button.classList.contains("is-done")) button.replaceChildren(...label);
   }
 }
 
@@ -733,6 +734,16 @@ const FIELD_LABELS = {
   release_notes: "Release notes", verification: "Verification",
 };
 
+// An icon for each well-known preview field.
+const FIELD_ICONS = {
+  from: "mail", to: "mail", subject: "mail", plugin: "plug", about: "sparkle", publisher: "user", website: "link",
+  source: "link", review: "shield", warning: "warn", new_permissions: "warn", can: "check", connects_to: "globe",
+  will_ask_for: "key", can_notify_about: "bell", notifies_about: "bell", rubi_home: "home", account: "user",
+  integration: "plug", agent: "bot", webhook: "link", effect: "sparkle", reason: "eye", current: "clock",
+  new_version: "download", back_to: "undo", shortcut: "sparkle", folder: "folder", emails: "mail", input: "sparkle",
+  allows: "shield", fingerprint: "key", web_addresses: "link", release_notes: "sparkle", verification: "shield",
+};
+
 // Preview fields that need the user's attention.
 const ATTENTION = new Set(["warning", "new_permissions"]);
 
@@ -791,7 +802,8 @@ function fieldList(preview) {
   const keys = Object.keys(preview).sort((a, b) =>
     (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99) || a.localeCompare(b));
   return h("dl", { class: "fields" }, keys.filter((k) => preview[k] !== null && preview[k] !== undefined && preview[k] !== "")
-    .map((k) => h("div", { class: ATTENTION.has(k) ? "field-item attention" : "field-item" }, h("dt", {}, FIELD_LABELS[k] || k),
+    .map((k) => h("div", { class: ATTENTION.has(k) ? "field-item attention" : "field-item" },
+      h("dt", {}, icon(FIELD_ICONS[k] || (ATTENTION.has(k) ? "warn" : "chevron"), 15), FIELD_LABELS[k] || k.replace(/_/g, " ")),
       h("dd", {}, typeof preview[k] === "string" ? preview[k] : JSON.stringify(preview[k], null, 2)))));
 }
 
@@ -799,11 +811,15 @@ const isMail = (p) => p && typeof p === "object" && "to" in p && "subject" in p 
 
 // countdown shows the time left and calls onExpire once. It stops when its element leaves the page.
 function countdown(expiresAt, onExpire) {
-  const el = h("span", { class: "timer", title: `Expires ${fmtTime(expiresAt)}` });
+  const text = h("span", {});
+  const el = h("span", { class: "timer", title: `Expires ${fmtTime(expiresAt)}`, role: "timer" }, h("i", { class: "ring", "aria-hidden": "true" }), text);
   const end = new Date(expiresAt).getTime();
+  let total = 0;
   const tick = () => {
     const left = Math.max(0, Math.round((end - Date.now()) / 1000));
-    el.textContent = left ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "Expired";
+    total = total || Math.max(left, 1);
+    el.style.setProperty("--left", String(left / total));
+    text.textContent = left ? `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "Expired";
     el.classList.toggle("urgent", left < 60);
     if (!left) {
       clearInterval(timer);
@@ -938,13 +954,21 @@ async function approveScreen(ctx, id, opts = {}) {
 
   const verb = a.options[0].label;
   const primary = h("button", { class: "primary big", type: "button" });
-  const setPrimary = () => { primary.textContent = usePasskey() ? `${verb} with Passkey` : `${verb} with password`; };
+  const setPrimary = () => {
+    primary.replaceChildren(icon(usePasskey() ? "passkey" : "key", 20), usePasskey() ? `${verb} with Passkey` : `${verb} with password`);
+  };
   setPrimary();
   primary.onclick = () => busy(primary, async () => {
     const proof = ctx.demo ? { type: "demo" } : usePasskey()
       ? await signChallenge(b64u.dec(await challengeFor(chosen)), approverIds)
       : await passwordProof(chosen);
     const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
+    if (res.state === "executed") { // the button becomes a check before Rubi celebrates
+      primary.classList.remove("is-busy");
+      primary.classList.add("is-done");
+      primary.replaceChildren(icon("check", 22), "Done");
+      await new Promise((r) => setTimeout(r, reducedMotion() ? 0 : 560));
+    }
     resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen), notified, doneLabel: opts.doneLabel });
   }).catch((e) => { showError(err, e); setPrimary(); });
 
@@ -976,7 +1000,7 @@ async function approveScreen(ctx, id, opts = {}) {
         choiceUI,
         info.password ? pwBox : null,
         err,
-        h("p", { class: "fine" }, "Nothing happens until you approve. Your agent can't approve for you."),
+        h("p", { class: "fine" }, icon("lock", 14), "Nothing happens until you approve. Your agent can't approve for you."),
         h("div", { class: "actionbar" },
       primary,
       h("div", { class: "actionbar-row" },

@@ -562,3 +562,30 @@ button.copy { width: auto; min-height: 36px; padding: 8px 14px; font-size: 0.85r
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+/* ============================================================ icons and approval details (iteration 4) */
+
+.icon { fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+button .icon { vertical-align: -4px; margin-right: 8px; }
+button.primary.big { display: inline-flex; align-items: center; justify-content: center; }
+button.primary.is-done { background: linear-gradient(180deg, #8bdc96, #4caf5c); box-shadow: 0 10px 30px -10px rgba(76, 175, 92, 0.7); color: #08200d;
+  animation: done-pop var(--t-gentle) var(--spring); }
+button.primary.is-done .icon { stroke-width: 2.6; stroke-dasharray: 24; stroke-dashoffset: 24; animation: draw 360ms var(--ease-out) 80ms forwards; }
+@keyframes done-pop { 0% { transform: scale(0.94); } 100% { transform: scale(1); } }
+@keyframes draw { to { stroke-dashoffset: 0; } }
+
+.fields dt { display: flex; align-items: center; gap: 6px; text-transform: capitalize; }
+.fields dt .icon { color: var(--faint); }
+.field-item.attention dt .icon { color: var(--danger); }
+.fine { display: flex; align-items: flex-start; justify-content: center; gap: 6px; }
+.fine .icon { margin-top: 2px; color: var(--faint); }
+
+.timer { display: inline-flex; align-items: center; gap: 7px; }
+.timer .ring { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0;
+  background: conic-gradient(currentColor calc(var(--left, 1) * 360deg), color-mix(in srgb, currentColor 22%, transparent) 0);
+  -webkit-mask: radial-gradient(circle, transparent 52%, #000 56%); mask: radial-gradient(circle, transparent 52%, #000 56%); }
+
+@media (max-width: 899px) {
+  .card.approve .actionbar { background: color-mix(in srgb, var(--card) 78%, transparent); -webkit-backdrop-filter: blur(14px) saturate(1.4);
+    backdrop-filter: blur(14px) saturate(1.4); border-top: 1px solid var(--line); }
+}
