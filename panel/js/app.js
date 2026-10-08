@@ -619,8 +619,8 @@ function pairScreen(ctx) {
     h("span", { class: "option-text" }, h("strong", {}, title, tag ? h("span", { class: "tag" }, tag) : null), h("small", {}, text)),
     icon("chevron", 18, "option-go"));
   screen(
-    face("idle", 96),
     header(hello),
+    face("idle", 96),
     stepper(SETUP_STEPS, 0),
     h("h1", {}, "Set up Rubi"),
     h("p", {}, "Rubi will be locked with a key only you hold. Choose how you'll unlock it and approve your agent's actions."),
@@ -706,8 +706,8 @@ async function agentConnected(ctx, name) {
     await ctx.client.call("webhook.test", { name });
   } catch (_) { /* the test event is a courtesy */ }
   screen(
-    face("happy", 96),
     header(ctx.hello),
+    face("happy", 96),
     h("h1", {}, `${name} is connected`),
     h("p", {}, "Rubi just sent it a test event; it will confirm in the chat. From now on it continues on its own after you approve something, and hears about replies right away."),
     h("p", { class: "muted" }, "You can close this page."),
@@ -737,8 +737,8 @@ function connectAgentScreen(ctx) {
     agentHowTo(""),
     agentForm(ctx, { err, onSaved: (n) => agentConnected(ctx, n) }));
   screen(
-    face("happy", 96),
     header(ctx.hello),
+    face("happy", 96),
     stepper(SETUP_STEPS, 2),
     h("h1", {}, "Connect your agent"),
     h("p", {}, "Rubi is set up and unlocked. One more thing: let Rubi wake your agent when you approve something or a reply arrives."),
@@ -798,8 +798,8 @@ async function unlockFlow(ctx, title, intro, onDone) {
   }, user, pwField(pw), go) : null;
 
   screen(
-    face("locked", 96),
     header(hello),
+    face("locked", 96),
     h("h1", {}, title),
     h("p", {}, intro),
     passkeyWraps.length && passkeysAvailable()
@@ -830,20 +830,21 @@ async function statusScreen(ctx, message) {
   }
   const receipts = (st?.receipts || []).slice(-5).reverse();
   screen(
-    face(st?.state === "unlocked" ? "happy" : "locked"),
     header(ctx.hello),
-    h("h1", {}, st?.state === "unlocked" ? "Rubi is unlocked" : "Rubi"),
-    h("p", {}, message),
+    face(st?.state === "unlocked" ? "happy" : "locked"),
+    h("h1", { class: "center" }, st?.state === "unlocked" ? "Rubi is unlocked" : "Rubi"),
+    message ? h("p", { class: "center muted" }, message) : null,
     receipts.length ? h("h2", {}, "Recent unlocks") : null,
-    receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) =>
-      h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
+    receipts.length ? h("ul", { class: "acct-list" }, receipts.map((r) => h("li", {},
+      h("span", { class: "avatar-dot small" }, icon(r.method === "passkey" ? "passkey" : "key", 14)),
+      h("span", { class: "acct-name" }, `${r.event} with ${r.method}`, h("small", { class: "muted" }, fmtTime(r.at)))))) : null,
     receipts.length ? h("p", { class: "muted" }, "Don't recognize one of these? Lock Rubi and tell your agent.") : null,
     integrityLine(st),
     st?.state === "unlocked"
       ? h("button", { class: "secondary", onclick: async (e) => {
-        await busy(e.target, () => ctx.client.call("lock"));
+        await busy(e.currentTarget, () => ctx.client.call("lock"));
         statusScreen(ctx, "Rubi is locked.");
-      } }, "Lock Rubi now")
+      } }, icon("lock", 18), "Lock Rubi now")
       : null,
   );
 }
