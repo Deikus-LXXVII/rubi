@@ -28,7 +28,7 @@ func TestGatewayCarriesRubiTraffic(t *testing.T) {
 	defer cancel()
 	ready := make(chan int, 10)
 	go (&relay.Server{Key: rubiKey, Relays: []string{url}, Ready: func(n int) { ready <- n },
-		Handle: func(_ context.Context, b []byte) (int, []byte) { return 200, append([]byte("ok:"), b...) },
+		Handle:   func(_ context.Context, b []byte) (int, []byte) { return 200, append([]byte("ok:"), b...) },
 		Announce: &relay.Announcements{Key: ann.Public(), On: func(relay.Announcement) {}}}).Run(ctx)
 	<-ready
 	dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
