@@ -120,7 +120,7 @@ Motion explains what happened and where things went. It is quick, soft and never
 - Press: buttons scale to 0.97 on press and ease back.
 - Waiting: the button keeps its size and shows three soft dots; after 1.5 s the mascot starts "thinking".
 - Success: Rubi smiles (^ ^) and a band of light sweeps across it like a ruby catching the light (no
-  jump); hexagon confetti and a ring of ruby light; the title rises.
+  jump); the title rises. Nothing bursts or flies around.
 - Decline / expired: the mascot sighs; no sparks.
 - Error: the message slides down; the field shakes twice, small (6 px).
 - Expand / collapse: height and opacity together, 420 ms.

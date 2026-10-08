@@ -1160,7 +1160,6 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   const sad = a.state === "denied" || a.state === "cancelled" || a.state === "expired";
   const ok = a.state === "executed";
   const mascotBlock = face(moods[a.state] || "idle", 112, sad ? "sigh" : a.state === "failed" ? "shake" : null);
-  if (ok) mascotBlock.append(burst());
   if (ok && /^rubi\.(update|plugin\.)/.test(a.kind || "")) updatesCache = null; // versions changed
   const ub = updatesButton();
 
@@ -1186,35 +1185,6 @@ function resultScreen(ctx, a, onDone, extra = {}) {
       : h("p", { class: "muted center" }, "You can close this page."),
   );
 }
-
-// burst celebrates a success: a ring of ruby light and hexagon confetti that flies out and falls.
-function burst() {
-  const wrap = h("span", { class: "burst", "aria-hidden": "true" }, h("i", { class: "burst-ring" }));
-  if (reducedMotion()) return wrap;
-  const colors = ["var(--ruby-400)", "var(--ruby-500)", "#f2c14e", "var(--ok)", "var(--ruby-300)"];
-  for (let i = 0; i < 26; i++) {
-    const bit = h("i", { class: i % 5 === 4 ? "bit star" : "bit" });
-    bit.style.background = colors[i % colors.length];
-    const size = 7 + Math.random() * 8;
-    bit.style.width = bit.style.height = `${size}px`;
-    wrap.append(bit);
-    const angle = (i / 26) * Math.PI * 2 + Math.random() * 0.4;
-    const speed = 70 + Math.random() * 70;
-    const vx = Math.cos(angle) * speed;
-    const vy = Math.sin(angle) * speed - 40;
-    const spin = (Math.random() - 0.5) * 720;
-    const frames = [];
-    for (let k = 0; k <= 8; k++) {
-      const t = k / 8;
-      frames.push({ transform: `translate(${vx * t}px, ${vy * t + 140 * t * t}px) rotate(${spin * t}deg) scale(${1 - 0.5 * t})`,
-        opacity: k === 0 ? 0 : k < 6 ? 1 : 1 - (k - 5) / 3 });
-    }
-    requestAnimationFrame(() => bit.animate(frames, { duration: 1100 + Math.random() * 400, delay: 320 + Math.random() * 120,
-      easing: "cubic-bezier(.2, .6, .4, 1)", fill: "both" }));
-  }
-  return wrap;
-}
-
 
 // ---------- settings & integration setup ----------
 

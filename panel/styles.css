@@ -588,14 +588,6 @@ button.primary.is-done .icon { stroke-width: 2.6; stroke-dasharray: 24; stroke-d
 .state-executed .receipt-row:first-child .icon { color: var(--ok); stroke-width: 2.4; stroke-dasharray: 24; stroke-dashoffset: 24; animation: draw 420ms var(--ease-out) 600ms forwards; }
 .state-failed .receipt-row:first-child .icon { color: var(--danger); }
 
-.burst { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
-.burst-ring { position: absolute; left: -60px; top: -60px; width: 120px; height: 120px; border-radius: 50%;
-  border: 2px solid color-mix(in srgb, var(--ruby-400) 70%, transparent); opacity: 0;
-  animation: ring 900ms var(--ease-out) 300ms both; }
-@keyframes ring { 0% { opacity: 0.9; transform: scale(0.5); } 100% { opacity: 0; transform: scale(2.1); border-width: 1px; } }
-.burst .bit { position: absolute; left: 0; top: 0; margin: -4px; opacity: 0;
-  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%); }
-.burst .bit.star { clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%); }
 .card.result .error[role=alert] { text-align: left; }
 
 /* ============================================================ settings (iteration 6) */
@@ -998,7 +990,6 @@ input.switch.sm:checked::after { transform: translateX(16px); }
   .mail, .card.approve .req-side .switch-row { background: var(--card); border-color: var(--line-2); }
   .card.approve .req-side { background: var(--bg-2); }
   .mascot .eye-glint { opacity: 0.95; }
-  .burst-ring { border-color: color-mix(in srgb, var(--ruby-500) 55%, transparent); }
   .num, .pbadge, .num-s, .plugin-chips .chip b { box-shadow: none; }
   #landing::after { opacity: 0.55; }
 }
