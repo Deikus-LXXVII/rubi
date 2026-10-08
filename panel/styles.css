@@ -1011,3 +1011,62 @@ h1:focus { outline: none; box-shadow: none; }
 .menu summary:focus-visible { box-shadow: var(--focus); }
 .pill-toggle, .seg label { min-height: 36px; }
 @media (pointer: coarse) { .menu summary, .icon-btn { width: 44px; height: 44px; } button.small { min-height: 40px; } }
+
+/* ============================================================ micro-interactions (iteration 15) */
+
+/* Checkboxes: a soft square whose check draws itself with a little spring. */
+.check input[type=checkbox], .batch-item input[type=checkbox], .cfg input[type=checkbox] {
+  appearance: none; -webkit-appearance: none; position: relative; width: 22px; height: 22px; min-height: 0; padding: 0; margin: 0;
+  border-radius: 7px; border: 1.5px solid var(--line-2); background: var(--bg-2); cursor: pointer; flex-shrink: 0;
+  transition: background-color var(--t-base) var(--ease-out), border-color var(--t-base) var(--ease-out), transform var(--t-quick) var(--spring);
+}
+.check input[type=checkbox]::after, .batch-item input[type=checkbox]::after, .cfg input[type=checkbox]::after {
+  content: ""; position: absolute; left: 6.5px; top: 2.5px; width: 6px; height: 11px; border: solid #fff; border-width: 0 2.4px 2.4px 0;
+  transform: rotate(45deg) scale(0); transform-origin: 60% 60%; transition: transform var(--t-gentle) var(--spring);
+}
+.check input[type=checkbox]:checked, .batch-item input[type=checkbox]:checked, .cfg input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
+.check input[type=checkbox]:checked::after, .batch-item input[type=checkbox]:checked::after, .cfg input[type=checkbox]:checked::after { transform: rotate(45deg) scale(1); }
+.check input[type=checkbox]:active, .batch-item input[type=checkbox]:active { transform: scale(0.9); }
+.check input:focus-visible, .batch-item input:focus-visible, .choice input:focus-visible { box-shadow: var(--focus); }
+
+/* Radios: a ring whose dot springs in. */
+.check input[type=radio], .choice input[type=radio] {
+  appearance: none; -webkit-appearance: none; position: relative; width: 22px; height: 22px; min-height: 0; padding: 0; margin: 0;
+  border-radius: 50%; border: 1.5px solid var(--line-2); background: var(--bg-2); cursor: pointer; flex-shrink: 0;
+  transition: border-color var(--t-base) var(--ease-out);
+}
+.check input[type=radio]::after, .choice input[type=radio]::after {
+  content: ""; position: absolute; inset: 4px; border-radius: 50%; background: var(--accent); transform: scale(0);
+  transition: transform var(--t-gentle) var(--spring);
+}
+.check input[type=radio]:checked, .choice input[type=radio]:checked { border-color: var(--accent); }
+.check input[type=radio]:checked::after, .choice input[type=radio]:checked::after { transform: scale(1); }
+
+/* A light that sweeps across the primary button on hover. */
+button.primary, a.btn.primary { position: relative; overflow: hidden; isolation: isolate; }
+button.primary::before, a.btn.primary::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.28) 50%, transparent 65%);
+  transform: translateX(-120%); transition: transform 0s;
+}
+button.primary:hover:not(:disabled)::before, a.btn.primary:hover::before { transform: translateX(120%); transition: transform 900ms var(--ease-out); }
+button.primary.is-busy::before { display: none; }
+
+/* The updates badge pops in; the icon nods once when there's something new. */
+.updates-btn .badge:not([hidden]) { animation: badge-in var(--t-slow) var(--spring) both; }
+.updates-btn.has-updates .icon, .updates-btn.has-updates svg { animation: bob 1.2s var(--ease-in-out) 0.6s 1; }
+@keyframes badge-in { from { transform: scale(0); } }
+@keyframes bob { 0%, 100% { transform: none; } 30% { transform: translateY(2px); } 60% { transform: translateY(-1px); } }
+
+/* Labels light up while their field has focus. */
+.field:focus-within > span { color: var(--accent-2); transition: color var(--t-quick); }
+
+/* Text links: the underline grows in. */
+.muted a, .note a, .lede a { text-decoration: none; background: linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat; transition: background-size var(--t-base) var(--ease-out); }
+.muted a:hover, .note a:hover, .lede a:hover { background-size: 100% 1px; }
+
+/* Cards settle in with a hint of scale. */
+#app > .card { animation: card-in var(--t-gentle) var(--ease-out) both; }
+@keyframes card-in { from { opacity: 0.6; transform: translateY(6px) scale(0.99); } }
+.savebar button.primary { padding: 10px 14px; }
+.savebar button.link { text-decoration: none; font-weight: 600; }
