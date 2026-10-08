@@ -51,7 +51,15 @@ function screen(...children) {
     window.scrollTo({ top: 0 });
     animateIn(main);
     for (const svg of main.querySelectorAll(".mascot")) svg.enter?.(morph && svg === hero);
-    if (opts.focus !== false) root.querySelector("input:not([type=checkbox]):not([type=radio])")?.focus({ preventScroll: true });
+    // Focus the first field; otherwise the title, so screen readers announce the new screen.
+    const field = opts.focus !== false && root.querySelector("input:not([type=checkbox]):not([type=radio])");
+    const title = main.querySelector("h1");
+    if (field) field.focus({ preventScroll: true });
+    else if (title) {
+      title.tabIndex = -1;
+      title.focus({ preventScroll: true });
+    }
+    if (title) document.title = `${title.textContent.trim()} · Rubi`;
   };
   if (document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden) {
     const vt = document.startViewTransition(swap);

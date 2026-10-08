@@ -1004,3 +1004,10 @@ input.switch.sm:checked::after { transform: translateX(16px); }
   .num, .pbadge, .num-s, .plugin-chips .chip b { box-shadow: none; }
   #landing::after { opacity: 0.55; }
 }
+
+/* accessibility (iteration 14) */
+h1:focus { outline: none; box-shadow: none; }
+.menu summary, .icon-btn { width: 40px; height: 40px; }
+.menu summary:focus-visible { box-shadow: var(--focus); }
+.pill-toggle, .seg label { min-height: 36px; }
+@media (pointer: coarse) { .menu summary, .icon-btn { width: 44px; height: 44px; } button.small { min-height: 40px; } }

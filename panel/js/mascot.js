@@ -37,7 +37,12 @@ export function mascot(mood = "idle", size = 48, opts = {}) {
   const id = `rubi${++seq}`;
   const svg = el("svg", { viewBox: "0 0 100 100", width: size, height: size, class: `mascot mood-${mood}`,
     role: "img", "aria-label": `Rubi (${mood})`, "data-mood": mood });
-  if (size < 34) svg.classList.add("tiny"); // icons: no shadow or highlights, crisper eyes
+  if (size < 34) { // icons: no shadow or highlights, crisper eyes; decoration for screen readers
+    svg.classList.add("tiny");
+    svg.removeAttribute("role");
+    svg.removeAttribute("aria-label");
+    svg.setAttribute("aria-hidden", "true");
+  }
 
   svg.append(el("defs", {},
     el("radialGradient", { id: `${id}-body`, cx: "34%", cy: "26%", r: "82%", fx: "30%", fy: "20%" },
@@ -91,7 +96,7 @@ export function setMood(svg, mood) {
   svg.classList.remove(...MOODS.map((m) => `mood-${m}`));
   svg.classList.add(`mood-${mood}`);
   svg.dataset.mood = mood;
-  svg.setAttribute("aria-label", `Rubi (${mood})`);
+  if (svg.getAttribute("role")) svg.setAttribute("aria-label", `Rubi (${mood})`);
 }
 
 // ---------- reactions ----------
