@@ -176,6 +176,8 @@ export const DEMO_SCREENS = [
   ["reveal", "Choose what to show"],
   ["door", "A sensitive shortcut"],
   ["settings", "Settings"],
+  ["approvals", "Approval levels"],
+  ["security", "Security"],
   ["store", "Plugin store"],
   ["config", "Plugin settings"],
   ["setup", "Connect with a code"],

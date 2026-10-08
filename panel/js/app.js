@@ -385,7 +385,11 @@ function demoScreen(ctx, which) {
     case "send": case "install": case "reveal": case "door":
       return approveScreen(ctx, which, { onDone: back, doneLabel: "Back to the demo" });
     case "settings":
-      return settingsScreen(ctx);
+      return settingsScreen(ctx, "plugins");
+    case "approvals":
+      return settingsScreen(ctx, "approvals");
+    case "security":
+      return settingsScreen(ctx, "security");
     case "store":
       return storeScreen(ctx, back);
     case "config":
@@ -1205,9 +1209,60 @@ function integrityLine(st) {
   return h("p", { class: i.status === "modified" ? "error" : "muted" }, text);
 }
 
-const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Passkey / password" };
 
-async function settingsScreen(ctx) {
+// ---------- small components ----------
+
+// badge is a plugin's mark: its initials on a hexagon, like Rubi.
+function badge(name, size = 40) {
+  const words = String(name || "?").replace(/^Unofficial /, "").split(/\s+/).filter(Boolean);
+  const text = (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase();
+  return h("span", { class: "pbadge", style: `--size:${size}px`, "aria-hidden": "true" }, text);
+}
+
+// menu is a "…" button with a small list of actions.
+function menu(label, items) {
+  const pop = h("div", { class: "menu-pop", role: "menu" }, items.filter(Boolean));
+  const d = h("details", { class: "menu" }, h("summary", { "aria-label": label, title: label }, h("span", { class: "dots" }, "•••")), pop);
+  d.addEventListener("toggle", () => {
+    if (!d.open) return;
+    const close = (e) => {
+      if (!d.contains(e.target) || e.target.closest(".menu-pop button")) {
+        d.open = false;
+        removeEventListener("click", close, true);
+      }
+    };
+    setTimeout(() => addEventListener("click", close, true));
+  });
+  return d;
+}
+
+// segmented is a row of choices, one selected; onChange gets the new value.
+function segmented(options, value, onChange, disabled = false) {
+  const wrap = h("div", { class: "seg" + (disabled ? " disabled" : ""), role: "radiogroup" });
+  const name = "seg" + Math.random().toString(36).slice(2);
+  for (const [v, label] of options) {
+    const r = h("input", { type: "radio", name, value: v, checked: v === value, disabled, onchange: () => {
+      wrap.style.setProperty("--i", String(options.findIndex((o) => o[0] === v)));
+      onChange(v);
+    } });
+    wrap.append(h("label", {}, r, h("span", {}, label)));
+  }
+  wrap.style.setProperty("--n", String(options.length));
+  wrap.style.setProperty("--i", String(Math.max(0, options.findIndex((o) => o[0] === value))));
+  return wrap;
+}
+
+const SETTINGS_TABS = [
+  ["plugins", "Plugins", "plug"],
+  ["bots", "Grok Bot", "bot"],
+  ["home", "Rubi Home", "home"],
+  ["approvals", "Approvals", "shield"],
+  ["security", "Security", "lock"],
+];
+
+async function settingsScreen(ctx, tab) {
+  tab = tab || ctx.settingsTab || "plugins";
+  ctx.settingsTab = tab;
   currentView = () => settingsScreen(ctx);
   const err = errorBox();
   let store, policy, hook, st, devices;
@@ -1222,98 +1277,148 @@ async function settingsScreen(ctx) {
   }
   const back = () => settingsScreen(ctx);
   const change = (op, args) => async (e) => {
-    await busy(e.target, async () => confirmChange(ctx, await ctx.client.call(op, args()), back)).catch((x) => showError(err, x));
+    const target = e.target.closest("button") || e.target;
+    await busy(target, async () => confirmChange(ctx, await ctx.client.call(op, args()), back)).catch((x) => showError(err, x));
   };
 
+  // ----- plugins
   const installed = (store.plugins || []).filter((p) => p.installed);
   // Each plugin lists its connected accounts (several mailboxes, for example), each with its own settings.
   // An older Rubi reports one account without a list.
   const accountsOf = (p) => p.accounts || (p.connected ? [{ id: "", label: p.account || "Connected", default: true }] : []);
-  const accountRows = (p) => accountsOf(p).map((a) => h("div", { class: "account-row" },
-    h("span", {}, a.label || a.id, a.default && accountsOf(p).length > 1 ? h("span", { class: "tag" }, "Default") : null),
-    h("span", { class: "actions" },
-      p.has_config ? h("button", { class: "link small", onclick: () => pluginConfigScreen(ctx, p.id, { account: a.id }) }, "Settings") : null,
-      h("button", { class: "link small", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, "Disconnect"))));
-  const pluginsList = installed.length ? h("div", { class: "list" }, installed.map((p) => h("div", { class: "item plugin plugin-block" },
-    h("div", { class: "plugin-head" },
-      h("div", {},
-        h("strong", {}, p.name), " ", h("span", { class: p.reviewed ? "tag" : "tag warn" }, p.reviewed ? "Reviewed" : "Not reviewed"),
-        h("div", { class: "muted small" }, `${p.version}${p.connected ? "" : " · not connected"}${p.running === false ? " · not running" : ""}`)),
-      h("div", { class: "actions" },
-        p.update_available
-          ? h("button", { class: "primary small", onclick: change("plugin.update", () => ({ id: p.id })) }, `Update to ${p.update_available}`) : null,
-        h("button", { class: "secondary small", onclick: () => setupScreen(ctx, p.id, back) }, p.connected ? "Add account" : "Connect"))),
-    p.connected ? h("div", { class: "accounts" }, accountRows(p)) : null,
-    h("div", { class: "plugin-foot" },
-      p.previous_version
-        ? h("button", { class: "link small", onclick: change("plugin.rollback", () => ({ id: p.id })) }, `Roll back to ${p.previous_version}`) : null,
-      h("button", { class: "link small", onclick: change("plugin.remove", () => ({ id: p.id })) }, "Remove plugin")))))
-    : h("p", { class: "muted" }, "No plugins yet. Rubi starts bare; add what you need from the store.");
+  const pluginCard = (p) => {
+    const accts = accountsOf(p);
+    return h("article", { class: "pcard" },
+      h("header", { class: "pcard-head" },
+        badge(p.name),
+        h("div", { class: "pcard-title" },
+          h("strong", {}, p.name),
+          h("span", { class: "muted small" }, p.version, " · ", h("span", { class: p.reviewed ? "ok" : "error" }, p.reviewed ? "Reviewed" : "Not reviewed"),
+            p.running === false ? " · not running" : "")),
+        menu(`More for ${p.name}`, [
+          p.previous_version ? h("button", { type: "button", onclick: change("plugin.rollback", () => ({ id: p.id })) }, icon("undo", 16), `Roll back to ${p.previous_version}`) : null,
+          h("button", { type: "button", class: "danger-item", onclick: change("plugin.remove", () => ({ id: p.id })) }, icon("trash", 16), "Remove plugin"),
+        ])),
+      p.update_available ? h("button", { class: "primary small update-cta", onclick: change("plugin.update", () => ({ id: p.id })) },
+        icon("download", 16), `Update to ${p.update_available}`) : null,
+      accts.length ? h("ul", { class: "acct-list" }, accts.map((a) => h("li", {},
+        h("span", { class: "avatar-dot small" }, (a.label || a.id || "?").charAt(0).toUpperCase()),
+        h("span", { class: "acct-name" }, a.label || a.id, a.default && accts.length > 1 ? h("span", { class: "tag" }, "Default") : null),
+        p.has_config ? h("button", { class: "icon-btn", title: "Settings", "aria-label": `Settings for ${a.label || a.id}`,
+          onclick: () => pluginConfigScreen(ctx, p.id, { account: a.id }) }, icon("gear", 18)) : null,
+        menu(`More for ${a.label || a.id}`, [
+          h("button", { type: "button", class: "danger-item", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, icon("close", 16), "Disconnect"),
+        ])))) : h("p", { class: "muted small" }, "Not connected yet."),
+      h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
+  };
 
-  const selects = {};
-  const policyRows = (policy.actions || []).map((a) => {
-    const sel = h("select", { disabled: a.locked }, policy.levels.map((l) =>
-      h("option", { value: l, selected: l === a.level }, LEVEL_LABELS[l] + (l === a.default ? " (default)" : ""))));
-    selects[a.kind] = { sel, current: a.level };
-    return h("label", { class: "field row-field" }, h("span", {}, `${a.title}`, h("small", {}, a.integration)), sel);
-  });
-  const savePolicy = h("button", { class: "secondary", onclick: change("policy.set", () => {
-    const levels = {};
-    for (const [kind, { sel, current }] of Object.entries(selects)) if (sel.value !== current) levels[kind] = sel.value;
-    return { levels };
-  }) }, "Save approval levels");
+  // ----- approval levels, grouped by plugin
+  const pending = {};
+  const savePolicy = h("button", { class: "primary", disabled: true, onclick: change("policy.set", () => ({ levels: pending })) }, "Save approval levels");
+  const groups = new Map();
+  for (const a of policy.actions || []) {
+    if (!groups.has(a.integration)) groups.set(a.integration, []);
+    groups.get(a.integration).push(a);
+  }
+  const levelOpts = (policy.levels || []).map((l) => [l, { none: "Free", chat: "Chat", strong: "Passkey" }[l] || l]);
+  const policyBlocks = [...groups].map(([name, acts]) => h("section", { class: "policy-group" },
+    h("h3", {}, badge(name, 26), name),
+    acts.map((a) => h("div", { class: "policy-row" },
+      h("div", {}, h("span", {}, a.title), a.locked ? h("small", { class: "muted" }, icon("lock", 12), " Always needs your passkey") : null),
+      segmented(levelOpts, a.level, (v) => {
+        if (v === a.level) delete pending[a.kind];
+        else pending[a.kind] = v;
+        savePolicy.disabled = !Object.keys(pending).length;
+      }, a.locked)))));
 
-  const hookUrl = h("input", { type: "url", placeholder: "https://… (from your Grok Bot routine)", autocomplete: "off", autocapitalize: "none" });
-  const hookKey = h("input", { type: "password", placeholder: "Routine key (crsr_…)", autocomplete: "off", autocapitalize: "none" });
-
+  // ----- sections
   const receipts = (st.receipts || []).slice(-5).reverse();
-  screen(
-    { cls: "wide" },
-    header(ctx.hello),
-    h("h1", {}, "Rubi settings"),
-    err,
-    h("div", { class: "panes" },
-    pane(h("h2", {}, "Plugins"),
-      pluginsList,
-      h("button", { class: "secondary", onclick: () => storeScreen(ctx, back) }, "Open the store")),
-    pane(...(hook.agents ? agentsSection(ctx, hook) : [h("h2", {}, "Agent webhook")]),
-    ...(hook.agents ? [] : [
-    h("p", { class: "muted" }, hook.configured
-      ? `Events go to ${hook.url}`
-      : "Not set. Create a routine with a webhook trigger in Grok Bot and paste its URL and key here, so Rubi can wake your agent when something happens (e.g. a reply arrives)."),
-    hookUrl, hookKey,
-    h("button", { class: "secondary", onclick: change("webhook.set", () => ({ url: hookUrl.value.trim(), key: hookKey.value.trim() })) }, "Save webhook"),
-    hook.configured ? h("button", { class: "link", onclick: async (e) => {
-      await busy(e.target, () => ctx.client.call("webhook.test")).then(() => { e.target.textContent = "Test event sent"; }).catch((x) => showError(err, x));
-    } }, "Send a test event") : null,
-    hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null])),
-    devices ? pane(h("h2", {}, "Rubi Home"),
+  const agents = hook.agents || [];
+  const sections = {
+    plugins: () => [
+      h("div", { class: "section-head" }, h("h2", {}, "Plugins"),
+        h("button", { class: "secondary small", onclick: () => storeScreen(ctx, back) }, icon("plus", 16), "Add from the store")),
+      installed.length ? h("div", { class: "pgrid" }, installed.map(pluginCard))
+        : h("div", { class: "empty" }, face("idle", 64), h("p", {}, "No plugins yet. Rubi starts bare; add what you need from the store.")),
+    ],
+    bots: () => [
+      h("h2", {}, "Grok Bot"),
+      h("p", { class: agents.length ? "muted" : "error" }, agents.length
+        ? `${agents.length === 1 ? "1 Bot is" : agents.length + " Bots are"} connected. Rubi wakes them when something they follow happens.`
+        : "No Bot is connected, so Rubi can't wake your agent. Setup isn't finished."),
+      agents.length ? h("ul", { class: "acct-list" }, agents.map((a) => h("li", {},
+        h("span", { class: "avatar-dot small" }, icon("bot", 14)), h("span", { class: "acct-name" }, a.name, a.default ? h("span", { class: "tag" }, "Default") : null)))) : null,
+      h("button", { class: "secondary", onclick: () => grokBotScreen(ctx) }, "Manage Grok Bot connections"),
+    ],
+    home: () => [
+      h("h2", {}, "Rubi Home"),
       h("p", { class: "muted" }, "A helper on a computer at home (a Mac that stays on) lets plugins control Philips Hue and run your Shortcuts."),
-      devices.devices.length ? h("div", { class: "accounts" }, devices.devices.map((d) => {
-        const state = h("span", { class: "muted small" }, "");
-        return h("div", { class: "account-row" }, h("span", {}, d.name, " ", state),
-          h("span", { class: "actions" },
-            h("button", { class: "link small", onclick: async (e) => {
-              await busy(e.target, async () => {
-                const r = await ctx.client.call("device.check", { id: d.id });
-                state.textContent = r.online ? `online · ${r.version || ""}` : "not answering";
-              }).catch((x) => showError(err, x));
-            } }, "Check"),
-            h("button", { class: "link small", onclick: change("device.remove", () => ({ id: d.id })) }, "Remove")));
+      devices?.devices?.length ? h("ul", { class: "acct-list" }, devices.devices.map((d) => {
+        const state = h("span", { class: "status-dot", title: "Not checked" });
+        return h("li", {}, h("span", { class: "avatar-dot small" }, icon("home", 14)), h("span", { class: "acct-name" }, d.name, state),
+          h("button", { class: "ghost small", onclick: async (e) => {
+            await busy(e.target, async () => {
+              const r = await ctx.client.call("device.check", { id: d.id });
+              state.className = "status-dot " + (r.online ? "on" : "off");
+              state.title = r.online ? `Online · ${r.version || ""}` : "Not answering";
+              state.textContent = r.online ? "Online" : "Not answering";
+            }).catch((x) => showError(err, x));
+          } }, "Check"),
+          menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]));
       })) : null,
-      h("button", { class: "secondary", onclick: () => homeDeviceScreen(ctx, back) }, "Add a home computer")) : null,
-    pane(h("h2", {}, "Approval levels"),
-      h("p", { class: "muted" }, "How each action is approved. Changing these always needs your passkey or password."),
-      ...policyRows,
-      savePolicy),
-    pane(h("h2", {}, "Security"),
+      h("button", { class: "secondary", onclick: () => homeDeviceScreen(ctx, back) }, icon("plus", 16), "Add a home computer"),
+    ],
+    approvals: () => [
+      h("h2", {}, "Approvals"),
+      h("p", { class: "muted" }, "How each action is approved: freely, with buttons in the agent chat, or with your passkey. Changing these always needs your passkey or password."),
+      ...policyBlocks,
+      policyBlocks.length ? savePolicy : h("p", { class: "muted" }, "Install a plugin to see its actions here."),
+    ],
+    security: () => [
+      h("h2", {}, "Security"),
       integrityLine(st),
-      receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) => h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
+      receipts.length ? h("h3", {}, "Recent unlocks") : null,
+      receipts.length ? h("ul", { class: "acct-list" }, receipts.map((r) => h("li", {}, h("span", { class: "avatar-dot small" }, icon(r.method === "passkey" ? "passkey" : "key", 14)),
+        h("span", { class: "acct-name" }, `${r.event} with ${r.method}`, h("small", { class: "muted" }, fmtTime(r.at)))))) : null,
+      h("p", { class: "muted small" }, "Don't recognize one of these? Lock Rubi and tell your agent."),
       h("button", { class: "danger", onclick: async (e) => {
         await busy(e.target, () => ctx.client.call("lock"));
         statusScreen(ctx, "Rubi is locked.");
-      } }, "Lock Rubi now"))),
+      } }, icon("lock", 18), "Lock Rubi now"),
+    ],
+  };
+  if (!devices) delete sections.home;
+  if (!sections[tab]) tab = "plugins";
+
+  const body = h("div", { class: "settings-body" });
+  const nav = h("nav", { class: "settings-nav", "aria-label": "Settings" });
+  const show = (id) => {
+    ctx.settingsTab = id;
+    for (const b of nav.querySelectorAll("button")) b.setAttribute("aria-current", String(b.dataset.tab === id));
+    requestAnimationFrame(() => nav.querySelector("[aria-current=true]")?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" }));
+    body.replaceChildren(...sections[id]());
+    body.querySelectorAll(":scope > *").forEach((el, i) => {
+      el.classList.remove("rise");
+      void el.offsetWidth;
+      el.classList.add("rise");
+      el.style.setProperty("--d", `${Math.min(i, 8) * 35}ms`);
+    });
+  };
+  for (const [id, label, ic] of SETTINGS_TABS) {
+    if (!sections[id]) continue;
+    nav.append(h("button", { type: "button", "data-tab": id, onclick: () => show(id) }, icon(ic, 18), h("span", {}, label),
+      id === "bots" && !agents.length ? h("i", { class: "nav-dot", title: "Needs attention" }) : null,
+      id === "plugins" && installed.some((p) => p.update_available) ? h("i", { class: "nav-dot", title: "Updates" }) : null));
+  }
+
+  screen(
+    { cls: "wide settings" },
+    header(ctx.hello),
+    h("h1", {}, "Settings"),
+    err,
+    h("div", { class: "settings-layout" }, nav, body),
   );
+  show(tab);
 }
 
 const HOME_INSTALL = "curl -fsSL https://rubi-panel.com/install-home.sh | sh";
@@ -1359,17 +1464,6 @@ const CONNECT_PROMPT = "Connect yourself to Rubi so it can wake you: create a ro
   "JSON body.\" Then send me rubi_link(\"agent:<your Bot name>\"). Once I've connected it, choose which Rubi " +
   "notifications you need with rubi_notifications.";
 
-// agentsSection is the summary in settings; the details live on their own page.
-function agentsSection(ctx, data) {
-  const agents = data.agents || [];
-  return [
-    h("h2", {}, "Grok Bot"),
-    h("p", { class: agents.length ? "muted" : "error" }, agents.length
-      ? `${agents.length === 1 ? "1 Bot is" : agents.length + " Bots are"} connected: ${agents.map((a) => a.name).join(", ")}.`
-      : "No Bot is connected, so Rubi can't wake your agent. Setup isn't finished."),
-    h("button", { class: "secondary", onclick: () => grokBotScreen(ctx) }, "Grok Bot connections"),
-  ];
-}
 
 // grokBotScreen manages the Bots Rubi can wake: one webhook per Bot, any number of them, each with the
 // notifications it hears about.
