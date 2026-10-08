@@ -128,7 +128,7 @@ func (c *relayConn) send(ctx context.Context, msg []any) error {
 // pool keeps connections to several relays, each subscribed with the same filter, and reconnects.
 type pool struct {
 	relays  []string
-	filter  func() map[string]any
+	filter  func() []map[string]any
 	onEvent func(*Event)
 	logf    func(string, ...any)
 	ready   func(n int)
@@ -138,7 +138,7 @@ type pool struct {
 	seen  map[string]time.Time
 }
 
-func newPool(relays []string, filter func() map[string]any, onEvent func(*Event), logf func(string, ...any)) *pool {
+func newPool(relays []string, filter func() []map[string]any, onEvent func(*Event), logf func(string, ...any)) *pool {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -211,7 +211,11 @@ func (p *pool) session(ctx context.Context, url string) error {
 	defer ws.CloseNow()
 	ws.SetReadLimit(readLimit)
 	c := &relayConn{url: url, ws: ws}
-	if err := c.send(ctx, []any{"REQ", "rubi", p.filter()}); err != nil {
+	req := []any{"REQ", "rubi"}
+	for _, f := range p.filter() {
+		req = append(req, f)
+	}
+	if err := c.send(ctx, req); err != nil {
 		return err
 	}
 	p.setConn(url, c)
@@ -253,7 +257,16 @@ func (p *pool) session(ctx context.Context, url string) error {
 				continue
 			}
 			var e Event
-			if json.Unmarshal(msg[2], &e) != nil || e.Kind != Kind || !fresh(&e, time.Now()) || p.dup(e.ID) {
+			if json.Unmarshal(msg[2], &e) != nil || p.dup(e.ID) {
+				continue
+			}
+			switch e.Kind {
+			case Kind:
+				if !fresh(&e, time.Now()) {
+					continue
+				}
+			case AnnounceKind: // stored, so possibly old; the receiver compares versions
+			default:
 				continue
 			}
 			if Verify(&e) != nil {

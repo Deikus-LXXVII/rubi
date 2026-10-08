@@ -60,3 +60,18 @@ jobs:
           path: panel
       - id: deploy
         uses: actions/deploy-pages@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Announce to installed Rubis
+        # A signed hint on the Nostr relays: installed Rubis check for Rubi and plugin updates at once
+        # instead of at their next hourly check. They verify everything themselves; see internal/relay.
+        env:
+          NOSTR_ANNOUNCE_KEY: ${{ secrets.NOSTR_ANNOUNCE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NOSTR_ANNOUNCE_KEY" ]; then echo "NOSTR_ANNOUNCE_KEY not set; skipping"; exit 0; fi
+          core=$(python3 -c 'import json;print(json.load(open("panel/releases/latest.json"))["version"])')
+          catalog=$(sha256sum panel/marketplace/catalog.json | cut -d" " -f1)
+          sleep 30  # let the CDN pick up the new files first
+          go run ./cmd/rubi-announce -core "$core" -catalog "$catalog"

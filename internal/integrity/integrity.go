@@ -158,6 +158,23 @@ func HashFile(p string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
+type freshKey struct{}
+
+// WithFresh marks ctx so that FreshURL bypasses CDN caches (used right after a release announcement).
+func WithFresh(ctx context.Context) context.Context { return context.WithValue(ctx, freshKey{}, true) }
+
+// FreshURL adds a cache-busting query parameter when ctx asks for fresh data.
+func FreshURL(ctx context.Context, u string) string {
+	if v, _ := ctx.Value(freshKey{}).(bool); !v {
+		return u
+	}
+	sep := "?"
+	if strings.Contains(u, "?") {
+		sep = "&"
+	}
+	return fmt.Sprintf("%s%sfresh=%d", u, sep, time.Now().UnixNano())
+}
+
 // Fetch downloads a small file (up to 1 MiB).
 func Fetch(ctx context.Context, url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)

@@ -54,6 +54,14 @@ Rubis see the new version within six hours.
 The Go SDK ships with Rubi (`sdk/rubiplugin`): a plugin built against SDK vX works with every Rubi that
 supports its `api`.
 
+## Release announcements
+
+The `pages` workflow ends by publishing a signed announcement to the Nostr relays (`cmd/rubi-announce`),
+so installed Rubis check for updates within seconds. It needs the repository secret `NOSTR_ANNOUNCE_KEY`
+(hex secp256k1 key; its public half is `relay.AnnouncePub`). The key only triggers checks, so losing it is
+harmless: generate a new one with `go run ./cmd/rubi-announce -genkey`, store it as the secret, and ship
+the new public key in the next release (older Rubis keep checking hourly).
+
 ## Updating the pinned cloudflared
 
 Bump `CLOUDFLARED_VERSION` in `panel/install.sh` and the three checksums. Use the SHA-256 GitHub shows

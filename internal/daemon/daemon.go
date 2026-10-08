@@ -113,7 +113,7 @@ func Run(ctx context.Context, layout paths.Layout) error {
 	return nil
 }
 
-// checkUpdates looks for new releases shortly after start and then every six hours.
+// checkUpdates looks for new releases shortly after start and then every hour.
 func checkUpdates(ctx context.Context, c *core.Core) {
 	if version.Version == "dev" {
 		return
@@ -133,7 +133,8 @@ func checkUpdates(ctx context.Context, c *core.Core) {
 			log.Printf("update available: %s -> %s", info.Current, info.Latest)
 		}
 		c.CheckPluginUpdates(ctx) // plugins update separately from Rubi itself
-		delay = 6 * time.Hour
+		// Release announcements over the relays usually arrive first; this hourly check is the fallback.
+		delay = time.Hour
 	}
 }
 
@@ -296,6 +297,7 @@ func startRelays(ctx context.Context, c *core.Core, api *panelapi.Server) {
 	c.SetRelay(key.Public(), relays)
 	last := -1
 	srv := &relay.Server{Key: key, Relays: relays, Handle: api.HandleRPC, Logf: log.Printf,
+		Announce: &relay.Announcements{Key: relay.AnnouncerKey(version.Version), On: c.OnAnnouncement},
 		Ready: func(n int) {
 			c.SetRelaysConnected(n)
 			if (n == 0) != (last == 0) || last < 0 {

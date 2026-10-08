@@ -29,7 +29,7 @@ func installManifest(t *testing.T, c *Core, raw string) {
 	dir := filepath.Join(t.TempDir(), "stage")
 	_ = os.MkdirAll(dir, 0o700)
 	tree, _ := plugins.TreeHash(dir)
-	if err := c.Store.Commit(&plugins.Candidate{Manifest: m, Dir: dir, Tree: tree}); err != nil {
+	if err := c.Store.Commit(&plugins.Candidate{Manifest: m, Dir: dir, Tree: tree}, ""); err != nil {
 		t.Fatal(err)
 	}
 }

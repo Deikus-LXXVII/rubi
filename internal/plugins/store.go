@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -90,8 +91,9 @@ func (s *Store) Get(id string) (Manifest, bool) {
 	return m, ok
 }
 
-// Commit moves a verified candidate into place, replacing any other version of the same plugin.
-func (s *Store) Commit(c *Candidate) error {
+// Commit moves a verified candidate into place. Other versions are deleted, except keep (the version
+// being replaced, kept for rollback; "" keeps none).
+func (s *Store) Commit(c *Candidate, keep string) error {
 	tree, err := TreeHash(c.Dir)
 	if err != nil {
 		return err
@@ -118,14 +120,43 @@ func (s *Store) Commit(c *Candidate) error {
 	if err != nil {
 		return err
 	}
-	// Remove other versions.
+	s.prune(id, ver, keep)
+	return nil
+}
+
+// prune deletes every version directory of id except the ones named.
+func (s *Store) prune(id string, keep ...string) {
 	entries, _ := os.ReadDir(filepath.Join(s.Root, id))
 	for _, e := range entries {
-		if e.IsDir() && e.Name() != ver && e.Name() != "data" {
-			_ = os.RemoveAll(filepath.Join(s.Root, id, e.Name()))
+		if !e.IsDir() || e.Name() == "data" || slices.Contains(keep, e.Name()) {
+			continue
 		}
+		_ = os.RemoveAll(filepath.Join(s.Root, id, e.Name()))
 	}
-	return nil
+}
+
+// Activate switches the installed version of id to another version already on disk (a rollback). The
+// caller verifies its files first.
+func (s *Store) Activate(id, version string) error {
+	b, err := os.ReadFile(filepath.Join(s.Dir(id, version), "rubi-plugin.json"))
+	if err != nil {
+		return fmt.Errorf("version %s of %s isn't on disk any more", version, id)
+	}
+	var m Manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		return err
+	}
+	if err := Check(&m); err != nil {
+		return err
+	}
+	if m.ID != id || m.Version != version {
+		return errors.New("the stored manifest doesn't match the version")
+	}
+	s.mu.Lock()
+	s.index[id] = m
+	err = s.saveLocked()
+	s.mu.Unlock()
+	return err
 }
 
 // Remove deletes a plugin's files, including its working directory.

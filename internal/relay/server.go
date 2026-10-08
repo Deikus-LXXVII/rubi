@@ -14,6 +14,8 @@ type Server struct {
 	Handle func(ctx context.Context, body []byte) (status int, resp []byte)
 	// Ready reports how many relays are connected (0 = the transport is down).
 	Ready func(connected int)
+	// Announce, when set, also follows release announcements (see announce.go).
+	Announce *Announcements
 	Logf  func(format string, args ...any)
 }
 
@@ -21,9 +23,19 @@ type Server struct {
 func (s *Server) Run(ctx context.Context) {
 	asm := newAssembler()
 	var p *pool
-	p = newPool(s.Relays, func() map[string]any {
-		return map[string]any{"kinds": []int{Kind}, "#p": []string{s.Key.Public()}, "since": time.Now().Add(-time.Minute).Unix()}
+	p = newPool(s.Relays, func() []map[string]any {
+		filters := []map[string]any{{"kinds": []int{Kind}, "#p": []string{s.Key.Public()}, "since": time.Now().Add(-time.Minute).Unix()}}
+		if s.Announce != nil {
+			filters = append(filters, s.Announce.filter())
+		}
+		return filters
 	}, func(e *Event) {
+		if e.Kind == AnnounceKind {
+			if s.Announce != nil {
+				s.Announce.handle(e)
+			}
+			return
+		}
 		var pt part
 		if json.Unmarshal([]byte(e.Content), &pt) != nil {
 			return

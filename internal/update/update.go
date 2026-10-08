@@ -48,7 +48,7 @@ func Feed(current string) string {
 
 // Latest reads the release feed.
 func Latest(ctx context.Context, current string) (Release, error) {
-	b, err := integrity.Fetch(ctx, Feed(current))
+	b, err := integrity.Fetch(ctx, integrity.FreshURL(ctx, Feed(current)))
 	if err != nil {
 		return Release{}, fmt.Errorf("release feed: %w", err)
 	}

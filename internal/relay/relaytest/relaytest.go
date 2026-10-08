@@ -29,7 +29,7 @@ type event struct {
 type client struct {
 	ws   *websocket.Conn
 	mu   sync.Mutex
-	subs map[string]filter
+	subs map[string][]filter
 }
 
 type Relay struct {
@@ -57,7 +57,7 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	ws.SetReadLimit(1 << 20)
-	c := &client{ws: ws, subs: map[string]filter{}}
+	c := &client{ws: ws, subs: map[string][]filter{}}
 	r.mu.Lock()
 	r.conns[c] = true
 	r.mu.Unlock()
@@ -82,13 +82,15 @@ func (r *Relay) serve(w http.ResponseWriter, req *http.Request) {
 		switch typ {
 		case "REQ":
 			var id string
-			var f filter
 			_ = json.Unmarshal(msg[1], &id)
-			if len(msg) > 2 {
-				_ = json.Unmarshal(msg[2], &f)
+			var fs []filter
+			for _, raw := range msg[2:] { // a REQ may carry several filters (any of them matches)
+				var f filter
+				_ = json.Unmarshal(raw, &f)
+				fs = append(fs, f)
 			}
 			c.mu.Lock()
-			c.subs[id] = f
+			c.subs[id] = fs
 			c.mu.Unlock()
 			c.write(ctx, []any{"EOSE", id})
 		case "CLOSE":
@@ -125,9 +127,12 @@ func (r *Relay) broadcast(ctx context.Context, e event, raw json.RawMessage) {
 	for _, c := range conns {
 		c.mu.Lock()
 		var ids []string
-		for id, f := range c.subs {
-			if matches(f, e) {
-				ids = append(ids, id)
+		for id, fs := range c.subs {
+			for _, f := range fs {
+				if matches(f, e) {
+					ids = append(ids, id)
+					break
+				}
 			}
 		}
 		c.mu.Unlock()

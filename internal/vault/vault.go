@@ -74,6 +74,31 @@ type Plugin struct {
 	InstalledAt   time.Time `json:"installed_at"`
 	// Notified is the last update the agent was told about.
 	Notified string `json:"notified,omitempty"`
+	// Previous is the version this one replaced, kept on disk so the user can roll back to it.
+	Previous *PluginVersion `json:"previous,omitempty"`
+}
+
+// PluginVersion is what's needed to trust and start one installed version of a plugin.
+type PluginVersion struct {
+	Version       string `json:"version"`
+	Source        string `json:"source"`
+	Reviewed      bool   `json:"reviewed"`
+	PublisherName string `json:"publisher_name"`
+	PublisherKey  string `json:"publisher_key"`
+	SumsSHA256    string `json:"sums_sha256"`
+	Tree          string `json:"tree"`
+}
+
+// Current returns the trusted facts of the installed version.
+func (p *Plugin) Current() PluginVersion {
+	return PluginVersion{Version: p.Version, Source: p.Source, Reviewed: p.Reviewed, PublisherName: p.PublisherName,
+		PublisherKey: p.PublisherKey, SumsSHA256: p.SumsSHA256, Tree: p.Tree}
+}
+
+// Use makes v the installed version.
+func (p *Plugin) Use(v PluginVersion) {
+	p.Version, p.Source, p.Reviewed, p.PublisherName = v.Version, v.Source, v.Reviewed, v.PublisherName
+	p.PublisherKey, p.SumsSHA256, p.Tree = v.PublisherKey, v.SumsSHA256, v.Tree
 }
 
 type Receipt struct {

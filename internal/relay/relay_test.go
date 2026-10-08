@@ -77,3 +77,41 @@ func TestSignVerify(t *testing.T) {
 		t.Fatal("tampered event verified")
 	}
 }
+
+func TestAnnouncements(t *testing.T) {
+	r := relaytest.New()
+	defer r.Close()
+	ann, _ := relay.NewKey()
+	stranger, _ := relay.NewKey()
+	key, _ := relay.NewKey()
+	got := make(chan relay.Announcement, 4)
+	ready := make(chan int, 10)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv := &relay.Server{Key: key, Relays: []string{r.URL()}, Ready: func(n int) { ready <- n },
+		Handle:   func(context.Context, []byte) (int, []byte) { return 200, nil },
+		Announce: &relay.Announcements{Key: ann.Public(), On: func(a relay.Announcement) { got <- a }}}
+	go srv.Run(ctx)
+	<-ready
+	time.Sleep(200 * time.Millisecond)
+
+	if _, err := relay.Publish(ctx, stranger, []string{r.URL()}, relay.Announcement{Core: "v9.9.9"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := relay.Publish(ctx, ann, []string{r.URL()}, relay.Announcement{Core: "v1.2.3", Catalog: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case a := <-got:
+		if a.Core != "v1.2.3" || a.Catalog != "abc" {
+			t.Fatalf("announcement: %+v", a)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no announcement")
+	}
+	select {
+	case a := <-got:
+		t.Fatalf("unexpected announcement: %+v", a)
+	case <-time.After(500 * time.Millisecond):
+	}
+}

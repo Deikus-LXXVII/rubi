@@ -116,6 +116,9 @@ func (c *Core) describeInstalled(item map[string]any, id string, records map[str
 		return
 	}
 	item["installed"], item["version"], item["running"] = true, rec.Version, c.Runner.Running(id)
+	if rec.Previous != nil {
+		item["previous_version"] = rec.Previous.Version
+	}
 	if m, ok := c.Store.Get(id); ok && len(m.Config) > 0 {
 		item["has_config"] = true
 	}
@@ -164,7 +167,7 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 	m := cand.Manifest
 	preview := permissions(m, cand.Reviewed, cand.Source)
 	return c.submitPluginChange(ctx, cand, "rubi.plugin.install", "Install "+m.Name+" "+m.Version, preview, func() error {
-		if err := c.Store.Commit(cand); err != nil {
+		if err := c.Store.Commit(cand, ""); err != nil {
 			return err
 		}
 		if err := c.Vault.Update(func(d *vault.Data) error {
@@ -237,13 +240,15 @@ func (c *Core) RequestPluginUpdate(ctx context.Context, id string) (map[string]a
 	}
 	return c.submitPluginChange(ctx, cand, "rubi.plugin.update", "Update "+m.Name+" to "+m.Version, preview, func() error {
 		c.Runner.Stop(id)
-		if err := c.Store.Commit(cand); err != nil {
+		if err := c.Store.Commit(cand, rec.Version); err != nil { // keep the old version for rollback
 			return err
 		}
 		if err := c.Vault.Update(func(d *vault.Data) error {
 			r := newRecord(cand)
 			if prev := d.Plugins[id]; prev != nil {
 				r.InstalledAt = prev.InstalledAt
+				old := prev.Current()
+				r.Previous = &old
 			}
 			d.Plugins[id] = r
 			return nil
@@ -255,6 +260,60 @@ func (c *Core) RequestPluginUpdate(ctx context.Context, id string) (map[string]a
 		c.startInstalled(id, m.Version, cand.Tree)
 		return nil
 	}, nil)
+}
+
+// RequestPluginRollback asks to switch a plugin back to the version it replaced. Doing it again switches
+// forward again. Settings, secrets and state stay.
+func (c *Core) RequestPluginRollback(ctx context.Context, id string) (map[string]any, error) {
+	if c.State() != Unlocked {
+		return nil, errors.New("Rubi is locked")
+	}
+	rec := c.record(id)
+	m, _ := c.Store.Get(id)
+	if rec == nil {
+		return nil, fmt.Errorf("plugin %q is not installed", id)
+	}
+	if rec.Previous == nil {
+		return nil, fmt.Errorf("%s has no earlier version to go back to", m.Name)
+	}
+	prev := *rec.Previous
+	if err := c.Store.Verify(id, prev.Version, prev.Tree); err != nil {
+		return nil, fmt.Errorf("can't roll back: %w", err)
+	}
+	preview := map[string]any{"plugin": m.Name, "current": rec.Version, "back_to": prev.Version,
+		"effect": "Settings, passwords and state stay. You can switch forward again the same way."}
+	return c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: "rubi.plugin.rollback",
+		Summary: "Roll " + m.Name + " back to " + prev.Version, Preview: preview,
+		Options: []approvals.Option{{Key: "rollback", Label: "Roll back"}},
+		Execute: func(context.Context, string) (any, error) {
+			c.Runner.Stop(id)
+			if err := c.Store.Verify(id, prev.Version, prev.Tree); err != nil {
+				c.startInstalled(id, rec.Version, rec.Tree)
+				return nil, err
+			}
+			if err := c.Store.Activate(id, prev.Version); err != nil {
+				c.startInstalled(id, rec.Version, rec.Tree)
+				return nil, err
+			}
+			if err := c.Vault.Update(func(d *vault.Data) error {
+				r := d.Plugins[id]
+				if r == nil {
+					return errors.New("plugin record missing")
+				}
+				cur := r.Current()
+				r.Use(prev)
+				r.Previous = &cur
+				return nil
+			}); err != nil {
+				_ = c.Store.Activate(id, rec.Version)
+				c.startInstalled(id, rec.Version, rec.Tree)
+				return nil, err
+			}
+			c.Audit.Record("plugin.rolled_back", audit.Fields{"plugin": id, "from": rec.Version, "to": prev.Version})
+			c.toolsChanged()
+			c.startInstalled(id, prev.Version, prev.Tree)
+			return map[string]any{"plugin": id, "version": prev.Version, "previous": rec.Version}, nil
+		}})
 }
 
 // RequestPluginRemove asks to uninstall a plugin and erase everything it stored.

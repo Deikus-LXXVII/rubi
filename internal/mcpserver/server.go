@@ -293,6 +293,16 @@ func (s *Server) registerCoreTools() {
 			return nil, s.withHint(res), err
 		})
 
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_rollback",
+		Description: "Switch a plugin back to the version it replaced (e.g. if an update broke something). The user approves in the panel; doing it again switches forward."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginIDIn) (*mcp.CallToolResult, out, error) {
+			if locked := s.lockedResponse(); locked != nil {
+				return nil, locked, nil
+			}
+			res, err := s.core.RequestPluginRollback(ctx, in.ID)
+			return nil, s.withHint(res), err
+		})
+
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_remove",
 		Description: "Remove a plugin and erase what it stored (passwords, settings, state). The user approves in the panel."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginIDIn) (*mcp.CallToolResult, out, error) {

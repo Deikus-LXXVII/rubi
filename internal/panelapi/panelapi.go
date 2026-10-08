@@ -231,7 +231,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		return s.approvalDecide(ctx, purpose, env)
 	case "integration.catalog", "integration.setup", "integration.disconnect",
 		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
-		"store.list", "plugin.install", "plugin.update", "plugin.remove",
+		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set":
 		return s.settings(ctx, purpose, env)
@@ -570,13 +570,15 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return s.catalog(), nil
 	case "store.list":
 		return s.core.StoreList(ctx)
-	case "plugin.install", "plugin.update", "plugin.remove":
+	case "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback":
 		var res map[string]any
 		switch env.Op {
 		case "plugin.install":
 			res, err = s.core.RequestPluginInstall(ctx, args.Plugin)
 		case "plugin.update":
 			res, err = s.core.RequestPluginUpdate(ctx, args.ID)
+		case "plugin.rollback":
+			res, err = s.core.RequestPluginRollback(ctx, args.ID)
 		default:
 			res, err = s.core.RequestPluginRemove(ctx, args.ID)
 		}

@@ -53,8 +53,8 @@ func CatalogURL(current string) string {
 // FetchCatalog downloads the catalog and verifies its signature with the Rubi release key.
 func FetchCatalog(ctx context.Context, current string) (*Catalog, error) {
 	u := CatalogURL(current)
-	body, err1 := integrity.Fetch(ctx, u)
-	sig, err2 := integrity.Fetch(ctx, u+".sig")
+	body, err1 := integrity.Fetch(ctx, integrity.FreshURL(ctx, u))
+	sig, err2 := integrity.Fetch(ctx, integrity.FreshURL(ctx, u+".sig"))
 	if err := errors.Join(err1, err2); err != nil {
 		return nil, fmt.Errorf("plugin catalog: %w", err)
 	}

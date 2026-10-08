@@ -477,7 +477,7 @@ const FIELD_LABELS = {
   from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", in_reply_to: "In reply to", body: "Message",
   plugin: "Plugin", warning: "Warning", review: "Review", publisher: "Publisher", source: "Installed from",
   integration: "Integration", account: "Account", current: "Current version", new_version: "New version",
-  new_permissions: "New permissions", will_ask_for: "Will ask you for", can: "Can", connects_to: "Connects to",
+  new_permissions: "New permissions", back_to: "Back to", will_ask_for: "Will ask you for", can: "Can", connects_to: "Connects to",
   can_notify_about: "Can notify your agent about", effect: "Effect", webhook: "Webhook",
   release_notes: "Release notes", verification: "Verification",
 };
@@ -576,6 +576,7 @@ function titleFor(a) {
   if (a.kind === "rubi.plugin.install" && name) return `Install ${name}?`;
   if (a.kind === "rubi.plugin.update" && name) return `Update ${name}?`;
   if (a.kind === "rubi.plugin.remove" && name) return `Remove ${name}?`;
+  if (a.kind === "rubi.plugin.rollback" && name) return `Roll ${name} back to ${a.preview.back_to}?`;
   return a.summary;
 }
 
@@ -712,7 +713,8 @@ async function approveScreen(ctx, id, opts = {}) {
 function resultScreen(ctx, a, onDone, extra = {}) {
   const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved"
     : a.kind === "rubi.update" ? "Updating…" : a.kind === "rubi.plugin.install" ? "Installed"
-    : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed" : "Done";
+    : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed"
+    : a.kind === "rubi.plugin.rollback" ? "Rolled back" : "Done";
   const titles = {
     executed: executedTitle,
     denied: "Declined",
@@ -873,6 +875,8 @@ async function settingsScreen(ctx) {
     h("div", { class: "actions" },
       p.update_available
         ? h("button", { class: "primary small", onclick: change("plugin.update", () => ({ id: p.id })) }, `Update to ${p.update_available}`) : null,
+      p.previous_version
+        ? h("button", { class: "link small", onclick: change("plugin.rollback", () => ({ id: p.id })) }, `Roll back to ${p.previous_version}`) : null,
       p.connected && p.has_config
         ? h("button", { class: "secondary small", onclick: () => pluginConfigScreen(ctx, p.id) }, "Settings") : null,
       p.connected

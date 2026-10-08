@@ -308,6 +308,21 @@ func TestMarketplaceFullStack(t *testing.T) {
 		t.Fatalf("state after update: %v", res)
 	}
 
+	// Rollback: back to v1.0.0 (its tools and files), then forward again; state stays.
+	out = ag.call("rubi_plugin_rollback", map[string]any{"id": "demo"})
+	if res := r.approve(out, "rollback"); res["version"] != "v1.0.0" {
+		t.Fatalf("rollback: %v", res)
+	}
+	r.waitFor("plugin after rollback", func() bool { return ag.call("demo_echo", map[string]any{"text": "x"})["user"] == "ann" })
+	if st := ag.call("rubi_status", nil)["plugins"].([]any)[0].(map[string]any); st["version"] != "v1.0.0" {
+		t.Fatalf("status after rollback: %v", st)
+	}
+	out = ag.call("rubi_plugin_rollback", map[string]any{"id": "demo"})
+	if res := r.approve(out, "rollback"); res["version"] != "v1.1.0" {
+		t.Fatalf("roll forward: %v", res)
+	}
+	r.waitFor("plugin after roll forward", func() bool { return ag.call("demo_echo", map[string]any{"text": "x"})["user"] == "ann" })
+
 	// Files changed on disk: the plugin doesn't start after the next unlock.
 	ag.call("rubi_lock", nil)
 	bin := filepath.Join(r.c.Layout.Plugins(), "demo", "v1.1.0", "demo")

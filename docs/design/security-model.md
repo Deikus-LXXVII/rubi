@@ -199,8 +199,9 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
 ## 10. Updates
 
 - **Discovery:** Rubi reads `https://rubi-panel.com/releases/latest.json` (published by the Pages workflow on
-  every release) at start and every six hours, and tells the agent once per version
-  (`rubi.update.available`). The feed is only a hint; nothing in it is trusted.
+  every release) at start and every hour, and at once when a signed release announcement arrives over the
+  relays (see plugins.md, §5). It tells the agent once per version (`rubi.update.available`). The feed and
+  the announcement are only hints; nothing in them is trusted.
 - **Approval:** updating changes the code that holds the user's key, so it's a strong action (`rubi.update`,
   locked). Before asking, Rubi verifies the release's signed checksums, so the approval screen states a
   checked fact.

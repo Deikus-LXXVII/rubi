@@ -54,7 +54,11 @@ and `~/.rubi/bin/rubi rollback`.
 
 **Plugins.** On a `plugin.update_available` event, tell the user (the event says whether the new version
 is reviewed). If they want it, call `rubi_plugin_update(id)` and send the approval link; the panel lists any
-new permissions. Rubi keeps running; only that plugin restarts.
+new permissions. Rubi keeps running; only that plugin restarts. If an update breaks something, offer
+`rubi_plugin_rollback(id)` (the user approves; calling it again switches forward).
+
+Rubi learns about new releases within seconds (signed announcements over its relays), so don't poll for
+updates.
 
 ## Add a plugin (e.g. iCloud Mail)
 

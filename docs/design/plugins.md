@@ -141,13 +141,26 @@ The flow:
 1. **Install.** The user asks the agent ("install iCloud Mail") or taps **Install** in the panel's
    **Store**. The plugin is downloaded and verified *before* the approval is created, so the approval shows
    the real manifest. Once the user approves, Rubi installs the plugin and offers setup (`setup:<id>`).
-2. **Update.** Rubi checks the catalog and sideloaded sources at startup and every 6 hours, like core
-   updates but separately. Each new version is announced once with a `plugin.update_available` event.
-   The update approval lists **new permissions** separately. Rubi stops the plugin, swaps the files and
-   starts it again; secrets, settings and state stay.
-3. **Remove.** Rubi stops the plugin and deletes its files, secrets, settings and state.
+2. **Update.** Rubi checks the catalog and sideloaded sources when it is unlocked and every hour, and at
+   once when a release announcement arrives (see below). Each new version is announced to the agent once
+   with a `plugin.update_available` event. The update approval lists **new permissions** separately. Rubi
+   stops the plugin, swaps the files and starts it again; secrets, settings and state stay. The replaced
+   version stays on disk.
+3. **Rollback.** `rubi_plugin_rollback` (or the panel) switches back to the replaced version after a strong
+   approval, re-checking its files against the tree hash recorded at install. Doing it again switches
+   forward. Settings, secrets and state stay.
+4. **Remove.** Rubi stops the plugin and deletes its files, secrets, settings and state.
 
 The agent can't skip any of these approvals: `rubi.*` kinds are always strong.
+
+**Release announcements.** Plugins and Rubi are released on GitHub, but installed Rubis have no public
+address to receive a GitHub webhook, and the project runs no server. Instead, the site workflow (which runs
+after every Rubi release and every catalog change) publishes a signed announcement to the Nostr relays Rubi
+already uses: a NIP-78 event (kind 30078, `d=rubi-releases`) with the latest Rubi version and the catalog's
+hash, signed with the announcement key whose public half is built into Rubi. Relays keep the latest one, so
+Rubis get it within seconds, or when they reconnect. It is only a hint: Rubi then reads the feed and the
+catalog (bypassing CDN caches) and verifies every signature as usual; a forged announcement costs at most a
+check.
 
 ## 6. Runtime
 
