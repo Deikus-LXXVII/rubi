@@ -49,9 +49,11 @@ go build -o rubi ./cmd/rubi
 ./rubi status
 ```
 
-`RUBI_HOME` sets the state directory (default `~/.rubi`). The panel transport needs
-[`cloudflared`](https://github.com/cloudflare/cloudflared/releases) on `PATH` (or `RUBI_CLOUDFLARED`);
-`RUBI_PUBLIC_URL` uses a fixed URL instead, e.g. with Tailscale.
+`RUBI_HOME` sets the state directory (default `~/.rubi`). The panel reaches Rubi through public Nostr
+relays by default (`RUBI_RELAYS` overrides the list). If no relay is reachable, Rubi falls back to a
+Cloudflare quick tunnel ([`cloudflared`](https://github.com/cloudflare/cloudflared/releases) on `PATH`, or
+`RUBI_CLOUDFLARED`; `RUBI_TUNNEL=1` starts it always). `RUBI_PUBLIC_URL` adds a fixed URL, e.g. with
+Tailscale.
 
 `rubi dev-panel '<link>'` pairs or unlocks with a password from the terminal (for development).
 

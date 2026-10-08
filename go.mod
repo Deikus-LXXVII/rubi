@@ -3,6 +3,8 @@ module github.com/Deikus-LXXVII/rubi
 go 1.26.4
 
 require (
+	github.com/btcsuite/btcd/btcec/v2 v2.5.0
+	github.com/coder/websocket v1.8.15
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/crypto v0.57.0
@@ -11,6 +13,9 @@ require (
 )
 
 require (
+	github.com/btcsuite/btcd/chainhash/v2 v2.0.0 // indirect
+	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect

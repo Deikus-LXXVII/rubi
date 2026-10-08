@@ -26,6 +26,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/mcpserver"
 	"github.com/Deikus-LXXVII/rubi/internal/panelapi"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
+	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/tunnel"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
@@ -228,10 +229,16 @@ func receiveHandoff(c *core.Core) error {
 	return nil
 }
 
-// startPanelTransport serves the panel API on loopback and exposes it through the configured transport:
-// RUBI_PUBLIC_URL if set (e.g. Tailscale serve), otherwise a Cloudflare quick tunnel.
+// startPanelTransport makes the panel API reachable from the user's browser:
+//   - public Nostr relays, always (the default; needs no inbound address and no account);
+//   - RUBI_PUBLIC_URL if set (e.g. Tailscale serve);
+//   - otherwise a Cloudflare quick tunnel as a fallback, started only if no relay is reachable for a while
+//     (quick tunnels are rate-limited per IP address, which agent machines share), or always with
+//     RUBI_TUNNEL=1.
 func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout) (<-chan struct{}, error) {
 	done := make(chan struct{})
+	api := panelapi.New(c)
+	startRelays(ctx, c, api)
 	addr := "127.0.0.1:0"
 	if p := os.Getenv("RUBI_PANEL_API_PORT"); p != "" {
 		addr = "127.0.0.1:" + p
@@ -240,7 +247,7 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	if err != nil {
 		return nil, fmt.Errorf("panel API listener: %w", err)
 	}
-	hs := &http.Server{Handler: panelapi.New(c).Handler(), ReadHeaderTimeout: 10 * time.Second,
+	hs := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second}
 	go func() { _ = hs.Serve(pln) }()
 	go func() {
@@ -265,10 +272,63 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	}
 	m := &tunnel.Manager{Binary: bin, Target: target, OnURL: c.SetEndpoint, OnError: c.SetTransportError, Logf: log.Printf}
 	go func() {
+		defer close(done)
+		if os.Getenv("RUBI_TUNNEL") != "1" && !relaysDownFor(ctx, c, 90*time.Second) {
+			return
+		}
+		log.Printf("no relay reachable; starting the Cloudflare tunnel as a fallback")
 		m.Run(ctx)
-		close(done)
 	}()
 	return done, nil
+}
+
+// startRelays serves the panel through public relays.
+func startRelays(ctx context.Context, c *core.Core, api *panelapi.Server) {
+	relays := relay.DefaultRelays
+	if r := os.Getenv("RUBI_RELAYS"); r != "" {
+		relays = strings.Split(r, ",")
+	}
+	key, err := relay.NewKey()
+	if err != nil {
+		log.Printf("relay key: %v", err)
+		return
+	}
+	c.SetRelay(key.Public(), relays)
+	last := -1
+	srv := &relay.Server{Key: key, Relays: relays, Handle: api.HandleRPC, Logf: log.Printf,
+		Ready: func(n int) {
+			c.SetRelaysConnected(n)
+			if (n == 0) != (last == 0) || last < 0 {
+				log.Printf("panel relays connected: %d of %d", n, len(relays))
+			}
+			last = n
+		}}
+	go srv.Run(ctx)
+}
+
+// relaysDownFor waits and reports whether no relay was connected during the whole period (checked
+// repeatedly, so a later outage also triggers the fallback). It returns false when ctx ends.
+func relaysDownFor(ctx context.Context, c *core.Core, d time.Duration) bool {
+	down := time.Time{}
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-t.C:
+		}
+		if c.RelaysConnected() > 0 {
+			down = time.Time{}
+			continue
+		}
+		if down.IsZero() {
+			down = time.Now()
+		}
+		if time.Since(down) >= d {
+			return true
+		}
+	}
 }
 
 func serve(ctx context.Context, s *mcp.Server, conn net.Conn) {

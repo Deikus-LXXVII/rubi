@@ -13,6 +13,7 @@ package panelclient
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
@@ -22,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,8 +43,10 @@ import (
 var b64 = base64.RawURLEncoding
 
 type Link struct {
-	Endpoint string
-	Instance string // public bundle
+	Endpoint string   // HTTP transport (tunnel or fixed URL), if any
+	Relay    string   // Rubi's routing key on the relays, if any
+	Relays   []string // relays to use (default list when empty)
+	Instance string   // public bundle
 	Purpose  string
 	Pairing  string
 	Ticket   string
@@ -55,17 +59,60 @@ func ParseLink(s string) (Link, error) {
 		return Link{}, errors.New("not a Rubi panel link")
 	}
 	q, err := url.ParseQuery(s[i+1:])
-	if err != nil || q.Get("v") != "1" || q.Get("e") == "" || q.Get("k") == "" {
+	if err != nil || q.Get("v") != "1" || (q.Get("e") == "" && q.Get("n") == "") || q.Get("k") == "" {
 		return Link{}, errors.New("not a Rubi panel link")
 	}
-	return Link{Endpoint: strings.TrimRight(q.Get("e"), "/"), Instance: q.Get("k"), Purpose: q.Get("a"),
-		Pairing: q.Get("p"), Ticket: q.Get("t")}, nil
+	l := Link{Endpoint: strings.TrimRight(q.Get("e"), "/"), Relay: q.Get("n"), Instance: q.Get("k"), Purpose: q.Get("a"),
+		Pairing: q.Get("p"), Ticket: q.Get("t")}
+	if r := q.Get("r"); r != "" {
+		l.Relays = strings.Split(r, ",")
+	}
+	return l, nil
 }
 
 type Client struct {
 	Link Link
 	HTTP *http.Client
-	ch   e2e.Client
+	// PreferHTTP uses the HTTP endpoint even when the link also offers relays.
+	PreferHTTP bool
+	ch         e2e.Client
+	relay      *relay.Client
+}
+
+// post sends a sealed request over the link's transport: relays when offered, else HTTP.
+func (c *Client) post(body []byte) ([]byte, error) {
+	if c.Link.Relay != "" && (c.Link.Endpoint == "" || !c.PreferHTTP) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if c.relay == nil {
+			relays := c.Link.Relays
+			if len(relays) == 0 {
+				relays = relay.DefaultRelays
+			}
+			rc, err := relay.Dial(ctx, c.Link.Relay, relays)
+			if err != nil {
+				return nil, err
+			}
+			c.relay = rc
+		}
+		status, resp, err := c.relay.Do(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		if status != http.StatusOK {
+			return nil, fmt.Errorf("panel API returned %d", status)
+		}
+		return resp, nil
+	}
+	resp, err := c.HTTP.Post(c.Link.Endpoint+panelapi.RPCPath, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("panel API returned HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 }
 
 func New(l Link) (*Client, error) {
@@ -96,16 +143,12 @@ func (c *Client) Call(op string, args any, out any) error {
 		return err
 	}
 	body, _ := json.Marshal(req)
-	resp, err := c.HTTP.Post(c.Link.Endpoint+panelapi.RPCPath, "application/json", bytes.NewReader(body))
+	respBody, err := c.post(body)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("panel API returned HTTP %d", resp.StatusCode)
-	}
 	var sealed e2e.Response
-	if err := json.NewDecoder(resp.Body).Decode(&sealed); err != nil {
+	if err := json.Unmarshal(respBody, &sealed); err != nil {
 		return err
 	}
 	opened, err := e2e.OpenResponse(respKey, env.RID, sealed)

@@ -1,0 +1,4 @@
+@noble/secp256k1 3.2.0 (npm), index.js
+npm integrity sha512-Z3ZAWOTxJ0EuTuZTi7Y69iK7GgrLHh8sgm45lVDhg/b3Nk1TpAiKhick2KkZisHuupeepSkyIydN/J459SdX1w==
+sha256 ba5aadb469e9208f2da1c9878ab6bb93d2c894f84e6c7ebf9dbf9462741b9fb7
+https://github.com/paulmillr/noble-secp256k1

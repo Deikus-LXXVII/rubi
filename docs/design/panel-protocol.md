@@ -8,13 +8,15 @@ Status: implemented on the Rubi side (M2). The web panel (M3) implements the cli
 Rubi gives the agent links of this form; everything after `#` stays in the browser:
 
 ```
-https://rubi-panel.com/#v=1&e=<endpoint>&k=<instance key>&a=<purpose>&p=<pairing code>   (pair)
-https://rubi-panel.com/#v=1&e=<endpoint>&k=<instance key>&a=<purpose>&t=<ticket>         (everything else)
+https://rubi-panel.com/#v=1&n=<relay key>[&e=<endpoint>]&k=<instance key>&a=<purpose>&p=<pairing code>   (pair)
+https://rubi-panel.com/#v=1&n=<relay key>[&e=<endpoint>]&k=<instance key>&a=<purpose>&t=<ticket>         (everything else)
 ```
 
 | Field | Meaning |
 |---|---|
-| `e` | Current public URL of the instance's panel API (a quick-tunnel URL; changes on restart) |
+| `n` | Rubi's routing key on the relays (x-only secp256k1, hex; changes on restart). The panel sends requests as ephemeral Nostr events (kind 21777) tagged `p=<n>` and listens for answers from `n` |
+| `r` | Optional comma-separated relay list, when Rubi doesn't use the default relays |
+| `e` | Optional HTTPS URL of the panel API (fallback tunnel or `RUBI_PUBLIC_URL`); used when there is no `n` or the relays fail |
 | `k` | Instance public bundle: X25519 public key (32 bytes) ‖ Ed25519 public key (32 bytes), base64url |
 | `a` | `pair`, `unlock`, `settings`, `setup:<integration>`, `approve:<approval id>` |
 | `p` | One-time pairing code (15 min, burned on successful pairing) |

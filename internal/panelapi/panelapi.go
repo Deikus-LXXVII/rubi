@@ -98,40 +98,57 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) {
 func (s *Server) rpc(w http.ResponseWriter, r *http.Request) {
 	s.cors(w, r)
 	w.Header().Set("Cache-Control", "no-store")
-	var req e2e.Request
-	if err := json.NewDecoder(io.LimitReader(r.Body, maxBody)).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	plain, respKey, err := s.ch.Open(RPCPath, req)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	status, resp := s.HandleRPC(r.Context(), body)
+	if status != http.StatusOK {
+		http.Error(w, string(resp), status)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(resp)
+}
+
+// HandleRPC processes one encrypted request body, whatever carried it (HTTP or relays), and returns the
+// encrypted response body.
+func (s *Server) HandleRPC(ctx context.Context, body []byte) (int, []byte) {
+	bad := []byte("bad request")
+	if len(body) > maxBody {
+		return http.StatusBadRequest, bad
+	}
+	var req e2e.Request
+	if err := json.Unmarshal(body, &req); err != nil {
+		return http.StatusBadRequest, bad
+	}
+	plain, respKey, err := s.ch.Open(RPCPath, req)
+	if err != nil {
+		return http.StatusBadRequest, bad
+	}
 	var env Envelope
 	if err := json.Unmarshal(plain, &env); err != nil || env.RID == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
+		return http.StatusBadRequest, bad
 	}
 	var out reply
 	if err := s.checkFresh(env); err != nil {
 		out = reply{Error: err.Error()}
 	} else {
-		res, err := s.dispatch(r.Context(), env)
+		res, err := s.dispatch(ctx, env)
 		if err != nil {
 			out = reply{Error: err.Error()}
 		} else {
 			out = reply{OK: true, Result: res}
 		}
 	}
-	body, _ := json.Marshal(out)
-	sealed, err := e2e.SealResponse(respKey, env.RID, body)
+	plainOut, _ := json.Marshal(out)
+	sealed, err := e2e.SealResponse(respKey, env.RID, plainOut)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return http.StatusInternalServerError, []byte("internal error")
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(sealed)
+	resp, _ := json.Marshal(sealed)
+	return http.StatusOK, resp
 }
 
 // checkFresh rejects replays of a captured request and stale requests.

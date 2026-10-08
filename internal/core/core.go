@@ -21,6 +21,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/integrity"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/plugins"
+	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
@@ -41,7 +42,7 @@ const (
 	ticketTTL  = 15 * time.Minute
 )
 
-var ErrNoTransport = errors.New("the panel connection is not available yet (Rubi is still opening its tunnel); " +
+var ErrNoTransport = errors.New("the panel connection is not available yet (Rubi is still connecting to the relays); " +
 	"try again in a few seconds")
 
 type Core struct {
@@ -57,7 +58,10 @@ type Core struct {
 
 	mu       sync.Mutex
 	paired   bool
-	endpoint string // current public URL of the panel API (set by the transport)
+	endpoint string // current public URL of the panel API (set by the tunnel or RUBI_PUBLIC_URL)
+	relayPub string // Rubi's routing key on the relays ("" = relay transport off)
+	relays   []string
+	relayUp  int    // relays currently connected
 	transErr string // why there is no endpoint, if the transport can't start
 	pairCode string
 	pairExp  time.Time
@@ -177,6 +181,39 @@ func (c *Core) SetEndpoint(u string) {
 	c.mu.Unlock()
 }
 
+// SetRelay records the relay transport's routing key and relays (links carry them).
+func (c *Core) SetRelay(pub string, relays []string) {
+	c.mu.Lock()
+	c.relayPub, c.relays = pub, append([]string(nil), relays...)
+	c.mu.Unlock()
+}
+
+// SetRelaysConnected is called by the relay transport whenever the number of connected relays changes.
+func (c *Core) SetRelaysConnected(n int) {
+	c.mu.Lock()
+	c.relayUp = n
+	c.mu.Unlock()
+}
+
+// RelaysConnected reports how many relays carry the panel right now.
+func (c *Core) RelaysConnected() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.relayUp
+}
+
+func sameRelays(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // SetTransportError records why no panel connection can be offered (shown to the agent).
 func (c *Core) SetTransportError(msg string) {
 	c.mu.Lock()
@@ -192,7 +229,7 @@ func (c *Core) Link(purpose string) (string, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.endpoint == "" {
+	if c.endpoint == "" && c.relayUp == 0 {
 		if c.transErr != "" {
 			return "", errors.New(c.transErr)
 		}
@@ -206,7 +243,15 @@ func (c *Core) Link(purpose string) (string, error) {
 	}
 	q := url.Values{}
 	q.Set("v", "1")
-	q.Set("e", c.endpoint)
+	if c.endpoint != "" {
+		q.Set("e", c.endpoint)
+	}
+	if c.relayPub != "" {
+		q.Set("n", c.relayPub)
+		if !sameRelays(c.relays, relay.DefaultRelays) {
+			q.Set("r", strings.Join(c.relays, ","))
+		}
+	}
 	q.Set("k", c.ID.PublicBundle())
 	q.Set("a", purpose)
 	if purpose == "pair" {

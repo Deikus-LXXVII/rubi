@@ -89,21 +89,24 @@ Properties:
 
 ## 6. Transport
 
-- Rubi exposes its panel API over HTTPS. **The user configures nothing:** Rubi picks the first transport
-  that works, in this order:
-  1. A Cloudflare **quick tunnel** (`cloudflared tunnel --url …`). No account, no config; Rubi starts and
-     supervises it. The address changes on every restart, so the agent always sends the current link.
-     Traffic is tiny (pairing, unlocks, approvals), well within quick-tunnel limits, but there is no uptime
-     guarantee.
-  2. Other account-free tunnel providers as fallbacks.
-  3. **Optional:** Tailscale (`tailscale serve`, stable `*.ts.net` address, private to the tailnet), for
-     users who opt in.
-- A changing endpoint is harmless: the panel identifies the instance by its pinned `IK`, not by its URL.
+- **The user configures nothing.** Rubi offers the panel API over these transports:
+  1. **Public Nostr relays (default).** Rubi and the panel both connect out to several public relays and
+     exchange ephemeral events (kind 21777, which relays forward but don't store). Each event carries a
+     chunk of an already encrypted panel request or response. No inbound address, no account, nothing to
+     provision, so nothing to rate-limit. Any one working relay is enough; Rubi uses six. The Nostr keys
+     are throwaway routing identities, created per run; links carry Rubi's (`n`).
+  2. **Fallback: a Cloudflare quick tunnel**, started only after no relay has been reachable for 90
+     seconds (or always with `RUBI_TUNNEL=1`). Quick tunnels are rate-limited per IP address (HTTP 429),
+     and agent machines share their egress address, so they can't be the default.
+  3. **Optional:** a fixed URL (`RUBI_PUBLIC_URL`), e.g. Tailscale (`tailscale serve`).
+- Relays and tunnel providers are untrusted carriers. They see ciphertext, sizes and timing, and can drop
+  or delay messages; they can't read or forge them. A changing route is harmless: the panel identifies the
+  instance by its pinned `IK`, not by how it reaches it.
 - **End-to-end encryption on top of HTTPS:** every panel request is encrypted to `IK` (HPKE-style:
   X25519 + HKDF-SHA256 + AES-256-GCM, via WebCrypto) and every response is authenticated by `IK`. The
   tunnel provider sees only ciphertext.
 - CORS allows only `https://rubi-panel.com` (or the configured self-hosted panel origin).
-- The MCP endpoint for the agent listens on loopback only and is never exposed through the tunnel.
+- The MCP endpoint for the agent listens on loopback only and is never exposed through any transport.
 
 ## 7. Protocols
 
