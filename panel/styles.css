@@ -1093,3 +1093,12 @@ button.primary.is-busy::before { display: none; }
 .mascot.shy .eye-lid { opacity: 1; scale: 1; }
 .mascot.shy .mascot-gaze { translate: -2.5px 1px; }
 .mascot.shy .mascot-body { rotate: -6deg; }
+
+/* mobile ergonomics (iteration 18): batch items as compact rows */
+.batch-item > div { min-width: 0; flex: 1; }
+.batch-item .fields { border: 0; background: none; margin-top: 4px; border-radius: 0; }
+.batch-item .field-item { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; border: 0; }
+.batch-item .field-item dt { flex-shrink: 0; font-size: 0; gap: 0; }
+.batch-item .field-item dt .icon { width: 13px; height: 13px; vertical-align: -1px; }
+.batch-item .field-item dd { margin: 0; color: var(--muted); font-size: 0.84rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card.approve .fine { margin-bottom: 4px; }

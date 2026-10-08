@@ -862,7 +862,7 @@ const FIELD_LABELS = {
 
 // An icon for each well-known preview field.
 const FIELD_ICONS = {
-  from: "mail", to: "mail", subject: "mail", plugin: "plug", about: "sparkle", publisher: "user", website: "link",
+  from: "mail", to: "mail", subject: "mail", date: "clock", hidden_because: "eye", plugin: "plug", about: "sparkle", publisher: "user", website: "link",
   source: "link", review: "shield", warning: "warn", new_permissions: "warn", can: "check", connects_to: "globe",
   will_ask_for: "key", can_notify_about: "bell", notifies_about: "bell", rubi_home: "home", account: "user",
   integration: "plug", agent: "bot", webhook: "link", effect: "sparkle", reason: "eye", current: "clock",
