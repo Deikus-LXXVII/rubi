@@ -67,6 +67,13 @@ Rules the core enforces:
 - Tools are declared in the manifest, so Rubi lists them to the agent even while it is locked and the plugin
   isn't running.
 - `publisher.key` is a base64 Ed25519 public key (SubjectPublicKeyInfo DER, the body of a PEM file).
+- An action may be `locked`: its default level can't be lowered by the user (for example revealing an
+  email hidden by a privacy filter is always strong).
+- `config` declares **user-only settings**: `bool`, `text`, `choice` (one of `options`) or `list` (free
+  text, or a subset of `options`). `dynamic` options come from the plugin when the panel opens the settings
+  (for example the user's mail folders). Only the user changes them, in the panel with a strong approval;
+  the agent can't see or change them. The plugin reads them with `config.get`. Typical uses: privacy
+  filters, which folders or accounts the agent may see.
 
 The Go SDK generates the manifest from code: `<plugin> --manifest` prints it, and the release workflow
 publishes that output.
@@ -176,6 +183,7 @@ Both sides send requests. A message may be up to 4 MiB.
 | `stop` | `{}` | `{}`. The user disconnected. Stop background work |
 | `tool` | `{name, arguments}` | Any JSON object, returned to the agent. Only called while connected |
 | `execute` | `{kind, option, payload}` | Any JSON object. An approved action runs; `payload` is what the plugin submitted |
+| `config.options` | `{key}` | `{options: [{key, label}]}`. Choices for a `dynamic` config field |
 | `shutdown` | `{}` | `{}`, then exit |
 
 **Plugin → host**
@@ -187,7 +195,8 @@ Both sides send requests. A message may be up to 4 MiB.
 | `state.get` / `state.set` | `{}` / `{state}` | `{state}` / `{}`. Private state, encrypted in the vault |
 | `approval.submit` | `{kind, summary, question?, preview, options, payload}` | When the kind needs no approval, the host calls `execute` right away and returns its result. Otherwise it returns `{status: "awaiting_approval", approval_id, …}` for the agent |
 | `level.get` | `{kind}` | `{level}` |
-| `event.emit` | `{type, data}` | `{event_id}`. The type must be declared; `untrusted_fields` come from the manifest |
+| `event.emit` | `{type, data, agent?}` | `{event_id}`. The type must be declared; `untrusted_fields` come from the manifest. With `agent` (a connected Bot's name), only that Bot is woken; otherwise the Bots subscribed to the plugin |
+| `config.get` | `{}` | `{config}`: the user-only settings, with defaults for anything not set |
 | `audit` | `{event, fields}` | `{}` |
 
 Plugins log to stderr; Rubi saves it to `logs/plugin-<id>.log`.

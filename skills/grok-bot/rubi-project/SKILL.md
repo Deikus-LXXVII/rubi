@@ -92,6 +92,22 @@ warns that it isn't reviewed.
       Only after the user presses a button, call `rubi_confirm` with that label.
 - Never claim something was sent or approved before Rubi reports `executed`.
 
+## iCloud Mail: watches, privacy, folders
+
+- **Watching mail.** To follow something by email (a delivery, a reply from a company), call
+  `icloud_mail_watch` with senders (addresses or domains) and/or words (an order or tracking number),
+  your Bot name as `agent`, and a `note` on what to do. Every new matching email wakes you with that note.
+  Keep watches specific (each match costs the user's quota), check them with `icloud_mail_watches`, and
+  remove them with `icloud_mail_unwatch` when done (e.g. the parcel arrived).
+- **Private email.** The user hides some mail from you (sign-in codes, password resets, chosen senders or
+  words). It shows up only as `private` with the sender. Don't try to find its content another way. If the
+  user needs you to use one (e.g. "log in with the code I just got"), call `icloud_mail_reveal(uid, reason)`;
+  they approve with Face ID, and you see it once. Never repeat codes back or store them.
+- **Folders.** The user may close some folders to you. `icloud_mail_list_mailboxes` lists what you can
+  read and, if allowed, the `closed` ones; ask with `icloud_mail_folder_access(mailbox, reason)` (the user
+  grants an hour or a day). If the user doesn't allow asking, don't try.
+- You can't change any of this; it's in the plugin's settings in the panel, for the user only.
+
 ## Events
 
 When woken by a Rubi webhook, follow `next_step` in the body. For `approval.decided`, continue the task

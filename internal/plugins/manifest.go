@@ -141,20 +141,38 @@ func CheckConfigValue(f rubiplugin.ConfigField, v any) error {
 		if !ok || len(s) > 2000 {
 			return errors.New("must be text up to 2000 characters")
 		}
+	case "choice":
+		s, ok := v.(string)
+		if !ok || (!f.Dynamic && !hasOption(f.Options, s)) {
+			return errors.New("must be one of the offered choices")
+		}
 	case "list":
 		list, ok := v.([]any)
 		if !ok || len(list) > 500 {
 			return errors.New("must be a list of up to 500 entries")
 		}
 		for _, x := range list {
-			if s, ok := x.(string); !ok || len(s) > 200 {
+			s, ok := x.(string)
+			if !ok || len(s) > 200 {
 				return errors.New("entries must be text up to 200 characters")
+			}
+			if len(f.Options) > 0 && !f.Dynamic && !hasOption(f.Options, s) {
+				return errors.New("entries must be among the offered choices")
 			}
 		}
 	default:
 		return fmt.Errorf("unknown config type %q", f.Type)
 	}
 	return nil
+}
+
+func hasOption(opts []rubiplugin.Option, key string) bool {
+	for _, o := range opts {
+		if o.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 // PublicKey decodes a publisher key (base64 SubjectPublicKeyInfo DER of an Ed25519 key).

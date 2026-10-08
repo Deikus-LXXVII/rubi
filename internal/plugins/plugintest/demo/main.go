@@ -37,6 +37,9 @@ func main() {
 		Config: []rubiplugin.ConfigField{
 			{Key: "hidden", Label: "Hidden words", Type: "list", Default: []string{"code"}},
 			{Key: "strict", Label: "Strict mode", Type: "bool", Default: true},
+			{Key: "mode", Label: "Folders your agent can see", Type: "choice", Default: "all",
+				Options: []rubiplugin.Option{{Key: "all", Label: "All folders"}, {Key: "selected", Label: "Only the folders checked below"}}},
+			{Key: "folders", Label: "Allowed folders", Type: "list", Dynamic: true, Default: []string{"INBOX"}},
 		},
 		Events: []rubiplugin.EventType{{Type: "ping", Untrusted: []string{"from"}}},
 		Egress: []string{"example.com:443"},
@@ -46,6 +49,12 @@ func main() {
 			return nil, "", errors.New("wrong token")
 		}
 		return map[string]string{"user": fields["user"]}, fields["user"], nil
+	}
+	p.ConfigOptions = func(_ context.Context, _ *rubiplugin.Host, key string) ([]rubiplugin.Option, error) {
+		if key != "folders" {
+			return nil, nil
+		}
+		return []rubiplugin.Option{{Key: "INBOX", Label: "INBOX"}, {Key: "Archive", Label: "Archive"}, {Key: "Receipts", Label: "Receipts"}}, nil
 	}
 	started := false
 	p.Start = func(h *rubiplugin.Host) error { started = true; return nil }

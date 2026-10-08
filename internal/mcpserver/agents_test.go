@@ -158,6 +158,15 @@ func TestPluginConfigAndTargets(t *testing.T) {
 	if cfg := r.ag.call("demo_config", nil); cfg["strict"] != false || toString(cfg["hidden"]) != `["code","pin"]` {
 		t.Fatalf("after change: %v", cfg)
 	}
+	// Dynamic choices come from the plugin; a choice must be one of the offered keys.
+	var cfgView map[string]any
+	if err := settings.Call("plugin.config.get", map[string]any{"id": "demo"}, &cfgView); err != nil ||
+		!strings.Contains(toString(cfgView["fields"]), `"Receipts"`) {
+		t.Fatalf("config view: %v %v", cfgView, err)
+	}
+	if err := settings.Call("plugin.config.set", map[string]any{"id": "demo", "values": map[string]any{"mode": "some"}}, &res); err == nil {
+		t.Fatal("an unknown choice was accepted")
+	}
 
 	if err := settings.Call("policy.set", map[string]any{"levels": map[string]string{"demo.secret": "none"}}, &res); err == nil {
 		t.Fatal("a locked level was lowered")

@@ -25,6 +25,8 @@ type Plugin struct {
 	// Start begins background work once the plugin is connected; Stop ends it. Both are optional.
 	Start func(h *Host) error
 	Stop  func()
+	// ConfigOptions supplies the options of Dynamic config fields (e.g. the user's mail folders).
+	ConfigOptions func(ctx context.Context, h *Host, key string) ([]Option, error)
 
 	m     Manifest
 	tools map[string]func(ctx context.Context, h *Host, args json.RawMessage) (any, error)
@@ -148,6 +150,19 @@ func (p *Plugin) handle(ctx context.Context, method string, params json.RawMessa
 	case "stop":
 		p.stop()
 		return nil, nil
+	case "config.options":
+		var in struct {
+			Key string `json:"key"`
+		}
+		_ = json.Unmarshal(params, &in)
+		if p.ConfigOptions == nil {
+			return map[string]any{"options": []Option{}}, nil
+		}
+		opts, err := p.ConfigOptions(ctx, p.host, in.Key)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"options": opts}, nil
 	case "tool":
 		var in ToolParams
 		if err := json.Unmarshal(params, &in); err != nil {

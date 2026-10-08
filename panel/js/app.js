@@ -790,8 +790,12 @@ async function setupScreen(ctx, id, back) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
   if (!entry) return fatal("This plugin isn't installed. Ask your agent to install it from the store first.");
-  const done = back || (() => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
-    h("p", {}, "You can close this page and go back to your agent.")));
+  const connected = () => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
+    h("p", {}, "You can close this page and go back to your agent."));
+  const finish = back || connected;
+  const done = entry.has_config
+    ? () => pluginConfigScreen(ctx, id, { intro: true, done: finish })
+    : finish;
 
   const inputs = {};
   const fieldEls = (entry.fields || []).map((f) => {
@@ -1032,7 +1036,7 @@ async function grokBotScreen(ctx) {
 
 // pluginConfigScreen edits a plugin's user-only settings (like a privacy filter). Only the user can change
 // them, with Face ID or the password; the agent can't.
-async function pluginConfigScreen(ctx, id) {
+async function pluginConfigScreen(ctx, id, opts = {}) {
   const err = errorBox();
   let cfg;
   try {
@@ -1040,11 +1044,31 @@ async function pluginConfigScreen(ctx, id) {
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
-  const back = () => settingsScreen(ctx);
+  const back = opts.done || (() => settingsScreen(ctx));
   const inputs = {};
   const rows = (cfg.fields || []).map((f) => {
     const v = cfg.values[f.key];
     let el;
+    if (f.type === "choice") {
+      const name = "cfg-" + f.key;
+      const radios = (f.options || []).map((o) => {
+        const r = h("input", { type: "radio", name, value: o.key, checked: v === o.key });
+        return { r, row: h("label", { class: "check" }, r, h("span", {}, o.label)) };
+      });
+      inputs[f.key] = () => (radios.find((x) => x.r.checked) || {}).r?.value ?? v;
+      return h("fieldset", { class: "field" }, h("legend", {}, f.label), h("div", { class: "checks" }, radios.map((x) => x.row)),
+        f.help ? h("small", {}, f.help) : null);
+    }
+    if (f.type === "list" && (f.options || []).length) {
+      const have = new Set(v || []);
+      const boxes = f.options.map((o) => {
+        const b = h("input", { type: "checkbox", value: o.key, checked: have.has(o.key) });
+        return { b, row: h("label", { class: "check" }, b, h("span", {}, o.label)) };
+      });
+      inputs[f.key] = () => boxes.filter((x) => x.b.checked).map((x) => x.b.value);
+      return h("fieldset", { class: "field" }, h("legend", {}, f.label), h("div", { class: "checks" }, boxes.map((x) => x.row)),
+        f.help ? h("small", {}, f.help) : null);
+    }
     if (f.type === "bool") {
       el = h("input", { type: "checkbox", checked: !!v });
       inputs[f.key] = () => el.checked;
@@ -1063,17 +1087,26 @@ async function pluginConfigScreen(ctx, id) {
   const save = h("button", { class: "primary", onclick: async (e) => {
     const values = {};
     for (const [k, get] of Object.entries(inputs)) values[k] = get();
-    await busy(e.target, async () => confirmChange(ctx, await ctx.client.call("plugin.config.set", { id, values }), () => pluginConfigScreen(ctx, id)))
-      .catch((x) => showError(err, x));
-  } }, "Save");
+    await busy(e.target, async () => {
+      let res;
+      try {
+        res = await ctx.client.call("plugin.config.set", { id, values });
+      } catch (x) {
+        if (opts.done && /nothing changed/i.test(x.message)) return opts.done(); // defaults are fine
+        throw x;
+      }
+      confirmChange(ctx, res, opts.done || (() => pluginConfigScreen(ctx, id)), opts.done ? "Finish" : undefined);
+    }).catch((x) => showError(err, x));
+  } }, opts.done ? "Save and finish" : "Save");
   screen(
     header(ctx.hello),
-    h("h1", {}, `${cfg.name} settings`),
+    opts.intro ? h("p", { class: "eyebrow" }, "Last step") : null,
+    h("h1", {}, opts.intro ? `What can your agent see in ${cfg.name}?` : `${cfg.name} settings`),
     h("p", { class: "muted" }, "Only you can change these, with Face ID or your password. Your agent can't read or change them."),
     err,
     ...rows,
     save,
-    h("button", { class: "link", onclick: back }, "Back to settings"),
+    h("button", { class: "link", onclick: back }, opts.done ? "Keep the defaults" : "Back to settings"),
   );
 }
 

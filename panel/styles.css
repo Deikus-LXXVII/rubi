@@ -384,3 +384,6 @@ textarea { width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regu
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .check input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); }
 .block { display: block; }
+fieldset.field { border: 0; padding: 0; margin: 0 0 14px; }
+fieldset.field legend { padding: 0; margin-bottom: 6px; }
+.check input[type=radio] { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); }

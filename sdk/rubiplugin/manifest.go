@@ -58,10 +58,15 @@ type Manifest struct {
 type ConfigField struct {
 	Key   string `json:"key"`
 	Label string `json:"label"`
-	// Type is "bool", "text" or "list" (a list of strings, edited one per line).
-	Type    string `json:"type"`
-	Default any    `json:"default,omitempty"`
-	Help    string `json:"help,omitempty"`
+	// Type is "bool", "text", "choice" (one of Options) or "list" (a list of strings: with Options, a
+	// subset of them; without, free text edited one per line).
+	Type    string   `json:"type"`
+	Default any      `json:"default,omitempty"`
+	Help    string   `json:"help,omitempty"`
+	Options []Option `json:"options,omitempty"`
+	// Dynamic options come from the plugin when the panel opens the settings (Plugin.ConfigOptions), e.g.
+	// the user's mail folders.
+	Dynamic bool `json:"dynamic,omitempty"`
 }
 
 type Publisher struct {

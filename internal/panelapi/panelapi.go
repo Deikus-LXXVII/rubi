@@ -553,10 +553,12 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	}
 	if strings.HasPrefix(purpose, "setup:") {
 		// A setup link connects one integration and nothing else.
-		if env.Op != "integration.catalog" && env.Op != "integration.setup" {
+		switch env.Op {
+		case "integration.catalog", "integration.setup", "plugin.config.get", "plugin.config.set":
+		default:
 			return nil, errors.New("this link only sets up an integration; ask your agent for a settings link")
 		}
-		if env.Op == "integration.setup" && args.ID != strings.TrimPrefix(purpose, "setup:") {
+		if env.Op != "integration.catalog" && args.ID != strings.TrimPrefix(purpose, "setup:") {
 			return nil, errors.New("this link is for setting up a different integration")
 		}
 	}
@@ -650,7 +652,7 @@ func (s *Server) catalog() any {
 	var list []map[string]any
 	for _, m := range s.core.Store.Installed() {
 		entry := map[string]any{"id": m.ID, "name": m.Name, "description": m.Description, "needs": m.Needs,
-			"fields": m.Fields, "secrets": m.Secrets, "egress": m.Egress, "connected": false}
+			"fields": m.Fields, "secrets": m.Secrets, "egress": m.Egress, "connected": false, "has_config": len(m.Config) > 0}
 		if in := installed[m.ID]; in != nil {
 			entry["connected"], entry["account"] = in.Enabled, in.Account
 		}
