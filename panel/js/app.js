@@ -1029,7 +1029,9 @@ async function setupScreen(ctx, id, back) {
       h("p", {}, message || entry.needs),
       form,
       err,
-      h("p", { class: "muted" }, `Rubi will connect only to ${(entry.egress || []).join(", ")}. What you enter is stored encrypted on your Rubi and never shown to your agent.`),
+      h("p", { class: "muted" }, ((entry.egress || []).length
+        ? `Rubi will connect only to ${entry.egress.join(", ")}. `
+        : "This plugin connects to nothing on the internet itself. ") + "What you enter is stored encrypted on your Rubi and never shown to your agent."),
       back ? h("button", { class: "link", onclick: back }, "Back to settings") : null,
     );
   };
