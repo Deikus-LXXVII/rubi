@@ -85,7 +85,7 @@ export class DemoClient {
         return { state: "unlocked", integrity: { status: "verified", version: "v0.6.0" },
           receipts: [{ at: iso(now() - 3600e3), event: "unlocked", method: "passkey" }, { at: iso(now() - 86400e3 * 2), event: "paired", method: "passkey" }] };
       case "approval.get":
-        return { approval: approval(args.approval_id), approvers: [], password: true, agent_notified: true,
+        return { approval: approval(args.approval_id), approvers: [{ credential_id: "demo" }], password: true, agent_notified: true,
           challenges: {} };
       case "approval.challenge":
         return { challenge: "" };

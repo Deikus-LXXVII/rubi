@@ -219,16 +219,18 @@ function friendly(err) {
 
 async function busy(button, fn) {
   for (const e of root.querySelectorAll(".error[role=alert]")) e.hidden = true;
+  // The label stays (so the button keeps its size); CSS covers it with three moving dots.
   const label = button.textContent;
   button.disabled = true;
   button.classList.add("is-busy");
-  button.textContent = "Working…";
+  button.setAttribute("aria-busy", "true");
   try {
     return await fn();
   } finally {
     button.disabled = false;
     button.classList.remove("is-busy");
-    button.textContent = label;
+    button.removeAttribute("aria-busy");
+    if (button.isConnected) button.textContent = label;
   }
 }
 
