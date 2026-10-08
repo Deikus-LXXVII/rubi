@@ -78,15 +78,13 @@ Ruby is the only accent. Everything else is warm ink, so red always means "Rubi"
 
 ## 5. Type
 
-Two system typefaces, no font files: a serif for display (New York on Apple devices, then Iowan Old Style,
-Charter, Georgia) and the sans for everything you read or touch (SF Pro, Segoe UI, Roboto). The serif gives
-headlines an editorial, quiet-luxury voice that sets Rubi apart from the usual all-sans AI site; italics
-mark the turn of a phrase ("You *keep the keys.*"). Monospace: SF Mono / Menlo for commands and codes.
+The system typeface (SF Pro on Apple devices, Segoe UI, Roboto): it is what the user's phone already
+speaks, loads instantly and needs no font file. Monospace: SF Mono / Menlo for commands and codes.
 
 | Role | Size / line | Weight | Tracking |
 |---|---|---|---|
-| Display (landing, serif) | clamp(2.7rem, 7vw, 5rem) / 1.02 | 500 | -0.03em |
-| H1 (serif) | 1.85rem / 1.15 | 600 | -0.02em |
+| Display (landing) | clamp(2.4rem, 6vw, 4rem) / 1.04 | 750 | -0.035em |
+| H1 | 1.75rem / 1.15 | 700 | -0.025em |
 | H2 | 1.15rem / 1.3 | 650 | -0.015em |
 | Body | 1rem / 1.55 | 400 | 0 |
 | Small | 0.875rem / 1.45 | 450 | 0 |
@@ -97,13 +95,7 @@ mark the turn of a phrase ("You *keep the keys.*"). Monospace: SF Mono / Menlo f
 
 - 4 px grid: 4, 8, 12, 16, 20, 24, 32, 40, 56, 80.
 - Radii: 8 (chips), 12 (inputs, small cards), 16 (buttons), 22 (cards), pill (switches, tags).
-- Quiet luxury: few effects, done precisely. Cards are frosted glass with a hairline edge and almost no
-  shadow; a fine grain sits over everything like printed paper.
-- The primary button is flat ruby with a hairline edge: no gradient, no glow, no sheen. It changes only
-  its shade on hover.
-- Depth comes from the stage: a big Rubi lives in the corner behind the content. On the landing page it
-  is the hero art (peeking in, following the pointer); in the panel it sits back, dimmed behind the
-  frosted card, and mirrors the screen's mood (happy on success, asleep when locked).
+- Cards sit on the page with a 1 px line and a soft, warm shadow; nothing floats without a reason.
 - Touch targets at least 44 × 44 px. Content width: 560 px for focused tasks, 1040 px for settings.
 
 ## 7. Motion

@@ -51,9 +51,6 @@ function screen(...children) {
     window.scrollTo({ top: 0 });
     animateIn(main);
     for (const svg of main.querySelectorAll(".mascot")) svg.enter?.(morph && svg === hero);
-    const faceMood = main.querySelector(".screen-mascot .mascot")?.dataset.mood;
-    const mood = faceMood || (ctxLocked() ? "locked" : "idle");
-    stageMood(mood, mood === "happy" ? "hop" : mood === "concern" ? "shake" : null);
     // Focus the first field; otherwise the title, so screen readers announce the new screen.
     const field = opts.focus !== false && root.querySelector("input:not([type=checkbox]):not([type=radio])");
     const title = main.querySelector("h1");
@@ -74,7 +71,6 @@ function screen(...children) {
 }
 
 const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
-const ctxLocked = () => activeCtx && activeCtx.hello && activeCtx.hello.state !== "unlocked";
 
 // Rubi's attention, page-wide: it closes its eyes while you type a password, and looks at the primary
 // button you're about to press.
@@ -243,38 +239,13 @@ async function updatesScreen(ctx) {
   );
 }
 
-// ---------- the stage: a big Rubi living in the corner, behind everything ----------
-// On the landing page it is the hero; in the panel it sits back, dimmed, and mirrors the screen's mood.
-
-const stage = h("div", { id: "stage", "aria-hidden": "true" });
-const big = mascot("idle", 1000, { follow: true });
-big.removeAttribute("role");
-big.removeAttribute("aria-label");
-big.setAttribute("aria-hidden", "true");
-stage.append(big);
-document.body.prepend(stage);
-big.addEventListener("click", async () => {
-  if (document.body.dataset.mode !== "landing") return;
-  setMood(big, "happy");
-  await react(big, "hop");
-  setTimeout(() => setMood(big, "idle"), 600);
-});
-
-// stageMood mirrors a screen's mood on the big Rubi (it reacts too, a little later than the small one).
-function stageMood(mood, reaction) {
-  if (big.dataset.mood !== mood) setMood(big, mood);
-  if (reaction) setTimeout(() => react(big, reaction), 260);
-}
-
 function showPanel() {
   document.getElementById("landing").hidden = true;
   root.hidden = false;
-  document.body.dataset.mode = "panel";
 }
 
 function showLanding() {
   root.hidden = true;
-  document.body.dataset.mode = "landing";
   document.getElementById("landing").hidden = false;
   enhanceLanding();
   const btn = document.getElementById("copy-install");
@@ -370,9 +341,20 @@ function enhanceLanding() {
   landingDone = true;
   document.documentElement.classList.add("js");
 
-  // The big Rubi is the hero here: it follows the pointer and hops when clicked.
-  landingMascot = big;
-  react(big, "pop", 150);
+  // Rubi, alive, watching the pointer. Clicking it makes it hop.
+  const img = document.getElementById("hero-mascot");
+  if (img) {
+    const svg = mascot("idle", 240, { follow: true });
+    svg.classList.add("hero-mascot");
+    svg.addEventListener("click", async () => {
+      setMood(svg, "happy");
+      await react(svg, "hop");
+      setTimeout(() => setMood(svg, "idle"), 500);
+    });
+    img.replaceWith(svg);
+    react(svg, "pop", 200);
+    landingMascot = svg;
+  }
 
   // The headline arrives word by word.
   const title = document.getElementById("hero-title");
