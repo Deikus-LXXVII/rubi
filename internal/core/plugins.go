@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
@@ -340,6 +341,7 @@ func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json
 		Question string              `json:"question"`
 		Preview  json.RawMessage     `json:"preview"`
 		Options  []rubiplugin.Option `json:"options"`
+		Items    []rubiplugin.Item   `json:"items"`
 		Payload  json.RawMessage     `json:"payload"`
 	}
 	if err := json.Unmarshal(params, &in); err != nil {
@@ -365,9 +367,21 @@ func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json
 	}
 	var preview any
 	_ = json.Unmarshal(in.Preview, &preview)
+	if len(in.Items) > 100 {
+		return nil, errors.New("a batch can have at most 100 items")
+	}
+	var items []approvals.Item
+	seen := map[string]bool{}
+	for _, it := range in.Items {
+		if it.Key == "" || strings.ContainsAny(it.Key, ",") || seen[it.Key] {
+			return nil, errors.New("batch items need unique keys without commas")
+		}
+		seen[it.Key] = true
+		items = append(items, approvals.Item{Key: it.Key, Label: it.Label, Preview: it.Preview})
+	}
 	id, kind, payload := m.ID, in.Kind, in.Payload
 	req := approvals.Request{Integration: id, Kind: kind, Summary: in.Summary, Question: in.Question,
-		Preview: preview, Options: options,
+		Preview: preview, Options: options, Items: items,
 		Execute: func(ctx context.Context, option string) (any, error) {
 			var raw json.RawMessage
 			err := c.Runner.Call(ctx, id, "execute", rubiplugin.ExecuteParams{Kind: kind, Option: option, Payload: payload}, &raw)
@@ -377,7 +391,15 @@ func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json
 			return asObject(raw), nil
 		}}
 	if c.PolicyLevel(kind) == approvals.None {
-		res, err := req.Execute(ctx, options[0].Key)
+		opt := options[0].Key
+		if len(items) > 0 {
+			keys := make([]string, len(items))
+			for i, it := range items {
+				keys[i] = it.Key
+			}
+			opt = approvals.ItemsPrefix + strings.Join(keys, ",")
+		}
+		res, err := req.Execute(ctx, opt)
 		c.Audit.Record("action.executed", audit.Fields{"kind": kind, "level": approvals.None, "ok": err == nil})
 		if err != nil {
 			return nil, err

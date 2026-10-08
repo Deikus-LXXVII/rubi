@@ -68,7 +68,72 @@ type Request struct {
 	Question    string // optional, answered by the choice of option
 	Preview     any    // full details shown to the user, rendered by the panel or the agent
 	Options     []Option
-	Execute     Executor
+	// Items make this a batch: the user approves any subset in one go. Execute then receives
+	// "items:<key>,<key>…" with the chosen keys (all of them for an option key or level none).
+	Items   []Item
+	Execute Executor
+}
+
+// Item is one entry of a batch approval.
+type Item struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Preview any    `json:"preview,omitempty"`
+}
+
+// ItemsPrefix starts the option of a batch approval: "items:a,b".
+const ItemsPrefix = "items:"
+
+// normalize checks an option and, for batches, turns it into "items:" plus the chosen keys in item order.
+func (r *Request) normalize(option string) (string, error) {
+	isOption := false
+	for _, o := range r.Options {
+		isOption = isOption || o.Key == option
+	}
+	if len(r.Items) == 0 {
+		if !isOption {
+			return "", fmt.Errorf("unknown option %q", option)
+		}
+		return option, nil
+	}
+	chosen := map[string]bool{}
+	if isOption {
+		for _, it := range r.Items {
+			chosen[it.Key] = true
+		}
+	} else if rest, ok := strings.CutPrefix(option, ItemsPrefix); ok {
+		for _, k := range strings.Split(rest, ",") {
+			chosen[k] = true
+		}
+	} else {
+		return "", fmt.Errorf("unknown option %q", option)
+	}
+	var keys []string
+	for _, it := range r.Items {
+		if chosen[it.Key] {
+			keys = append(keys, it.Key)
+			delete(chosen, it.Key)
+		}
+	}
+	if len(chosen) > 0 {
+		return "", errors.New("unknown item in the selection")
+	}
+	if len(keys) == 0 {
+		return "", errors.New("choose at least one item")
+	}
+	return ItemsPrefix + strings.Join(keys, ","), nil
+}
+
+// CheckOption validates an option for a pending approval (the panel asks before signing a batch subset).
+func (e *Engine) CheckOption(id, option string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a, err := e.getLocked(id)
+	if err != nil {
+		return err
+	}
+	_, err = a.req.normalize(option)
+	return err
 }
 
 // Snapshot is the externally visible state of an approval.
@@ -92,6 +157,7 @@ type Detail struct {
 	Question string   `json:"question,omitempty"`
 	Preview  any      `json:"preview"`
 	Options  []Option `json:"options"`
+	Items    []Item   `json:"items,omitempty"`
 	Nonce    string   `json:"-"`
 }
 
@@ -185,7 +251,11 @@ func (e *Engine) Submit(ctx context.Context, req Request) (map[string]any, error
 		level = e.hooks.Level(req.Kind)
 	}
 	if level == None {
-		res, err := req.Execute(ctx, req.Options[0].Key)
+		opt, err := req.normalize(req.Options[0].Key)
+		if err != nil {
+			return nil, err
+		}
+		res, err := req.Execute(ctx, opt)
 		e.hooks.Audit("action.executed", map[string]any{"kind": req.Kind, "level": level, "ok": err == nil})
 		if err != nil {
 			return nil, err
@@ -292,7 +362,12 @@ func (e *Engine) ConfirmChat(ctx context.Context, id, userResponse string) (Snap
 		e.mu.Unlock()
 		return Snapshot{}, errors.New("too soon after the action was prepared; wait for the user's button press")
 	}
-	if err := e.claimLocked(a, chosen.Key); err != nil {
+	option, err := a.req.normalize(chosen.Key) // a chat button approves every item of a batch
+	if err != nil {
+		e.mu.Unlock()
+		return Snapshot{}, err
+	}
+	if err := e.claimLocked(a, option); err != nil {
 		e.mu.Unlock()
 		return Snapshot{}, err
 	}
@@ -320,13 +395,10 @@ func (e *Engine) DecideStrong(ctx context.Context, id, option string, approve bo
 		e.hooks.Audit("approval.denied", map[string]any{"approval_id": id})
 		return snap, nil
 	}
-	found := false
-	for _, o := range a.req.Options {
-		found = found || o.Key == option
-	}
-	if !found {
+	option, err = a.req.normalize(option)
+	if err != nil {
 		e.mu.Unlock()
-		return Snapshot{}, fmt.Errorf("unknown option %q", option)
+		return Snapshot{}, err
 	}
 	if err := e.claimLocked(a, option); err != nil {
 		e.mu.Unlock()
@@ -409,7 +481,7 @@ func (e *Engine) Detail(id string) (Detail, error) {
 		return Detail{}, err
 	}
 	return Detail{Snapshot: e.snapshotLocked(a), Question: a.req.Question, Preview: a.req.Preview,
-		Options: a.req.Options, Nonce: a.nonce}, nil
+		Options: a.req.Options, Items: a.req.Items, Nonce: a.nonce}, nil
 }
 
 // Wait blocks until the approval reaches a terminal state, the timeout elapses, or ctx ends.

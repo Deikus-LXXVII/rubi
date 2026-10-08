@@ -237,3 +237,39 @@ func TestQuietUpdates(t *testing.T) {
 		t.Fatal("no update event after turning notifications back on")
 	}
 }
+
+// TestBatchApproval: a Bot bundles several requests; the user approves a subset with one proof, and only
+// that subset runs.
+func TestBatchApproval(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+
+	out := r.ag.call("demo_batch", map[string]any{"to": []string{"ann", "bob", "cy"}})
+	pc := r.panelLink(out["approval_url"].(string))
+	info, err := pc.ApprovalInfo(out["approval_id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Approval.Preview) == 0 {
+		t.Fatal("no preview")
+	}
+	id := out["approval_id"].(string)
+	if _, err := pc.ApproveWithPassword(id, "items:zed", pw); err == nil {
+		t.Fatal("an unknown item was approved")
+	}
+	if _, err := pc.ApproveWithPassword(id, "items:", pw); err == nil {
+		t.Fatal("an empty selection was approved")
+	}
+	res, err := pc.ApproveWithPassword(id, "items:cy,ann", pw)
+	if err != nil || res["state"] != "executed" {
+		t.Fatalf("approve subset: %v %v", res, err)
+	}
+	snap := r.ag.call("rubi_approval", map[string]any{"approval_id": id})["approval"].(map[string]any)
+	if toString(snap["result"].(map[string]any)["sent_to"]) != `["ann","cy"]` {
+		t.Fatalf("executed: %v", snap)
+	}
+}

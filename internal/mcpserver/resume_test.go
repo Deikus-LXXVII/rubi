@@ -75,8 +75,8 @@ func TestApprovalWakesAgentWithPlan(t *testing.T) {
 	}
 }
 
-// TestNoWakeWhenNotNeeded: the agent isn't woken (no quota spent) when it already saw the outcome itself, or
-// when it left no plan; the outcome still waits in rubi_events.
+// TestNoWakeWhenNotNeeded: the agent isn't woken again when it already saw the outcome itself; without a
+// plan it is still told the outcome.
 func TestNoWakeWhenNotNeeded(t *testing.T) {
 	reg := plugintest.New(t)
 	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
@@ -104,22 +104,17 @@ func TestNoWakeWhenNotNeeded(t *testing.T) {
 	seen := r.ag.call("demo_send", map[string]any{"to": "a"})
 	r.ag.call("rubi_continue_after", map[string]any{"approval_id": seen["approval_id"], "plan": "p"})
 	r.approve(seen, "send") // calls rubi_approval afterwards, like a waiting agent
-	// 2. No plan, turn over: no wake either.
+	// 2. No plan, turn over: the outcome still reaches the agent.
 	quiet := r.ag.call("demo_send", map[string]any{"to": "b"})
 	if res, err := r.panelLink(quiet["approval_url"].(string)).ApproveWithPassword(quiet["approval_id"].(string), "send", pw); err != nil || res["state"] != "executed" {
 		t.Fatalf("approve: %v %v", res, err)
 	}
 	time.Sleep(5 * time.Second)
-	if len(hits) != 0 {
-		t.Fatalf("woke the agent for %v", <-hits)
+	var woke []string
+	for len(hits) > 0 {
+		woke = append(woke, <-hits)
 	}
-	found := false
-	for _, e := range r.events() {
-		if e["type"] == "approval.decided" && e["data"].(map[string]any)["approval_id"] == quiet["approval_id"] {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("the quiet outcome is missing from rubi_events")
+	if len(woke) != 1 || woke[0] != toString(quiet["approval_id"]) {
+		t.Fatalf("wakes: %v (want only %v)", woke, quiet["approval_id"])
 	}
 }

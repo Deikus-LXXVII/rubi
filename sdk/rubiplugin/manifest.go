@@ -191,5 +191,24 @@ type SubmitParams struct {
 	Question string   `json:"question,omitempty"`
 	Preview  any      `json:"preview"`
 	Options  []Option `json:"options"`
-	Payload  any      `json:"payload,omitempty"`
+	// Items make a batch: the user approves any subset at once. The executor then gets the option
+	// "items:<key>,<key>…" with the chosen keys (see ChosenItems).
+	Items   []Item `json:"items,omitempty"`
+	Payload any    `json:"payload,omitempty"`
+}
+
+// Item is one entry of a batch request.
+type Item struct {
+	Key     string `json:"key"`
+	Label   string `json:"label"`
+	Preview any    `json:"preview,omitempty"`
+}
+
+// ChosenItems returns the item keys the user approved in a batch ("items:a,b" -> [a b]).
+func ChosenItems(option string) []string {
+	rest, ok := strings.CutPrefix(option, "items:")
+	if !ok || rest == "" {
+		return nil
+	}
+	return strings.Split(rest, ",")
 }

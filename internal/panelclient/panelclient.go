@@ -333,7 +333,17 @@ func (c *Client) ApproveWithPassword(id, option, password string) (map[string]an
 	if err != nil {
 		return nil, err
 	}
-	ch, err := b64.DecodeString(info.Challenges[option])
+	chB64 := info.Challenges[option]
+	if chB64 == "" && strings.HasPrefix(option, "items:") { // a chosen subset of a batch
+		var r struct {
+			Challenge string `json:"challenge"`
+		}
+		if err := c.Call("approval.challenge", map[string]string{"approval_id": id, "option": option}, &r); err != nil {
+			return nil, err
+		}
+		chB64 = r.Challenge
+	}
+	ch, err := b64.DecodeString(chB64)
 	if err != nil || len(ch) == 0 {
 		return nil, fmt.Errorf("unknown option %q", option)
 	}

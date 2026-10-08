@@ -397,3 +397,35 @@ fieldset.field legend { padding: 0; margin-bottom: 6px; }
 .req-top .updates-btn { margin-left: 8px; }
 .agent-card.outdated { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
 .top-actions { display: flex; justify-content: flex-end; }
+.batch { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.batch-item { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; cursor: pointer; }
+.batch-item input { width: 18px; height: 18px; padding: 0; margin-top: 2px; flex-shrink: 0; accent-color: var(--accent); }
+.batch-item .fields { margin-top: 6px; }
+
+/* ---------- desktop layout ---------- */
+
+.panes { display: flex; flex-direction: column; gap: 10px; }
+.pane { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+@media (min-width: 1000px) {
+  .card.wide { max-width: 1120px; padding: 28px 36px 36px; }
+  .card.wide h1 { font-size: 1.9rem; }
+  .card.wide .panes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; align-items: start; }
+  .card.wide .pane { padding: 20px 22px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); }
+  .card.wide .pane h2 { margin-top: 0; }
+  .card.wide .agent-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .card.wide > .list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 0; gap: 12px; }
+  .card.wide > .list > .item { border: 1px solid var(--line); border-radius: var(--radius-sm); }
+  .card.wide .prompt { font-size: 0.9rem; }
+
+  #landing { max-width: 1160px; padding: 0 40px 40px; }
+  .hero { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.65fr); text-align: left; align-items: center;
+    gap: 24px 48px; padding: 72px 0 80px; }
+  .hero > * { grid-column: 1; }
+  .hero-mascot { grid-column: 2; grid-row: 1 / span 4; justify-self: center; width: 260px; height: 260px; }
+  .hero h1 { font-size: clamp(2.6rem, 4vw, 3.6rem); }
+  .lede { max-width: none; }
+  .install { max-width: none; }
+  .features { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .steps ol { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

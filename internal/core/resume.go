@@ -91,7 +91,7 @@ func (c *Core) AfterApproval() string {
 		return "After sending the link, call rubi_continue_after(approval_id, plan, agent=<your Bot name>) with what you'll do once the " +
 			"user decides. Then wait with rubi_approval(approval_id, wait_seconds=25). If it is still pending, end " +
 			"your turn and tell the user you'll continue on your own: Rubi wakes you through the webhook with the " +
-			"decision and your plan. (Without a plan Rubi doesn't wake you; the outcome waits in rubi_events.)"
+			"decision and your plan. (Without a plan you're still told the outcome, but may wake without context.)"
 	}
 	return "Rubi can't wake you when the user decides: no agent webhook is set up. Wait with " +
 		"rubi_approval(approval_id, wait_seconds=25) while the user acts; if your turn has to end, ask the user to " +

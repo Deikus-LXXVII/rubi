@@ -138,11 +138,14 @@ func Open(layout paths.Layout) (*Core, error) {
 			// Tell the agent how a panel approval ended, even if its turn is over, with the plan it left
 			// for this moment (rubi_continue_after), so a fresh routine run can pick the task up.
 			//
-			// Waking the agent costs the user's quota, so Rubi only does it when the agent asked (it left a
-			// plan) and hasn't already seen the outcome itself while waiting in rubi_approval.
+			// The agent always learns the outcome, unless it already saw it while waiting in rubi_approval.
+			// It goes to the Bot that left a plan, else to the Bots following Rubi's events (or the default).
 			p := c.takePlan(s.ID)
 			if s.Level != approvals.Strong || c.State() != Unlocked {
 				return
+			}
+			if s.Kind == "rubi.update" && s.State == approvals.Executed {
+				return // Rubi restarts; the new process reports update.completed instead
 			}
 			time.Sleep(seenGrace)
 			if c.takeSeen(s.ID) {
@@ -153,7 +156,7 @@ func Open(layout paths.Layout) (*Core, error) {
 			if p.plan != "" {
 				data["your_plan"] = p.plan
 			}
-			c.Events.EmitFor(p.agent, p.plan == "", "rubi", "approval.decided", data, []string{"result"})
+			c.Events.EmitFor(p.agent, false, "rubi", "approval.decided", data, []string{"result"})
 		},
 	})
 	c.Events.OnEmit(c.deliverEvent)

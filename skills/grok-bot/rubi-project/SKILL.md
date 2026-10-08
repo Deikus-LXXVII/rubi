@@ -109,7 +109,8 @@ warns that it isn't reviewed.
 - **Private email.** The user hides some mail from you (sign-in codes, password resets, chosen senders or
   words). It shows up only as `private` with the sender. Don't try to find its content another way. If the
   user needs you to use one (e.g. "log in with the code I just got"), call `icloud_mail_reveal(uid, reason)`;
-  they approve with Face ID, and you see it once. Never repeat codes back or store them.
+  they approve with their passkey, and you see it once. For several at once, pass `uids`: the user ticks which
+ones to show and approves them together. Never repeat codes back or store them.
 - **Security alerts.** Sign-in and suspicious-activity alerts are visible unless the user hides them. If
   the user wants to be warned, set a watch with words like "new sign-in", "suspicious", "unusual
   activity", "новый вход", "подозрительн" and a note to tell them right away.

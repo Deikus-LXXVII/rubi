@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
@@ -92,6 +93,17 @@ func main() {
 			id, err := h.EmitTo(in.Agent, "ping", map[string]any{"from": "someone"})
 			return map[string]any{"event_id": id}, err
 		})
+	rubiplugin.AddTool(p, "demo_batch", "Ask to send to several people at once (a batch approval).",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			To []string `json:"to"`
+		}) (any, error) {
+			var items []rubiplugin.Item
+			for _, to := range in.To {
+				items = append(items, rubiplugin.Item{Key: to, Label: "Send to " + to, Preview: map[string]string{"to": to}})
+			}
+			return h.Submit(ctx, rubiplugin.Request{Kind: "demo.send", Summary: "Send to several people",
+				Preview: map[string]string{"count": fmt.Sprint(len(items))}, Items: items, Payload: in})
+		})
 	rubiplugin.AddTool(p, "demo_crash", "Exit immediately.",
 		func(ctx context.Context, h *rubiplugin.Host, _ struct{}) (any, error) {
 			os.Exit(3)
@@ -108,6 +120,9 @@ func main() {
 		return map[string]any{"echo": in.Text, "user": s.User}, nil
 	})
 	p.OnExecute("demo.send", func(_ context.Context, h *rubiplugin.Host, option string, payload json.RawMessage) (any, error) {
+		if chosen := rubiplugin.ChosenItems(option); chosen != nil {
+			return map[string]any{"sent_to": chosen}, nil
+		}
 		var in sendIn
 		_ = json.Unmarshal(payload, &in)
 		var st struct{ Sent []string }

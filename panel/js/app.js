@@ -63,6 +63,11 @@ function header(hello) {
   return row;
 }
 
+// pane groups a block of a wide screen (side by side on large screens, stacked on phones).
+function pane(...children) {
+  return h("section", { class: "pane" }, ...children);
+}
+
 // ---------- updates button (on every screen) ----------
 
 let activeCtx = null; // the page's Rubi connection, once known
@@ -161,6 +166,7 @@ async function updatesScreen(ctx) {
   });
   const n = outdated(items);
   screen(
+    { cls: "wide" },
     header(ctx.hello),
     h("h1", {}, "Updates"),
     h("p", { class: "muted" }, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
@@ -703,6 +709,7 @@ function countdown(expiresAt, onExpire) {
 }
 
 function titleFor(a) {
+  if ((a.items || []).length) return a.summary; // a batch: "Show 3 private emails to your agent"
   if (a.kind.endsWith(".send")) return "Send this email?";
   if (a.kind.endsWith(".draft")) return "Save this draft?";
   if (a.kind === "rubi.update") return "Update Rubi?";
@@ -780,6 +787,31 @@ async function approveScreen(ctx, id, opts = {}) {
     }));
   }
 
+  // A batch: every item has its own checkbox; the passkey signs exactly the chosen set.
+  let itemsUI = null;
+  const itemBoxes = [];
+  if ((a.items || []).length) {
+    const sync = () => {
+      const keys = itemBoxes.filter((x) => x.b.checked).map((x) => x.key);
+      chosen = "items:" + keys.join(",");
+      primary.disabled = keys.length === 0;
+      count.textContent = `${keys.length} of ${itemBoxes.length} selected`;
+    };
+    const count = h("p", { class: "muted small" });
+    itemsUI = h("div", { class: "batch" }, count, a.items.map((it) => {
+      const b = h("input", { type: "checkbox", checked: true, onchange: () => sync() });
+      itemBoxes.push({ b, key: it.key });
+      return h("label", { class: "batch-item" }, b, h("div", {}, h("strong", {}, it.label),
+        it.preview && typeof it.preview === "object" ? fieldList(it.preview) : null));
+    }));
+    queueMicrotask(sync);
+  }
+
+  async function challengeFor(option) {
+    if (!(a.items || []).length) return info.challenges[option];
+    return (await ctx.client.call("approval.challenge", { approval_id: id, option })).challenge;
+  }
+
   async function passwordProof(option) {
     const pw = pwInput.value;
     if (!pw) throw new UserError("Enter your password first.");
@@ -791,7 +823,7 @@ async function approveScreen(ctx, id, opts = {}) {
       } catch {
         continue;
       }
-      const mac = await hmacSha256(await approveKey(kek), b64u.dec(info.challenges[option]));
+      const mac = await hmacSha256(await approveKey(kek), b64u.dec(await challengeFor(option)));
       return { type: "password", mac: b64u.enc(mac) };
     }
     throw new UserError("Wrong password.");
@@ -803,7 +835,7 @@ async function approveScreen(ctx, id, opts = {}) {
   setPrimary();
   primary.onclick = () => busy(primary, async () => {
     const proof = usePasskey()
-      ? await signChallenge(b64u.dec(info.challenges[chosen]), approverIds)
+      ? await signChallenge(b64u.dec(await challengeFor(chosen)), approverIds)
       : await passwordProof(chosen);
     const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
     resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen), notified, doneLabel: opts.doneLabel });
@@ -831,7 +863,8 @@ async function approveScreen(ctx, id, opts = {}) {
       h("section", { class: "req-main" },
         h("p", { class: "eyebrow" }, opts.eyebrow || "Approval needed"),
         h("h1", {}, titleFor(a)),
-        isMail(a.preview) ? mailCard(a.preview) : fieldList(a.preview)),
+        isMail(a.preview) ? mailCard(a.preview) : fieldList(a.preview),
+        itemsUI),
       h("aside", { class: "req-side" },
         choiceUI,
         info.password ? pwBox : null,
@@ -1048,17 +1081,15 @@ async function settingsScreen(ctx) {
 
   const receipts = (st.receipts || []).slice(-5).reverse();
   screen(
+    { cls: "wide" },
     header(ctx.hello),
     h("h1", {}, "Rubi settings"),
     err,
-    h("h2", {}, "Plugins"),
-    pluginsList,
-    h("button", { class: "secondary", onclick: () => storeScreen(ctx, back) }, "Open the store"),
-    h("h2", {}, "Approval levels"),
-    h("p", { class: "muted" }, "How each action is approved. Changing these always needs your passkey or password."),
-    ...policyRows,
-    savePolicy,
-    ...(hook.agents ? agentsSection(ctx, hook) : [h("h2", {}, "Agent webhook")]),
+    h("div", { class: "panes" },
+    pane(h("h2", {}, "Plugins"),
+      pluginsList,
+      h("button", { class: "secondary", onclick: () => storeScreen(ctx, back) }, "Open the store")),
+    pane(...(hook.agents ? agentsSection(ctx, hook) : [h("h2", {}, "Agent webhook")]),
     ...(hook.agents ? [] : [
     h("p", { class: "muted" }, hook.configured
       ? `Events go to ${hook.url}`
@@ -1068,14 +1099,18 @@ async function settingsScreen(ctx) {
     hook.configured ? h("button", { class: "link", onclick: async (e) => {
       await busy(e.target, () => ctx.client.call("webhook.test")).then(() => { e.target.textContent = "Test event sent"; }).catch((x) => showError(err, x));
     } }, "Send a test event") : null,
-    hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null]),
-    h("h2", {}, "Security"),
-    integrityLine(st),
-    receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) => h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
-    h("button", { class: "danger", onclick: async (e) => {
-      await busy(e.target, () => ctx.client.call("lock"));
-      statusScreen(ctx, "Rubi is locked.");
-    } }, "Lock Rubi now"),
+    hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null])),
+    pane(h("h2", {}, "Approval levels"),
+      h("p", { class: "muted" }, "How each action is approved. Changing these always needs your passkey or password."),
+      ...policyRows,
+      savePolicy),
+    pane(h("h2", {}, "Security"),
+      integrityLine(st),
+      receipts.length ? h("ul", { class: "receipts" }, receipts.map((r) => h("li", {}, `${fmtTime(r.at)} · ${r.event} with ${r.method}`))) : null,
+      h("button", { class: "danger", onclick: async (e) => {
+        await busy(e.target, () => ctx.client.call("lock"));
+        statusScreen(ctx, "Rubi is locked.");
+      } }, "Lock Rubi now"))),
   );
 }
 
@@ -1166,17 +1201,19 @@ async function grokBotScreen(ctx) {
   });
 
   screen(
+    { cls: "wide" },
     header(ctx.hello),
     h("h1", {}, "Grok Bot connections"),
     h("p", {}, "Rubi wakes a Grok Bot through that Bot's own routine webhook: when you approve something it asked for, or when something it follows happens (like a reply to a tracked email). The routine runs only then, never on a schedule."),
     err,
-    h("h2", {}, "1. Ask the Bot to connect itself"),
-    h("p", { class: "muted" }, "Send this to each Grok Bot that should hear from Rubi. It creates the routine and sends you a link; open that link in the Grok Bot desktop app, where the webhook is shown."),
-    prompt, copy,
-    h("h2", {}, "2. Or add a webhook here"),
-    agentHowTo(""),
-    agentForm(ctx, { err, onSaved: () => again() }),
-    h("p", { class: "footnote" }, "* Name each webhook exactly like its Grok Bot. Bots identify themselves to Rubi by name, so they can then choose for themselves which notifications they receive. You can always change it below."),
+    h("div", { class: "panes" },
+      pane(h("h2", {}, "1. Ask the Bot to connect itself"),
+        h("p", { class: "muted" }, "Send this to each Grok Bot that should hear from Rubi. It creates the routine and sends you a link; open that link in the Grok Bot desktop app, where the webhook is shown."),
+        prompt, copy),
+      pane(h("h2", {}, "2. Or add a webhook here"),
+        agentHowTo(""),
+        agentForm(ctx, { err, onSaved: () => again() }),
+        h("p", { class: "footnote" }, "* Name each webhook exactly like its Grok Bot. Bots identify themselves to Rubi by name, so they can then choose for themselves which notifications they receive. You can always change it below."))),
     h("h2", {}, "Connected Bots"),
     cards.length ? h("div", { class: "agent-list" }, cards) : h("p", { class: "error" }, "None yet. Setup isn't finished until at least one Bot is connected."),
     cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. Notifications no Bot chose go to the default Bot.") : null,
@@ -1303,6 +1340,7 @@ async function storeScreen(ctx, back) {
     h("button", { class: "secondary", onclick: (e) => install(url.value.trim())(e) }, "Check and install"));
 
   screen(
+    { cls: "wide" },
     header(ctx.hello),
     h("h1", {}, "Store"),
     h("p", { class: "muted" }, "Plugins reviewed by Rubi-Project. Installing one shows what it can do and needs your passkey or password."),

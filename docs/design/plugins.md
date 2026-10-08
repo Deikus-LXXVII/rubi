@@ -219,6 +219,12 @@ Both sides send requests. A message may be up to 4 MiB.
 
 Plugins log to stderr; Rubi saves it to `logs/plugin-<id>.log`.
 
+**Batch approvals.** `approval.submit` may carry `items: [{key, label, preview}]`. The panel shows one checkbox
+per item, and the user approves any subset with a single passkey or password proof; the proof signs exactly
+the chosen subset (the panel asks `approval.challenge` for it). `execute` then gets the option
+`items:<key>,<key>…` with the chosen keys, in item order (`rubiplugin.ChosenItems`); an approval in chat or
+at level none means every item.
+
 Errors use JSON-RPC error objects. `execute` must perform exactly the action described by its `payload`.
 Review checks this, because the user approves what the preview shows.
 

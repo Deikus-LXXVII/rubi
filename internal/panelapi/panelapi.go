@@ -233,6 +233,25 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		return s.approvalGet(purpose, env)
 	case "approval.decide":
 		return s.approvalDecide(ctx, purpose, env)
+	case "approval.challenge": // the challenge for a chosen subset of a batch approval
+		var a struct {
+			ApprovalID string `json:"approval_id"`
+			Option     string `json:"option"`
+		}
+		if err := json.Unmarshal(env.Args, &a); err != nil {
+			return nil, errors.New("bad arguments")
+		}
+		if err := approvalTicket(purpose, a.ApprovalID); err != nil {
+			return nil, err
+		}
+		if err := s.core.Approvals.CheckOption(a.ApprovalID, a.Option); err != nil {
+			return nil, err
+		}
+		d, err := s.core.Approvals.Detail(a.ApprovalID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"challenge": base64.RawURLEncoding.EncodeToString(s.challenge(d, a.Option))}, nil
 	case "integration.catalog", "integration.setup", "integration.disconnect",
 		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
