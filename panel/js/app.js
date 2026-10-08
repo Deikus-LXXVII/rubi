@@ -400,6 +400,12 @@ function demoScreen(ctx, which) {
       return updatesScreen(ctx);
     case "status":
       return statusScreen(ctx, "Unlocked. You can go back to your agent.");
+    case "sent": case "declined": case "failed": {
+      const a = { kind: "icloud-mail.send", summary: "Send email to Anna Petrova", state: { sent: "executed", declined: "denied", failed: "failed" }[which],
+        result: { tracking: {} }, error: which === "failed" ? "iCloud rejected the login. Check the app-specific password in Rubi's settings." : undefined };
+      return resultScreen(ctx, a, null, { preview: { to: "Anna Petrova <anna@example.com>", subject: "Dinner on Friday", body: "" }, notified: true,
+        option: { label: "Send and notify on reply" } });
+    }
     case "error":
       return fatal("Can't reach your Rubi. It may be restarting; wait a moment, or ask your agent for a new link.");
   }
@@ -1033,42 +1039,63 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   const line = to ? `To ${to.name || to.email} · ${p.subject || "(no subject)"}` : a.summary;
   const tracking = a.state === "executed" && ((a.result && a.result.tracking) || (extra.option && /reply/i.test(extra.option.label)));
   const sad = a.state === "denied" || a.state === "cancelled" || a.state === "expired";
-  const mascotBlock = face(moods[a.state] || "idle", 104, sad ? "sigh" : a.state === "failed" ? "shake" : null);
-  if (a.state === "executed") mascotBlock.append(sparks());
-  if (a.state === "executed" && /^rubi\.(update|plugin\.)/.test(a.kind || "")) updatesCache = null; // versions changed
+  const ok = a.state === "executed";
+  const mascotBlock = face(moods[a.state] || "idle", 112, sad ? "sigh" : a.state === "failed" ? "shake" : null);
+  if (ok) mascotBlock.append(burst());
+  if (ok && /^rubi\.(update|plugin\.)/.test(a.kind || "")) updatesCache = null; // versions changed
   const ub = updatesButton();
+
+  // A receipt of what happened, and what the agent knows.
+  const rows = [h("div", { class: "receipt-row" }, icon(ok ? "check" : sad ? "close" : "warn", 18), h("span", {}, line))];
+  if (tracking) rows.push(h("div", { class: "receipt-row" }, icon("bell", 18), h("span", {}, "Rubi will tell your agent when a reply arrives.")));
+  if (ok && a.kind === "rubi.update") rows.push(h("div", { class: "receipt-row" }, icon("download", 18), h("span", {}, "Rubi restarts into the new version in a few seconds and stays unlocked.")));
+  if (ok && a.result?.next_step && !onDone) rows.push(h("div", { class: "receipt-row" }, icon("link", 18), h("span", {}, "Your agent will send you a link to set it up.")));
+  if (!onDone) {
+    rows.push(h("div", { class: "receipt-row muted" }, icon("bot", 18), h("span", {}, ok
+      ? (extra.notified ? "Your agent has been told and continues on its own." : "Go back to your agent and tell it you approved, so it can continue.")
+      : (extra.notified ? "Nothing was done. Your agent has been told." : "Nothing was done."))));
+  }
   screen(
-    { cls: "result" },
+    { cls: `result state-${a.state}` },
     ub ? h("div", { class: "top-actions" }, ub) : null,
     mascotBlock,
-    h("h1", { class: "center" }, titles[a.state] || a.state),
-    h("p", { class: "center muted-strong" }, line),
-    tracking ? h("p", { class: "center ok" }, "Rubi will tell your agent when a reply arrives.") : null,
-    a.state === "executed" && a.kind === "rubi.update"
-      ? h("p", { class: "center ok" }, "Rubi restarts into the new version in a few seconds and stays unlocked.") : null,
-    a.state === "executed" && a.result?.next_step && !onDone
-      ? h("p", { class: "center ok" }, "Your agent will send you a link to set it up.") : null,
-    a.error ? h("p", { class: "error center" }, a.error) : null,
+    h("h1", { class: "center result-title" }, titles[a.state] || a.state),
+    h("div", { class: "receipt" }, rows),
+    a.error ? h("p", { class: "error", role: "alert" }, a.error) : null,
     onDone
       ? h("button", { class: "primary", onclick: onDone }, extra.doneLabel || "Back to settings")
-      : h("p", { class: "muted center" }, a.state === "executed"
-        ? (extra.notified ? "Your agent has been told and continues on its own. You can close this page."
-          : "Go back to your agent and tell it you approved, so it can continue.")
-        : (extra.notified ? "Nothing was done. Your agent has been told." : "Nothing was done. You can close this page.")),
+      : h("p", { class: "muted center" }, "You can close this page."),
   );
 }
 
-// sparks returns a small burst of particles around the mascot for a successful result.
-function sparks() {
-  const wrap = h("span", { class: "sparks", "aria-hidden": "true" });
-  for (let i = 0; i < 10; i++) {
-    const sp = h("i", {});
-    sp.style.setProperty("--a", `${i * 36 + (i % 2) * 12}deg`);
-    sp.style.setProperty("--r", `${62 + (i % 3) * 12}px`);
-    wrap.append(sp);
+// burst celebrates a success: a ring of ruby light and hexagon confetti that flies out and falls.
+function burst() {
+  const wrap = h("span", { class: "burst", "aria-hidden": "true" }, h("i", { class: "burst-ring" }));
+  if (reducedMotion()) return wrap;
+  const colors = ["var(--ruby-400)", "var(--ruby-500)", "#f2c14e", "var(--ok)", "var(--ruby-300)"];
+  for (let i = 0; i < 26; i++) {
+    const bit = h("i", { class: i % 5 === 4 ? "bit star" : "bit" });
+    bit.style.background = colors[i % colors.length];
+    const size = 7 + Math.random() * 8;
+    bit.style.width = bit.style.height = `${size}px`;
+    wrap.append(bit);
+    const angle = (i / 26) * Math.PI * 2 + Math.random() * 0.4;
+    const speed = 70 + Math.random() * 70;
+    const vx = Math.cos(angle) * speed;
+    const vy = Math.sin(angle) * speed - 40;
+    const spin = (Math.random() - 0.5) * 720;
+    const frames = [];
+    for (let k = 0; k <= 8; k++) {
+      const t = k / 8;
+      frames.push({ transform: `translate(${vx * t}px, ${vy * t + 140 * t * t}px) rotate(${spin * t}deg) scale(${1 - 0.5 * t})`,
+        opacity: k === 0 ? 0 : k < 6 ? 1 : 1 - (k - 5) / 3 });
+    }
+    requestAnimationFrame(() => bit.animate(frames, { duration: 1100 + Math.random() * 400, delay: 320 + Math.random() * 120,
+      easing: "cubic-bezier(.2, .6, .4, 1)", fill: "both" }));
   }
   return wrap;
 }
+
 
 // ---------- settings & integration setup ----------
 

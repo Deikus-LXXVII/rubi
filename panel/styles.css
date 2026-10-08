@@ -538,18 +538,6 @@ button.copy { width: auto; min-height: 36px; padding: 8px 14px; font-size: 0.85r
 @keyframes drop { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 @keyframes pulse { 50% { opacity: 0.55; } }
 
-.sparks { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
-.sparks i {
-  position: absolute; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--accent);
-  opacity: 0; animation: spark 0.9s var(--ease-out) 0.45s both;
-}
-.sparks i:nth-child(3n) { background: var(--ok); width: 6px; height: 6px; }
-.sparks i:nth-child(4n) { background: #f2c14e; }
-@keyframes spark {
-  0% { opacity: 0; transform: rotate(var(--a)) translateX(10px) scale(0.6); }
-  25% { opacity: 1; }
-  100% { opacity: 0; transform: rotate(var(--a)) translateX(var(--r)) scale(1); }
-}
 
 /* view transitions between screens */
 ::view-transition-old(root) { animation: vt-out var(--t-quick) var(--ease-in) both; }
@@ -589,3 +577,28 @@ button.primary.is-done .icon { stroke-width: 2.6; stroke-dasharray: 24; stroke-d
   .card.approve .actionbar { background: color-mix(in srgb, var(--card) 78%, transparent); -webkit-backdrop-filter: blur(14px) saturate(1.4);
     backdrop-filter: blur(14px) saturate(1.4); border-top: 1px solid var(--line); }
 }
+
+/* ============================================================ results (iteration 5) */
+
+.card.result { max-width: 460px; align-items: stretch; text-align: center; }
+.result-title { font-size: 2rem; letter-spacing: -0.03em; }
+.state-executed .result-title { animation: title-up var(--t-slow) var(--spring) 0.25s both; }
+@keyframes title-up { from { opacity: 0; transform: translateY(12px) scale(0.96); } }
+.state-denied .result-title, .state-expired .result-title, .state-cancelled .result-title { color: var(--muted); }
+
+.receipt { text-align: left; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2); overflow: hidden; }
+.receipt-row { display: flex; gap: 12px; align-items: flex-start; padding: 13px 16px; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.receipt-row:first-child { border-top: 0; font-weight: 600; }
+.receipt-row .icon { margin-top: 2px; color: var(--muted); }
+.state-executed .receipt-row:first-child .icon { color: var(--ok); stroke-width: 2.4; stroke-dasharray: 24; stroke-dashoffset: 24; animation: draw 420ms var(--ease-out) 600ms forwards; }
+.state-failed .receipt-row:first-child .icon { color: var(--danger); }
+
+.burst { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+.burst-ring { position: absolute; left: -60px; top: -60px; width: 120px; height: 120px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--ruby-400) 70%, transparent); opacity: 0;
+  animation: ring 900ms var(--ease-out) 300ms both; }
+@keyframes ring { 0% { opacity: 0.9; transform: scale(0.5); } 100% { opacity: 0; transform: scale(2.1); border-width: 1px; } }
+.burst .bit { position: absolute; left: 0; top: 0; margin: -4px; opacity: 0;
+  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%); }
+.burst .bit.star { clip-path: polygon(50% 0, 61% 39%, 100% 50%, 61% 61%, 50% 100%, 39% 61%, 0 50%, 39% 39%); }
+.card.result .error[role=alert] { text-align: left; }

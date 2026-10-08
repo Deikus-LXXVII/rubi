@@ -182,6 +182,9 @@ export const DEMO_SCREENS = [
   ["home", "Add a home computer"],
   ["bots", "Grok Bot connections"],
   ["updates", "Updates"],
+  ["sent", "Sent"],
+  ["declined", "Declined"],
+  ["failed", "It didn't work"],
   ["status", "Status"],
   ["error", "An error"],
 ];
