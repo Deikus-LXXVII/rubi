@@ -209,7 +209,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		return h.pair(env.Args)
 	}
 	if !h.paired(env.Token) {
-		return nil, errors.New("this Rubi isn't paired with this Rubi Home")
+		return nil, errors.New(homeproto.NotPairedMessage)
 	}
 	switch env.Op {
 	case "hello":

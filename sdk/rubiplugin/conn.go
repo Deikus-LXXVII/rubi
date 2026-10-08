@@ -25,6 +25,22 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Message }
 
+// Error codes Rubi uses for Rubi Home calls (Host.HomeCall), so plugins can react without matching text.
+const (
+	CodeHomeOffline   = -32010 // Rubi Home didn't answer (the computer is off, asleep or offline)
+	CodeHomeNotPaired = -32011 // no Rubi Home is paired, or it no longer knows this Rubi
+	CodeHomeFailed    = -32012 // Rubi Home refused or the operation failed; the message says why
+)
+
+// ErrorCode returns the JSON-RPC error code of err, or 0 if it has none.
+func ErrorCode(err error) int {
+	var e *Error
+	if errors.As(err, &e) {
+		return e.Code
+	}
+	return 0
+}
+
 // ErrClosed is returned by calls on a connection whose other side went away.
 var ErrClosed = errors.New("connection closed")
 

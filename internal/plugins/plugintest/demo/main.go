@@ -66,8 +66,10 @@ func main() {
 			Args map[string]any `json:"args,omitempty"`
 		}) (any, error) {
 			var out any
-			err := h.HomeCall(ctx, "", in.Op, in.Args, &out)
-			return map[string]any{"out": out}, err
+			if err := h.HomeCall(ctx, "", in.Op, in.Args, &out); err != nil {
+				return map[string]any{"error": err.Error(), "code": rubiplugin.ErrorCode(err)}, nil
+			}
+			return map[string]any{"out": out}, nil
 		})
 	p.OnHook = func(ctx context.Context, h *rubiplugin.Host, ev rubiplugin.HookEvent) error {
 		_, err := h.Emit("hooked", map[string]any{"name": ev.Name, "account": ev.Account, "body": ev.Body})

@@ -12,6 +12,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
+	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
 
 // Rubi Home devices: helpers on a computer at the user's home (see internal/home). The user pairs one by
@@ -185,17 +186,24 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 	}
 	dev, err := c.device(ref)
 	if err != nil {
-		return nil, err
+		return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeNotPaired, Message: err.Error()}
 	}
 	cl, err := c.deviceClient(dev)
 	if err != nil {
-		return nil, err
+		return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeFailed, Message: err.Error()}
 	}
 	ctx, cancel := context.WithTimeout(ctx, 100*time.Second)
 	defer cancel()
 	var out json.RawMessage
 	if err := cl.Call(ctx, op, args, &out); err != nil {
-		return nil, err
+		code := rubiplugin.CodeHomeFailed
+		switch {
+		case errors.Is(err, homeproto.ErrOffline):
+			code = rubiplugin.CodeHomeOffline
+		case err.Error() == homeproto.NotPairedMessage:
+			code = rubiplugin.CodeHomeNotPaired
+		}
+		return nil, &rubiplugin.Error{Code: code, Message: dev.Name + ": " + err.Error()}
 	}
 	return out, nil
 }

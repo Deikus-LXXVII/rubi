@@ -26,6 +26,9 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 )
 
+// NotPairedMessage is how the helper refuses a Rubi it doesn't know.
+const NotPairedMessage = "this Rubi isn't paired with this Rubi Home"
+
 // Path binds requests to this protocol (it is part of the encryption's associated data).
 const Path = "/home/v1/rpc"
 

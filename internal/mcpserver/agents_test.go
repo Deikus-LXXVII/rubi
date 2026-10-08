@@ -7,6 +7,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
+	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -436,7 +437,7 @@ func TestRubiHome(t *testing.T) {
 	go (&relay.Server{Key: key, Relays: h.Relays(), Handle: rpc.HandleRPC, Ready: func(n int) { ready <- n }}).Run(ctx)
 	<-ready
 
-	if out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"}); !strings.Contains(toString(out["tool_error"]), "no Rubi Home is paired") {
+	if out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"}); out["code"] != float64(rubiplugin.CodeHomeNotPaired) {
 		t.Fatalf("before pairing: %v", out)
 	}
 	code, _ := h.StartPairing()
@@ -455,7 +456,7 @@ func TestRubiHome(t *testing.T) {
 	if !strings.Contains(toString(out["out"]), "Lights off") {
 		t.Fatalf("shortcuts.list: %v", out)
 	}
-	if out := r.ag.call("demo_home", map[string]any{"op": "hue.discover"}); !strings.Contains(toString(out["tool_error"]), "doesn't allow") {
+	if out := r.ag.call("demo_home", map[string]any{"op": "hue.discover"}); !strings.Contains(toString(out["error"]), "doesn't allow") {
 		t.Fatalf("an undeclared capability: %v", out)
 	}
 	var check map[string]any
@@ -468,6 +469,9 @@ func TestRubiHome(t *testing.T) {
 	}
 	r.approveChange(settings, res)
 	r.waitFor("unpaired", func() bool { return len(h.Config().Paired) == 0 })
+	if out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"}); out["code"] != float64(rubiplugin.CodeHomeNotPaired) {
+		t.Fatalf("after removing: %v", out)
+	}
 }
 
 // TestInternalSecrets: a plugin may replace its own internal secrets, never what the user entered.
