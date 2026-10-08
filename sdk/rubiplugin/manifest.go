@@ -49,6 +49,19 @@ type Manifest struct {
 	Events      []EventType `json:"events,omitempty"`
 	Egress      []string    `json:"egress,omitempty"`
 	Tools       []Tool      `json:"tools,omitempty"`
+	// Config are settings only the user can change, in the Rubi panel and with their approval (for example
+	// a privacy filter). The agent can't read or change them through Rubi; the plugin reads them.
+	Config []ConfigField `json:"config,omitempty"`
+}
+
+// ConfigField is one user-only setting.
+type ConfigField struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	// Type is "bool", "text" or "list" (a list of strings, edited one per line).
+	Type    string `json:"type"`
+	Default any    `json:"default,omitempty"`
+	Help    string `json:"help,omitempty"`
 }
 
 type Publisher struct {
@@ -76,10 +89,12 @@ type Secret struct {
 }
 
 type Action struct {
-	Kind         string   `json:"kind"` // "<plugin id>.<action>"
-	Title        string   `json:"title"`
-	DefaultLevel Level    `json:"default_level"`
-	Options      []Option `json:"options,omitempty"`
+	Kind         string `json:"kind"` // "<plugin id>.<action>"
+	Title        string `json:"title"`
+	DefaultLevel Level  `json:"default_level"`
+	// Locked keeps the default level: the user can't lower it (e.g. revealing a private email).
+	Locked  bool     `json:"locked,omitempty"`
+	Options []Option `json:"options,omitempty"`
 }
 
 // Option is one way to approve an action, shown as a button (plain text, no emoji).

@@ -32,6 +32,11 @@ func main() {
 			{Kind: "demo.read", Title: "Read", DefaultLevel: rubiplugin.None},
 			{Kind: "demo.send", Title: "Send", DefaultLevel: rubiplugin.Strong,
 				Options: []rubiplugin.Option{{Key: "send", Label: "Send"}}},
+			{Kind: "demo.secret", Title: "Reveal a secret", DefaultLevel: rubiplugin.Strong, Locked: true},
+		},
+		Config: []rubiplugin.ConfigField{
+			{Key: "hidden", Label: "Hidden words", Type: "list", Default: []string{"code"}},
+			{Key: "strict", Label: "Strict mode", Type: "bool", Default: true},
 		},
 		Events: []rubiplugin.EventType{{Type: "ping", Untrusted: []string{"from"}}},
 		Egress: []string{"example.com:443"},
@@ -64,6 +69,19 @@ func main() {
 			tok, err1 := h.Secret("token")
 			_, err2 := h.Secret("other")
 			return map[string]any{"token_ok": err1 == nil && tok == "good", "undeclared_refused": err2 != nil}, nil
+		})
+	rubiplugin.AddTool(p, "demo_config", "Show the user-only settings as the plugin sees them.",
+		func(ctx context.Context, h *rubiplugin.Host, _ struct{}) (any, error) {
+			var cfg map[string]any
+			err := h.Config(&cfg)
+			return cfg, err
+		})
+	rubiplugin.AddTool(p, "demo_notify", "Emit a ping to one Bot.",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			Agent string `json:"agent"`
+		}) (any, error) {
+			id, err := h.EmitTo(in.Agent, "ping", map[string]any{"from": "someone"})
+			return map[string]any{"event_id": id}, err
 		})
 	rubiplugin.AddTool(p, "demo_crash", "Exit immediately.",
 		func(ctx context.Context, h *rubiplugin.Host, _ struct{}) (any, error) {

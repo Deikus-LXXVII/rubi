@@ -125,8 +125,8 @@ func (c *Core) SetPolicy(ctx context.Context, levels map[string]string) (string,
 		if _, ok := approvals.ParseLevel(l); !ok {
 			return "", fmt.Errorf("invalid level %q for %s", l, kind)
 		}
-		_, _, known := c.action(kind)
-		if !known || strings.HasPrefix(kind, "rubi.") {
+		a, _, known := c.action(kind)
+		if !known || a.Locked || strings.HasPrefix(kind, "rubi.") {
 			return "", fmt.Errorf("the approval level of %s can't be changed", kind)
 		}
 		clean[kind] = l

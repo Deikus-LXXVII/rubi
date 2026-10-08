@@ -125,3 +125,49 @@ func TestSeveralAgents(t *testing.T) {
 	}
 	noHit(t, mainCh, "rubi.approval.decided")
 }
+
+// TestPluginConfigAndTargets: user-only settings change only through the panel with approval, locked
+// levels can't be lowered, and a plugin can address one Bot.
+func TestPluginConfigAndTargets(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	mainSrv, mainCh := hookServer(t)
+	mailSrv, mailCh := hookServer(t)
+	r.setWebhook(mainSrv.URL)
+	settings := r.panel("settings")
+	var res map[string]any
+	if err := settings.Call("agent.add", map[string]any{"name": "Mail", "url": mailSrv.URL, "key": "k"}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+
+	if cfg := r.ag.call("demo_config", nil); cfg["strict"] != true || toString(cfg["hidden"]) != `["code"]` {
+		t.Fatalf("defaults: %v", cfg)
+	}
+	if err := settings.Call("plugin.config.set", map[string]any{"id": "demo", "values": map[string]any{"hidden": "nope"}}, &res); err == nil {
+		t.Fatal("bad config value accepted")
+	}
+	if err := settings.Call("plugin.config.set", map[string]any{"id": "demo", "values": map[string]any{"hidden": []string{"code", "pin"}, "strict": false}}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	if cfg := r.ag.call("demo_config", nil); cfg["strict"] != false || toString(cfg["hidden"]) != `["code","pin"]` {
+		t.Fatalf("after change: %v", cfg)
+	}
+
+	if err := settings.Call("policy.set", map[string]any{"levels": map[string]string{"demo.secret": "none"}}, &res); err == nil {
+		t.Fatal("a locked level was lowered")
+	}
+
+	time.Sleep(time.Second) // earlier pings went to the default Bot; drop them
+	for len(mainCh) > 0 {
+		<-mainCh
+	}
+	r.ag.call("demo_notify", map[string]any{"agent": "Mail"})
+	waitHit(t, mailCh, "demo.ping")
+	noHit(t, mainCh, "demo.ping")
+}

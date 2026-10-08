@@ -232,7 +232,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	case "integration.catalog", "integration.setup", "integration.disconnect",
 		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
 		"store.list", "plugin.install", "plugin.update", "plugin.remove",
-		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe":
+		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
+		"plugin.config.get", "plugin.config.set":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -530,6 +531,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Key     string            `json:"key"`
 		Name    string            `json:"name"`
 		Sources []string          `json:"sources"`
+		Values  map[string]any    `json:"values"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -611,6 +613,10 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	case "webhook.test":
 		ev := s.core.TestWebhook(args.Name)
 		return map[string]any{"event_id": ev.ID}, nil
+	case "plugin.config.get":
+		return s.core.PluginConfig(args.ID)
+	case "plugin.config.set":
+		approvalID, err = s.core.SetPluginConfig(ctx, args.ID, args.Values)
 	case "agent.add":
 		approvalID, err = s.core.AddAgent(ctx, args.Name, args.URL, args.Key)
 	case "agent.remove":
@@ -658,7 +664,7 @@ func (s *Server) policy() any {
 	for _, m := range s.core.Store.Installed() {
 		for _, a := range m.Actions {
 			actions = append(actions, map[string]any{"integration": m.Name, "kind": a.Kind, "title": a.Title,
-				"default": a.DefaultLevel, "level": s.core.PolicyLevel(a.Kind), "locked": false})
+				"default": a.DefaultLevel, "level": s.core.PolicyLevel(a.Kind), "locked": a.Locked})
 		}
 	}
 	return map[string]any{"actions": actions, "levels": []approvals.Level{approvals.None, approvals.Chat, approvals.Strong}}

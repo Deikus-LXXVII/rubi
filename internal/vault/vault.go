@@ -93,6 +93,8 @@ type Integration struct {
 	Secrets  map[string]string `json:"secrets,omitempty"`
 	// State is integration-private runtime state (e.g. tracked messages), kept encrypted with the rest.
 	State json.RawMessage `json:"state,omitempty"`
+	// Config holds user-only settings (manifest config) the user changed from their defaults.
+	Config map[string]json.RawMessage `json:"config,omitempty"`
 }
 
 // Agent is one Bot Rubi can wake. Events for it go to its routine webhook.

@@ -869,6 +869,8 @@ async function settingsScreen(ctx) {
     h("div", { class: "actions" },
       p.update_available
         ? h("button", { class: "primary small", onclick: change("plugin.update", () => ({ id: p.id })) }, `Update to ${p.update_available}`) : null,
+      p.connected && p.has_config
+        ? h("button", { class: "secondary small", onclick: () => pluginConfigScreen(ctx, p.id) }, "Settings") : null,
       p.connected
         ? h("button", { class: "secondary small", onclick: change("integration.disconnect", () => ({ id: p.id })) }, "Disconnect")
         : h("button", { class: "secondary small", onclick: () => setupScreen(ctx, p.id, back) }, "Connect"),
@@ -1024,6 +1026,53 @@ async function grokBotScreen(ctx) {
     h("h2", {}, "Connected Bots"),
     cards.length ? h("div", { class: "agent-list" }, cards) : h("p", { class: "error" }, "None yet. Setup isn't finished until at least one Bot is connected."),
     cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. Notifications no Bot chose go to the default Bot.") : null,
+    h("button", { class: "link", onclick: back }, "Back to settings"),
+  );
+}
+
+// pluginConfigScreen edits a plugin's user-only settings (like a privacy filter). Only the user can change
+// them, with Face ID or the password; the agent can't.
+async function pluginConfigScreen(ctx, id) {
+  const err = errorBox();
+  let cfg;
+  try {
+    cfg = await ctx.client.call("plugin.config.get", { id });
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  const back = () => settingsScreen(ctx);
+  const inputs = {};
+  const rows = (cfg.fields || []).map((f) => {
+    const v = cfg.values[f.key];
+    let el;
+    if (f.type === "bool") {
+      el = h("input", { type: "checkbox", checked: !!v });
+      inputs[f.key] = () => el.checked;
+      return h("label", { class: "check" }, el, h("span", {}, f.label, f.help ? h("small", { class: "muted small block" }, f.help) : null));
+    }
+    if (f.type === "list") {
+      el = h("textarea", { rows: "5", autocapitalize: "none", spellcheck: "false" });
+      el.value = (v || []).join("\n");
+      inputs[f.key] = () => el.value.split("\n").map((x) => x.trim()).filter(Boolean);
+    } else {
+      el = h("input", { type: "text", value: v || "" });
+      inputs[f.key] = () => el.value;
+    }
+    return h("label", { class: "field" }, h("span", {}, f.label), el, f.help ? h("small", {}, f.help) : null);
+  });
+  const save = h("button", { class: "primary", onclick: async (e) => {
+    const values = {};
+    for (const [k, get] of Object.entries(inputs)) values[k] = get();
+    await busy(e.target, async () => confirmChange(ctx, await ctx.client.call("plugin.config.set", { id, values }), () => pluginConfigScreen(ctx, id)))
+      .catch((x) => showError(err, x));
+  } }, "Save");
+  screen(
+    header(ctx.hello),
+    h("h1", {}, `${cfg.name} settings`),
+    h("p", { class: "muted" }, "Only you can change these, with Face ID or your password. Your agent can't read or change them."),
+    err,
+    ...rows,
+    save,
     h("button", { class: "link", onclick: back }, "Back to settings"),
   );
 }

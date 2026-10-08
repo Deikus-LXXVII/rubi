@@ -285,6 +285,8 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 				i.State = in.State
 				return nil
 			})
+		case "config.get":
+			return map[string]any{"config": c.pluginConfig(m)}, nil
 		case "level.get":
 			var in struct{ Kind string }
 			_ = json.Unmarshal(params, &in)
@@ -296,8 +298,9 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			return c.pluginSubmit(ctx, m, params)
 		case "event.emit":
 			var in struct {
-				Type string         `json:"type"`
-				Data map[string]any `json:"data"`
+				Type  string         `json:"type"`
+				Data  map[string]any `json:"data"`
+				Agent string         `json:"agent"`
 			}
 			if err := json.Unmarshal(params, &in); err != nil {
 				return nil, err
@@ -306,7 +309,11 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			if !ok {
 				return nil, fmt.Errorf("event type %q is not declared in the manifest", in.Type)
 			}
-			ev := c.Events.Emit(id, in.Type, in.Data, et.Untrusted)
+			target := ""
+			if in.Agent != "" && c.HasAgent(in.Agent) {
+				target = in.Agent
+			}
+			ev := c.Events.EmitFor(target, false, id, in.Type, in.Data, et.Untrusted)
 			return map[string]any{"event_id": ev.ID}, nil
 		case "audit":
 			var in struct {

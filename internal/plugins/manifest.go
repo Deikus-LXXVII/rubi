@@ -100,6 +100,17 @@ func Check(m *Manifest) error {
 			return fmt.Errorf("invalid event type %q", e.Type)
 		}
 	}
+	for _, f := range m.Config {
+		if !namePattern.MatchString(f.Key) || f.Label == "" {
+			return fmt.Errorf("invalid config field %q", f.Key)
+		}
+		if err := unique("config", f.Key); err != nil {
+			return err
+		}
+		if err := CheckConfigValue(f, f.Default); f.Default != nil && err != nil {
+			return fmt.Errorf("config %s default: %w", f.Key, err)
+		}
+	}
 	prefix := rubiplugin.ToolPrefix(m.ID)
 	for _, t := range m.Tools {
 		if !strings.HasPrefix(t.Name, prefix) || !toolPattern.MatchString(t.Name) {
@@ -114,6 +125,34 @@ func Check(m *Manifest) error {
 		if json.Unmarshal(t.InputSchema, &schema) != nil || schema.Type != "object" {
 			return fmt.Errorf("tool %s: input_schema must be a JSON Schema object", t.Name)
 		}
+	}
+	return nil
+}
+
+// CheckConfigValue validates a value for a config field (after JSON decoding).
+func CheckConfigValue(f rubiplugin.ConfigField, v any) error {
+	switch f.Type {
+	case "bool":
+		if _, ok := v.(bool); !ok {
+			return errors.New("must be true or false")
+		}
+	case "text":
+		s, ok := v.(string)
+		if !ok || len(s) > 2000 {
+			return errors.New("must be text up to 2000 characters")
+		}
+	case "list":
+		list, ok := v.([]any)
+		if !ok || len(list) > 500 {
+			return errors.New("must be a list of up to 500 entries")
+		}
+		for _, x := range list {
+			if s, ok := x.(string); !ok || len(s) > 200 {
+				return errors.New("entries must be text up to 200 characters")
+			}
+		}
+	default:
+		return fmt.Errorf("unknown config type %q", f.Type)
 	}
 	return nil
 }

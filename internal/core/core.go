@@ -420,6 +420,9 @@ func (c *Core) PolicyLevel(kind string) approvals.Level {
 		return approvals.Strong
 	}
 	level := approvals.Level(a.DefaultLevel)
+	if a.Locked {
+		return level
+	}
 	_ = c.Vault.View(func(d *vault.Data) error {
 		if l, ok := approvals.ParseLevel(d.Policy[kind]); ok {
 			level = l

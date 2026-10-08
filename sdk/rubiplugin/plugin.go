@@ -257,12 +257,30 @@ func (h *Host) Submit(ctx context.Context, r Request) (map[string]any, error) {
 }
 
 // Emit tells the agent about something (for example a reply arrived). typ must be declared in the manifest.
+// The event goes to the Bots that subscribed to this plugin's events.
 func (h *Host) Emit(typ string, data map[string]any) (string, error) {
+	return h.EmitTo("", typ, data)
+}
+
+// EmitTo sends an event to one Bot by its name (for example the Bot that set up a watch), or, if no Bot of
+// that name is connected, like Emit.
+func (h *Host) EmitTo(agent, typ string, data map[string]any) (string, error) {
 	var out struct {
 		EventID string `json:"event_id"`
 	}
-	err := h.conn.Call(context.Background(), "event.emit", map[string]any{"type": typ, "data": data}, &out)
+	err := h.conn.Call(context.Background(), "event.emit", map[string]any{"type": typ, "data": data, "agent": agent}, &out)
 	return out.EventID, err
+}
+
+// Config decodes the user-only settings (manifest Config), with defaults for anything not set.
+func (h *Host) Config(v any) error {
+	var out struct {
+		Config json.RawMessage `json:"config"`
+	}
+	if err := h.conn.Call(context.Background(), "config.get", nil, &out); err != nil {
+		return err
+	}
+	return json.Unmarshal(out.Config, v)
 }
 
 // Audit records an entry in Rubi's audit log. Never put secrets or message bodies in it.

@@ -116,6 +116,9 @@ func (c *Core) describeInstalled(item map[string]any, id string, records map[str
 		return
 	}
 	item["installed"], item["version"], item["running"] = true, rec.Version, c.Runner.Running(id)
+	if m, ok := c.Store.Get(id); ok && len(m.Config) > 0 {
+		item["has_config"] = true
+	}
 	if acct, ok := connected[id]; ok {
 		item["connected"], item["account"] = true, acct
 	} else {

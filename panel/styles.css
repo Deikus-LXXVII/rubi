@@ -383,3 +383,4 @@ textarea { width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regu
 .checks { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 6px; }
 .check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .check input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); }
+.block { display: block; }
