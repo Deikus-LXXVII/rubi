@@ -10,12 +10,15 @@ export class UserError extends Error {}
 export function parseLink(hash) {
   const q = new URLSearchParams(hash.replace(/^#/, ""));
   if (q.get("v") !== "1" || (!q.get("e") && !q.get("n")) || !q.get("k")) return null;
+  // Plain http and ws only for a panel that is itself served locally (development): a link on the real
+  // panel must not point it at services on the user's own machine.
+  const local = /^(127\.0\.0\.1|localhost)$/.test(globalThis.location?.hostname || "");
   const e = (q.get("e") || "").replace(/\/+$/, "");
-  if (e && !/^https:\/\//.test(e) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(e)) return null;
+  if (e && !/^https:\/\//.test(e) && !(local && /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/.test(e))) return null;
   const n = q.get("n") || "";
   if (n && !/^[0-9a-f]{64}$/.test(n)) return null;
   const r = (q.get("r") || "").split(",").filter(Boolean);
-  if (r.some((u) => !/^wss:\/\/[^/\s]+\/?$/.test(u) && !/^ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(u))) return null;
+  if (r.some((u) => !/^wss:\/\/[^/\s]+\/?$/.test(u) && !(local && /^ws:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(u)))) return null;
   let k;
   try {
     k = b64u.dec(q.get("k"));

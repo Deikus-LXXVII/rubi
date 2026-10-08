@@ -317,6 +317,9 @@ func (s *Server) pair(env Envelope) (any, error) {
 		if a.Wraps[i].CreatedAt.IsZero() {
 			a.Wraps[i].CreatedAt = time.Now().UTC()
 		}
+		if a.Wraps[i].Kind == "password" && !strongKDF(a.Wraps[i].KDF) {
+			return nil, errors.New("the password settings are too weak; update the panel and try again")
+		}
 	}
 	data := vault.NewData("")
 	data.Approvers, data.Locale = a.Approvers, a.Locale
@@ -772,4 +775,22 @@ func (s *Server) policy() any {
 		}
 	}
 	return map[string]any{"actions": actions, "levels": []approvals.Level{approvals.None, approvals.Chat, approvals.Strong}}
+}
+
+// strongKDF checks a password wrap's settings (the panel's own bounds, crypto.js kdfOK). keys.json is
+// what an attacker with a leaked backup would try to guess offline, so weak settings are refused.
+func strongKDF(raw json.RawMessage) bool {
+	var k struct {
+		Alg       string `json:"alg"`
+		Salt      string `json:"salt"`
+		Time      int    `json:"time"`
+		MemoryKiB int    `json:"memory_kib"`
+		Threads   int    `json:"threads"`
+	}
+	if json.Unmarshal(raw, &k) != nil {
+		return false
+	}
+	salt, err := base64.RawURLEncoding.DecodeString(k.Salt)
+	return err == nil && k.Alg == "argon2id" && len(salt) >= 16 && len(salt) <= 64 &&
+		k.Time >= 2 && k.Time <= 10 && k.MemoryKiB >= 46*1024 && k.MemoryKiB <= 1024*1024 && k.Threads >= 1 && k.Threads <= 4
 }

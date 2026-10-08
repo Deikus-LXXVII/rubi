@@ -36,6 +36,9 @@ func (l Layout) Ensure() error {
 
 func (l Layout) Identity() string { return filepath.Join(l.Home, "identity.json") }
 func (l Layout) Keys() string     { return filepath.Join(l.Home, "keys.json") }
+
+// PanelOrigin records the panel origin this instance was paired with (see core.Open).
+func (l Layout) PanelOrigin() string { return filepath.Join(l.Home, "panel-origin") }
 func (l Layout) Vault() string    { return filepath.Join(l.Home, "vault.sealed") }
 
 // Socket is the daemon's Unix socket. Unix socket paths are limited to ~104 bytes, so a long $RUBI_HOME

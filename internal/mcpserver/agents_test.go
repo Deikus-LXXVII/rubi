@@ -386,7 +386,8 @@ func TestHooks(t *testing.T) {
 		t.Fatalf("the address changed: %s %s", u, again)
 	}
 	parts := strings.Split(strings.TrimPrefix(u, "https://gw.example/h/"), "/")
-	if len(parts) != 2 || r.c.HookRoute() != parts[0] {
+	// The URL carries an address derived from the route secret, never the secret itself.
+	if len(parts) != 2 || relay.HookAddress(r.c.HookRoute()) != parts[0] || strings.Contains(u, r.c.HookRoute()) {
 		t.Fatalf("address %s, route %s", u, r.c.HookRoute())
 	}
 	if r.c.DeliverHookAt("wrong_route_000000000", parts[1], nil) || r.c.DeliverHook("nope", nil) {

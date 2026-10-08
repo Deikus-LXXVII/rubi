@@ -156,3 +156,31 @@ func TestPolicyLevel(t *testing.T) {
 		t.Fatalf("invalid policy value should fall back to the default: %s", got)
 	}
 }
+
+func TestPanelOriginFixedAfterPairing(t *testing.T) {
+	home := t.TempDir()
+	layout := paths.Layout{Home: home}
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	// Unpaired: the environment decides (self-hosted panels are set up this way).
+	t.Setenv("RUBI_PANEL_ORIGIN", "https://panel.example")
+	if o := panelOriginFor(layout, false, "v1.0.0"); o != "https://panel.example" {
+		t.Fatalf("unpaired: %q", o)
+	}
+	// Paired with the default: a later change of the environment is ignored in release builds.
+	_ = os.WriteFile(layout.PanelOrigin(), []byte(DefaultPanelOrigin+"\n"), 0o600)
+	t.Setenv("RUBI_PANEL_ORIGIN", "https://rubi-panel.co")
+	if o := panelOriginFor(layout, true, "v1.0.0"); o != DefaultPanelOrigin {
+		t.Fatalf("paired: %q", o)
+	}
+	// Paired before origins were recorded: the default, not the environment.
+	_ = os.Remove(layout.PanelOrigin())
+	if o := panelOriginFor(layout, true, "v1.0.0"); o != DefaultPanelOrigin {
+		t.Fatalf("paired, no record: %q", o)
+	}
+	// Test builds may always override it.
+	if o := panelOriginFor(layout, true, "dev"); o != "https://rubi-panel.co" {
+		t.Fatalf("dev: %q", o)
+	}
+}

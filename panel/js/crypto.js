@@ -62,6 +62,12 @@ export async function openGcm(key, nonce, ct, ad) {
   return new Uint8Array(p);
 }
 
+// fingerprint is the short digest of an instance key that Rubi shows as its own (identity.Fingerprint):
+// the panel computes it from the link itself, so a phishing instance can't show someone else's.
+export async function fingerprint(k) {
+  return b64u.enc((await sha256(utf8(k))).slice(0, 9));
+}
+
 export async function sha256(bytes) {
   return new Uint8Array(await subtle.digest("SHA-256", bytes));
 }
@@ -105,8 +111,18 @@ export function newPasswordKdf() {
   return { alg: "argon2id", salt: b64u.enc(rand(16)), time: 3, memory_kib: 64 * 1024, threads: 1 };
 }
 
+// The bounds a Rubi's password settings must be within: strong enough that a leaked keys file is costly
+// to guess, and small enough that a hostile instance can't freeze the page.
+export function kdfOK(kdf) {
+  const between = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+  let salt = 0;
+  try { salt = b64u.dec(kdf.salt).length; } catch { /* invalid */ }
+  return kdf.alg === "argon2id" && between(kdf.time, 2, 10) && between(kdf.memory_kib, 46 * 1024, 1024 * 1024) &&
+    between(kdf.threads, 1, 4) && salt >= 16 && salt <= 64;
+}
+
 export async function passwordKek(password, kdf) {
-  if (kdf.alg !== "argon2id" || kdf.memory_kib < 19 * 1024) throw new Error("Unsupported password settings.");
+  if (!kdfOK(kdf)) throw new Error("Unsupported password settings.");
   if (!globalThis.hashwasm) throw new Error("Password support failed to load.");
   return globalThis.hashwasm.argon2id({
     password,

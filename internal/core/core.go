@@ -132,11 +132,9 @@ func Open(layout paths.Layout) (*Core, error) {
 	}
 	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
 		Handler: c.pluginHandler, Launched: c.pluginLaunched, Crashed: c.pluginCrashed, Logf: log.Printf}}
-	if o := os.Getenv("RUBI_PANEL_ORIGIN"); o != "" {
-		c.PanelOrigin = strings.TrimRight(o, "/")
-	}
 	_, keysErr := os.Stat(layout.Keys())
 	c.paired = keysErr == nil && c.Vault.Exists()
+	c.PanelOrigin = panelOrigin(layout, c.paired)
 	c.Approvals = approvals.New(approvals.DefaultConfig(), approvals.Hooks{
 		Level: c.PolicyLevel,
 		Link:  func(id string) (string, error) { return c.Link("approve:" + id) },
@@ -377,6 +375,7 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 		return err
 	}
 	c.Audit.SetVaultKey(dek)
+	c.checkPanelOrigin()
 	c.addReceipt("unlocked", method, credentialID)
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
 	c.startPlugins()
@@ -427,10 +426,12 @@ func (c *Core) pair(dek []byte, keys *vault.Keys, data *vault.Data) error {
 	if err := vault.SaveKeys(c.Layout.Keys(), keys); err != nil {
 		return err
 	}
+	data.PanelOrigin = c.PanelOrigin
 	if err := c.Vault.Create(dek, data); err != nil {
 		return err
 	}
 	c.paired, c.pairCode = true, ""
+	_ = vault.WriteFileAtomic(c.Layout.PanelOrigin(), []byte(c.PanelOrigin+"\n"), 0o600)
 	c.Audit.SetVaultKey(dek)
 	c.Audit.Record("rubi.paired", nil)
 	return nil
@@ -475,4 +476,58 @@ func (c *Core) Endpoint() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.endpoint
+}
+
+// panelOrigin decides where links point. RUBI_PANEL_ORIGIN (self-hosted panels) counts only until the
+// instance is paired; after that the origin it was paired with is fixed, so an injected instruction to
+// restart Rubi with another origin can't turn every unlock link into a phishing page. Test builds may
+// always override it.
+func panelOrigin(layout paths.Layout, paired bool) string {
+	return panelOriginFor(layout, paired, version.Version)
+}
+
+func panelOriginFor(layout paths.Layout, paired bool, ver string) string {
+	env := strings.TrimRight(os.Getenv("RUBI_PANEL_ORIGIN"), "/")
+	if env != "" && (ver == "dev" || strings.HasSuffix(ver, "-test")) {
+		return env
+	}
+	if paired {
+		if b, err := os.ReadFile(layout.PanelOrigin()); err == nil {
+			if o := strings.TrimSpace(string(b)); o != "" {
+				if env != "" && env != o {
+					log.Printf("RUBI_PANEL_ORIGIN ignored: this Rubi was paired with %s", o)
+				}
+				return o
+			}
+		}
+		if env != "" && env != DefaultPanelOrigin {
+			log.Printf("RUBI_PANEL_ORIGIN ignored: it can only be set before pairing")
+		}
+		return DefaultPanelOrigin
+	}
+	if env != "" {
+		return env
+	}
+	return DefaultPanelOrigin
+}
+
+// checkPanelOrigin compares the origin in use with the one sealed in the vault at pairing. A mismatch
+// means the plain copy was edited: Rubi goes back to the sealed one and records it.
+func (c *Core) checkPanelOrigin() {
+	var sealed string
+	_ = c.Vault.Update(func(d *vault.Data) error {
+		if d.PanelOrigin == "" { // paired before the origin was sealed
+			d.PanelOrigin = c.PanelOrigin
+		}
+		sealed = d.PanelOrigin
+		return nil
+	})
+	if sealed == "" || sealed == c.PanelOrigin {
+		return
+	}
+	c.Audit.Record("rubi.panel_origin_restored", audit.Fields{"found": c.PanelOrigin, "restored": sealed})
+	c.mu.Lock()
+	c.PanelOrigin = sealed
+	c.mu.Unlock()
+	_ = vault.WriteFileAtomic(c.Layout.PanelOrigin(), []byte(sealed+"\n"), 0o600)
 }

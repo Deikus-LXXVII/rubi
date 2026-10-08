@@ -3,7 +3,7 @@
 
 import { RubiClient, UserError, parseLink } from "./api.js";
 import {
-  approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
+  fingerprint, approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
 import { icon } from "./icons.js";
@@ -421,6 +421,8 @@ async function main() {
   // Keep the one-time codes out of the address bar and history.
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
   if (!link) return showLanding();
+  // Another page could frame the panel under a decoy and get the user to approve something unseen.
+  if (window.top !== window.self) return fatal("Open this link directly, not inside another page.", true);
   if (!(await supportsX25519())) {
     return fatal("This browser is too old for Rubi's encryption. Update it (Safari 17+, Chrome 133+, Firefox 130+).");
   }
@@ -434,8 +436,13 @@ async function main() {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
 
-  const pin = loadPins()[hello.instance];
-  if (pin && pin.k !== link.k) {
+  // What the user sees and compares is computed here from the link's key, never taken from the server.
+  const fp = await fingerprint(link.k);
+  if (hello.fingerprint !== fp) return fatal("This Rubi didn't prove who it is. Don't continue; tell your agent.", true);
+  const pins = loadPins();
+  const pin = pins[hello.instance];
+  const sameKeyElsewhere = Object.entries(pins).some(([id, p]) => p.k === link.k && id !== hello.instance);
+  if (pin && pin.k !== link.k || sameKeyElsewhere) {
     return fatal("This link claims to be a Rubi you've used before, but its key is different. " +
       "Someone may be impersonating it. Don't continue; tell your agent.", true);
   }
@@ -752,17 +759,35 @@ function connectAgentScreen(ctx) {
 
 // ---------- unlocking ----------
 
+// unlockKeys fetches the wrapped keys. They must belong to the instance this page verified: an impostor
+// holding a leaked copy of the real wraps (from a backup) would otherwise get the user to unwrap the
+// real key and hand it over.
+async function unlockKeys(ctx) {
+  const keys = await ctx.client.call("unlock.keys");
+  if (keys.instance !== ctx.hello.instance) {
+    fatal("This Rubi didn't prove who it is. Don't continue; tell your agent.", true);
+    throw new UserError("This Rubi didn't prove who it is.");
+  }
+  return keys;
+}
+
 // unlockFlow renders the unlock UI and calls onDone() once Rubi is unlocked.
 async function unlockFlow(ctx, title, intro, onDone) {
   const { client, hello } = ctx;
-  const keys = await client.call("unlock.keys");
+  const keys = await unlockKeys(ctx);
   const err = errorBox();
   const passkeyWraps = keys.wraps.filter((w) => w.kind === "passkey");
   const passwordWraps = keys.wraps.filter((w) => w.kind === "password");
 
   async function send(dek, method, credentialId) {
-    const res = await client.call("unlock", { dek: b64u.enc(dek), min_vault_version: ctx.pin?.maxVersion || 0, method,
-      credential_id: credentialId });
+    let res;
+    try {
+      res = await client.call("unlock", { dek: b64u.enc(dek), min_vault_version: ctx.pin?.maxVersion || 0, method,
+        credential_id: credentialId });
+    } finally {
+      dek.fill(0);
+      pw.value = "";
+    }
     savePin(hello.instance, ctx.link.k, res.vault_version);
     await onDone();
   }
@@ -1067,7 +1092,7 @@ async function approveScreen(ctx, id, opts = {}) {
   async function passwordProof(option) {
     const pw = pwInput.value;
     if (!pw) throw new UserError("Enter your password first.");
-    const keys = await ctx.client.call("unlock.keys");
+    const keys = await unlockKeys(ctx);
     for (const w of keys.wraps.filter((x) => x.kind === "password")) {
       const kek = await passwordKek(pw, w.kdf);
       try {
@@ -1247,7 +1272,9 @@ async function setupScreen(ctx, id, back) {
       return h("label", { class: "field" }, h("span", {}, f.label), el, f.help ? h("small", {}, f.help) : null);
     });
     const secretEls = secretDefs.filter((sec) => !sec.internal).map((sec) => {
-      inputs["s:" + sec.key] = h("input", { type: "password", autocomplete: "off", required: !sec.optional, autocapitalize: "none", spellcheck: "false" });
+      // A service's secret, never the Rubi password: keep password managers from filling it in.
+      inputs["s:" + sec.key] = h("input", { type: "password", autocomplete: "new-password", "data-1p-ignore": "", "data-lpignore": "true",
+        required: !sec.optional, autocapitalize: "none", spellcheck: "false" });
       return h("label", { class: "field" }, h("span", {}, sec.label), inputs["s:" + sec.key],
         sec.help ? h("small", {}, sec.help) : null,
         /^https:\/\//.test(sec.help_url || "") ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, sec.help_link || "Open the account page") : null);

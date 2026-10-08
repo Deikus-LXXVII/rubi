@@ -194,7 +194,7 @@ func DefaultKDF() PasswordKDF {
 }
 
 func (k PasswordKDF) derive(password string) ([]byte, error) {
-	if k.Alg != "argon2id" || k.Time == 0 || k.MemoryKiB < 19*1024 || k.Threads == 0 {
+	if k.Alg != "argon2id" || k.Time < 2 || k.Time > 10 || k.MemoryKiB < 46*1024 || k.MemoryKiB > 1024*1024 || k.Threads < 1 || k.Threads > 4 {
 		return nil, errors.New("unsupported password KDF parameters")
 	}
 	salt, err := b64.DecodeString(k.Salt)

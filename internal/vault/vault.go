@@ -68,6 +68,9 @@ type Data struct {
 	Hooks *Hooks `json:"hooks,omitempty"`
 	// Devices are the Rubi Home helpers paired with this Rubi (see core/devices.go).
 	Devices []*Device `json:"devices,omitempty"`
+	// PanelOrigin is the panel this instance was paired with. Links always point there; a different
+	// origin found at start (an edited file) is reported and replaced on unlock.
+	PanelOrigin string `json:"panel_origin,omitempty"`
 }
 
 // Device is a paired Rubi Home helper: how to reach it and the token that proves it's us.
