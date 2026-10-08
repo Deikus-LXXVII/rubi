@@ -40,7 +40,7 @@ func main() {
 			{Key: "strict", Label: "Strict mode", Type: "bool", Default: true},
 			{Key: "mode", Label: "Folders your agent can see", Type: "choice", Default: "all",
 				Options: []rubiplugin.Option{{Key: "all", Label: "All folders"}, {Key: "selected", Label: "Only the folders checked below"}}},
-			{Key: "folders", Label: "Allowed folders", Type: "list", Dynamic: true, Default: []string{"INBOX"}},
+			{Key: "folders", Label: "Allowed folders", Type: "list", Dynamic: true, PerAccount: true, Default: []string{"INBOX"}},
 		},
 		Events: []rubiplugin.EventType{{Type: "ping", Untrusted: []string{"from"}}},
 		Egress: []string{"example.com:443"},
@@ -51,7 +51,7 @@ func main() {
 		}
 		return map[string]string{"user": fields["user"]}, fields["user"], nil
 	}
-	p.ConfigOptions = func(_ context.Context, _ *rubiplugin.Host, key string) ([]rubiplugin.Option, error) {
+	p.ConfigOptions = func(_ context.Context, _ *rubiplugin.Host, _ string, key string) ([]rubiplugin.Option, error) {
 		if key != "folders" {
 			return nil, nil
 		}
@@ -103,6 +103,23 @@ func main() {
 			}
 			return h.Submit(ctx, rubiplugin.Request{Kind: "demo.send", Summary: "Send to several people",
 				Preview: map[string]string{"count": fmt.Sprint(len(items))}, Items: items, Payload: in})
+		})
+	rubiplugin.AddTool(p, "demo_who", "Which account a call uses, with its settings and folders.",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			Account string `json:"account,omitempty"`
+		}) (any, error) {
+			var s struct{ User string }
+			if err := h.SettingsFor(in.Account, &s); err != nil {
+				return nil, err
+			}
+			tok, err := h.SecretFor(in.Account, "token")
+			if err != nil {
+				return nil, err
+			}
+			var cfg map[string]any
+			_ = h.ConfigFor(in.Account, &cfg)
+			accts, _ := h.Accounts()
+			return map[string]any{"user": s.User, "token_ok": tok != "", "folders": cfg["folders"], "accounts": len(accts)}, nil
 		})
 	rubiplugin.AddTool(p, "demo_crash", "Exit immediately.",
 		func(ctx context.Context, h *rubiplugin.Host, _ struct{}) (any, error) {

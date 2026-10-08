@@ -13,7 +13,8 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	dek := NewKey()
 	d := NewData("inst-1")
 	d.Version = 3
-	d.Integrations["icloud-mail"] = &Integration{Enabled: true, Secrets: map[string]string{"app_password": "s3cret"}}
+	d.Integrations["icloud-mail"] = &Integration{Accounts: []*Account{{ID: "me@icloud.com", Label: "me@icloud.com",
+		Default: true, Secrets: map[string]string{"app_password": "s3cret"}}}}
 
 	blob, err := Seal(dek, d)
 	if err != nil {
@@ -26,7 +27,7 @@ func TestSealOpenRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Integrations["icloud-mail"].Secrets["app_password"] != "s3cret" || got.Version != 3 {
+	if got.Integrations["icloud-mail"].Find("").Secrets["app_password"] != "s3cret" || got.Version != 3 {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 }
@@ -133,5 +134,23 @@ func TestMigrateSingleWebhookToAgent(t *testing.T) {
 	if got.Webhook != nil || len(got.Agents) != 1 || got.Agents[0].Name != "Main" || !got.Agents[0].Default ||
 		got.Agents[0].Key != "k1" {
 		t.Fatalf("migration: %+v %+v", got.Webhook, got.Agents)
+	}
+}
+
+func TestMigrateSingleAccount(t *testing.T) {
+	dek := NewKey()
+	d := NewData("inst")
+	d.Integrations["icloud-mail"] = &Integration{Enabled: true, Account: "Me@iCloud.com",
+		Settings: json.RawMessage(`{"address":"me@icloud.com"}`), Secrets: map[string]string{"app_password": "x"}}
+	blob, _ := Seal(dek, d)
+	got, err := Open(dek, "inst", blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := got.Integrations["icloud-mail"]
+	a := i.Find("")
+	if len(i.Accounts) != 1 || a == nil || a.ID != "me@icloud.com" || a.Label != "Me@iCloud.com" || !a.Default ||
+		a.Secrets["app_password"] != "x" || i.Settings != nil || !i.Enabled || i.Find("ME@ICLOUD.COM") != a {
+		t.Fatalf("migration: %+v %+v", i, a)
 	}
 }

@@ -58,14 +58,14 @@ func (c *Core) StoreList(ctx context.Context) (map[string]any, error) {
 		cat, _ = c.Catalog(ctx) // fall back to the last good copy
 	}
 	records := map[string]vault.Plugin{}
-	connected := map[string]string{}
+	connected := map[string][]map[string]any{}
 	_ = c.Vault.View(func(d *vault.Data) error {
 		for id, p := range d.Plugins {
 			records[id] = *p
 		}
 		for id, i := range d.Integrations {
-			if i.Enabled {
-				connected[id] = i.Account
+			for _, a := range i.Accounts {
+				connected[id] = append(connected[id], map[string]any{"id": a.ID, "label": a.Label, "default": a == i.Find("")})
 			}
 		}
 		return nil
@@ -109,7 +109,7 @@ func (c *Core) StoreList(ctx context.Context) (map[string]any, error) {
 	return out, nil
 }
 
-func (c *Core) describeInstalled(item map[string]any, id string, records map[string]vault.Plugin, connected map[string]string) {
+func (c *Core) describeInstalled(item map[string]any, id string, records map[string]vault.Plugin, connected map[string][]map[string]any) {
 	rec, ok := records[id]
 	if !ok {
 		item["installed"] = false
@@ -122,8 +122,14 @@ func (c *Core) describeInstalled(item map[string]any, id string, records map[str
 	if m, ok := c.Store.Get(id); ok && len(m.Config) > 0 {
 		item["has_config"] = true
 	}
-	if acct, ok := connected[id]; ok {
-		item["connected"], item["account"] = true, acct
+	if accts := connected[id]; len(accts) > 0 {
+		item["connected"], item["accounts"] = true, accts
+		item["account"] = accts[0]["label"] // the default (older panels show one)
+		for _, a := range accts {
+			if a["default"] == true {
+				item["account"] = a["label"]
+			}
+		}
 	} else {
 		item["connected"] = false
 	}

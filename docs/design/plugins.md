@@ -73,7 +73,15 @@ Rules the core enforces:
   text, or a subset of `options`). `dynamic` options come from the plugin when the panel opens the settings
   (for example the user's mail folders). Only the user changes them, in the panel with a strong approval;
   the agent can't see or change them. The plugin reads them with `config.get`. Typical uses: privacy
-  filters, which folders or accounts the agent may see.
+  filters, which folders or accounts the agent may see. A field marked `per_account` is kept separately for
+  each connected account; the rest apply to the whole plugin.
+
+**Several accounts.** A plugin can have several connected accounts (two Gmail mailboxes, for example).
+Each "Add account" in the panel runs `validate` again; the `account` it returns names the account (its
+id is the lowercased name). Connecting an account that already exists updates its secrets and keeps its
+settings. The first account is the default. Host methods that read per-account data take an optional
+`account`; empty means the default account. Plugins should accept an optional `account` argument in their
+tools and include the account in their events.
 
 The Go SDK generates the manifest from code: `<plugin> --manifest` prints it, and the release workflow
 publishes that output.
@@ -197,24 +205,25 @@ Both sides send requests. A message may be up to 4 MiB.
 |---|---|---|
 | `initialize` | `{api, rubi_version, plugin_id}` | `{api}` |
 | `validate` | `{fields, secrets}` | `{settings, account}`. Check what the user entered (for example, log in). Errors are shown in the panel |
-| `start` | `{}` | `{}`. The plugin is connected (settings exist). Begin background work |
-| `stop` | `{}` | `{}`. The user disconnected. Stop background work |
+| `start` | `{}` | `{}`. At least one account is connected. Begin background work; called again after accounts change |
+| `stop` | `{}` | `{}`. Accounts changed or the last one was disconnected. Stop background work |
 | `tool` | `{name, arguments}` | Any JSON object, returned to the agent. Only called while connected |
 | `execute` | `{kind, option, payload}` | Any JSON object. An approved action runs; `payload` is what the plugin submitted |
-| `config.options` | `{key}` | `{options: [{key, label}]}`. Choices for a `dynamic` config field |
+| `config.options` | `{key, account}` | `{options: [{key, label}]}`. Choices for a `dynamic` config field |
 | `shutdown` | `{}` | `{}`, then exit |
 
 **Plugin → host**
 
 | Method | Params | Result |
 |---|---|---|
-| `settings.get` | `{}` | `{settings}` |
-| `secret.get` | `{key}` | `{value}`. Only keys declared in the manifest |
+| `accounts.list` | `{}` | `{accounts: [{id, label, default}]}` |
+| `settings.get` | `{account?}` | `{settings}` |
+| `secret.get` | `{key, account?}` | `{value}`. Only keys declared in the manifest |
 | `state.get` / `state.set` | `{}` / `{state}` | `{state}` / `{}`. Private state, encrypted in the vault |
 | `approval.submit` | `{kind, summary, question?, preview, options, payload}` | When the kind needs no approval, the host calls `execute` right away and returns its result. Otherwise it returns `{status: "awaiting_approval", approval_id, …}` for the agent |
 | `level.get` | `{kind}` | `{level}` |
 | `event.emit` | `{type, data, agent?}` | `{event_id}`. The type must be declared; `untrusted_fields` come from the manifest. With `agent` (a connected Bot's name), only that Bot is woken; otherwise the Bots subscribed to the plugin |
-| `config.get` | `{}` | `{config}`: the user-only settings, with defaults for anything not set |
+| `config.get` | `{account?}` | `{config}`: the user-only settings (`per_account` ones for that account), with defaults for anything not set |
 | `audit` | `{event, fields}` | `{}` |
 
 Plugins log to stderr; Rubi saves it to `logs/plugin-<id>.log`.

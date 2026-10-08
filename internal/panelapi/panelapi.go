@@ -555,6 +555,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Name    string            `json:"name"`
 		Sources []string          `json:"sources"`
 		Values  map[string]any    `json:"values"`
+		Account string            `json:"account"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -586,7 +587,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		}
 	}
 
-	var approvalID string
+	var approvalID, account string
 	var err error
 	switch env.Op {
 	case "integration.catalog":
@@ -641,9 +642,9 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		ev := s.core.TestWebhook(args.Name)
 		return map[string]any{"event_id": ev.ID}, nil
 	case "plugin.config.get":
-		return s.core.PluginConfig(args.ID)
+		return s.core.PluginConfig(args.ID, args.Account)
 	case "plugin.config.set":
-		approvalID, err = s.core.SetPluginConfig(ctx, args.ID, args.Values)
+		approvalID, err = s.core.SetPluginConfig(ctx, args.ID, args.Account, args.Values)
 	case "agent.add":
 		approvalID, err = s.core.AddAgent(ctx, args.Name, args.URL, args.Key, args.Sources)
 	case "agent.remove":
@@ -652,9 +653,9 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		approvalID, err = s.core.SetDefaultAgent(ctx, args.Name)
 
 	case "integration.setup":
-		approvalID, err = s.core.ConnectIntegration(ctx, args.ID, args.Fields, args.Secrets)
+		approvalID, account, err = s.core.ConnectIntegration(ctx, args.ID, args.Fields, args.Secrets)
 	case "integration.disconnect":
-		approvalID, err = s.core.DisconnectIntegration(ctx, args.ID)
+		approvalID, err = s.core.DisconnectIntegration(ctx, args.ID, args.Account)
 	case "policy.set":
 		approvalID, err = s.core.SetPolicy(ctx, args.Levels)
 	case "webhook.set":
@@ -663,7 +664,11 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"approval_id": approvalID, "ticket": s.core.MintTicket("approve:" + approvalID)}, nil
+	res := map[string]any{"approval_id": approvalID, "ticket": s.core.MintTicket("approve:" + approvalID)}
+	if account != "" {
+		res["account"] = account
+	}
+	return res, nil
 }
 
 func (s *Server) updates(ctx context.Context, env Envelope) (any, error) {
@@ -705,10 +710,12 @@ func (s *Server) updates(ctx context.Context, env Envelope) (any, error) {
 }
 
 func (s *Server) catalog() any {
-	installed := map[string]*vault.Integration{}
+	accounts := map[string][]string{}
 	_ = s.core.Vault.View(func(d *vault.Data) error {
 		for id, i := range d.Integrations {
-			installed[id] = &vault.Integration{Enabled: i.Enabled, Account: i.Account}
+			for _, a := range i.Accounts {
+				accounts[id] = append(accounts[id], a.Label)
+			}
 		}
 		return nil
 	})
@@ -716,8 +723,8 @@ func (s *Server) catalog() any {
 	for _, m := range s.core.Store.Installed() {
 		entry := map[string]any{"id": m.ID, "name": m.Name, "description": m.Description, "needs": m.Needs,
 			"fields": m.Fields, "secrets": m.Secrets, "egress": m.Egress, "connected": false, "has_config": len(m.Config) > 0}
-		if in := installed[m.ID]; in != nil {
-			entry["connected"], entry["account"] = in.Enabled, in.Account
+		if a := accounts[m.ID]; len(a) > 0 {
+			entry["connected"], entry["accounts"] = true, a
 		}
 		list = append(list, entry)
 	}

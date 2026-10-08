@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -115,14 +116,73 @@ type Receipt struct {
 const MaxReceipts = 50
 
 type Integration struct {
-	Enabled  bool              `json:"enabled"`
-	Account  string            `json:"account,omitempty"` // e.g. the connected email address
+	Enabled bool `json:"enabled"`
+	// Accounts are the connected accounts (e.g. several mailboxes); the first Default one is used when a
+	// tool doesn't name one.
+	Accounts []*Account `json:"accounts,omitempty"`
+	// Account, Settings and Secrets held the single account of earlier versions; normalize moves them
+	// into Accounts.
+	Account  string            `json:"account,omitempty"`
 	Settings json.RawMessage   `json:"settings,omitempty"`
 	Secrets  map[string]string `json:"secrets,omitempty"`
 	// State is integration-private runtime state (e.g. tracked messages), kept encrypted with the rest.
 	State json.RawMessage `json:"state,omitempty"`
-	// Config holds user-only settings (manifest config) the user changed from their defaults.
+	// Config holds user-only settings (manifest config) the user changed from their defaults, for
+	// settings that apply to the whole plugin. Per-account ones live in the account.
 	Config map[string]json.RawMessage `json:"config,omitempty"`
+}
+
+// Account is one connected account of a plugin.
+type Account struct {
+	ID       string                     `json:"id"`    // stable key, e.g. the lower-cased address
+	Label    string                     `json:"label"` // shown to the user and the agent
+	Default  bool                       `json:"default,omitempty"`
+	Settings json.RawMessage            `json:"settings,omitempty"`
+	Secrets  map[string]string          `json:"secrets,omitempty"`
+	Config   map[string]json.RawMessage `json:"config,omitempty"`
+}
+
+// Find returns the account named by ref (id or label, any case), or the default account for "".
+func (i *Integration) Find(ref string) *Account {
+	if i == nil {
+		return nil
+	}
+	ref = strings.ToLower(strings.TrimSpace(ref))
+	if ref == "" {
+		for _, a := range i.Accounts {
+			if a.Default {
+				return a
+			}
+		}
+		if len(i.Accounts) > 0 {
+			return i.Accounts[0]
+		}
+		return nil
+	}
+	for _, a := range i.Accounts {
+		if a.ID == ref || strings.ToLower(a.Label) == ref {
+			return a
+		}
+	}
+	return nil
+}
+
+// AccountID is the stable key for an account label.
+func AccountID(label string) string {
+	id := strings.ToLower(strings.TrimSpace(label))
+	if id == "" {
+		return "default"
+	}
+	return id
+}
+
+func (i *Integration) normalize() {
+	if len(i.Accounts) == 0 && (len(i.Settings) > 0 || len(i.Secrets) > 0 || i.Account != "") {
+		i.Accounts = []*Account{{ID: AccountID(i.Account), Label: i.Account, Default: true, Settings: i.Settings,
+			Secrets: i.Secrets}}
+	}
+	i.Account, i.Settings, i.Secrets = "", nil, nil
+	i.Enabled = len(i.Accounts) > 0
 }
 
 // Agent is one Bot Rubi can wake. Events for it go to its routine webhook.
@@ -159,6 +219,9 @@ func (d *Data) normalize() {
 	}
 	if d.Plugins == nil {
 		d.Plugins = map[string]*Plugin{}
+	}
+	for _, i := range d.Integrations {
+		i.normalize()
 	}
 	if d.Webhook != nil && len(d.Agents) == 0 && d.Webhook.URL != "" {
 		d.Agents = []*Agent{{Name: "Main", URL: d.Webhook.URL, Key: d.Webhook.Key, Default: true}}

@@ -972,8 +972,9 @@ async function setupScreen(ctx, id, back) {
   const connected = () => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
     h("p", {}, "You can close this page and go back to your agent."));
   const finish = back || connected;
+  let account = "";
   const done = entry.has_config
-    ? () => pluginConfigScreen(ctx, id, { intro: true, done: finish })
+    ? () => pluginConfigScreen(ctx, id, { intro: true, account, done: finish })
     : finish;
 
   const inputs = {};
@@ -986,7 +987,7 @@ async function setupScreen(ctx, id, back) {
     inputs["s:" + sec.key] = h("input", { type: "password", autocomplete: "off", required: true, autocapitalize: "none", spellcheck: "false" });
     return h("label", { class: "field" }, h("span", {}, sec.label), inputs["s:" + sec.key],
       sec.help ? h("small", {}, sec.help) : null,
-      sec.help_url ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, "Open account.apple.com") : null);
+      sec.help_url ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, sec.help_link || "Open the account page") : null);
   });
   const go = h("button", { class: "primary", type: "submit" }, `Connect ${entry.name}`);
   const form = h("form", {
@@ -999,6 +1000,7 @@ async function setupScreen(ctx, id, back) {
         }
         go.textContent = "Checking your login…";
         const res = await ctx.client.call("integration.setup", { id, fields, secrets });
+        account = res.account || "";
         for (const el of Object.values(inputs)) el.value = "";
         confirmChange(ctx, res, done);
       }).catch((x) => showError(err, x));
@@ -1008,7 +1010,7 @@ async function setupScreen(ctx, id, back) {
   screen(
     header(ctx.hello),
     h("h1", {}, `Connect ${entry.name}`),
-    entry.connected ? h("p", { class: "ok" }, `Connected as ${entry.account}. Connecting again replaces it.`) : null,
+    entry.connected ? h("p", { class: "muted" }, "This adds another account. Signing in to an account that is already connected updates its password and keeps its settings.") : null,
     h("p", {}, entry.needs),
     form,
     err,
@@ -1046,21 +1048,28 @@ async function settingsScreen(ctx) {
   };
 
   const installed = (store.plugins || []).filter((p) => p.installed);
-  const pluginsList = installed.length ? h("div", { class: "list" }, installed.map((p) => h("div", { class: "item plugin" },
-    h("div", {},
-      h("strong", {}, p.name), " ", h("span", { class: p.reviewed ? "tag" : "tag warn" }, p.reviewed ? "Reviewed" : "Not reviewed"),
-      h("div", { class: "muted" }, `${p.version}${p.connected ? ` · ${p.account || "connected"}` : " · not connected"}${p.running === false ? " · not running" : ""}`)),
-    h("div", { class: "actions" },
-      p.update_available
-        ? h("button", { class: "primary small", onclick: change("plugin.update", () => ({ id: p.id })) }, `Update to ${p.update_available}`) : null,
+  // Each plugin lists its connected accounts (several mailboxes, for example), each with its own settings.
+  // An older Rubi reports one account without a list.
+  const accountsOf = (p) => p.accounts || (p.connected ? [{ id: "", label: p.account || "Connected", default: true }] : []);
+  const accountRows = (p) => accountsOf(p).map((a) => h("div", { class: "account-row" },
+    h("span", {}, a.label || a.id, a.default && accountsOf(p).length > 1 ? h("span", { class: "tag" }, "Default") : null),
+    h("span", { class: "actions" },
+      p.has_config ? h("button", { class: "link small", onclick: () => pluginConfigScreen(ctx, p.id, { account: a.id }) }, "Settings") : null,
+      h("button", { class: "link small", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, "Disconnect"))));
+  const pluginsList = installed.length ? h("div", { class: "list" }, installed.map((p) => h("div", { class: "item plugin plugin-block" },
+    h("div", { class: "plugin-head" },
+      h("div", {},
+        h("strong", {}, p.name), " ", h("span", { class: p.reviewed ? "tag" : "tag warn" }, p.reviewed ? "Reviewed" : "Not reviewed"),
+        h("div", { class: "muted small" }, `${p.version}${p.connected ? "" : " · not connected"}${p.running === false ? " · not running" : ""}`)),
+      h("div", { class: "actions" },
+        p.update_available
+          ? h("button", { class: "primary small", onclick: change("plugin.update", () => ({ id: p.id })) }, `Update to ${p.update_available}`) : null,
+        h("button", { class: "secondary small", onclick: () => setupScreen(ctx, p.id, back) }, p.connected ? "Add account" : "Connect"))),
+    p.connected ? h("div", { class: "accounts" }, accountRows(p)) : null,
+    h("div", { class: "plugin-foot" },
       p.previous_version
         ? h("button", { class: "link small", onclick: change("plugin.rollback", () => ({ id: p.id })) }, `Roll back to ${p.previous_version}`) : null,
-      p.connected && p.has_config
-        ? h("button", { class: "secondary small", onclick: () => pluginConfigScreen(ctx, p.id) }, "Settings") : null,
-      p.connected
-        ? h("button", { class: "secondary small", onclick: change("integration.disconnect", () => ({ id: p.id })) }, "Disconnect")
-        : h("button", { class: "secondary small", onclick: () => setupScreen(ctx, p.id, back) }, "Connect"),
-      h("button", { class: "link small", onclick: change("plugin.remove", () => ({ id: p.id })) }, "Remove")))))
+      h("button", { class: "link small", onclick: change("plugin.remove", () => ({ id: p.id })) }, "Remove plugin")))))
     : h("p", { class: "muted" }, "No plugins yet. Rubi starts bare; add what you need from the store.");
 
   const selects = {};
@@ -1227,14 +1236,16 @@ async function pluginConfigScreen(ctx, id, opts = {}) {
   const err = errorBox();
   let cfg;
   try {
-    cfg = await ctx.client.call("plugin.config.get", { id });
+    cfg = await ctx.client.call("plugin.config.get", { id, account: opts.account || "" });
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
   const back = opts.done || (() => settingsScreen(ctx));
   const inputs = {};
+  const several = (cfg.accounts || []).length > 1;
   const rows = (cfg.fields || []).map((f) => {
     const v = cfg.values[f.key];
+    if (several && !f.per_account) f = { ...f, help: [f.help, "Applies to all accounts."].filter(Boolean).join(" ") };
     let el;
     if (f.type === "choice") {
       const name = "cfg-" + f.key;
@@ -1277,18 +1288,19 @@ async function pluginConfigScreen(ctx, id, opts = {}) {
     await busy(e.target, async () => {
       let res;
       try {
-        res = await ctx.client.call("plugin.config.set", { id, values });
+        res = await ctx.client.call("plugin.config.set", { id, values, account: cfg.account || "" });
       } catch (x) {
         if (opts.done && /nothing changed/i.test(x.message)) return opts.done(); // defaults are fine
         throw x;
       }
-      confirmChange(ctx, res, opts.done || (() => pluginConfigScreen(ctx, id)), opts.done ? "Finish" : undefined);
+      confirmChange(ctx, res, opts.done || (() => pluginConfigScreen(ctx, id, opts)), opts.done ? "Finish" : undefined);
     }).catch((x) => showError(err, x));
   } }, opts.done ? "Save and finish" : "Save");
   screen(
     header(ctx.hello),
     opts.intro ? h("p", { class: "eyebrow" }, "Last step") : null,
     h("h1", {}, opts.intro ? `What can your agent see in ${cfg.name}?` : `${cfg.name} settings`),
+    (cfg.accounts || []).length > 1 || opts.intro ? h("p", { class: "muted" }, `Account: ${((cfg.accounts || []).find((a) => a.id === cfg.account) || {}).label || cfg.account}`) : null,
     h("p", { class: "muted" }, "Only you can change these, with your passkey or password. Your agent can't read or change them."),
     err,
     ...rows,

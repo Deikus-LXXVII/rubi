@@ -25,8 +25,9 @@ type Plugin struct {
 	// Start begins background work once the plugin is connected; Stop ends it. Both are optional.
 	Start func(h *Host) error
 	Stop  func()
-	// ConfigOptions supplies the options of Dynamic config fields (e.g. the user's mail folders).
-	ConfigOptions func(ctx context.Context, h *Host, key string) ([]Option, error)
+	// ConfigOptions supplies the options of Dynamic config fields (e.g. the folders of one mailbox).
+	// account is set for PerAccount fields.
+	ConfigOptions func(ctx context.Context, h *Host, account, key string) ([]Option, error)
 
 	m     Manifest
 	tools map[string]func(ctx context.Context, h *Host, args json.RawMessage) (any, error)
@@ -152,13 +153,14 @@ func (p *Plugin) handle(ctx context.Context, method string, params json.RawMessa
 		return nil, nil
 	case "config.options":
 		var in struct {
-			Key string `json:"key"`
+			Key     string `json:"key"`
+			Account string `json:"account"`
 		}
 		_ = json.Unmarshal(params, &in)
 		if p.ConfigOptions == nil {
 			return map[string]any{"options": []Option{}}, nil
 		}
-		opts, err := p.ConfigOptions(ctx, p.host, in.Key)
+		opts, err := p.ConfigOptions(ctx, p.host, in.Account, in.Key)
 		if err != nil {
 			return nil, err
 		}
@@ -212,24 +214,39 @@ type Host struct {
 // ID is the plugin id.
 func (h *Host) ID() string { return h.id }
 
-// Settings decodes the settings returned by Validate.
-func (h *Host) Settings(v any) error {
+// Settings decodes the default account's settings (as returned by Validate).
+func (h *Host) Settings(v any) error { return h.SettingsFor("", v) }
+
+// SettingsFor decodes one account's settings ("" = the default account).
+func (h *Host) SettingsFor(account string, v any) error {
 	var out struct {
 		Settings json.RawMessage `json:"settings"`
 	}
-	if err := h.conn.Call(context.Background(), "settings.get", nil, &out); err != nil {
+	if err := h.conn.Call(context.Background(), "settings.get", map[string]string{"account": account}, &out); err != nil {
 		return err
 	}
 	return json.Unmarshal(out.Settings, v)
 }
 
-// Secret returns a secret declared in the manifest.
-func (h *Host) Secret(key string) (string, error) {
+// Secret returns a secret of the default account.
+func (h *Host) Secret(key string) (string, error) { return h.SecretFor("", key) }
+
+// SecretFor returns a secret declared in the manifest, for one account ("" = the default account).
+func (h *Host) SecretFor(account, key string) (string, error) {
 	var out struct {
 		Value string `json:"value"`
 	}
-	err := h.conn.Call(context.Background(), "secret.get", map[string]string{"key": key}, &out)
+	err := h.conn.Call(context.Background(), "secret.get", map[string]string{"key": key, "account": account}, &out)
 	return out.Value, err
+}
+
+// Accounts lists the connected accounts, the default one first.
+func (h *Host) Accounts() ([]AccountInfo, error) {
+	var out struct {
+		Accounts []AccountInfo `json:"accounts"`
+	}
+	err := h.conn.Call(context.Background(), "accounts.list", nil, &out)
+	return out.Accounts, err
 }
 
 // LoadState decodes the plugin's private state (kept encrypted by Rubi). v is left alone if none is saved.
@@ -287,12 +304,17 @@ func (h *Host) EmitTo(agent, typ string, data map[string]any) (string, error) {
 	return out.EventID, err
 }
 
-// Config decodes the user-only settings (manifest Config), with defaults for anything not set.
-func (h *Host) Config(v any) error {
+// Config decodes the user-only settings (manifest Config) for the default account, with defaults for
+// anything not set.
+func (h *Host) Config(v any) error { return h.ConfigFor("", v) }
+
+// ConfigFor decodes the user-only settings as they apply to one account: the plugin-wide ones plus that
+// account's PerAccount ones.
+func (h *Host) ConfigFor(account string, v any) error {
 	var out struct {
 		Config json.RawMessage `json:"config"`
 	}
-	if err := h.conn.Call(context.Background(), "config.get", nil, &out); err != nil {
+	if err := h.conn.Call(context.Background(), "config.get", map[string]string{"account": account}, &out); err != nil {
 		return err
 	}
 	return json.Unmarshal(out.Config, v)

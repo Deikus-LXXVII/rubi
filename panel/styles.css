@@ -429,3 +429,8 @@ fieldset.field legend { padding: 0; margin-bottom: 6px; }
   .features { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .steps ol { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+.plugin-block { flex-direction: column; align-items: stretch; gap: 8px; }
+.plugin-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.accounts { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+.account-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 0.92rem; overflow-wrap: anywhere; }
+.plugin-foot { display: flex; justify-content: flex-end; gap: 10px; }

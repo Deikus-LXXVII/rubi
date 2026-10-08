@@ -67,6 +67,16 @@ type ConfigField struct {
 	// Dynamic options come from the plugin when the panel opens the settings (Plugin.ConfigOptions), e.g.
 	// the user's mail folders.
 	Dynamic bool `json:"dynamic,omitempty"`
+	// PerAccount settings are kept separately for each connected account (e.g. which folders of that
+	// mailbox the agent may see); the others apply to the whole plugin.
+	PerAccount bool `json:"per_account,omitempty"`
+}
+
+// AccountInfo is one connected account.
+type AccountInfo struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Default bool   `json:"default,omitempty"`
 }
 
 type Publisher struct {
@@ -91,6 +101,8 @@ type Secret struct {
 	Label   string `json:"label"`
 	Help    string `json:"help,omitempty"`
 	HelpURL string `json:"help_url,omitempty"`
+	// HelpLink is the label of the HelpURL button, e.g. "Open Google app passwords".
+	HelpLink string `json:"help_link,omitempty"`
 }
 
 type Action struct {

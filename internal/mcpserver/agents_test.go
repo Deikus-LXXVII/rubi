@@ -273,3 +273,53 @@ func TestBatchApproval(t *testing.T) {
 		t.Fatalf("executed: %v", snap)
 	}
 }
+
+// TestSeveralAccounts: a plugin connects any number of accounts, each with its own secrets and per-account
+// settings; disconnecting one leaves the others.
+func TestSeveralAccounts(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo() // account "ann" (the default)
+	setup := r.panel("setup:demo")
+	var res map[string]any
+	if err := setup.Call("integration.setup", map[string]any{"id": "demo", "fields": map[string]string{"user": "bob"},
+		"secrets": map[string]string{"token": "good"}}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(setup, res)
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+
+	if out := r.ag.call("demo_who", nil); out["user"] != "ann" || out["accounts"] != float64(2) {
+		t.Fatalf("default account: %v", out)
+	}
+	if out := r.ag.call("demo_who", map[string]any{"account": "BOB"}); out["user"] != "bob" || out["token_ok"] != true {
+		t.Fatalf("named account: %v", out)
+	}
+	if out := r.ag.call("demo_who", map[string]any{"account": "carol"}); !strings.Contains(toString(out["tool_error"]), "no connected account") {
+		t.Fatalf("unknown account: %v", out)
+	}
+
+	// Per-account settings: bob's folders change, ann's stay.
+	settings := r.panel("settings")
+	if err := settings.Call("plugin.config.set", map[string]any{"id": "demo", "account": "bob", "values": map[string]any{"folders": []string{"Archive"}}}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	if out := r.ag.call("demo_who", map[string]any{"account": "bob"}); toString(out["folders"]) != `["Archive"]` {
+		t.Fatalf("bob's folders: %v", out)
+	}
+	if out := r.ag.call("demo_who", nil); toString(out["folders"]) != `["INBOX"]` {
+		t.Fatalf("ann's folders changed: %v", out)
+	}
+
+	// Disconnect ann (the default): bob remains and becomes the default.
+	if err := settings.Call("integration.disconnect", map[string]any{"id": "demo", "account": "ann"}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	if out := r.ag.call("demo_who", nil); out["user"] != "bob" || out["accounts"] != float64(1) {
+		t.Fatalf("after disconnecting ann: %v", out)
+	}
+}

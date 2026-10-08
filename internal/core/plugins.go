@@ -26,12 +26,29 @@ func (c *Core) action(kind string) (rubiplugin.Action, plugins.Manifest, bool) {
 	return rubiplugin.Action{}, plugins.Manifest{}, false
 }
 
+// accountOf finds a connected account of a plugin ("" = the default one).
+func accountOf(d *vault.Data, plugin, ref string) (*vault.Account, error) {
+	i := d.Integrations[plugin]
+	if i == nil || len(i.Accounts) == 0 {
+		return nil, errors.New("the plugin is not connected")
+	}
+	a := i.Find(ref)
+	if a == nil {
+		var names []string
+		for _, x := range i.Accounts {
+			names = append(names, x.Label)
+		}
+		return nil, fmt.Errorf("no connected account %q (connected: %s)", ref, strings.Join(names, ", "))
+	}
+	return a, nil
+}
+
 // enabled reports whether a plugin is connected (set up by the user).
 func (c *Core) enabled(id string) bool {
 	on := false
 	_ = c.Vault.View(func(d *vault.Data) error {
 		i := d.Integrations[id]
-		on = i != nil && i.Enabled
+		on = i != nil && len(i.Accounts) > 0
 		return nil
 	})
 	return on
@@ -226,18 +243,38 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 		}
 		switch method {
 		case "settings.get":
+			var in struct{ Account string }
+			_ = json.Unmarshal(params, &in)
 			var out json.RawMessage
+			var acct string
 			err := c.Vault.View(func(d *vault.Data) error {
-				i := d.Integrations[id]
-				if i == nil || len(i.Settings) == 0 {
-					return errors.New("the plugin is not connected")
+				a, err := accountOf(d, id, in.Account)
+				if err != nil {
+					return err
 				}
-				out = append(json.RawMessage(nil), i.Settings...)
+				out, acct = append(json.RawMessage(nil), a.Settings...), a.ID
 				return nil
 			})
-			return map[string]any{"settings": out}, err
+			return map[string]any{"settings": out, "account": acct}, err
+		case "accounts.list":
+			var list []rubiplugin.AccountInfo
+			_ = c.Vault.View(func(d *vault.Data) error {
+				i := d.Integrations[id]
+				if def := i.Find(""); def != nil {
+					list = append(list, rubiplugin.AccountInfo{ID: def.ID, Label: def.Label, Default: true})
+				}
+				if i != nil {
+					for _, a := range i.Accounts {
+						if a != i.Find("") {
+							list = append(list, rubiplugin.AccountInfo{ID: a.ID, Label: a.Label})
+						}
+					}
+				}
+				return nil
+			})
+			return map[string]any{"accounts": list}, nil
 		case "secret.get":
-			var in struct{ Key string }
+			var in struct{ Key, Account string }
 			_ = json.Unmarshal(params, &in)
 			declared := false
 			for _, s := range m.Secrets {
@@ -248,11 +285,14 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			}
 			var v string
 			err := c.Vault.View(func(d *vault.Data) error {
-				i := d.Integrations[id]
-				if i == nil || i.Secrets[in.Key] == "" {
+				a, err := accountOf(d, id, in.Account)
+				if err != nil {
+					return err
+				}
+				if a.Secrets[in.Key] == "" {
 					return fmt.Errorf("secret %q is not set", in.Key)
 				}
-				v = i.Secrets[in.Key]
+				v = a.Secrets[in.Key]
 				return nil
 			})
 			return map[string]any{"value": v}, err
@@ -287,7 +327,9 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 				return nil
 			})
 		case "config.get":
-			return map[string]any{"config": c.pluginConfig(m)}, nil
+			var in struct{ Account string }
+			_ = json.Unmarshal(params, &in)
+			return map[string]any{"config": c.pluginConfig(m, in.Account)}, nil
 		case "level.get":
 			var in struct{ Kind string }
 			_ = json.Unmarshal(params, &in)

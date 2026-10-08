@@ -46,13 +46,13 @@ func (c *Core) RequestChange(ctx context.Context, summary string, preview map[st
 }
 
 // ConnectIntegration asks the plugin to validate setup values and requests approval to store them.
-func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secrets map[string]string) (string, error) {
+func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secrets map[string]string) (approvalID, accountID string, err error) {
 	m, ok := c.Store.Get(id)
 	if !ok {
-		return "", fmt.Errorf("plugin %q is not installed", id)
+		return "", "", fmt.Errorf("plugin %q is not installed", id)
 	}
 	if c.State() != Unlocked {
-		return "", errors.New("Rubi is locked")
+		return "", "", errors.New("Rubi is locked")
 	}
 	in := rubiplugin.ValidateParams{Fields: map[string]string{}, Secrets: map[string]string{}}
 	for _, f := range m.Fields {
@@ -64,9 +64,9 @@ func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secret
 	var res rubiplugin.ValidateResult
 	if err := c.Runner.Call(ctx, id, "validate", in, &res); err != nil {
 		if errors.Is(err, plugins.ErrNotRunning) {
-			return "", errors.New(m.Name + " isn't running; ask your agent to check rubi_status")
+			return "", "", errors.New(m.Name + " isn't running; ask your agent to check rubi_status")
 		}
-		return "", err
+		return "", "", err
 	}
 	stored := in.Secrets
 	if res.Secrets != nil {
@@ -80,15 +80,22 @@ func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secret
 	if account != "" {
 		summary += " (" + account + ")"
 	}
-	return c.RequestChange(ctx, summary,
+	acctID := vault.AccountID(account)
+	approvalID, err = c.RequestChange(ctx, summary,
 		map[string]any{"integration": m.Name, "account": account, "connects_to": strings.Join(m.Egress, ", ")},
 		func(d *vault.Data) error {
-			prev := d.Integrations[id]
-			i := &vault.Integration{Enabled: true, Account: account, Settings: res.Settings, Secrets: stored}
-			if prev != nil && prev.Account == account {
-				i.State = prev.State // reconnecting the same account keeps the plugin's state
+			i := d.Integrations[id]
+			if i == nil {
+				i = &vault.Integration{}
+				d.Integrations[id] = i
 			}
-			d.Integrations[id] = i
+			if a := i.Find(acctID); a != nil && a.ID == acctID {
+				a.Label, a.Settings, a.Secrets = account, res.Settings, stored // reconnecting keeps its settings
+			} else {
+				i.Accounts = append(i.Accounts, &vault.Account{ID: acctID, Label: account, Default: len(i.Accounts) == 0,
+					Settings: res.Settings, Secrets: stored})
+			}
+			i.Enabled = true
 			return nil
 		},
 		func() {
@@ -96,26 +103,64 @@ func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secret
 			c.Audit.Record("integration.connected", audit.Fields{"integration": id, "account": account})
 			c.Events.Emit("rubi", "integration.ready", map[string]any{"plugin": id, "name": m.Name, "account": account}, nil)
 		})
+	return approvalID, acctID, err
 }
 
-// DisconnectIntegration requests approval to stop a plugin's work and erase its secrets and state. The
-// plugin stays installed.
-func (c *Core) DisconnectIntegration(ctx context.Context, id string) (string, error) {
+// DisconnectIntegration requests approval to disconnect one account of a plugin ("" = all of them) and
+// erase what Rubi stored for it. The plugin stays installed.
+func (c *Core) DisconnectIntegration(ctx context.Context, id, account string) (string, error) {
 	m, ok := c.Store.Get(id)
 	if !ok {
 		return "", fmt.Errorf("plugin %q is not installed", id)
 	}
-	return c.RequestChange(ctx, "Disconnect "+m.Name, map[string]any{"integration": m.Name,
-		"effect": "Stops it and erases its stored passwords, settings and state from Rubi. The plugin stays installed."},
+	label := ""
+	if account != "" {
+		err := c.Vault.View(func(d *vault.Data) error {
+			a, err := accountOf(d, id, account)
+			if err == nil {
+				label, account = a.Label, a.ID
+			}
+			return err
+		})
+		if err != nil {
+			return "", err
+		}
+	}
+	summary, effect := "Disconnect "+m.Name, "Stops it and erases its stored passwords, settings and state from Rubi. The plugin stays installed."
+	preview := map[string]any{"integration": m.Name}
+	if label != "" {
+		summary = "Disconnect " + label + " from " + m.Name
+		effect = "Erases this account's password and settings from Rubi. Other accounts stay connected."
+		preview["account"] = label
+	}
+	preview["effect"] = effect
+	return c.RequestChange(ctx, summary, preview,
 		func(d *vault.Data) error {
-			delete(d.Integrations, id)
+			i := d.Integrations[id]
+			if account == "" || i == nil {
+				delete(d.Integrations, id)
+				return nil
+			}
+			wasDefault := false
+			var kept []*vault.Account
+			for _, a := range i.Accounts {
+				if a.ID == account {
+					wasDefault = a.Default
+					continue
+				}
+				kept = append(kept, a)
+			}
+			if len(kept) == 0 {
+				delete(d.Integrations, id)
+				return nil
+			}
+			if wasDefault {
+				kept[0].Default = true
+			}
+			i.Accounts = kept
 			return nil
 		},
-		func() {
-			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = c.Runner.Call(sctx, id, "stop", nil, nil)
-		})
+		func() { c.restartPluginWork(id) })
 }
 
 // SetPolicy requests approval to change approval levels. Locked and core kinds can't be changed.
