@@ -261,7 +261,7 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 		close(done)
 		return done, nil
 	}
-	m := &tunnel.Manager{Binary: bin, Target: target, OnURL: c.SetEndpoint, Logf: log.Printf}
+	m := &tunnel.Manager{Binary: bin, Target: target, OnURL: c.SetEndpoint, OnError: c.SetTransportError, Logf: log.Printf}
 	go func() {
 		m.Run(ctx)
 		close(done)

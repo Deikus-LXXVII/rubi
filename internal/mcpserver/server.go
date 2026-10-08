@@ -7,7 +7,6 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"sync"
 	"time"
@@ -389,8 +388,8 @@ func (s *Server) lockedResponse() out {
 	}
 	if u, err := s.core.Link(purpose); err == nil {
 		o["link"] = u
-	} else if errors.Is(err, core.ErrNoTransport) {
-		o["link_error"] = err.Error()
+	} else {
+		o["link_error"] = err.Error() // e.g. the tunnel is down, and why
 	}
 	return o
 }
