@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -23,6 +24,7 @@ type Server struct {
 	Logf  func(format string, args ...any)
 
 	mu   sync.Mutex
+	busy chan struct{} // bounds concurrent answers
 	pool *pool
 	ctx  context.Context
 }
@@ -47,6 +49,7 @@ func (s *Server) Resubscribe() {
 // Run serves until ctx ends.
 func (s *Server) Run(ctx context.Context) {
 	asm := newAssembler()
+	s.busy = make(chan struct{}, maxAnswers)
 	var p *pool
 	p = newPool(s.Relays, func(url string) []map[string]any {
 		filters := []map[string]any{{"kinds": []int{Kind}, "#p": []string{s.Key.Public()}, "since": time.Now().Add(-time.Minute).Unix()}}
@@ -79,7 +82,15 @@ func (s *Server) Run(ctx context.Context) {
 		if !done {
 			return
 		}
-		go s.answer(ctx, p, e.PubKey, pt.R, payload)
+		select { // a flood of requests is dropped rather than answered in unbounded parallel
+		case s.busy <- struct{}{}:
+		default:
+			return
+		}
+		go func() {
+			defer func() { <-s.busy }()
+			s.answer(ctx, p, e.PubKey, pt.R, payload)
+		}()
 	}, s.Logf)
 	p.ready = s.Ready
 	s.mu.Lock()
@@ -104,7 +115,7 @@ func (s *Server) hook(e *Event) {
 		ID   string `json:"id"`
 		Body string `json:"body"`
 	}
-	if !tagged || json.Unmarshal([]byte(e.Content), &in) != nil || in.ID == "" {
+	if !tagged || json.Unmarshal([]byte(e.Content), &in) != nil || !hookID(in.ID) || len(in.Body) > maxHookBody {
 		return
 	}
 	s.Hooks.On(in.ID, []byte(in.Body))
@@ -123,6 +134,11 @@ func (s *Server) answer(ctx context.Context, p *pool, to, msgID, payload string)
 	hctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	status, resp := s.Handle(hctx, []byte(payload))
+	if status == http.StatusBadRequest {
+		// Not a request for this Rubi (it didn't decrypt): stay silent, as the HTTP path does for
+		// anything it can't open. Answering would let anyone make Rubi publish to every relay.
+		return
+	}
 	parts, err := split(msgID, status, string(resp))
 	if err != nil {
 		parts, _ = split(msgID, 500, "")
@@ -134,4 +150,23 @@ func (s *Server) answer(ctx context.Context, p *pool, to, msgID, payload string)
 	if err := p.publish(ctx, events); err != nil && s.Logf != nil {
 		s.Logf("relay answer: %v", err)
 	}
+}
+
+const (
+	maxAnswers  = 8
+	maxHookBody = 16 << 10
+)
+
+// hookID accepts the ids Rubi hands out (base64url, at most 43 characters); a gateway can't push
+// anything else to plugins.
+func hookID(id string) bool {
+	if id == "" || len(id) > 43 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
 }

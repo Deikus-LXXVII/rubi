@@ -2,6 +2,8 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -29,6 +31,12 @@ const (
 	maxMessage  = chunkSize * maxParts
 	readLimit   = 1 << 20
 	dialTimeout = 10 * time.Second
+
+	// Reassembly limits. A sender's routing key is visible to every relay, so anyone can send chunks;
+	// these keep a flood from using much memory or crowding out other senders' messages.
+	maxPendingPerSender = 2
+	maxPendingBytes     = 4 << 20
+	maxSeen             = 20000
 )
 
 // part is the content of one event: a chunk of a message.
@@ -58,11 +66,14 @@ func split(msgID string, status int, payload string) ([]part, error) {
 type assembler struct {
 	mu      sync.Mutex
 	pending map[string]*pendingMsg
+	bytes   int
 }
 
 type pendingMsg struct {
+	sender  string
 	parts   []string
 	have    int
+	size    int
 	status  int
 	started time.Time
 }
@@ -71,8 +82,12 @@ func newAssembler() *assembler { return &assembler{pending: map[string]*pendingM
 
 // add returns the whole payload once every chunk of a message arrived.
 func (a *assembler) add(sender string, p part) (payload string, status int, done bool) {
-	if p.V != 1 || p.N < 1 || p.N > maxParts || p.I < 0 || p.I >= p.N || p.R == "" || len(p.R) > 64 {
+	if p.V != 1 || p.N < 1 || p.N > maxParts || p.I < 0 || p.I >= p.N || p.R == "" || len(p.R) > 64 ||
+		len(p.D) > chunkSize {
 		return "", 0, false
+	}
+	if p.N == 1 { // most messages: nothing to keep
+		return p.D, p.Status, true
 	}
 	key := sender + "|" + p.R
 	a.mu.Lock()
@@ -80,30 +95,76 @@ func (a *assembler) add(sender string, p part) (payload string, status int, done
 	now := time.Now()
 	for k, m := range a.pending {
 		if now.Sub(m.started) > 2*time.Minute {
-			delete(a.pending, k)
+			a.drop(k)
 		}
 	}
 	m := a.pending[key]
 	if m == nil {
-		if len(a.pending) > 200 {
-			return "", 0, false
+		// A new message pushes out its sender's oldest unfinished one, so a flood from one sender
+		// can't block anyone else's messages.
+		for a.count(sender) >= maxPendingPerSender {
+			a.drop(a.oldest(sender))
 		}
-		m = &pendingMsg{parts: make([]string, p.N), started: now}
+		m = &pendingMsg{sender: sender, parts: make([]string, p.N), started: now}
 		a.pending[key] = m
 	}
 	if len(m.parts) != p.N || m.parts[p.I] != "" {
 		return "", 0, false
 	}
+	for a.bytes+len(p.D) > maxPendingBytes && len(a.pending) > 1 {
+		a.drop(a.oldestExcept(key))
+	}
 	m.parts[p.I] = p.D
 	m.have++
+	m.size += len(p.D)
+	a.bytes += len(p.D)
 	if p.Status != 0 {
 		m.status = p.Status
 	}
 	if m.have < p.N {
 		return "", 0, false
 	}
-	delete(a.pending, key)
+	a.drop(key)
 	return strings.Join(m.parts, ""), m.status, true
+}
+
+func (a *assembler) drop(key string) {
+	if m := a.pending[key]; m != nil {
+		a.bytes -= m.size
+		delete(a.pending, key)
+	}
+}
+
+func (a *assembler) count(sender string) int {
+	n := 0
+	for _, m := range a.pending {
+		if m.sender == sender {
+			n++
+		}
+	}
+	return n
+}
+
+func (a *assembler) oldest(sender string) string {
+	var key string
+	var t time.Time
+	for k, m := range a.pending {
+		if m.sender == sender && (key == "" || m.started.Before(t)) {
+			key, t = k, m.started
+		}
+	}
+	return key
+}
+
+func (a *assembler) oldestExcept(except string) string {
+	var key string
+	var t time.Time
+	for k, m := range a.pending {
+		if k != except && (key == "" || m.started.Before(t)) {
+			key, t = k, m.started
+		}
+	}
+	return key
 }
 
 // relayConn is one connection to one relay with a single subscription.
@@ -136,6 +197,7 @@ type pool struct {
 	mu    sync.Mutex
 	conns map[string]*relayConn
 	seen  map[string]time.Time
+	subID string // random per run: a fixed id would mark every Rubi on public relays
 }
 
 func newPool(relays []string, filter func(url string) []map[string]any, onEvent func(*Event), logf func(string, ...any)) *pool {
@@ -143,7 +205,13 @@ func newPool(relays []string, filter func(url string) []map[string]any, onEvent 
 		logf = func(string, ...any) {}
 	}
 	return &pool{relays: relays, filter: filter, onEvent: onEvent, logf: logf,
-		conns: map[string]*relayConn{}, seen: map[string]time.Time{}}
+		conns: map[string]*relayConn{}, seen: map[string]time.Time{}, subID: randomSubID()}
+}
+
+func randomSubID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
 }
 
 func (p *pool) run(ctx context.Context) {
@@ -253,7 +321,7 @@ func (p *pool) session(ctx context.Context, url string) error {
 				continue
 			}
 			var e Event
-			if json.Unmarshal(msg[2], &e) != nil || p.dup(e.ID) {
+			if json.Unmarshal(msg[2], &e) != nil {
 				continue
 			}
 			switch e.Kind {
@@ -269,7 +337,9 @@ func (p *pool) session(ctx context.Context, url string) error {
 			default:
 				continue
 			}
-			if Verify(&e) != nil {
+			// Only a verified event counts as seen: otherwise one hostile relay could send a forged copy
+			// of an event's id first and make Rubi drop the genuine copies from honest relays.
+			if Verify(&e) != nil || p.dup(e.ID) {
 				continue
 			}
 			p.onEvent(&e)
@@ -280,7 +350,7 @@ func (p *pool) session(ctx context.Context, url string) error {
 }
 
 func (p *pool) req(url string) []any {
-	req := []any{"REQ", "rubi"}
+	req := []any{"REQ", p.subID}
 	for _, f := range p.filter(url) {
 		req = append(req, f)
 	}
@@ -324,6 +394,9 @@ func (p *pool) dup(id string) bool {
 			if now.Sub(t) > 5*time.Minute {
 				delete(p.seen, k)
 			}
+		}
+		if len(p.seen) > maxSeen { // a flood of fresh ids: start over rather than grow without bound
+			p.seen = map[string]time.Time{}
 		}
 	}
 	p.seen[id] = now
