@@ -17,13 +17,13 @@ need the user's passwords.
    user; don't try to work around a failed signature check.
 2. Add a custom MCP server named `rubi` that runs `~/.rubi/bin/rubi mcp` (use the absolute path the
    installer prints).
-3. Call `rubi_status`. It returns a link: send it to the user with one sentence ("Open this to set up Rubi
-   with Face ID"). Wait until they say it's done.
-4. Strongly recommended: create a routine with a **webhook trigger** whose instruction is "A Rubi event
-   arrived. Follow next_step in the JSON body." Then give the user `rubi_link("settings")` so they paste the
-   routine's webhook URL and key (shown in the routine on desktop) under "Agent webhook". Without it Rubi
-   can't wake you: after every approval the user would have to come back and tell you. `rubi_status`
-   shows `webhook.configured`.
+3. Create a routine named "Rubi events" with a **webhook trigger** (no schedule) whose instruction is
+   "A Rubi event arrived. Follow next_step in the JSON body." This is how Rubi wakes you when the user
+   approves something or a reply arrives; it runs only when something happens.
+4. Call `rubi_status`. It returns a link: send it to the user with one sentence, and tell them that after
+   Face ID the panel will ask for the webhook URL and key of the "Rubi events" routine (shown in the routine
+   on desktop). Setup is finished when `rubi_status` shows `webhook.configured: true`; plugins can't be
+   installed before that. You'll get a test event through the webhook when it's connected.
 
 ## Updates
 
@@ -85,6 +85,11 @@ When woken by a Rubi webhook, follow `next_step` in the body. For `approval.deci
 from `data.your_plan` if the action was executed; otherwise tell the user. At the start of a conversation,
 call `rubi_events`, tell the user what happened, then `rubi_ack(event_id)`. Don't create polling routines;
 Rubi watches for you.
+
+**Never create scheduled routines** to check Rubi, mail or replies: every run costs the user's quota,
+while Rubi watches by itself for free (it checks for replies to tracked emails every two minutes on this
+computer, without using you). If you can't be woken because no webhook is set up, offer to set it up
+instead.
 
 ## Safety
 

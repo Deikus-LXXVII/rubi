@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -85,7 +86,26 @@ func newRig(t *testing.T) *rig {
 	if _, err := r.panel("pair").PairWithPassword(pw); err != nil {
 		t.Fatal(err)
 	}
+	// Setup isn't finished without the agent webhook.
+	if out := r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}); !strings.Contains(toString(out["tool_error"]), "agent webhook") {
+		t.Fatalf("install before the webhook: %v", out)
+	}
+	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {}))
+	t.Cleanup(sink.Close)
+	r.setWebhook(sink.URL)
 	return r
+}
+
+func (r *rig) setWebhook(url string) {
+	r.t.Helper()
+	settings := r.panel("settings")
+	var res map[string]any
+	if err := settings.Call("webhook.set", map[string]any{"url": url, "key": "crsr_test"}, &res); err != nil {
+		r.t.Fatal(err)
+	}
+	if out := r.approveChange(settings, res); out["state"] != "executed" {
+		r.t.Fatalf("webhook: %v", out)
+	}
 }
 
 func (r *rig) panel(purpose string) *panelclient.Client {

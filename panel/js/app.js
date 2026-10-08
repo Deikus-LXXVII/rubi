@@ -257,13 +257,9 @@ function pairScreen(ctx) {
     if (!args.wraps.length) throw new UserError("Add a password: this passkey can't unlock Rubi on its own.");
     const res = await ctx.client.call("pair", args);
     savePin(hello.instance, ctx.link.k, res.vault_version);
-    screen(
-      face("happy", 96),
-      header(hello),
-      h("h1", {}, "Rubi is set up"),
-      h("p", {}, "It's unlocked and ready. You can close this page and go back to your agent."),
-      h("p", { class: "muted" }, "After a restart Rubi locks itself again, and your agent will send you an unlock link."),
-    );
+    const settingsCtx = { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
+    settingsCtx.hello = await settingsCtx.client.call("hello");
+    connectAgentScreen(settingsCtx);
   }
 
   screen(
@@ -276,6 +272,47 @@ function pairScreen(ctx) {
       ? h("button", { class: "primary", onclick: (e) => addPasskey(e.target) }, "Use Face ID / Touch ID")
       : null,
     h("button", { class: passkeysAvailable() ? "secondary" : "primary", onclick: passwordStep }, "Use a password only"),
+    err,
+  );
+}
+
+// connectAgentScreen is the last setup step: the agent's routine webhook, so Rubi can wake the agent when the
+// user approves something or a reply arrives. Setup isn't finished without it.
+function connectAgentScreen(ctx) {
+  const err = errorBox();
+  const url = h("input", { type: "url", placeholder: "Webhook URL", autocomplete: "off", autocapitalize: "none", required: true });
+  const key = h("input", { type: "password", placeholder: "Webhook key", autocomplete: "off", autocapitalize: "none", required: true });
+  const go = h("button", { class: "primary", type: "submit" }, "Connect my agent");
+  const done = async () => {
+    try {
+      await ctx.client.call("webhook.test");
+    } catch (_) { /* the test event is a courtesy; setup is complete either way */ }
+    screen(
+      face("happy", 96),
+      header(ctx.hello),
+      h("h1", {}, "Rubi is set up"),
+      h("p", {}, "Your agent just got a test event from Rubi and will confirm in the chat. You can close this page."),
+      h("p", { class: "muted" }, "After a restart Rubi locks itself again, and your agent will send you an unlock link."),
+    );
+  };
+  const form = h("form", {
+    onsubmit: (e) => {
+      e.preventDefault();
+      busy(go, async () => {
+        const res = await ctx.client.call("webhook.set", { url: url.value.trim(), key: key.value.trim() });
+        key.value = "";
+        confirmChange(ctx, res, done, "Finish");
+      }).catch((x) => showError(err, x));
+    },
+  }, url, key, go);
+  screen(
+    face("idle", 96),
+    header(ctx.hello),
+    h("p", { class: "eyebrow" }, "Last step"),
+    h("h1", {}, "Connect your agent"),
+    h("p", {}, "Your agent created a routine called \u201cRubi events\u201d. Open it in Grok Bot on a computer: its Webhook section shows a URL and a key. Paste both here."),
+    h("p", { class: "muted" }, "This is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without you writing to it. The routine runs only when something happens, never on a schedule."),
+    form,
     err,
   );
 }
@@ -507,7 +544,7 @@ async function approveScreen(ctx, id, opts = {}) {
   }
   const a = info.approval;
   const notified = !!info.agent_notified;
-  if (a.state !== "pending") return resultScreen(ctx, a, opts.onDone, { notified });
+  if (a.state !== "pending") return resultScreen(ctx, a, opts.onDone, { notified, doneLabel: opts.doneLabel });
 
   const err = errorBox();
   const approverIds = (info.approvers || []).map((x) => x.credential_id);
@@ -572,11 +609,11 @@ async function approveScreen(ctx, id, opts = {}) {
       ? await signChallenge(b64u.dec(info.challenges[chosen]), approverIds)
       : await passwordProof(chosen);
     const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
-    resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen), notified });
+    resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen), notified, doneLabel: opts.doneLabel });
   }).catch((e) => { showError(err, e); setPrimary(); });
 
   const decline = h("button", { class: "link decline", type: "button", onclick: (e) => busy(e.target, async () =>
-    resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone, { preview: a.preview, notified }))
+    resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone, { preview: a.preview, notified, doneLabel: opts.doneLabel }))
     .catch((x) => showError(err, x)) }, opts.declineLabel || "Decline");
 
   const timer = countdown(a.expires_at, () => {
@@ -646,7 +683,7 @@ function resultScreen(ctx, a, onDone, extra = {}) {
       ? h("p", { class: "center ok" }, "Your agent will send you a link to set it up.") : null,
     a.error ? h("p", { class: "error center" }, a.error) : null,
     onDone
-      ? h("button", { class: "primary", onclick: onDone }, "Back to settings")
+      ? h("button", { class: "primary", onclick: onDone }, extra.doneLabel || "Back to settings")
       : h("p", { class: "muted center" }, a.state === "executed"
         ? (extra.notified ? "Your agent has been told and continues on its own. You can close this page."
           : "Go back to your agent and tell it you approved, so it can continue.")
@@ -682,9 +719,9 @@ async function whenUnlocked(ctx, next) {
 
 // confirmChange takes the {approval_id, ticket} a settings operation returns and asks for Face ID or the
 // password, using a client bound to that approval's ticket.
-function confirmChange(ctx, res, onDone) {
+function confirmChange(ctx, res, onDone, doneLabel) {
   const approvalCtx = { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
-  return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone });
+  return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone, doneLabel });
 }
 
 async function setupScreen(ctx, id, back) {

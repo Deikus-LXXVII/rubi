@@ -66,6 +66,7 @@ type Core struct {
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
 	plans   map[string]string // approval id -> what the agent will do once it's decided
+	seen    map[string]bool   // approvals whose outcome the agent already got from rubi_approval
 	upd     updateState
 	mkt     marketState
 	integ   integrity.Result
@@ -115,6 +116,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		PanelOrigin: DefaultPanelOrigin,
 		tickets:     map[string]ticket{},
 		plans:       map[string]string{},
+		seen:        map[string]bool{},
 	}
 	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
 		Handler: c.pluginHandler, Launched: c.pluginLaunched, Crashed: c.pluginCrashed, Logf: log.Printf}}
@@ -131,15 +133,25 @@ func Open(layout paths.Layout) (*Core, error) {
 		OnFinish: func(s approvals.Snapshot) {
 			// Tell the agent how a panel approval ended, even if its turn is over, with the plan it left
 			// for this moment (rubi_continue_after), so a fresh routine run can pick the task up.
+			//
+			// Waking the agent costs the user's quota, so Rubi only does it when the agent asked (it left a
+			// plan) and hasn't already seen the outcome itself while waiting in rubi_approval.
 			plan := c.takePlan(s.ID)
-			if s.Level == approvals.Strong && c.State() == Unlocked {
-				data := map[string]any{"approval_id": s.ID, "kind": s.Kind, "state": s.State,
-					"summary": s.Summary, "option": s.Chosen, "error": s.Error, "result": s.Result}
-				if plan != "" {
-					data["your_plan"] = plan
-				}
-				c.Events.Emit("rubi", "approval.decided", data, []string{"result"})
+			if s.Level != approvals.Strong || c.State() != Unlocked {
+				return
 			}
+			time.Sleep(seenGrace)
+			if c.takeSeen(s.ID) {
+				return
+			}
+			data := map[string]any{"approval_id": s.ID, "kind": s.Kind, "state": s.State,
+				"summary": s.Summary, "option": s.Chosen, "error": s.Error, "result": s.Result}
+			if plan == "" {
+				c.Events.EmitQuiet("rubi", "approval.decided", data, []string{"result"})
+				return
+			}
+			data["your_plan"] = plan
+			c.Events.Emit("rubi", "approval.decided", data, []string{"result"})
 		},
 	})
 	c.Events.OnEmit(c.deliverEvent)

@@ -21,6 +21,11 @@ import (
 
 const Instructions = `Rubi-Project: self-hosted integrations that act for the user only with their consent.
 
+SETUP. Before giving the user the pairing link, create a routine with a webhook trigger whose instruction is
+"A Rubi event arrived. Follow next_step in the JSON body." Right after setting up Face ID, the panel asks
+the user for that routine's webhook URL and key (shown in the routine on desktop). Setup isn't finished,
+and plugins can't be installed, until the webhook is connected.
+
 STATE. Call rubi_status first. If Rubi is "unpaired" or "locked", give the user the link it returns and
 explain in one sentence. Retry the user's request after they say it's done. If a plugin tool answers
 "not_connected", tell the user what it needs (the "needs" field) and give them the setup link.
@@ -46,8 +51,10 @@ rubi_link("settings") or rubi_link("setup:<plugin id>"). Service passwords are e
 the panel. Never ask the user to paste a password into the chat.
 
 EVENTS. When woken by a webhook, follow the next_step in its body. At the start of a conversation, call
-rubi_events, tell the user, then rubi_ack. Do not create polling routines. If rubi_status shows
-webhook.configured=false, offer to set it up (webhook.how): without it Rubi can't wake you.
+rubi_events, tell the user, then rubi_ack. NEVER create scheduled routines to check Rubi, mail or replies:
+each run costs the user's quota, and Rubi already watches by itself for free (e.g. for replies to tracked
+emails). The only routine Rubi needs is one with a webhook trigger, which runs only when something
+happens. If rubi_status shows webhook.configured=false, offer to set that up (webhook.how).
 
 UPDATES. Rubi checks for new releases of itself and sends an "update.available" event. Tell the user; if they
 want it, call rubi_update and give them the approval link. After they approve, Rubi verifies, installs and
@@ -298,7 +305,10 @@ func (s *Server) registerCoreTools() {
 			if err != nil {
 				return nil, nil, err
 			}
-			return nil, out{"approval": snap}, nil
+			if snap.State != approvals.Pending && snap.State != approvals.Executing {
+				s.core.MarkSeen(snap.ID) // the agent has the outcome; don't wake it for this one
+			}
+			return nil, out{"approval": snap, "later": s.core.WakeUp()}, nil
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_continue_after",
@@ -372,6 +382,10 @@ func (s *Server) status() out {
 	}
 	if st == core.Unlocked {
 		o["webhook"] = s.core.WebhookHint()
+		if !s.core.WebhookConfigured() {
+			o["next_step"] = "Setup isn't finished: connect the agent webhook (webhook.how). Plugins can't be " +
+				"installed until then."
+		}
 	}
 	var installed []map[string]any
 	for _, m := range s.core.Store.Installed() {

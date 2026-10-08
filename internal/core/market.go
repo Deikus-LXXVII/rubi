@@ -129,6 +129,9 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked")
 	}
+	if !c.WebhookConfigured() {
+		return nil, ErrNoWebhook
+	}
 	ref = strings.TrimSpace(ref)
 	cat, catErr := c.Catalog(ctx)
 	var cand *plugins.Candidate

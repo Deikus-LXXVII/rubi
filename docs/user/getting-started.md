@@ -23,6 +23,11 @@ Open the link on your iPhone (or any device with a browser):
 2. Add a backup password (recommended) and save it in the Passwords app. If you lose both the passkey and
    the password, Rubi has to be reset; nobody can recover your key.
 
+3. **Connect your agent.** Your agent created a routine called "Rubi events". Open it in Grok Bot on a
+   computer; its *Webhook* section shows a URL and a key. Paste both into the panel and confirm. This is how
+   Rubi tells your agent that you approved something or that a reply arrived, so it can continue without you
+   writing to it. The routine runs only when something happens, not on a schedule.
+
 Rubi is now unlocked. After every restart it locks itself again, and your agent sends you an unlock link.
 
 ## 3. Add iCloud Mail
@@ -71,7 +76,7 @@ Ask your agent for the settings link. There you can:
 
 - install, update, connect, disconnect or remove plugins;
 - choose how each action is approved: no approval, buttons in chat, or Face ID / password;
-- connect the agent webhook (so Rubi can wake your agent when a reply arrives);
+- change the agent webhook;
 - see recent unlocks and lock Rubi.
 
 Every settings change needs Face ID or your password. Your agent can't change settings.

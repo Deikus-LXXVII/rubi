@@ -275,7 +275,8 @@ func (s *Server) pair(env Envelope) (any, error) {
 		return nil, err
 	}
 	v, _ := s.core.Vault.Version()
-	return map[string]any{"state": s.core.State(), "vault_version": v}, nil
+	// The panel continues straight to connecting the agent's webhook, which needs a settings ticket.
+	return map[string]any{"state": s.core.State(), "vault_version": v, "ticket": s.core.MintTicket("settings")}, nil
 }
 
 type unlockArgs struct {
@@ -306,7 +307,8 @@ func (s *Server) unlock(env Envelope) (any, error) {
 		return nil, s.fail(errors.New("unlock failed"))
 	}
 	v, _ := s.core.Vault.Version()
-	return map[string]any{"state": s.core.State(), "vault_version": v}, nil
+	// The panel continues straight to connecting the agent's webhook, which needs a settings ticket.
+	return map[string]any{"state": s.core.State(), "vault_version": v, "ticket": s.core.MintTicket("settings")}, nil
 }
 
 func (s *Server) status(purpose string) any {

@@ -3,12 +3,36 @@ package core
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
 
 const maxPlan = 2000
+
+// ErrNoWebhook: setup isn't finished until Rubi can wake the agent.
+var ErrNoWebhook = errors.New("finish setting up Rubi first: connect the agent webhook (see rubi_status, field " +
+	"webhook.how). Without it Rubi can't tell you when the user approves something or a reply arrives")
+
+// seenGrace is how long Rubi waits, after an approval is decided, for the agent to pick up the outcome
+// itself (it is usually long-polling rubi_approval) before waking it through the webhook.
+var seenGrace = 3 * time.Second
+
+// MarkSeen records that the agent got an approval's final outcome directly, so no wake is needed.
+func (c *Core) MarkSeen(approvalID string) {
+	c.mu.Lock()
+	c.seen[approvalID] = true
+	c.mu.Unlock()
+}
+
+func (c *Core) takeSeen(approvalID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.seen[approvalID]
+	delete(c.seen, approvalID)
+	return s
+}
 
 // SetPlan stores what the agent intends to do once a pending approval is decided. Rubi sends it back with
 // the approval.decided event, so the agent can continue even if it is woken in a fresh run.
@@ -57,12 +81,26 @@ func (c *Core) AfterApproval() string {
 		return "After sending the link, call rubi_continue_after(approval_id, plan) with what you'll do once the " +
 			"user decides. Then wait with rubi_approval(approval_id, wait_seconds=25). If it is still pending, end " +
 			"your turn and tell the user you'll continue on your own: Rubi wakes you through the webhook with the " +
-			"decision and your plan."
+			"decision and your plan. (Without a plan Rubi doesn't wake you; the outcome waits in rubi_events.)"
 	}
 	return "Rubi can't wake you when the user decides: no agent webhook is set up. Wait with " +
 		"rubi_approval(approval_id, wait_seconds=25) while the user acts; if your turn has to end, ask the user to " +
 		"tell you when they're done. Then suggest setting up the webhook so this happens automatically (see " +
 		"rubi_status, field webhook)."
+}
+
+// WakeUp tells the agent how it learns about things later (an approval decided, a reply arriving), and
+// forbids the expensive workaround agents reach for when they can't be woken.
+func (c *Core) WakeUp() string {
+	const noPolling = " Never create scheduled routines to check Rubi, mail or replies: every run costs the user's " +
+		"quota, while Rubi already watches by itself at no cost."
+	if c.WebhookConfigured() {
+		return "Rubi wakes you through the agent webhook when something happens (an approval is decided, a reply " +
+			"arrives)." + noPolling
+	}
+	return "No agent webhook is set up, so Rubi can't wake you; you'll see events (decisions, replies) in " +
+		"rubi_events the next time the user writes." + noPolling + " Instead, offer to set up the webhook once " +
+		"(see rubi_status, field webhook.how)."
 }
 
 // WebhookHint explains how to set up the webhook, or nil if it is set up.
@@ -71,7 +109,8 @@ func (c *Core) WebhookHint() map[string]any {
 		return map[string]any{"configured": true}
 	}
 	return map[string]any{"configured": false,
-		"why": "Without it you only learn about approvals and events (like replies) when the user writes to you.",
+		"why": "Without it you only learn about approvals and events (like replies) when the user writes to you. " +
+			"Don't work around it with scheduled routines: they cost the user's quota on every run.",
 		"how": "Create a routine with a webhook trigger whose instruction is: \"A Rubi event arrived. Follow " +
 			"next_step in the JSON body.\" Then send the user rubi_link(\"settings\") and ask them to paste the " +
 			"routine's webhook URL and key (shown in the routine on desktop) under Agent webhook."}
