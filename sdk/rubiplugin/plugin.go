@@ -388,3 +388,7 @@ func (h *Host) HookURL(account, name string, rotate bool) (string, error) {
 type AccountIDer interface {
 	RubiAccountID() string
 }
+
+// Host returns the connection to Rubi, for use inside Validate (e.g. to reach a Rubi Home device during
+// setup). It is nil before Main starts.
+func (p *Plugin) Host() *Host { return p.host }
