@@ -45,11 +45,15 @@ function screen(...children) {
     hero.style.viewTransitionName = "rubi";
     hero.dataset.vt = "rubi";
   }
-  const morph = !!(hero && before && document.startViewTransition && !reducedMotion() && !document.hidden);
+  const viaVT = !!(document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden);
+  const morph = !!(hero && before && viaVT);
+  // During a view transition the browser fades the card in itself, and Rubi's flight ends where it stood
+  // when the transition began: nothing around Rubi may still be moving then, or it would jump on landing.
+  if (viaVT) main.classList.add("vt");
   const swap = () => {
     root.replaceChildren(main);
     window.scrollTo({ top: 0 });
-    animateIn(main);
+    animateIn(main, morph ? hero : null);
     for (const svg of main.querySelectorAll(".mascot")) svg.enter?.(morph && svg === hero);
     // Focus the first field; otherwise the title, so screen readers announce the new screen.
     const field = opts.focus !== false && root.querySelector("input:not([type=checkbox]):not([type=radio])");
@@ -61,7 +65,7 @@ function screen(...children) {
     }
     if (title) document.title = `${title.textContent.trim()} · Rubi`;
   };
-  if (document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden) {
+  if (viaVT) {
     const vt = document.startViewTransition(swap);
     vt.ready.catch(() => {}); // skipped (e.g. the tab went to the background): the swap still happens
     vt.finished.catch(() => {});
@@ -87,8 +91,9 @@ root.addEventListener("pointerout", (e) => {
 });
 
 // animateIn staggers the entrance of a screen's blocks.
-function animateIn(main) {
-  const items = main.querySelectorAll(":scope > *:not(.req-grid):not(.screen-mascot), .req-grid > section > *, .req-grid > aside > *");
+function animateIn(main, still) {
+  const items = [...main.querySelectorAll(":scope > *:not(.req-grid):not(.screen-mascot), .req-grid > section > *, .req-grid > aside > *")]
+    .filter((el) => !still || !el.contains(still));
   items.forEach((el, i) => {
     el.classList.add("rise");
     el.style.setProperty("--d", `${Math.min(i, 10) * 40}ms`);

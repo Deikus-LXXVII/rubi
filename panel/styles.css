@@ -133,7 +133,6 @@ code, pre, kbd { font-family: var(--mono); }
 .mascot { overflow: visible; display: block; }
 .mascot .mascot-body { transform-box: fill-box; transform-origin: 50% 100%; rotate: var(--lean, 0deg);
   transition: rotate var(--t-gentle) var(--ease-out); animation: breathe 4.6s var(--ease-in-out) infinite; }
-.mascot .mascot-floor { transform-box: fill-box; transform-origin: 50% 50%; }
 .mascot .mascot-gaze { translate: var(--gx, 0px) var(--gy, 0px); transition: translate var(--t-gentle) var(--ease-out); }
 .mascot .mascot-eyes { transform-box: fill-box; transform-origin: 50% 50%; }
 .mascot .eye-pill, .mascot .eye-arc, .mascot .eye-lid, .mascot .eye-glint {
@@ -160,7 +159,7 @@ code, pre, kbd { font-family: var(--mono); }
 .mascot.mood-concern .eye-r .eye-pill { rotate: -14deg; }
 .mascot.mood-concern .mascot-gaze { translate: 0 1.5px; }
 
-.mascot.tiny .mascot-floor, .mascot.tiny .mascot-spec, .mascot.tiny .eye-glint { display: none; }
+.mascot.tiny .mascot-spec, .mascot.tiny .eye-glint { display: none; }
 .mascot.tiny .mascot-body { animation: none; }
 .mascot.tiny .eye-pill { scale: 1.15 1.08; }
 
@@ -462,7 +461,7 @@ button.decline:hover { color: var(--text); }
 .toplink:hover { color: var(--text); }
 
 .hero { text-align: center; padding: 48px 0 56px; display: flex; flex-direction: column; align-items: center; gap: 20px; }
-.hero-mascot { filter: drop-shadow(0 22px 40px rgba(206, 56, 61, 0.35)); }
+.hero-mascot { filter: drop-shadow(0 0 40px rgba(206, 56, 61, 0.3)); }
 .hero h1 { font-size: clamp(2.4rem, 6vw, 4rem); line-height: 1.04; letter-spacing: -0.035em; font-weight: 750; }
 .lede { max-width: 620px; color: var(--muted); font-size: 1.15rem; }
 
@@ -781,7 +780,7 @@ a.btn.ghost:hover { background: var(--raise); }
 a.btn:active { transform: scale(0.97); }
 
 .hero-stage { position: relative; display: grid; place-items: start center; min-height: 270px; padding-top: 4px; }
-.hero-stage .hero-mascot { width: 170px; height: 170px; cursor: pointer; filter: drop-shadow(0 30px 50px rgba(206, 56, 61, 0.35)); }
+.hero-stage .hero-mascot { width: 170px; height: 170px; cursor: pointer; filter: drop-shadow(0 0 50px rgba(206, 56, 61, 0.3)); }
 .story { position: absolute; left: 50%; bottom: -6px; translate: -50% 0; width: min(330px, 92%); }
 .story-card { padding: 12px 14px; border: 1px solid var(--line-2); border-radius: var(--r-md); background: color-mix(in srgb, var(--raise) 80%, transparent);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); box-shadow: var(--shadow-pop); overflow: hidden; }
@@ -1037,6 +1036,7 @@ button.primary::before, a.btn.primary::before {
   content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
   background: linear-gradient(105deg, transparent 35%, rgba(255, 255, 255, 0.28) 50%, transparent 65%);
   transform: translateX(-120%); transition: transform 0s;
+  will-change: transform; /* its own layer from the start, so the label isn't re-rendered (and shifted) on hover */
 }
 button.primary:hover:not(:disabled)::before, a.btn.primary:hover::before { transform: translateX(120%); transition: transform 900ms var(--ease-out); }
 button.primary.is-busy::before { display: none; }
@@ -1055,7 +1055,7 @@ button.primary.is-busy::before { display: none; }
 .muted a:hover, .note a:hover, .lede a:hover { background-size: 100% 1px; }
 
 /* Cards settle in with a hint of scale. */
-#app > .card { animation: card-in var(--t-gentle) var(--ease-out) both; }
+#app > .card:not(.vt) { animation: card-in var(--t-gentle) var(--ease-out) both; }
 @keyframes card-in { from { opacity: 0.6; transform: translateY(6px) scale(0.99); } }
 .savebar button.primary { padding: 10px 14px; }
 .savebar button.link { text-decoration: none; font-weight: 600; }

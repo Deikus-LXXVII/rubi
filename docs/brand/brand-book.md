@@ -24,7 +24,8 @@ makes sure nothing that matters happens without you.
 
 ## 3. Mascot
 
-Rubi's body is the rounded hexagon from avatar_core (our own engine), lit with a radial gradient. The
+Rubi's body is the rounded hexagon from avatar_core (our own engine), lit with a soft, low-contrast
+radial gradient and no shadow underneath; the ruby light behind it stays. The
 face is two dark eyes; the eyes carry nearly all emotion.
 
 | Mood | When | Eyes | Body |
@@ -41,7 +42,8 @@ Attention (the mascot shows it is paying attention to the user, not to itself):
 - While a password is typed, Rubi closes its eyes and turns a little away.
 - Pointing at the primary button makes Rubi look at it.
 - On the landing page Rubi follows the pointer and smiles with a shine when clicked.
-- Between screens Rubi flies from its old place and size to the new one, then lands with a small squash.
+- Between screens Rubi flies from its old place and size to the new one and stops exactly there: nothing
+  around it moves while it flies, so it never jumps on landing.
 
 Rules:
 

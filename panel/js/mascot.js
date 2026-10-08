@@ -46,21 +46,18 @@ export function mascot(mood = "idle", size = 48, opts = {}) {
 
   svg.append(el("defs", {},
     el("radialGradient", { id: `${id}-body`, cx: "34%", cy: "26%", r: "82%", fx: "30%", fy: "20%" },
-      ...stops(["0%", "#f2898b"], ["22%", "#e2585c"], ["52%", "#ce383d"], ["82%", "#a12b2f"], ["100%", "#7c1f23"])),
+      ...stops(["0%", "#e05357"], ["55%", "#ce383d"], ["100%", "#b8302f"])),
     el("linearGradient", { id: `${id}-rim`, x1: "0", y1: "0", x2: "0", y2: "1" },
-      ...stops(["0%", "#ffffff", 0.55], ["38%", "#ffffff", 0], ["86%", "#000000", 0], ["100%", "#000000", 0.28])),
+      ...stops(["0%", "#ffffff", 0.3], ["38%", "#ffffff", 0])),
     el("radialGradient", { id: `${id}-spec`, cx: "50%", cy: "50%", r: "50%" },
-      ...stops(["0%", "#ffffff", 0.55], ["100%", "#ffffff", 0])),
+      ...stops(["0%", "#ffffff", 0.22], ["100%", "#ffffff", 0])),
     el("linearGradient", { id: `${id}-shine`, x1: "0", y1: "0", x2: "1", y2: "0" },
       ...stops(["0%", "#ffffff", 0], ["45%", "#ffffff", 0.45], ["52%", "#ffffff", 0.7], ["60%", "#ffffff", 0.45], ["100%", "#ffffff", 0])),
     el("radialGradient", { id: `${id}-cheek`, cx: "50%", cy: "50%", r: "50%" },
       ...stops(["0%", "#ff9aa6", 0.95], ["100%", "#ff9aa6", 0])),
-    el("radialGradient", { id: `${id}-floor`, cx: "50%", cy: "50%", r: "50%" },
-      ...stops(["0%", "#000000", 0.42], ["100%", "#000000", 0])),
     el("clipPath", { id: `${id}-clip` }, el("path", { d: BODY_PATH })),
   ));
 
-  svg.append(el("ellipse", { class: "mascot-floor", cx: 50, cy: 95.5, rx: 30, ry: 3.4, fill: `url(#${id}-floor)` }));
   const body = el("g", { class: "mascot-body" });
   body.append(
     el("path", { class: "mascot-skin", d: BODY_PATH, fill: `url(#${id}-body)` }),
@@ -124,13 +121,6 @@ const REACTIONS = {
       { transform: "translateY(0) scale(1.07, 0.92)", offset: 0.78 },
       { transform: "translateY(0) scale(1, 1)" },
     ],
-    floor: [
-      { transform: "scale(1)", opacity: 1 },
-      { transform: "scale(1.08)", opacity: 1, offset: 0.16 },
-      { transform: "scale(0.62)", opacity: 0.55, offset: 0.45 },
-      { transform: "scale(1.06)", opacity: 1, offset: 0.78 },
-      { transform: "scale(1)", opacity: 1 },
-    ],
     duration: 760,
     easing: "cubic-bezier(.45, 0, .55, 1)",
   },
@@ -186,16 +176,14 @@ const REACTIONS = {
     duration: 1500,
     easing: "cubic-bezier(.65, 0, .35, 1)",
   },
-  // Light: floats up and back down; its shadow shrinks and returns.
+  // Light: floats up and back down.
   rise: {
     body: [{ transform: "none" }, { transform: "translateY(-9%)", offset: 0.5 }, { transform: "none" }],
-    floor: [{ transform: "scale(1)", opacity: 1 }, { transform: "scale(0.78)", opacity: 0.55, offset: 0.5 }, { transform: "scale(1)", opacity: 1 }],
     duration: 1500,
     easing: "cubic-bezier(.65, 0, .35, 1)",
   },
   land: {
     body: [{ transform: "scale(1.03, 0.97)" }, { transform: "none" }],
-    floor: [{ transform: "scale(1.05)" }, { transform: "scale(1)" }],
     duration: 480,
     easing: EASE_OUT,
   },
@@ -204,7 +192,6 @@ const REACTIONS = {
       { transform: "translateY(6%) scale(0.86)", opacity: 0 },
       { transform: "none", opacity: 1 },
     ],
-    floor: [{ transform: "scale(0.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }],
     duration: 700,
     easing: EASE_OUT,
   },
@@ -216,10 +203,8 @@ export function react(svg, kind, delay = 0) {
   if (!svg || !r || !svg.animate) return Promise.resolve();
   if (reduced() && kind !== "pop") return Promise.resolve();
   const body = svg.querySelector(".mascot-body");
-  const floor = svg.querySelector(".mascot-floor");
   const opts = { duration: r.duration, easing: r.easing, delay, fill: r.fill || "both" };
   const anims = [body.animate(r.body, opts)];
-  if (r.floor) anims.push(floor.animate(r.floor, opts));
   for (const [sel, frames] of r.parts || []) {
     for (const part of svg.querySelectorAll(sel)) anims.push(part.animate(frames, { ...opts, fill: "none" }));
   }
