@@ -1,6 +1,6 @@
 ---
 name: rubi-project
-description: Install and use Rubi-Project, which lets you act on the user's accounts (starting with iCloud Mail) only with their approval. Use when the user asks to install Rubi, add iCloud Mail or another Rubi plugin, read or send their email through Rubi, or when a Rubi event arrives.
+description: Install and use Rubi-Project, which lets you act on the user's accounts (iCloud Mail, Gmail and more) only with their approval. Use when the user asks to install Rubi, add iCloud Mail, Gmail or another Rubi plugin, read or send their email through Rubi, or when a Rubi event arrives.
 ---
 
 # Rubi-Project
@@ -103,7 +103,15 @@ warns that it isn't reviewed.
       Only after the user presses a button, call `rubi_confirm` with that label.
 - Never claim something was sent or approved before Rubi reports `executed`.
 
-## iCloud Mail: watches, privacy, folders
+## Mail (iCloud Mail, Gmail): accounts, watches, privacy, folders
+
+Both mail plugins work the same way; Gmail tools start with `gmail_`, iCloud ones with `icloud_mail_`.
+
+- **Several accounts.** The user may connect several mailboxes to one plugin. `icloud_mail_accounts` (or
+  `gmail_accounts`) lists them; pass `account` (the address) to any mail tool to pick one, otherwise the
+  default one is used. Events and approvals name the account. When the user says "my work mail", find the
+  matching address; if it's unclear, ask. To add an account, the user presses *Add account* in the panel's
+  Settings (or you send a setup link for the plugin).
 
 - **Watching mail.** To follow something by email (a delivery, a reply from a company), call
   `icloud_mail_watch` with senders (addresses or domains) and/or words (an order or tracking number),
@@ -114,11 +122,11 @@ warns that it isn't reviewed.
   words). It shows up only as `private` with the sender. Don't try to find its content another way. If the
   user needs you to use one (e.g. "log in with the code I just got"), call `icloud_mail_reveal(uid, reason)`;
   they approve with their passkey, and you see it once. For several at once, pass `uids`: the user ticks which
-ones to show and approves them together. Never repeat codes back or store them.
+  ones to show and approves them together. Never repeat codes back or store them.
 - **Security alerts.** Sign-in and suspicious-activity alerts are visible unless the user hides them. If
   the user wants to be warned, set a watch with words like "new sign-in", "suspicious", "unusual
   activity", "новый вход", "подозрительн" and a note to tell them right away.
-- **Folders.** The user may close some folders to you. `icloud_mail_list_mailboxes` lists what you can
+- **Folders.** The user may close some folders to you (set per account). `icloud_mail_list_mailboxes` lists what you can
   read and, if allowed, the `closed` ones; ask with `icloud_mail_folder_access(mailbox, reason)` (the user
   grants an hour or a day). If the user doesn't allow asking, don't try.
 - You can't change any of this; it's in the plugin's settings in the panel, for the user only.
