@@ -109,7 +109,7 @@ func (c *Core) SetPluginConfig(ctx context.Context, id, account string, values m
 	preview := map[string]any{"plugin": m.Name}
 	for _, f := range m.Config {
 		v, ok := values[f.Key]
-		if !ok {
+		if !ok || f.Type == "info" {
 			continue
 		}
 		if err := plugins.CheckConfigValue(f, v); err != nil {

@@ -1264,6 +1264,20 @@ async function pluginConfigScreen(ctx, id, opts = {}) {
     const v = cfg.values[f.key];
     if (several && !f.per_account) f = { ...f, help: [f.help, "Applies to all accounts."].filter(Boolean).join(" ") };
     let el;
+    if (f.type === "info") {
+      return h("div", { class: "field info" }, h("span", { class: "label" }, f.label), f.help ? h("small", {}, f.help) : null,
+        ...(f.options || []).map((o) => {
+          const copy = h("button", { class: "secondary small", onclick: async () => {
+            try {
+              await navigator.clipboard.writeText(o.key);
+              copy.textContent = "Copied";
+            } catch {
+              copy.textContent = "Select and copy";
+            }
+          } }, "Copy");
+          return h("div", { class: "info-row" }, h("span", {}, o.label), h("code", {}, o.key), copy);
+        }));
+    }
     if (f.type === "choice") {
       const name = "cfg-" + f.key;
       const radios = (f.options || []).map((o) => {

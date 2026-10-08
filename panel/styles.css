@@ -434,3 +434,6 @@ fieldset.field legend { padding: 0; margin-bottom: 6px; }
 .accounts { display: flex; flex-direction: column; border-top: 1px solid var(--line); }
 .account-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 0.92rem; overflow-wrap: anywhere; }
 .plugin-foot { display: flex; justify-content: flex-end; gap: 10px; }
+.field.info { display: flex; flex-direction: column; gap: 8px; }
+.info-row { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.info-row code { grid-column: 1 / -1; grid-row: 2; font-size: 0.8rem; overflow-wrap: anywhere; user-select: all; }

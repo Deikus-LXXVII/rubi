@@ -107,6 +107,9 @@ func Check(m *Manifest) error {
 		if err := unique("config", f.Key); err != nil {
 			return err
 		}
+		if f.Type == "info" && f.Default != nil {
+			return fmt.Errorf("config %s: an info field has no value", f.Key)
+		}
 		if err := CheckConfigValue(f, f.Default); f.Default != nil && err != nil {
 			return fmt.Errorf("config %s default: %w", f.Key, err)
 		}
@@ -132,6 +135,8 @@ func Check(m *Manifest) error {
 // CheckConfigValue validates a value for a config field (after JSON decoding).
 func CheckConfigValue(f rubiplugin.ConfigField, v any) error {
 	switch f.Type {
+	case "info":
+		return errors.New("is read-only")
 	case "bool":
 		if _, ok := v.(bool); !ok {
 			return errors.New("must be true or false")

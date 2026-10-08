@@ -62,7 +62,8 @@ type ConfigField struct {
 	Key   string `json:"key"`
 	Label string `json:"label"`
 	// Type is "bool", "text", "choice" (one of Options) or "list" (a list of strings: with Options, a
-	// subset of them; without, free text edited one per line).
+	// subset of them; without, free text edited one per line). "info" is read-only: the panel shows its
+	// (Dynamic) Options as label and value, with a copy button, e.g. addresses to paste into a Shortcut.
 	Type    string   `json:"type"`
 	Default any      `json:"default,omitempty"`
 	Help    string   `json:"help,omitempty"`
