@@ -78,10 +78,17 @@ func (c *Core) startPlugins() {
 		}
 		return nil
 	})
+	// Before anything runs, permissions and approval levels come from each plugin's verified files, not
+	// from the editable index (see Store.Trust); index entries the user never approved are dropped.
+	approved := map[string]bool{}
+	for id := range records {
+		approved[id] = true
+	}
+	c.Store.Retain(approved)
 	for id, rec := range records {
-		m, ok := c.Store.Get(id)
-		if !ok || m.Version != rec.Version {
-			c.pluginProblem(id, "plugin.missing", "The plugin's files are missing or don't match the installed version. Reinstall it from the store.")
+		if _, err := c.Store.Trust(id, rec.Version, rec.Tree); err != nil {
+			log.Printf("[plugin %s] not started: %v", id, err)
+			c.pluginProblem(id, "plugin.failed", err.Error()+". Reinstall it from the store.")
 			continue
 		}
 		go func() {

@@ -2,12 +2,15 @@
 # Rubi Home installer: the helper for a computer at home (a Mac that stays on, or a Linux box) that lets
 # Rubi control Philips Hue and run your Shortcuts.
 #
-#   curl -fsSL https://rubi-panel.com/install-home.sh | sh
+#   curl --proto =https --tlsv1.2 -fsSL https://rubi-panel.com/install-home.sh | sh
 #
 # Installs ~/.rubi-home/bin/rubi-home after verifying the release's signed checksums against the key
 # below, starts it at login (a LaunchAgent on macOS, a systemd user service on Linux), and prints a
 # pairing code to paste into the Rubi panel. Running it again upgrades in place.
 set -eu
+
+# Everything runs from main, called on the last line: if the download is cut short, nothing runs.
+main() {
 
 REPO="Deikus-LXXVII/rubi"
 DIR="${RUBI_HOME_INSTALL:-$HOME/.rubi-home}"
@@ -45,14 +48,12 @@ esac
 
 version="${1:-}"
 if [ -z "$version" ]; then
-  version=$(curl -fsSL "${RUBI_RELEASE_FEED:-https://rubi-panel.com/releases/latest.json}" |
+  version=$(curl --proto =https --tlsv1.2 -fsSL "${RUBI_RELEASE_FEED:-https://rubi-panel.com/releases/latest.json}" |
     sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$version" ] || fail "couldn't find the latest release"
 fi
-case "$version" in
-  v[0-9]*) ;;
-  *) fail "bad version '$version'" ;;
-esac
+# Only a plain release tag: it becomes part of file names and URLs below.
+printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || fail "bad version '$version'"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -60,9 +61,9 @@ base="${RUBI_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download}/$version
 archive="rubi-home-$version-$platform.tar.gz"
 
 say "downloading Rubi Home $version for $platform"
-curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
-curl -fsSL -o "$tmp/SHA256SUMS.sig" "$base/SHA256SUMS.sig"
-curl -fsSL -o "$tmp/$archive" "$base/$archive"
+curl --proto =https --tlsv1.2 -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
+curl --proto =https --tlsv1.2 -fsSL -o "$tmp/SHA256SUMS.sig" "$base/SHA256SUMS.sig"
+curl --proto =https --tlsv1.2 -fsSL -o "$tmp/$archive" "$base/$archive"
 printf '%s\n' "$RELEASE_KEY" > "$tmp/release-key.pem"
 if ! openssl pkeyutl -verify -pubin -inkey "$tmp/release-key.pem" -rawin \
   -in "$tmp/SHA256SUMS" -sigfile "$tmp/SHA256SUMS.sig" >/dev/null 2>&1; then
@@ -131,3 +132,6 @@ echo
 "$bin" pair
 echo
 echo "Shortcuts: make a folder named \"Rubi\" in the Shortcuts app and put there only the shortcuts Rubi may run."
+}
+
+main "$@"

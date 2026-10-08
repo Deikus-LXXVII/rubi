@@ -139,3 +139,43 @@ func TestTreeHash(t *testing.T) {
 		t.Fatal("symlink accepted")
 	}
 }
+
+// Permissions and approval levels come from the verified package, never from the editable index.
+func TestTrustUsesTheVerifiedManifest(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := manifest(t, "")
+	dir := s.Dir("demo", "v1.0.0")
+	_ = os.MkdirAll(dir, 0o700)
+	b, _ := json.Marshal(real)
+	_ = os.WriteFile(filepath.Join(dir, "rubi-plugin.json"), b, 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "demo"), []byte("#!/bin/sh\n"), 0o755)
+	tree, err := TreeHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Someone edits the index: the send action no longer asks, and an unapproved plugin appears.
+	forged := manifest(t, `{"actions":[{"kind":"demo.send","title":"Send","default_level":"none","locked":true}],"home":["shortcuts"]}`)
+	s.index["demo"] = forged
+	s.index["evil"] = manifest(t, `{"id":"evil"}`)
+
+	s.Retain(map[string]bool{"demo": true})
+	m, err := s.Trust("demo", "v1.0.0", tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Get("demo")
+	if m.Actions[0].DefaultLevel != "strong" || got.Actions[0].DefaultLevel != "strong" || len(got.Home) != 0 {
+		t.Fatalf("the edited index is still in use: %+v", got.Actions)
+	}
+	if _, ok := s.Get("evil"); ok {
+		t.Fatal("a plugin the user never approved is still listed")
+	}
+	// Changed files are refused.
+	_ = os.WriteFile(filepath.Join(dir, "demo"), []byte("#!/bin/sh\necho hi\n"), 0o755)
+	if _, err := s.Trust("demo", "v1.0.0", tree); err == nil {
+		t.Fatal("modified files trusted")
+	}
+}

@@ -22,6 +22,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
+	"github.com/Deikus-LXXVII/rubi/internal/update"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
@@ -60,12 +61,13 @@ type Core struct {
 	HookBase    func() string
 	OnHookRoute func()
 
-	mu       sync.Mutex
-	paired   bool
-	endpoint string // current public URL of the panel API (set by the tunnel or RUBI_PUBLIC_URL)
-	relayPub string // Rubi's routing key on the relays ("" = relay transport off)
-	relays   []string
-	relayUp  int // relays currently connected
+	mu             sync.Mutex
+	paired         bool
+	downgradedFrom string // see checkDowngrade
+	endpoint       string // current public URL of the panel API (set by the tunnel or RUBI_PUBLIC_URL)
+	relayPub       string // Rubi's routing key on the relays ("" = relay transport off)
+	relays         []string
+	relayUp        int // relays currently connected
 	// transport is the user's chosen transport (gateway, relays, tailscale).
 	transport string
 	transErr  string // why there is no endpoint, if the transport can't start
@@ -376,6 +378,7 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 	}
 	c.Audit.SetVaultKey(dek)
 	c.checkPanelOrigin()
+	c.checkDowngrade()
 	c.addReceipt("unlocked", method, credentialID)
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
 	c.startPlugins()
@@ -530,4 +533,40 @@ func (c *Core) checkPanelOrigin() {
 	c.PanelOrigin = sealed
 	c.mu.Unlock()
 	_ = vault.WriteFileAtomic(c.Layout.PanelOrigin(), []byte(sealed+"\n"), 0o600)
+}
+
+// checkDowngrade remembers the newest Rubi ever unlocked and reports when an older one is unlocked
+// (rubi rollback, or a replaced binary): the user sees it on the panel and the agent is told.
+func (c *Core) checkDowngrade() {
+	cur := version.Version
+	if cur == "dev" || strings.HasSuffix(cur, "-test") {
+		return
+	}
+	var highest string
+	_ = c.Vault.Update(func(d *vault.Data) error {
+		if d.HighestVersion == "" || update.Newer(cur, d.HighestVersion) {
+			d.HighestVersion = cur
+		}
+		highest = d.HighestVersion
+		return nil
+	})
+	c.mu.Lock()
+	c.downgradedFrom = ""
+	if update.Newer(highest, cur) {
+		c.downgradedFrom = highest
+	}
+	from := c.downgradedFrom
+	c.mu.Unlock()
+	if from != "" {
+		c.Audit.Record("rubi.downgraded", audit.Fields{"running": cur, "highest": from})
+		c.Events.Emit("rubi", "rubi.downgraded", map[string]any{"running": cur, "highest": from,
+			"next_step": "Tell the user Rubi is running an older version than before (" + cur + ", was " + from + "). If they didn't roll back on purpose, they should update (rubi_update)."}, nil)
+	}
+}
+
+// DowngradedFrom is the newer version this Rubi ran before, when it now runs an older one ("" otherwise).
+func (c *Core) DowngradedFrom() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.downgradedFrom
 }

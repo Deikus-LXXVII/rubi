@@ -45,6 +45,9 @@ func (c *Core) catalog(ctx context.Context, fresh bool) (*plugins.Catalog, error
 	if err != nil {
 		return nil, err
 	}
+	if err := c.checkCatalogAge(cat); err != nil {
+		return nil, err
+	}
 	c.mkt.mu.Lock()
 	c.mkt.catalog, c.mkt.fetchedAt = cat, time.Now()
 	c.mkt.mu.Unlock()
@@ -161,6 +164,11 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 		}
 		cand, err = c.fetchReviewed(ctx, e)
 	} else {
+		// An id that is in the store can only come from the store. Without the store's list that can't
+		// be checked, so sideloading waits until it can be (a blocked store must not let an impostor in).
+		if catErr != nil {
+			return nil, fmt.Errorf("the Rubi store can't be reached to check this plugin; try again later: %w", catErr)
+		}
 		cand, err = c.fetchSideload(ctx, ref, "", cat)
 		if err == nil && c.record(cand.Manifest.ID) != nil {
 			os.RemoveAll(cand.Dir)
@@ -236,6 +244,10 @@ func (c *Core) RequestPluginUpdate(ctx context.Context, id string) (map[string]a
 		return nil, err
 	}
 	m := cand.Manifest
+	if !update.Newer(m.Version, rec.Version) { // never an older (or the same) release as an "update"
+		os.RemoveAll(cand.Dir)
+		return map[string]any{"status": "up_to_date", "version": rec.Version}, nil
+	}
 	if m.ID != id {
 		os.RemoveAll(cand.Dir)
 		return nil, errors.New("the source now publishes a different plugin; refusing to update")
@@ -480,6 +492,10 @@ func (c *Core) fetchSideload(ctx context.Context, source, key string, cat *plugi
 	if err != nil {
 		return nil, err
 	}
+	if cand.Manifest.Version != m.Version { // the pinned release must be the version it said it was
+		os.RemoveAll(cand.Dir)
+		return nil, errors.New("the source served a different version than it announced; refusing to install")
+	}
 	cand.Reviewed, cand.Source = false, source
 	return cand, nil
 }
@@ -673,4 +689,28 @@ func (c *Core) CheckPluginUpdates(ctx context.Context) {
 		})
 		log.Printf("[plugin %s] update available: %s -> %s", id, rec.Version, latest)
 	}
+}
+
+// checkCatalogAge refuses a signed catalog older than one already seen: replaying an old one could bring
+// back a pulled version or hide updates.
+func (c *Core) checkCatalogAge(cat *plugins.Catalog) error {
+	if c.State() != Unlocked || cat.UpdatedAt.IsZero() {
+		return nil
+	}
+	var stale bool
+	_ = c.Vault.Update(func(d *vault.Data) error {
+		if cat.UpdatedAt.Before(d.CatalogSeen) {
+			stale = true
+			return errors.New("stale")
+		}
+		if cat.UpdatedAt.After(d.CatalogSeen) {
+			d.CatalogSeen = cat.UpdatedAt.UTC()
+		}
+		return nil
+	})
+	if stale {
+		c.Audit.Record("rubi.catalog_stale", audit.Fields{"updated_at": cat.UpdatedAt})
+		return errors.New("the Rubi store returned an older list than before; try again later")
+	}
+	return nil
 }

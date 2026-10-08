@@ -243,6 +243,11 @@ func updateCmd(layout paths.Layout, args []string) error {
 		}
 		target = rel.Version
 	}
+	// Never back to an older release from here: an old, genuinely signed version may have known bugs.
+	// (Going back after a bad update is `rubi rollback`, to the version that was approved before.)
+	if version.Version != "dev" && !update.Newer(target, version.Version) {
+		return fmt.Errorf("%s is not newer than the installed %s; Rubi only updates forward", target, version.Version)
+	}
 	exe, err := selfPath()
 	if err != nil {
 		return err

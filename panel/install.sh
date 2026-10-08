@@ -1,14 +1,17 @@
 #!/bin/sh
 # Rubi-Project installer.
 #
-#   curl -fsSL https://rubi-panel.com/install.sh | sh              # latest release
-#   curl -fsSL https://rubi-panel.com/install.sh | sh -s -- v0.1.0 # a specific version
+#   curl --proto =https --tlsv1.2 -fsSL https://rubi-panel.com/install.sh | sh              # latest release
+#   curl --proto =https --tlsv1.2 -fsSL https://rubi-panel.com/install.sh | sh -s -- v0.1.0 # a specific version
 #
 # Installs into $RUBI_HOME (default ~/.rubi) without root:
 #   - the rubi binary, after verifying the release's signed checksums against the key embedded below;
 #   - cloudflared (for the zero-config panel connection), verified against a pinned checksum.
 # Running it again upgrades in place.
 set -eu
+
+# Everything runs from main, called on the last line: if the download is cut short, nothing runs.
+main() {
 
 REPO="Deikus-LXXVII/rubi"
 RUBI_HOME="${RUBI_HOME:-$HOME/.rubi}"
@@ -57,14 +60,12 @@ esac
 version="${1:-}"
 if [ -z "$version" ]; then
   # The same release feed Rubi uses to find updates (GitHub's "latest release" API skips pre-releases).
-  version=$(curl -fsSL "${RUBI_RELEASE_FEED:-https://rubi-panel.com/releases/latest.json}" |
+  version=$(curl --proto =https --tlsv1.2 -fsSL "${RUBI_RELEASE_FEED:-https://rubi-panel.com/releases/latest.json}" |
     sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -n 1)
   [ -n "$version" ] || fail "couldn't find the latest release"
 fi
-case "$version" in
-  v[0-9]*) ;;
-  *) fail "bad version '$version'" ;;
-esac
+# Only a plain release tag: it becomes part of file names and URLs below.
+printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' || fail "bad version '$version'"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
@@ -72,9 +73,9 @@ base="${RUBI_DOWNLOAD_BASE:-https://github.com/$REPO/releases/download}/$version
 archive="rubi-$version-$platform.tar.gz"
 
 say "downloading Rubi $version for $platform"
-curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
-curl -fsSL -o "$tmp/SHA256SUMS.sig" "$base/SHA256SUMS.sig"
-curl -fsSL -o "$tmp/$archive" "$base/$archive"
+curl --proto =https --tlsv1.2 -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
+curl --proto =https --tlsv1.2 -fsSL -o "$tmp/SHA256SUMS.sig" "$base/SHA256SUMS.sig"
+curl --proto =https --tlsv1.2 -fsSL -o "$tmp/$archive" "$base/$archive"
 
 printf '%s\n' "$RELEASE_KEY" > "$tmp/release-key.pem"
 if ! openssl pkeyutl -verify -pubin -inkey "$tmp/release-key.pem" -rawin \
@@ -100,7 +101,7 @@ if [ ! -x "$cf" ] || ! "$cf" --version 2>/dev/null | grep -q "version $CLOUDFLAR
   cf_file=$1
   cf_sum=$2
   say "downloading cloudflared $CLOUDFLARED_VERSION"
-  curl -fsSL -o "$tmp/$cf_file" "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/$cf_file"
+  curl --proto =https --tlsv1.2 -fsSL -o "$tmp/$cf_file" "https://github.com/cloudflare/cloudflared/releases/download/$CLOUDFLARED_VERSION/$cf_file"
   [ "$(sha256 "$tmp/$cf_file")" = "$cf_sum" ] || fail "cloudflared checksum mismatch; not installing"
   case "$cf_file" in
     *.tgz) tar -xzf "$tmp/$cf_file" -C "$tmp" cloudflared && mv "$tmp/cloudflared" "$cf.new" ;;
@@ -140,3 +141,6 @@ if [ -n "$restarted" ]; then
   echo
   echo "Rubi was running and will restart locked with the new version on its next use; the user unlocks it again."
 fi
+}
+
+main "$@"

@@ -71,6 +71,10 @@ type Data struct {
 	// PanelOrigin is the panel this instance was paired with. Links always point there; a different
 	// origin found at start (an edited file) is reported and replaced on unlock.
 	PanelOrigin string `json:"panel_origin,omitempty"`
+	// CatalogSeen is the newest signed store catalog seen; an older one is refused.
+	CatalogSeen time.Time `json:"catalog_seen,omitempty"`
+	// HighestVersion is the newest Rubi version ever unlocked; unlocking an older one is reported.
+	HighestVersion string `json:"highest_version,omitempty"`
 }
 
 // Device is a paired Rubi Home helper: how to reach it and the token that proves it's us.

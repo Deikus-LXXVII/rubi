@@ -1323,7 +1323,10 @@ function integrityLine(st) {
   if (!i) return null;
   const text = { verified: `Official release ${i.version}, verified`, modified: `Warning: ${i.detail}`,
     unknown: `Release check: ${i.detail}` }[i.status] || i.detail;
-  return h("p", { class: i.status === "modified" ? "error" : "muted" }, text);
+  const line = h("p", { class: i.status === "modified" ? "error" : "muted" }, text);
+  if (!st.downgraded_from) return line;
+  return h("div", {}, line, h("p", { class: "error" },
+    `Rubi is running ${st.version}, older than the ${st.downgraded_from} it ran before. If you didn't roll back on purpose, ask your agent to update Rubi.`));
 }
 
 

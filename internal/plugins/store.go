@@ -194,6 +194,59 @@ func (s *Store) saveLocked() error {
 }
 
 // Verify checks an installed plugin against the tree hash recorded in the vault.
+// Trust re-reads an installed plugin's manifest from its verified files and makes it the one in use,
+// replacing what index.json said. The index is plain text anyone on the machine can edit; the manifest
+// inside the package is covered by the tree hash the user approved (kept in the vault), so permissions,
+// approval levels and the entry point are always taken from there.
+func (s *Store) Trust(id, version, tree string) (Manifest, error) {
+	if err := s.Verify(id, version, tree); err != nil {
+		return Manifest{}, err
+	}
+	b, err := os.ReadFile(filepath.Join(s.Dir(id, version), "rubi-plugin.json"))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("plugin %s has no manifest: %w", id, err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		return Manifest{}, fmt.Errorf("plugin %s has a broken manifest", id)
+	}
+	if err := Check(&m); err != nil {
+		return Manifest{}, err
+	}
+	if m.ID != id || m.Version != version {
+		return Manifest{}, fmt.Errorf("plugin %s: the manifest doesn't match the installed version", id)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prev, ok := s.index[id]; !ok || !sameManifest(prev, m) {
+		s.index[id] = m
+		_ = s.saveLocked()
+	}
+	return m, nil
+}
+
+// Retain drops index entries for plugins the user never approved installing.
+func (s *Store) Retain(ids map[string]bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for id := range s.index {
+		if !ids[id] {
+			delete(s.index, id)
+			changed = true
+		}
+	}
+	if changed {
+		_ = s.saveLocked()
+	}
+}
+
+func sameManifest(a, b Manifest) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
+}
+
 func (s *Store) Verify(id, version, tree string) error {
 	got, err := TreeHash(s.Dir(id, version))
 	if err != nil {
