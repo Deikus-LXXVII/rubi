@@ -550,7 +550,7 @@ func (s *Server) rpID() string {
 //
 // Settings operations need a "settings" or "setup:<id>" ticket and an unlocked Rubi. Reading is free;
 // every change becomes a strong approval. The response carries a fresh ticket for that approval so the
-// panel can ask for Face ID (or the password) right away.
+// panel can ask for the passkey (or the password) right away.
 
 func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (any, error) {
 	if purpose != "settings" && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
@@ -760,7 +760,7 @@ func (s *Server) catalog() any {
 }
 
 func (s *Server) policy() any {
-	var actions []map[string]any
+	actions := []map[string]any{}
 	for _, m := range s.core.Store.Installed() {
 		for _, a := range m.Actions {
 			actions = append(actions, map[string]any{"integration": m.Name, "kind": a.Kind, "title": a.Title,

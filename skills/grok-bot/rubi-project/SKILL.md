@@ -7,7 +7,7 @@ description: Install and use Rubi-Project, which lets you act on the user's acco
 
 Rubi runs on this computer and gives you tools for the user's accounts. It holds the user's secrets
 encrypted with a key only the user has. Sensitive actions (like sending email) wait for the user to approve
-them in the Rubi panel with Face ID or a password. **You can't approve anything yourself**, and you never
+them in the Rubi panel with a passkey or a password. **You can't approve anything yourself**, and you never
 need the user's passwords.
 
 ## Install (once)
@@ -22,7 +22,7 @@ need the user's passwords.
 2. Add a custom MCP server named `rubi` that runs `~/.rubi/bin/rubi mcp` (use the absolute path the
    installer prints).
 3. Call `rubi_status`. It returns a link: send it to the user with one sentence ("Open this to set up
-   Rubi with Face ID"). Wait until they say it's done.
+   Rubi with a passkey"). Wait until they say it's done.
 4. Connect yourself so Rubi can wake you: create a routine named "Rubi events" with a **webhook trigger**
    (no schedule) whose instruction is "A Rubi event arrived. Follow next_step in the JSON body." Then send
    `rubi_link("agent:<your Bot name>")` and ask the user to open it in the **Grok Bot desktop app**, next
@@ -48,7 +48,7 @@ Rubi itself and its plugins update separately.
 
 **Rubi.** Rubi checks for new releases itself and sends an `update.available` event (through the routine webhook,
 or in `rubi_events`). Tell the user what's new (`notes_url`) and, if they want it, call `rubi_update`: it
-verifies the release signature and returns an approval link. After the user approves with Face ID, Rubi
+verifies the release signature and returns an approval link. After the user approves with their passkey, Rubi
 installs the update and restarts into it within seconds, **staying unlocked**; your MCP session keeps
 working (retry any call that failed with "Rubi restarted"). `rubi_status` shows `update` and the current
 `version`.

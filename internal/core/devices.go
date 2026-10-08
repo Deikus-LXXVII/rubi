@@ -113,7 +113,7 @@ func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
 	dev := &vault.Device{ID: randomID(), Name: name, Relay: pc.Relay, Bundle: pc.Bundle, Relays: pc.Relays, Token: token,
 		Paired: time.Now().UTC()}
 	return c.RequestChange(ctx, "Add Rubi Home on "+name, map[string]any{"computer": name,
-		"lets_rubi": "control Philips Hue on your home network and run the shortcuts in the folder \"" + hello.Folder + "\""},
+		"allows": "control Philips Hue on your home network and run the shortcuts in the folder \"" + hello.Folder + "\""},
 		func(d *vault.Data) error {
 			if len(d.Devices) >= 10 {
 				return errors.New("at most 10 Rubi Home computers")

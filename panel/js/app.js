@@ -1091,7 +1091,7 @@ async function settingsScreen(ctx) {
     : h("p", { class: "muted" }, "No plugins yet. Rubi starts bare; add what you need from the store.");
 
   const selects = {};
-  const policyRows = policy.actions.map((a) => {
+  const policyRows = (policy.actions || []).map((a) => {
     const sel = h("select", { disabled: a.locked }, policy.levels.map((l) =>
       h("option", { value: l, selected: l === a.level }, LEVEL_LABELS[l] + (l === a.default ? " (default)" : ""))));
     selects[a.kind] = { sel, current: a.level };
@@ -1129,7 +1129,7 @@ async function settingsScreen(ctx) {
     hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null])),
     devices ? pane(h("h2", {}, "Rubi Home"),
       h("p", { class: "muted" }, "A helper on a computer at home (a Mac that stays on) lets plugins control Philips Hue and run your Shortcuts."),
-      devices.devices.length ? h("div", { class: "list" }, devices.devices.map((d) => {
+      devices.devices.length ? h("div", { class: "accounts" }, devices.devices.map((d) => {
         const state = h("span", { class: "muted small" }, "");
         return h("div", { class: "account-row" }, h("span", {}, d.name, " ", state),
           h("span", { class: "actions" },
@@ -1181,9 +1181,9 @@ function homeDeviceScreen(ctx, back) {
     header(ctx.hello),
     h("h1", {}, "Add a home computer"),
     h("p", {}, "Rubi runs on your agent's machine and can't reach your home network. Rubi Home, a small helper on a computer at home, can: it talks to your Hue Bridge and runs the shortcuts you put in its folder."),
-    h("ol", { class: "steps" },
+    h("ol", { class: "steps-list" },
       h("li", {}, "On a Mac at home that stays on (or a Linux box), open Terminal and run:",
-        h("div", { class: "info-row" }, h("span", {}, "Install Rubi Home"), h("code", {}, HOME_INSTALL), copy)),
+        h("div", { class: "cmd" }, h("code", {}, HOME_INSTALL), copy)),
       h("li", {}, "It prints a pairing code starting with rubi-home:. Paste it here. (Later: rubi-home pair makes a new one.)"),
       h("li", {}, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run.")),
     h("label", { class: "field" }, h("span", {}, "Pairing code"), code),

@@ -487,7 +487,7 @@ func (s *Server) status() out {
 	purpose := map[core.State]string{core.Unpaired: "pair", core.Locked: "unlock"}[st]
 	if purpose != "" {
 		o["next_step"] = map[core.State]string{
-			core.Unpaired: "Give the user this link to set up Rubi with Face ID or a password.",
+			core.Unpaired: "Give the user this link to set up Rubi with a passkey or a password.",
 			core.Locked:   "Rubi restarted and is locked. Give the user this link to unlock it.",
 		}[st]
 		if u, err := s.core.Link(purpose); err == nil {
