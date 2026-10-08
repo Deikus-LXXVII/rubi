@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Rubi's brand book, live: the mascot, colour, type, motion, components and voice.">
+  <title>Rubi brand book</title>
+  <link rel="icon" href="assets/rubi.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/brand.js"></script>
+</head>
+<body class="brandbook">
+  <header class="topbar bb-top">
+    <a class="brand" href="./"><img src="assets/rubi.svg" alt="" width="28" height="28"><span>Rubi</span></a>
+    <nav class="bb-nav">
+      <a href="#mascot">Mascot</a><a href="#colour">Colour</a><a href="#type">Type</a><a href="#motion">Motion</a><a href="#components">Components</a><a href="#icons">Icons</a><a href="#voice">Voice</a>
+    </nav>
+  </header>
+  <main class="bb">
+    <section class="bb-hero">
+      <p class="eyebrow">Brand book</p>
+      <h1>Rubi holds your keys while your agent works.</h1>
+      <p class="lede">Calm, attentive, loyal, a little playful. A softly rounded hexagon, a cut gem and a shield at once. This page is the living version of docs/brand/brand-book.md: everything here is the real code.</p>
+    </section>
+
+    <section id="mascot" class="bb-sec">
+      <h2>Mascot</h2>
+      <p class="muted">The eyes carry the emotion. Rubi breathes, blinks at natural intervals and glances around; moods morph smoothly. Press a reaction.</p>
+      <div class="bb-moods" id="moods"></div>
+      <div class="bb-row" id="reactions"></div>
+    </section>
+
+    <section id="colour" class="bb-sec">
+      <h2>Colour</h2>
+      <p class="muted">Ruby is the only accent, so red always means "Rubi" or "act here". Everything else is warm ink.</p>
+      <div class="bb-swatches" id="swatches"></div>
+    </section>
+
+    <section id="type" class="bb-sec">
+      <h2>Type</h2>
+      <p class="muted">The system typeface: what the phone already speaks, instant, no font files.</p>
+      <div class="bb-type">
+        <p class="t-display">Your agent acts.</p>
+        <p class="t-h1">Send this email?</p>
+        <p class="t-h2">Approval levels</p>
+        <p class="t-body">Nothing happens until you approve. Your agent can't approve for you.</p>
+        <p class="t-small muted">Reviewed by Rubi-Project · v1.0.0</p>
+        <p class="eyebrow">Approval needed</p>
+        <p class="t-mono">curl -fsSL https://rubi-panel.com/install.sh | sh</p>
+      </div>
+    </section>
+
+    <section id="motion" class="bb-sec">
+      <h2>Motion</h2>
+      <p class="muted">Quick, soft, never in the way. Press a curve to see it.</p>
+      <div class="bb-curves" id="curves"></div>
+    </section>
+
+    <section id="components" class="bb-sec">
+      <h2>Components</h2>
+      <div class="bb-comp" id="components-box"></div>
+    </section>
+
+    <section id="icons" class="bb-sec">
+      <h2>Icons</h2>
+      <p class="muted">24-unit grid, 1.75 stroke, round caps. Few and plain.</p>
+      <div class="bb-icons" id="icon-grid"></div>
+    </section>
+
+    <section id="voice" class="bb-sec">
+      <h2>Voice</h2>
+      <div class="bb-voice">
+        <div class="bb-do"><h3>Say</h3><p>Send this email?</p><p>Nothing happens until you approve.</p><p>Wrong password. Try again, or use your passkey.</p></div>
+        <div class="bb-dont"><h3>Not</h3><p>Approve action icloud-mail.send</p><p>⚠️ URGENT: confirm now!!</p><p>Error 401: unauthorized</p></div>
+      </div>
+    </section>
+  </main>
+  <footer class="footer"><img src="assets/rubi.svg" alt="" width="20" height="20"><span>Rubi-Project · MIT · <a href="./">Home</a></span></footer>
+</body>
+</html>

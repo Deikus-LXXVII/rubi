@@ -20,6 +20,7 @@ function h(tag, attrs = {}, ...children) {
     if (v === undefined || v === null || v === false) continue;
     if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
     else if (k === "class") el.className = v;
+    else if (k === "style") el.style.cssText = v; // CSSOM, which the page's CSP allows (style attributes it doesn't)
     else el.setAttribute(k, v === true ? "" : v);
   }
   for (const c of children.flat()) {
