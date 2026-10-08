@@ -555,6 +555,15 @@ func permissions(m plugins.Manifest, reviewed bool, source string) map[string]an
 	if len(m.Egress) > 0 {
 		p["connects_to"] = strings.Join(m.Egress, ", ")
 	}
+	if len(m.Home) > 0 {
+		var what []string
+		for _, h := range m.Home {
+			if n, ok := homeCapabilities[h]; ok {
+				what = append(what, n)
+			}
+		}
+		p["rubi_home"] = "Uses your Rubi Home computer for: " + strings.Join(what, ", ")
+	}
 	if m.Hooks {
 		p["web_addresses"] = "Can give you private web addresses (for example for iPhone Shortcuts) that pass requests to it"
 	}

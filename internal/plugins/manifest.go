@@ -100,6 +100,11 @@ func Check(m *Manifest) error {
 			return fmt.Errorf("invalid event type %q", e.Type)
 		}
 	}
+	for _, h := range m.Home {
+		if h != "hue" && h != "shortcuts" {
+			return fmt.Errorf("unknown Rubi Home capability %q", h)
+		}
+	}
 	for _, f := range m.Config {
 		if !namePattern.MatchString(f.Key) || f.Label == "" {
 			return fmt.Errorf("invalid config field %q", f.Key)

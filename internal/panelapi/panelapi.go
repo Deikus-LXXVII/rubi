@@ -270,7 +270,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
-		"plugin.config.get", "plugin.config.set":
+		"plugin.config.get", "plugin.config.set",
+		"devices.get", "device.pair", "device.remove", "device.check":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -570,6 +571,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Sources []string          `json:"sources"`
 		Values  map[string]any    `json:"values"`
 		Account string            `json:"account"`
+		Code    string            `json:"code"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -657,6 +659,14 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return map[string]any{"event_id": ev.ID}, nil
 	case "plugin.config.get":
 		return s.core.PluginConfig(args.ID, args.Account)
+	case "devices.get":
+		return map[string]any{"devices": s.core.Devices()}, nil
+	case "device.check":
+		return s.core.CheckDevice(ctx, args.ID)
+	case "device.pair":
+		approvalID, err = s.core.PairDevice(ctx, args.Code)
+	case "device.remove":
+		approvalID, err = s.core.RemoveDevice(ctx, args.ID)
 	case "plugin.config.set":
 		approvalID, err = s.core.SetPluginConfig(ctx, args.ID, args.Account, args.Values)
 	case "agent.add":

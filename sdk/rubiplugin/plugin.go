@@ -392,3 +392,39 @@ type AccountIDer interface {
 // Host returns the connection to Rubi, for use inside Validate (e.g. to reach a Rubi Home device during
 // setup). It is nil before Main starts.
 func (p *Plugin) Host() *Host { return p.host }
+
+// HomeDevice is a paired Rubi Home computer.
+type HomeDevice struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// HomeDevices lists the user's Rubi Home computers (the manifest must declare Home).
+func (h *Host) HomeDevices() ([]HomeDevice, error) {
+	var out struct {
+		Devices []HomeDevice `json:"devices"`
+	}
+	err := h.conn.Call(context.Background(), "home.devices", nil, &out)
+	return out.Devices, err
+}
+
+// HomeCall runs an operation on a Rubi Home computer ("" = the first one), e.g. "hue.request" or
+// "shortcuts.run". Only operations of the capabilities in the manifest's Home are allowed.
+func (h *Host) HomeCall(ctx context.Context, device, op string, args, out any) error {
+	var res struct {
+		Result json.RawMessage `json:"result"`
+	}
+	if err := h.conn.Call(ctx, "home.call", map[string]any{"device": device, "op": op, "args": args}, &res); err != nil {
+		return err
+	}
+	if out == nil || len(res.Result) == 0 {
+		return nil
+	}
+	return json.Unmarshal(res.Result, out)
+}
+
+// SetSecretFor replaces an Internal secret of one account ("" = the default account), e.g. a login
+// session the service renewed. Secrets the user entered can't be changed this way.
+func (h *Host) SetSecretFor(account, key, value string) error {
+	return h.conn.Call(context.Background(), "secret.set", map[string]string{"account": account, "key": key, "value": value}, nil)
+}

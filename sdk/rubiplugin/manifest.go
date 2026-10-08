@@ -55,6 +55,9 @@ type Manifest struct {
 	// Hooks lets the plugin hand out private web addresses (e.g. for iPhone Shortcuts) whose requests
 	// Rubi passes to it. Shown to the user before install.
 	Hooks bool `json:"hooks,omitempty"`
+	// Home lists what the plugin does through the user's Rubi Home helper: "hue", "shortcuts". It may
+	// only call those operations. Shown to the user before install.
+	Home []string `json:"home,omitempty"`
 }
 
 // ConfigField is one user-only setting.

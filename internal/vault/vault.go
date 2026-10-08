@@ -66,6 +66,19 @@ type Data struct {
 	Plugins map[string]*Plugin `json:"plugins,omitempty"`
 	// Hooks are the private web addresses plugins handed out (see core/hooks.go).
 	Hooks *Hooks `json:"hooks,omitempty"`
+	// Devices are the Rubi Home helpers paired with this Rubi (see core/devices.go).
+	Devices []*Device `json:"devices,omitempty"`
+}
+
+// Device is a paired Rubi Home helper: how to reach it and the token that proves it's us.
+type Device struct {
+	ID     string    `json:"id"`
+	Name   string    `json:"name"`
+	Relay  string    `json:"relay"`
+	Bundle string    `json:"bundle"`
+	Relays []string  `json:"relays,omitempty"`
+	Token  string    `json:"token"`
+	Paired time.Time `json:"paired"`
 }
 
 // Hooks: Route picks this Rubi on Rubi Gateway; each hook's ID picks the plugin, account and name.

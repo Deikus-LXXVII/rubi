@@ -214,6 +214,17 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 	switch env.Op {
 	case "hello":
 		return h.hello(), nil
+	case "unpair":
+		want := tokenHash(env.Token)
+		return nil, h.Update(func(c *Config) {
+			kept := c.Paired[:0]
+			for _, p := range c.Paired {
+				if p.TokenHash != want {
+					kept = append(kept, p)
+				}
+			}
+			c.Paired = kept
+		})
 	case "shortcuts.list":
 		return h.listShortcuts(ctx)
 	case "shortcuts.run":

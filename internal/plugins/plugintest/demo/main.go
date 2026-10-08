@@ -28,7 +28,7 @@ func main() {
 		Publisher: rubiplugin.Publisher{Name: "Test Publisher", Key: PublisherKey},
 		Entry:     "demo",
 		Fields:    []rubiplugin.Field{{Key: "user", Label: "User", Type: "text"}},
-		Secrets:   []rubiplugin.Secret{{Key: "token", Label: "Token"}},
+		Secrets:   []rubiplugin.Secret{{Key: "token", Label: "Token"}, {Key: "session", Label: "Session", Internal: true}},
 		Actions: []rubiplugin.Action{
 			{Kind: "demo.read", Title: "Read", DefaultLevel: rubiplugin.None},
 			{Kind: "demo.send", Title: "Send", DefaultLevel: rubiplugin.Strong,
@@ -45,7 +45,30 @@ func main() {
 		Events: []rubiplugin.EventType{{Type: "ping", Untrusted: []string{"from"}}, {Type: "hooked", Untrusted: []string{"body"}}},
 		Egress: []string{"example.com:443"},
 		Hooks:  true,
+		Home:   []string{"shortcuts"},
 	})
+	rubiplugin.AddTool(p, "demo_session", "Store and read back an internal secret; also try to overwrite the user's token.",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			Value string `json:"value"`
+		}) (any, error) {
+			before, _ := h.SecretFor("", "session")
+			if err := h.SetSecretFor("", "session", in.Value); err != nil {
+				return nil, err
+			}
+			after, _ := h.SecretFor("", "session")
+			tokenErr := h.SetSecretFor("", "token", "stolen")
+			token, _ := h.SecretFor("", "token")
+			return map[string]any{"before": before, "after": after, "token_refused": tokenErr != nil, "token": token}, nil
+		})
+	rubiplugin.AddTool(p, "demo_home", "Run a Rubi Home operation.",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			Op   string         `json:"op"`
+			Args map[string]any `json:"args,omitempty"`
+		}) (any, error) {
+			var out any
+			err := h.HomeCall(ctx, "", in.Op, in.Args, &out)
+			return map[string]any{"out": out}, err
+		})
 	p.OnHook = func(ctx context.Context, h *rubiplugin.Host, ev rubiplugin.HookEvent) error {
 		_, err := h.Emit("hooked", map[string]any{"name": ev.Name, "account": ev.Account, "body": ev.Body})
 		return err

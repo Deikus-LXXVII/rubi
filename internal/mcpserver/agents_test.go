@@ -3,6 +3,10 @@ package mcpserver_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/Deikus-LXXVII/rubi/internal/home"
+	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/relay"
+	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -401,5 +405,81 @@ func TestHooks(t *testing.T) {
 	nu := r.ag.call("demo_hook", map[string]any{"name": "home:arrive", "rotate": true})["url"].(string)
 	if nu == u || r.c.DeliverHook(parts[1], nil) {
 		t.Fatalf("rotate: %s %s", u, nu)
+	}
+}
+
+// TestRubiHome: the user pairs a Rubi Home helper by pasting its code into the panel; a plugin then
+// reaches it, but only for what its manifest declares.
+func TestRubiHome(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+
+	rl := relaytest.New()
+	defer rl.Close()
+	h, err := home.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h.Update(func(c *home.Config) { c.Relays = []string{rl.URL()} })
+	h.Shortcuts = func(ctx context.Context, args ...string) ([]byte, error) {
+		return []byte("Lights off (11111111-2222-3333-4444-555555555555)\n"), nil
+	}
+	key, _ := h.RelayKey()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan int, 4)
+	rpc := &homeproto.Server{Key: h.ID.Box, Handle: h.Handle}
+	go (&relay.Server{Key: key, Relays: h.Relays(), Handle: rpc.HandleRPC, Ready: func(n int) { ready <- n }}).Run(ctx)
+	<-ready
+
+	if out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"}); !strings.Contains(toString(out["tool_error"]), "no Rubi Home is paired") {
+		t.Fatalf("before pairing: %v", out)
+	}
+	code, _ := h.StartPairing()
+	settings := r.panel("settings")
+	var res map[string]any
+	if err := settings.Call("device.pair", map[string]any{"code": code.String()}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	var devs struct{ Devices []map[string]any }
+	_ = settings.Call("devices.get", nil, &devs)
+	if len(devs.Devices) != 1 {
+		t.Fatalf("devices: %v", devs)
+	}
+	out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"})
+	if !strings.Contains(toString(out["out"]), "Lights off") {
+		t.Fatalf("shortcuts.list: %v", out)
+	}
+	if out := r.ag.call("demo_home", map[string]any{"op": "hue.discover"}); !strings.Contains(toString(out["tool_error"]), "doesn't allow") {
+		t.Fatalf("an undeclared capability: %v", out)
+	}
+	var check map[string]any
+	if err := settings.Call("device.check", map[string]any{"id": devs.Devices[0]["id"]}, &check); err != nil || check["online"] != true {
+		t.Fatalf("check: %v %v", check, err)
+	}
+	// Removing it also unpairs it on the helper.
+	if err := settings.Call("device.remove", map[string]any{"id": devs.Devices[0]["id"]}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	r.waitFor("unpaired", func() bool { return len(h.Config().Paired) == 0 })
+}
+
+// TestInternalSecrets: a plugin may replace its own internal secrets, never what the user entered.
+func TestInternalSecrets(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+	out := r.ag.call("demo_session", map[string]any{"value": "s2"})
+	if out["before"] != "" || out["after"] != "s2" || out["token_refused"] != true || out["token"] != "good" {
+		t.Fatalf("secrets: %v", out)
 	}
 }

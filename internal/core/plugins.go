@@ -298,6 +298,32 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 				return nil
 			})
 			return map[string]any{"value": v}, err
+		case "secret.set":
+			// Only Internal secrets: what the plugin itself keeps for an account (e.g. a login session
+			// the service renewed). Secrets the user entered are changed only by the user.
+			var in struct{ Key, Account, Value string }
+			_ = json.Unmarshal(params, &in)
+			internal := false
+			for _, s := range m.Secrets {
+				internal = internal || s.Key == in.Key && s.Internal
+			}
+			if !internal {
+				return nil, fmt.Errorf("secret %q isn't an internal secret", in.Key)
+			}
+			if len(in.Value) > 64<<10 {
+				return nil, errors.New("secret too large")
+			}
+			return nil, c.Vault.Update(func(d *vault.Data) error {
+				a, err := accountOf(d, id, in.Account)
+				if err != nil {
+					return err
+				}
+				if a.Secrets == nil {
+					a.Secrets = map[string]string{}
+				}
+				a.Secrets[in.Key] = in.Value
+				return nil
+			})
 		case "state.get":
 			var out json.RawMessage
 			_ = c.Vault.View(func(d *vault.Data) error {
@@ -341,6 +367,25 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			return map[string]any{"level": c.PolicyLevel(in.Kind)}, nil
 		case "approval.submit":
 			return c.pluginSubmit(ctx, m, params)
+		case "home.devices":
+			if len(m.Home) == 0 {
+				return nil, errors.New("the manifest doesn't use Rubi Home")
+			}
+			return map[string]any{"devices": c.Devices()}, nil
+		case "home.call":
+			var in struct {
+				Device string          `json:"device"`
+				Op     string          `json:"op"`
+				Args   json.RawMessage `json:"args"`
+			}
+			if err := json.Unmarshal(params, &in); err != nil {
+				return nil, err
+			}
+			out, err := c.homeCall(ctx, id, m.Home, in.Device, in.Op, in.Args)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"result": out}, nil
 		case "hook.url":
 			if !m.Hooks {
 				return nil, errors.New("the manifest doesn't declare hooks")
