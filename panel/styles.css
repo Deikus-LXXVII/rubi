@@ -1091,3 +1091,13 @@ button.primary.is-busy::before { display: none; }
 .batch-item .field-item dt .icon { width: 13px; height: 13px; vertical-align: -1px; }
 .batch-item .field-item dd { margin: 0; color: var(--muted); font-size: 0.84rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card.approve .fine { margin-bottom: 4px; }
+
+/* Primary button: flat. Hovering only sends the sheen across; nothing moves, no shadow changes. */
+button.primary, a.btn.primary {
+  background: var(--ruby-500); border: 0; box-shadow: none;
+  transition: background-color 0s, color var(--t-quick) var(--ease-out);
+}
+button.primary:hover:not(:disabled), a.btn.primary:hover { background: var(--ruby-500); box-shadow: none; transform: none; }
+button.primary:focus-visible, a.btn.primary:focus-visible { box-shadow: var(--focus); }
+button.primary.is-done { box-shadow: none; }
+button.copy { box-shadow: none; }

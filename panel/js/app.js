@@ -103,10 +103,7 @@ function face(mood, size = 76, then) {
   const svg = mascot(mood, size);
   svg.enter = async (morphed) => {
     if (!morphed) await react(svg, "pop");
-    else {
-      await new Promise((r) => setTimeout(r, 420));
-      await react(svg, "land");
-    }
+    else await new Promise((r) => setTimeout(r, 560)); // it flew in from the last screen: let it settle
     if (mood === "happy") await celebrate(svg);
     if (then) react(svg, then);
   };
@@ -348,8 +345,7 @@ function enhanceLanding() {
       await celebrate(svg);
       setMood(svg, "idle");
     });
-    img.replaceWith(svg);
-    react(svg, "pop", 200);
+    img.replaceWith(svg); // the same shape in the same place, so no entrance: it simply comes alive
     landingMascot = svg;
   }
 
