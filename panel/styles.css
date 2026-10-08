@@ -440,3 +440,5 @@ fieldset.field legend { padding: 0; margin-bottom: 6px; }
 .account-row .actions { flex-direction: row; gap: 12px; }
 .cmd { display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .cmd code { flex: 1; font-size: 0.85rem; overflow-wrap: anywhere; user-select: all; color: var(--text); }
+.demo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; margin-top: 8px; }
+.demo-tile { text-align: left; }

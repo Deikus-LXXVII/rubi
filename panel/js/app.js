@@ -5,6 +5,7 @@ import { RubiClient, UserError, parseLink } from "./api.js";
 import {
   approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
+import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
 import { mascot } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
 
@@ -265,6 +266,7 @@ function savePin(instance, k, version) {
 // ---------- entry ----------
 
 async function main() {
+  if (location.hash.startsWith("#demo")) return demoMain(location.hash.slice(5).replace(/^=/, ""));
   if (!window.isSecureContext) return fatal("This page must be opened over HTTPS.");
   const link = parseLink(location.hash);
   // Keep the one-time codes out of the address bar and history.
@@ -301,6 +303,66 @@ async function main() {
   return statusScreen(ctx, "");
 }
 
+// ---------- demo: every screen with made-up data (see demo.js) ----------
+
+function demoMain(which) {
+  const ctx = { client: new DemoClient(), link: { a: "demo", k: "demo" }, hello: { ...DEMO_HELLO }, demo: true };
+  activeCtx = ctx;
+  const go = (name) => {
+    history.replaceState(null, "", "#demo=" + name);
+    demoScreen(ctx, name);
+  };
+  ctx.gallery = () => {
+    history.replaceState(null, "", "#demo");
+    screen(
+      { cls: "wide" },
+      face("happy", 88),
+      h("p", { class: "eyebrow center" }, "Demo"),
+      h("h1", { class: "center" }, "Try the Rubi panel"),
+      h("p", { class: "center muted" }, "Everything here is made up: no Rubi, no keys, nothing leaves this page. Approve, decline, poke around."),
+      h("div", { class: "demo-grid" }, DEMO_SCREENS.map(([id, label]) =>
+        h("button", { class: "demo-tile", type: "button", onclick: () => go(id) }, label))),
+    );
+  };
+  if (!which) return ctx.gallery();
+  demoScreen(ctx, which);
+}
+
+function demoScreen(ctx, which) {
+  const back = () => ctx.gallery();
+  ctx.hello = { ...DEMO_HELLO };
+  switch (which) {
+    case "pair":
+      ctx.hello = { ...DEMO_HELLO, state: "unpaired" };
+      return pairScreen(ctx);
+    case "unlock":
+      ctx.hello = { ...DEMO_HELLO, state: "locked" };
+      return unlockFlow(ctx, "Unlock Rubi", "Rubi restarted and locked itself. Unlock it to let your agent continue.",
+        () => { ctx.hello = { ...DEMO_HELLO }; statusScreen(ctx, "Unlocked. You can go back to your agent."); });
+    case "send": case "install": case "reveal": case "door":
+      return approveScreen(ctx, which, { onDone: back, doneLabel: "Back to the demo" });
+    case "settings":
+      return settingsScreen(ctx);
+    case "store":
+      return storeScreen(ctx, back);
+    case "config":
+      return pluginConfigScreen(ctx, "icloud-mail", { done: back });
+    case "setup":
+      return setupScreen(ctx, "telegram", back);
+    case "home":
+      return homeDeviceScreen(ctx, back);
+    case "bots":
+      return grokBotScreen(ctx);
+    case "updates":
+      return updatesScreen(ctx);
+    case "status":
+      return statusScreen(ctx, "Unlocked. You can go back to your agent.");
+    case "error":
+      return fatal("Can't reach your Rubi. It may be restarting; wait a moment, or ask your agent for a new link.");
+  }
+  return ctx.gallery();
+}
+
 function fatal(message, danger = false) {
   const ub = danger ? null : updatesButton(); // never next to an impersonation warning
   screen(ub ? h("div", { class: "top-actions" }, ub) : null, face("alert"), h("h1", {}, danger ? "Stop" : "Something's wrong"),
@@ -319,6 +381,10 @@ function pairScreen(ctx) {
   const dek = rand(32);
 
   async function addPasskey(btn) {
+    if (ctx.demo) {
+      state.passkeyCanUnlock = true;
+      return passwordStep();
+    }
     await busy(btn, async () => {
       const prfSalt = rand(32);
       const pk = await createPasskey({ instance: hello.instance, fingerprint: hello.fingerprint, prfSalt });
@@ -365,6 +431,7 @@ function pairScreen(ctx) {
   }
 
   async function finish(password) {
+    if (ctx.demo) return connectAgentScreen({ ...ctx, hello: { ...DEMO_HELLO } });
     const args = { code: ctx.link.p, dek: b64u.enc(dek), wraps: [...state.wraps], approvers: state.approvers,
       method: state.passkeyCanUnlock ? "passkey" : "password", credential_id: state.credentialId || undefined };
     if (password) {
@@ -531,6 +598,7 @@ async function unlockFlow(ctx, title, intro, onDone) {
 
   async function withPasskey(btn) {
     await busy(btn, async () => {
+      if (ctx.demo) return onDone();
       const r = await evalPrf(passkeyWraps.map((w) => ({ credentialId: w.credential_id, prfSalt: b64u.dec(w.prf_salt) })));
       const w = passkeyWraps.find((x) => x.credential_id === r.credentialId);
       if (!w) throw new UserError("That passkey isn't registered with this Rubi.");
@@ -546,6 +614,7 @@ async function unlockFlow(ctx, title, intro, onDone) {
     onsubmit: (e) => {
       e.preventDefault();
       busy(go, async () => {
+        if (ctx.demo) return onDone();
         for (const w of passwordWraps) {
           const kek = await passwordKek(pw.value, w.kdf);
           try {
@@ -834,7 +903,7 @@ async function approveScreen(ctx, id, opts = {}) {
   const setPrimary = () => { primary.textContent = usePasskey() ? `${verb} with Passkey` : `${verb} with password`; };
   setPrimary();
   primary.onclick = () => busy(primary, async () => {
-    const proof = usePasskey()
+    const proof = ctx.demo ? { type: "demo" } : usePasskey()
       ? await signChallenge(b64u.dec(await challengeFor(chosen)), approverIds)
       : await passwordProof(chosen);
     const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
@@ -956,7 +1025,7 @@ async function whenUnlocked(ctx, next) {
 // confirmChange takes the {approval_id, ticket} a settings operation returns and asks for the passkey or the
 // password, using a client bound to that approval's ticket.
 function confirmChange(ctx, res, onDone, doneLabel) {
-  const approvalCtx = { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
+  const approvalCtx = ctx.demo ? ctx : { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
   return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone, doneLabel });
 }
 
