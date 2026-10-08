@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "updated_at": "2026-10-07T19:30:00Z",
+  "updated_at": "2026-10-08T14:45:00Z",
   "plugins": [
     {
       "id": "icloud-mail",
       "name": "iCloud Mail",
-      "summary": "Read, search and draft iCloud email; send after your approval; get notified about replies.",
+      "summary": "Read, search and draft iCloud email; send after your approval; watch for new mail; keep private mail private.",
       "publisher": {
         "name": "Rubi-Project",
         "key": "MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="
@@ -16,6 +16,11 @@
           "version": "v1.0.0",
           "sums_sha256": "3a3830e123ea482afc855b80fbf90ed87b1e9604f229cb389e9babfe47201525",
           "min_rubi": "v0.3.0"
+        },
+        {
+          "version": "v1.1.0",
+          "sums_sha256": "878446b400e1bdb00cf4f2ab6f857cc6e061d2a4a7e237658b7c1ad37ffd60fa",
+          "min_rubi": "v0.4.0"
         }
       ]
     }
