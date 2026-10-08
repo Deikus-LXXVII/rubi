@@ -172,14 +172,16 @@ async function updatesScreen(ctx) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
   const again = () => updatesScreen(ctx);
-  const rows = items.map((it) => {
-    const notify = h("input", { type: "checkbox", checked: it.notify });
-    const saved = h("span", { class: "muted small" });
+  const sorted = [...items].sort((a, b) => Number(!!b.available) - Number(!!a.available));
+  const rows = sorted.map((it) => {
+    const notify = h("input", { type: "checkbox", role: "switch", class: "switch sm", checked: it.notify, "aria-label": `Tell my agent about new versions of ${it.name}` });
+    const saved = h("span", { class: "muted small saved" });
     notify.addEventListener("change", async () => {
       saved.textContent = "Saving…";
       try {
         await ctx.client.call("updates.notify", { id: it.id, notify: notify.checked });
         saved.textContent = "Saved";
+        setTimeout(() => { saved.textContent = ""; }, 1400);
       } catch (x) {
         notify.checked = !notify.checked;
         saved.textContent = "";
@@ -187,30 +189,28 @@ async function updatesScreen(ctx) {
       }
     });
     const update = it.available ? h("button", { class: "primary small", onclick: async (e) => {
-      await busy(e.target, async () => {
-        e.target.textContent = "Verifying…";
+      await busy(e.currentTarget, async () => {
         const op = it.id === "rubi" ? "updates.rubi" : "updates.plugin";
         confirmChange(ctx, await ctx.client.call(op, { id: it.id }), again, "Back to updates");
       }).catch((x) => showError(err, x));
-    } }, "Update") : null;
-    return h("div", { class: "agent-card" + (it.available ? " outdated" : "") },
-      h("div", { class: "agent-head" },
-        h("div", {}, h("strong", {}, it.name), " ",
-          it.available ? h("span", { class: "tag warn" }, "Update available") : h("span", { class: "tag" }, "Up to date"),
-          h("div", { class: "muted small" }, it.available ? `${it.current} \u2192 ${it.latest}` : it.current)),
-        h("div", { class: "actions" }, update)),
-      h("label", { class: "check" }, notify, h("span", {}, "Tell my agent when a new version is out")), saved);
+    } }, icon("download", 16), "Update") : null;
+    return h("article", { class: "urow" + (it.available ? " outdated" : "") },
+      it.id === "rubi" ? h("span", { class: "urow-mascot" }, mascot("idle", 36)) : badge(it.name, 36),
+      h("div", { class: "urow-text" }, h("strong", {}, it.name),
+        h("span", { class: "muted small" }, it.available ? h("span", {}, it.current, " ", icon("chevron", 12), " ", h("b", { class: "ok" }, it.latest)) : `${it.current} · up to date`)),
+      update,
+      h("label", { class: "urow-notify", title: "Tell my agent when a new version is out" }, h("span", { class: "muted small" }, "Tell agent"), notify, saved));
   });
   const n = outdated(items);
   screen(
-    { cls: "wide" },
+    { cls: "wide", focus: false },
     header(ctx.hello),
+    backBar("Back", back),
     h("h1", {}, "Updates"),
-    h("p", { class: "muted" }, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
-    h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off \u201cTell my agent\u201d for anything you'd rather update from here, without your agent bringing it up. Every update still needs your passkey or password."),
+    h("p", {}, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
     err,
-    h("div", { class: "agent-list" }, rows),
-    h("button", { class: "link", onclick: back }, "Back"),
+    h("div", { class: "ulist" }, rows),
+    h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off “Tell agent” for anything you'd rather update from here, without your agent bringing it up. Every update still needs your passkey or password."),
   );
 }
 
@@ -1277,7 +1277,8 @@ async function setupScreen(ctx, id, back) {
 
     screen(
       header(ctx.hello),
-      h("h1", {}, `Connect ${entry.name}`),
+      back && !message ? backBar("Settings", back) : null,
+      h("div", { class: "title-row" }, badge(entry.name, 44), h("h1", {}, `Connect ${entry.name}`)),
       !message && entry.connected ? h("p", { class: "muted" }, "This adds another account. Signing in to an account that is already connected updates its password and keeps its settings.") : null,
       h("p", {}, message || entry.needs),
       form,
@@ -1285,7 +1286,6 @@ async function setupScreen(ctx, id, back) {
       h("p", { class: "muted" }, ((entry.egress || []).length
         ? `Rubi will connect only to ${entry.egress.join(", ")}. `
         : "This plugin connects to nothing on the internet itself. ") + "What you enter is stored encrypted on your Rubi and never shown to your agent."),
-      back ? h("button", { class: "link", onclick: back }, "Back to settings") : null,
     );
   };
   step(entry.fields || [], entry.secrets || [], "", {});
@@ -1332,6 +1332,22 @@ function strength(pw) {
   if (pw.length >= 16) score++;
   if (kinds >= 3) score++;
   return Math.min(4, score);
+}
+
+// copyButton copies text; its icon turns into a check for a moment.
+function copyButton(text, label = "Copy", cls = "secondary small") {
+  const b = h("button", { type: "button", class: `${cls} copy-btn` }, icon("copy", 16), h("span", {}, label));
+  b.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(typeof text === "function" ? text() : text);
+      b.replaceChildren(icon("check", 16), h("span", {}, "Copied"));
+      b.classList.add("copied");
+    } catch {
+      b.replaceChildren(icon("copy", 16), h("span", {}, "Select and copy"));
+    }
+    setTimeout(() => { b.replaceChildren(icon("copy", 16), h("span", {}, label)); b.classList.remove("copied"); }, 1800);
+  };
+  return b;
 }
 
 // backBar is the way back, at the top of a screen that was opened from another one.
@@ -1554,14 +1570,7 @@ const HOME_INSTALL = "curl -fsSL https://rubi-panel.com/install-home.sh | sh";
 function homeDeviceScreen(ctx, back) {
   const err = errorBox();
   const code = h("textarea", { rows: "4", placeholder: "rubi-home:…", autocapitalize: "none", spellcheck: "false" });
-  const copy = h("button", { class: "secondary small", onclick: async () => {
-    try {
-      await navigator.clipboard.writeText(HOME_INSTALL);
-      copy.textContent = "Copied";
-    } catch {
-      copy.textContent = "Select and copy";
-    }
-  } }, "Copy");
+  const copy = copyButton(HOME_INSTALL);
   const pair = h("button", { class: "primary", onclick: async (e) => {
     await busy(e.target, async () => {
       e.target.textContent = "Reaching Rubi Home…";
@@ -1571,6 +1580,7 @@ function homeDeviceScreen(ctx, back) {
   } }, "Pair");
   screen(
     header(ctx.hello),
+    backBar("Settings", back),
     h("h1", {}, "Add a home computer"),
     h("p", {}, "Rubi runs on your agent's machine and can't reach your home network. Rubi Home, a small helper on a computer at home, can: it talks to your Hue Bridge and runs the shortcuts you put in its folder."),
     h("ol", { class: "steps-list" },
@@ -1581,7 +1591,6 @@ function homeDeviceScreen(ctx, back) {
     h("label", { class: "field" }, h("span", {}, "Pairing code"), code),
     err,
     pair,
-    h("button", { class: "link", onclick: back }, "Back to settings"),
   );
 }
 
@@ -1611,18 +1620,7 @@ async function grokBotScreen(ctx) {
   };
 
   const prompt = h("div", { class: "prompt" }, CONNECT_PROMPT);
-  const copy = h("button", { class: "secondary small", onclick: async () => {
-    try {
-      await navigator.clipboard.writeText(CONNECT_PROMPT);
-      copy.textContent = "Copied";
-    } catch (_) {
-      const r = document.createRange();
-      r.selectNodeContents(prompt);
-      getSelection().removeAllRanges();
-      getSelection().addRange(r);
-      copy.textContent = "Selected: copy it";
-    }
-  } }, "Copy");
+  const copy = copyButton(CONNECT_PROMPT, "Copy the message");
 
   const cards = (data.agents || []).map((a) => {
     const subs = new Set(a.subscriptions || []);
@@ -1643,41 +1641,46 @@ async function grokBotScreen(ctx) {
           showError(err, x);
         }
       });
-      return h("label", { class: "check" }, box, h("span", {}, src.name));
+      return h("label", { class: "pill-toggle" }, box, h("span", {}, src.name));
     });
     return h("div", { class: "agent-card" },
       h("div", { class: "agent-head" },
-        h("div", {}, h("strong", {}, a.name), " ", a.default ? h("span", { class: "tag" }, "Default") : null,
+        h("span", { class: "avatar-dot" }, icon("bot", 16)),
+        h("div", { class: "agent-name" }, h("strong", {}, a.name), " ", a.default ? h("span", { class: "tag" }, "Default") : null,
           h("div", { class: "muted small" }, a.host)),
         h("div", { class: "actions" },
-          h("button", { class: "secondary small", onclick: async (e) => {
-            await busy(e.target, () => ctx.client.call("webhook.test", { name: a.name }))
-              .then(() => { e.target.textContent = "Sent"; }).catch((x) => showError(err, x));
+          h("button", { class: "ghost small", onclick: async (e) => {
+            const b = e.currentTarget;
+            await busy(b, () => ctx.client.call("webhook.test", { name: a.name }))
+              .then(() => { b.textContent = "Sent"; }).catch((x) => showError(err, x));
           } }, "Test"),
-          a.default ? null : h("button", { class: "link small", onclick: change("agent.default", { name: a.name }) }, "Make default"),
-          h("button", { class: "link small", onclick: change("agent.remove", { name: a.name }) }, "Remove"))),
-      h("p", { class: "muted small" }, "Notifies this Bot about:"),
-      h("div", { class: "checks" }, boxes), saved);
+          menu(`More for ${a.name}`, [
+            a.default ? null : h("button", { type: "button", onclick: change("agent.default", { name: a.name }) }, icon("check", 16), "Make default"),
+            h("button", { type: "button", class: "danger-item", onclick: change("agent.remove", { name: a.name }) }, icon("trash", 16), "Remove"),
+          ]))),
+      h("p", { class: "muted small" }, "Wakes this Bot for:"),
+      h("div", { class: "pills" }, boxes), saved);
   });
 
   screen(
-    { cls: "wide" },
+    { cls: "wide", focus: false },
     header(ctx.hello),
+    backBar("Settings", back),
     h("h1", {}, "Grok Bot connections"),
-    h("p", {}, "Rubi wakes a Grok Bot through that Bot's own routine webhook: when you approve something it asked for, or when something it follows happens (like a reply to a tracked email). The routine runs only then, never on a schedule."),
+    h("p", { class: "muted" }, "Rubi wakes a Grok Bot through that Bot's own routine webhook: when you approve something it asked for, or when something it follows happens (like a reply to a tracked email). The routine runs only then, never on a schedule."),
     err,
+    h("div", { class: "section-head" }, h("h2", {}, "Connected Bots")),
+    cards.length ? h("div", { class: "agent-list" }, cards) : h("div", { class: "empty" }, face("concern", 56), h("p", {}, "None yet. Setup isn't finished until at least one Bot is connected.")),
+    cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. Notifications no Bot chose go to the default Bot.") : null,
+    h("div", { class: "section-head" }, h("h2", {}, "Add a Bot")),
     h("div", { class: "panes" },
-      pane(h("h2", {}, "1. Ask the Bot to connect itself"),
+      pane(h("h3", {}, h("span", { class: "num-s" }, "A"), "Ask the Bot to connect itself"),
         h("p", { class: "muted" }, "Send this to each Grok Bot that should hear from Rubi. It creates the routine and sends you a link; open that link in the Grok Bot desktop app, where the webhook is shown."),
         prompt, copy),
-      pane(h("h2", {}, "2. Or add a webhook here"),
+      pane(h("h3", {}, h("span", { class: "num-s" }, "B"), "Or add a webhook here"),
         agentHowTo(""),
         agentForm(ctx, { err, onSaved: () => again() }),
-        h("p", { class: "footnote" }, "* Name each webhook exactly like its Grok Bot. Bots identify themselves to Rubi by name, so they can then choose for themselves which notifications they receive. You can always change it below."))),
-    h("h2", {}, "Connected Bots"),
-    cards.length ? h("div", { class: "agent-list" }, cards) : h("p", { class: "error" }, "None yet. Setup isn't finished until at least one Bot is connected."),
-    cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. Notifications no Bot chose go to the default Bot.") : null,
-    h("button", { class: "link", onclick: back }, "Back to settings"),
+        h("p", { class: "footnote" }, "* Name each webhook exactly like its Grok Bot. Bots identify themselves to Rubi by name, so they can then choose for themselves which notifications they receive. You can always change it above."))),
   );
 }
 
