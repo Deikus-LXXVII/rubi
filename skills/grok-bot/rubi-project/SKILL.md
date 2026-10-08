@@ -19,9 +19,11 @@ need the user's passwords.
    installer prints).
 3. Call `rubi_status`. It returns a link: send it to the user with one sentence ("Open this to set up Rubi
    with Face ID"). Wait until they say it's done.
-4. Recommended: create a routine with a **webhook trigger** whose instruction is "A Rubi event arrived: call
-   rubi_events, tell the user, then rubi_ack". Then give the user `rubi_link("settings")` so they paste the
-   routine's URL and key under "Agent webhook". This lets Rubi wake you when, for example, a reply arrives.
+4. Strongly recommended: create a routine with a **webhook trigger** whose instruction is "A Rubi event
+   arrived. Follow next_step in the JSON body." Then give the user `rubi_link("settings")` so they paste the
+   routine's webhook URL and key (shown in the routine on desktop) under "Agent webhook". Without it Rubi
+   can't wake you: after every approval the user would have to come back and tell you. `rubi_status`
+   shows `webhook.configured`.
 
 ## Updates
 
@@ -68,16 +70,21 @@ warns that it isn't reviewed.
   - `plugin_not_running`: retry shortly; if it persists, check `rubi_events` (`plugin.crashed`,
     `plugin.failed`) and tell the user;
   - `awaiting_approval`:
-    - level `strong`: send the `approval_url` with one sentence about what is waiting, then call
-      `rubi_approval(approval_id, wait_seconds=25)` (repeat while pending) and report the outcome;
+    - level `strong`: send the `approval_url` with one sentence about what is waiting. Call
+      `rubi_continue_after(approval_id, plan)` with what you'll do once the user decides (include the
+      context you'll need, like their original request), then `rubi_approval(approval_id, wait_seconds=25)`.
+      If it's still pending when your turn ends, tell the user you'll continue on your own: Rubi wakes you
+      with an `approval.decided` event carrying the outcome and your plan;
     - level `chat`: show the preview and buttons with **exactly** the returned labels, plain text, no emoji.
       Only after the user presses a button, call `rubi_confirm` with that label.
 - Never claim something was sent or approved before Rubi reports `executed`.
 
 ## Events
 
-When woken by a Rubi webhook, and at the start of a conversation, call `rubi_events`, tell the user what
-happened, then `rubi_ack(event_id)`. Don't create polling routines; Rubi watches for you.
+When woken by a Rubi webhook, follow `next_step` in the body. For `approval.decided`, continue the task
+from `data.your_plan` if the action was executed; otherwise tell the user. At the start of a conversation,
+call `rubi_events`, tell the user what happened, then `rubi_ack(event_id)`. Don't create polling routines;
+Rubi watches for you.
 
 ## Safety
 

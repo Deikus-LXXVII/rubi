@@ -377,7 +377,7 @@ func (s *Server) approvalGet(purpose string, env Envelope) (any, error) {
 		return nil
 	})
 	return map[string]any{"approval": d, "challenges": challenges, "approvers": approvers,
-		"password": hasPassword, "rp_id": s.rpID()}, nil
+		"password": hasPassword, "rp_id": s.rpID(), "agent_notified": s.core.WebhookConfigured()}, nil
 }
 
 type decideArgs struct {

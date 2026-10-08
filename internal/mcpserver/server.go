@@ -33,8 +33,10 @@ tools don't show up in your tool list, call them through rubi_call.
 
 APPROVALS. Some tools return status "awaiting_approval" instead of acting.
 - level "strong": send the user the approval_url with one sentence about what is waiting. They review and
-  approve in the Rubi panel. You cannot approve, and you must never claim it was approved. Call
-  rubi_approval with wait_seconds to learn the outcome.
+  approve in the Rubi panel. You cannot approve, and you must never claim it was approved. Then call
+  rubi_continue_after with your plan for after the decision, and rubi_approval with wait_seconds. If the
+  user hasn't decided when your turn ends, Rubi wakes you with the decision through the webhook
+  (approval.decided event), and you continue the task without the user having to write to you.
 - level "chat": show the preview and question, and attach buttons with EXACTLY the returned labels: plain
   text, no emoji, no extra words. Wait. After the user personally presses an option button, call
   rubi_confirm with that label verbatim. A typed "yes" is not a button press. Never press buttons yourself.
@@ -43,8 +45,9 @@ SETTINGS. You cannot change approval levels, passwords or webhooks. For any of t
 rubi_link("settings") or rubi_link("setup:<plugin id>"). Service passwords are entered only in
 the panel. Never ask the user to paste a password into the chat.
 
-EVENTS. When woken by a webhook, and at the start of a conversation, call rubi_events, tell the user, then
-rubi_ack. Do not create polling routines.
+EVENTS. When woken by a webhook, follow the next_step in its body. At the start of a conversation, call
+rubi_events, tell the user, then rubi_ack. Do not create polling routines. If rubi_status shows
+webhook.configured=false, offer to set it up (webhook.how): without it Rubi can't wake you.
 
 UPDATES. Rubi checks for new releases of itself and sends an "update.available" event. Tell the user; if they
 want it, call rubi_update and give them the approval link. After they approve, Rubi verifies, installs and
@@ -139,7 +142,8 @@ func (s *Server) syncPluginTools() {
 				if req.Params != nil {
 					args = req.Params.Arguments
 				}
-				return toolResult(s.core.CallTool(ctx, name, args))
+				res, err := s.core.CallTool(ctx, name, args)
+				return toolResult(s.withHint(res), err)
 			})
 		s.tools[name] = toolDef(t)
 	}
@@ -147,6 +151,15 @@ func (s *Server) syncPluginTools() {
 
 func toolDef(t core.PluginTool) string {
 	return t.Tool.Description + "\x00" + string(t.Tool.InputSchema)
+}
+
+// withHint adds, to a result that waits for the user's approval in the panel, how the agent will learn the
+// outcome.
+func (s *Server) withHint(out map[string]any) map[string]any {
+	if out != nil && out["status"] == "awaiting_approval" && out["level"] == "strong" {
+		out["after_sending_the_link"] = s.core.AfterApproval()
+	}
+	return out
 }
 
 func toolResult(out map[string]any, err error) (*mcp.CallToolResult, error) {
@@ -186,6 +199,11 @@ type ackIn struct {
 }
 
 type out = map[string]any
+
+type planIn struct {
+	ApprovalID string `json:"approval_id"`
+	Plan       string `json:"plan" jsonschema:"what you will do once the user decides, with the context you need (e.g. the user's original request)"`
+}
 
 type pluginRefIn struct {
 	Plugin string `json:"plugin" jsonschema:"store id (e.g. icloud-mail) or a source URL to sideload"`
@@ -241,7 +259,7 @@ func (s *Server) registerCoreTools() {
 				return nil, locked, nil
 			}
 			res, err := s.core.RequestPluginInstall(ctx, in.Plugin)
-			return nil, res, err
+			return nil, s.withHint(res), err
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_update",
@@ -251,7 +269,7 @@ func (s *Server) registerCoreTools() {
 				return nil, locked, nil
 			}
 			res, err := s.core.RequestPluginUpdate(ctx, in.ID)
-			return nil, res, err
+			return nil, s.withHint(res), err
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_remove",
@@ -261,7 +279,7 @@ func (s *Server) registerCoreTools() {
 				return nil, locked, nil
 			}
 			res, err := s.core.RequestPluginRemove(ctx, in.ID)
-			return nil, res, err
+			return nil, s.withHint(res), err
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_call",
@@ -269,7 +287,7 @@ func (s *Server) registerCoreTools() {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in callIn) (*mcp.CallToolResult, out, error) {
 			args, _ := json.Marshal(in.Arguments)
 			res, err := s.core.CallTool(ctx, in.Tool, args)
-			return nil, res, err
+			return nil, s.withHint(res), err
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_approval",
@@ -281,6 +299,19 @@ func (s *Server) registerCoreTools() {
 				return nil, nil, err
 			}
 			return nil, out{"approval": snap}, nil
+		})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_continue_after",
+		Description: "Leave yourself a note for when the user decides a pending approval: what to do next and what for. Rubi sends it back with the decision through the webhook, so you can continue even in a new run."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in planIn) (*mcp.CallToolResult, out, error) {
+			if err := s.core.SetPlan(in.ApprovalID, in.Plan); err != nil {
+				return nil, nil, err
+			}
+			o := out{"saved": true}
+			if !s.core.WebhookConfigured() {
+				o["warning"] = "No agent webhook is set up, so Rubi can't wake you. Ask the user to tell you when they're done."
+			}
+			return nil, o, nil
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_confirm",
@@ -319,7 +350,7 @@ func (s *Server) registerCoreTools() {
 				return nil, locked, nil
 			}
 			res, err := s.core.RequestUpdate(ctx)
-			return nil, res, err
+			return nil, s.withHint(res), err
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_ack",
@@ -338,6 +369,9 @@ func (s *Server) status() out {
 		"fingerprint": s.core.ID.Fingerprint(),
 		"integrity":   s.core.Integrity(),
 		"update":      s.core.UpdateInfo(),
+	}
+	if st == core.Unlocked {
+		o["webhook"] = s.core.WebhookHint()
 	}
 	var installed []map[string]any
 	for _, m := range s.core.Store.Installed() {

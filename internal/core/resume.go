@@ -1,0 +1,78 @@
+package core
+
+import (
+	"errors"
+	"strings"
+
+	"github.com/Deikus-LXXVII/rubi/internal/approvals"
+	"github.com/Deikus-LXXVII/rubi/internal/vault"
+)
+
+const maxPlan = 2000
+
+// SetPlan stores what the agent intends to do once a pending approval is decided. Rubi sends it back with
+// the approval.decided event, so the agent can continue even if it is woken in a fresh run.
+func (c *Core) SetPlan(approvalID, plan string) error {
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return errors.New("describe what you'll do after the decision")
+	}
+	if len(plan) > maxPlan {
+		return errors.New("keep the plan under 2000 characters")
+	}
+	d, err := c.Approvals.Detail(approvalID)
+	if err != nil {
+		return err
+	}
+	if d.State != approvals.Pending {
+		return errors.New("this approval is already " + string(d.State) + "; continue now")
+	}
+	c.mu.Lock()
+	c.plans[approvalID] = plan
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *Core) takePlan(approvalID string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	p := c.plans[approvalID]
+	delete(c.plans, approvalID)
+	return p
+}
+
+// WebhookConfigured reports whether Rubi can wake the agent.
+func (c *Core) WebhookConfigured() bool {
+	on := false
+	_ = c.Vault.View(func(d *vault.Data) error {
+		on = d.Webhook != nil && d.Webhook.URL != ""
+		return nil
+	})
+	return on
+}
+
+// AfterApproval tells the agent how it will learn about a decision, depending on whether Rubi can wake it.
+func (c *Core) AfterApproval() string {
+	if c.WebhookConfigured() {
+		return "After sending the link, call rubi_continue_after(approval_id, plan) with what you'll do once the " +
+			"user decides. Then wait with rubi_approval(approval_id, wait_seconds=25). If it is still pending, end " +
+			"your turn and tell the user you'll continue on your own: Rubi wakes you through the webhook with the " +
+			"decision and your plan."
+	}
+	return "Rubi can't wake you when the user decides: no agent webhook is set up. Wait with " +
+		"rubi_approval(approval_id, wait_seconds=25) while the user acts; if your turn has to end, ask the user to " +
+		"tell you when they're done. Then suggest setting up the webhook so this happens automatically (see " +
+		"rubi_status, field webhook)."
+}
+
+// WebhookHint explains how to set up the webhook, or nil if it is set up.
+func (c *Core) WebhookHint() map[string]any {
+	if c.WebhookConfigured() {
+		return map[string]any{"configured": true}
+	}
+	return map[string]any{"configured": false,
+		"why": "Without it you only learn about approvals and events (like replies) when the user writes to you.",
+		"how": "Create a routine with a webhook trigger whose instruction is: \"A Rubi event arrived. Follow " +
+			"next_step in the JSON body.\" Then send the user rubi_link(\"settings\") and ask them to paste the " +
+			"routine's webhook URL and key (shown in the routine on desktop) under Agent webhook."}
+}

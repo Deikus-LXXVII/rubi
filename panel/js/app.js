@@ -506,7 +506,8 @@ async function approveScreen(ctx, id, opts = {}) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
   const a = info.approval;
-  if (a.state !== "pending") return resultScreen(ctx, a, opts.onDone);
+  const notified = !!info.agent_notified;
+  if (a.state !== "pending") return resultScreen(ctx, a, opts.onDone, { notified });
 
   const err = errorBox();
   const approverIds = (info.approvers || []).map((x) => x.credential_id);
@@ -571,11 +572,11 @@ async function approveScreen(ctx, id, opts = {}) {
       ? await signChallenge(b64u.dec(info.challenges[chosen]), approverIds)
       : await passwordProof(chosen);
     const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
-    resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen) });
+    resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen), notified });
   }).catch((e) => { showError(err, e); setPrimary(); });
 
   const decline = h("button", { class: "link decline", type: "button", onclick: (e) => busy(e.target, async () =>
-    resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone, { preview: a.preview }))
+    resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone, { preview: a.preview, notified }))
     .catch((x) => showError(err, x)) }, opts.declineLabel || "Decline");
 
   const timer = countdown(a.expires_at, () => {
@@ -647,8 +648,9 @@ function resultScreen(ctx, a, onDone, extra = {}) {
     onDone
       ? h("button", { class: "primary", onclick: onDone }, "Back to settings")
       : h("p", { class: "muted center" }, a.state === "executed"
-        ? "Your agent will see the result. You can close this page."
-        : "Nothing was done. You can close this page."),
+        ? (extra.notified ? "Your agent has been told and continues on its own. You can close this page."
+          : "Go back to your agent and tell it you approved, so it can continue.")
+        : (extra.notified ? "Nothing was done. Your agent has been told." : "Nothing was done. You can close this page.")),
   );
 }
 

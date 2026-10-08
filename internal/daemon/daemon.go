@@ -223,6 +223,8 @@ func receiveHandoff(c *core.Core) error {
 		return err
 	}
 	log.Printf("unlocked after update to %s", version.Version)
+	c.Events.Emit("rubi", "update.completed", map[string]any{"version": version.Version,
+		"message": "Rubi restarted into the new version and is unlocked."}, nil)
 	return nil
 }
 

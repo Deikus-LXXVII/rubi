@@ -65,6 +65,7 @@ type Core struct {
 	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
+	plans   map[string]string // approval id -> what the agent will do once it's decided
 	upd     updateState
 	mkt     marketState
 	integ   integrity.Result
@@ -113,6 +114,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		Store:       store,
 		PanelOrigin: DefaultPanelOrigin,
 		tickets:     map[string]ticket{},
+		plans:       map[string]string{},
 	}
 	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
 		Handler: c.pluginHandler, Launched: c.pluginLaunched, Crashed: c.pluginCrashed, Logf: log.Printf}}
@@ -127,10 +129,16 @@ func Open(layout paths.Layout) (*Core, error) {
 		Label: c.Label,
 		Audit: func(ev string, f map[string]any) { c.Audit.Record(ev, f) },
 		OnFinish: func(s approvals.Snapshot) {
-			// Tell the agent how a panel approval ended, even if its turn is over.
+			// Tell the agent how a panel approval ended, even if its turn is over, with the plan it left
+			// for this moment (rubi_continue_after), so a fresh routine run can pick the task up.
+			plan := c.takePlan(s.ID)
 			if s.Level == approvals.Strong && c.State() == Unlocked {
-				c.Events.Emit("rubi", "approval.decided", map[string]any{"approval_id": s.ID, "kind": s.Kind,
-					"state": s.State, "summary": s.Summary, "option": s.Chosen, "error": s.Error}, nil)
+				data := map[string]any{"approval_id": s.ID, "kind": s.Kind, "state": s.State,
+					"summary": s.Summary, "option": s.Chosen, "error": s.Error, "result": s.Result}
+				if plan != "" {
+					data["your_plan"] = plan
+				}
+				c.Events.Emit("rubi", "approval.decided", data, []string{"result"})
 			}
 		},
 	})

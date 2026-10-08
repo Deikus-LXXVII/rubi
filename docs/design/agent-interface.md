@@ -50,6 +50,7 @@ what to do.
 | `rubi_plugin_update(id)` / `rubi_plugin_remove(id)` | Update or remove a plugin (strong approval) |
 | `rubi_call(tool, arguments)` | Call a plugin tool by name, for agents that don't refresh their tool list |
 | `rubi_approval(approval_id, wait_seconds=0..25)` | Status of a pending approval (`pending`, `approved`, `denied`, `expired`, `executed`) and the action result. Long-polls up to `wait_seconds` (max 25). |
+| `rubi_continue_after(approval_id, plan)` | The agent's own note for after a strong approval is decided; returned with `approval.decided` |
 | `rubi_confirm(approval_id, user_response)` | Only for `chat`-level approvals: the exact plain-text label the user pressed |
 | `rubi_events(include_acked=false)` / `rubi_ack(event_id)` | Pull and acknowledge events (e.g. a reply arrived) |
 | `rubi_update()` | Ask the user (strong approval) to update to the latest signed release; Rubi restarts into it and stays unlocked |
@@ -73,9 +74,12 @@ A plugin tool whose action kind has level `strong` or `chat` doesn't act. It ret
 ```
 
 - **`strong`:** the agent shows the link and says what is waiting. The preview in the panel comes from
-  Rubi, not from the agent. The agent then calls `rubi_approval(approval_id, wait_seconds=25)` and repeats
-  while the user is acting. If the agent's turn ends first, Rubi delivers an `approval.decided` event
-  through the routine webhook, and the agent reports the result.
+  Rubi, not from the agent. The agent leaves itself a note with `rubi_continue_after(approval_id, plan)`
+  and waits with `rubi_approval(approval_id, wait_seconds=25)`. If its turn ends first, Rubi delivers an
+  `approval.decided` event through the routine webhook with the outcome, the result and the agent's plan,
+  so the agent continues the task in a fresh run without the user writing to it. Results that await
+  approval carry `after_sending_the_link`, which tells the agent which of the two cases applies (webhook
+  set up or not); `rubi_status` reports `webhook.configured` and how to set it up.
 - **`chat`:** the response carries `buttons` with plain-text labels (no emoji) that include a short code
   (`Send · K7Q2`). The agent renders them as buttons, waits, and calls `rubi_confirm` with the pressed
   label. Users can pair this with a Grok Bot "Ask first" rule on `rubi_confirm`.
