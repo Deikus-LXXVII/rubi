@@ -73,7 +73,7 @@
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #faf7f5;
-    --bg-2: #f3eeea;
+    --bg-2: #f6f2ef;
     --card: #ffffff;
     --card-2: #fbf9f8;
     --raise: #ffffff;
@@ -994,3 +994,13 @@ input.switch.sm:checked::after { transform: translateX(16px); }
 }
 .agent-head .muted.small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-card { display: flex; flex-direction: column; gap: 8px; }
+
+/* light theme details (iteration 13) */
+@media (prefers-color-scheme: light) {
+  .mail, .card.approve .req-side .switch-row { background: var(--card); border-color: var(--line-2); }
+  .card.approve .req-side { background: var(--bg-2); }
+  .mascot .eye-glint { opacity: 0.95; }
+  .burst-ring { border-color: color-mix(in srgb, var(--ruby-500) 55%, transparent); }
+  .num, .pbadge, .num-s, .plugin-chips .chip b { box-shadow: none; }
+  #landing::after { opacity: 0.55; }
+}
