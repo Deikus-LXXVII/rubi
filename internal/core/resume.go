@@ -122,8 +122,8 @@ const agentHow = "Create a routine named \"Rubi events\" with a webhook trigger 
 func (c *Core) WebhookHint() map[string]any {
 	if c.WebhookConfigured() {
 		return map[string]any{"configured": true, "agents": c.Agents(),
-			"note": "Several Bots can share Rubi. Identify yourself with your Bot's name where tools take an agent. " +
-				"A Bot that isn't listed can register itself the same way: " + agentHow}
+			"note": "Several Bots can share Rubi. Identify yourself with your Bot's name where tools take an agent, " +
+				"and pick your notifications with rubi_notifications. A Bot that isn't listed can connect itself: " + agentHow}
 	}
 	return map[string]any{"configured": false,
 		"why": "Without it you only learn about approvals and events (like replies) when the user writes to you. " +

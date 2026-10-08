@@ -29,9 +29,14 @@ need the user's passwords.
 ## Several Bots
 
 All Bots on the account share this computer and this Rubi. Each Bot that should be woken connects itself
-as above, under its own name. Pass your Bot's name as `agent` to `rubi_continue_after`, so the outcome
-wakes you and not another Bot. `rubi_status` (field `webhook.agents`) lists the connected Bots. The user
-chooses in Rubi's settings which Bot hears about each plugin's events (e.g. replies to tracked emails).
+as above, under its own name (the user may also have added it in Rubi's settings, page "Grok Bot
+connections"). Then:
+
+- Pass your Bot's name as `agent` to `rubi_continue_after`, so the outcome wakes you and not another Bot.
+- Choose what you hear about with `rubi_notifications(agent, sources)`: plugin ids (e.g. `icloud-mail` for
+  replies to tracked emails) and `rubi` for Rubi's own events. Pick only what your role needs: every wake
+  costs the user's quota. Notifications no Bot chose go to the default Bot.
+- `rubi_status` (field `webhook.agents`) lists the connected Bots and what each one hears about.
 
 ## Updates
 

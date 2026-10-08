@@ -7,7 +7,9 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,7 +31,8 @@ installed, until at least one agent is connected (rubi_status, field webhook).
 
 SEVERAL BOTS. Bots on the same account share Rubi. Each Bot that wants to be woken registers itself the
 same way, under its own name. Pass your Bot's name as "agent" where tools take one, so Rubi wakes you and
-not another Bot. The user chooses in settings which agent gets each plugin's events (e.g. replies).
+not another Bot. After connecting, choose what you want to hear about with rubi_notifications (e.g. a
+mail Bot subscribes to "icloud-mail" for replies). The user can change this in settings too.
 
 STATE. Call rubi_status first. If Rubi is "unpaired" or "locked", give the user the link it returns and
 explain in one sentence. Retry the user's request after they say it's done. If a plugin tool answers
@@ -212,6 +215,11 @@ type ackIn struct {
 
 type out = map[string]any
 
+type notifyIn struct {
+	Agent   string    `json:"agent" jsonschema:"your Bot's name as connected to Rubi"`
+	Sources *[]string `json:"sources,omitempty" jsonschema:"omit to just look; otherwise the full list of sources you want (plugin ids and/or \"rubi\")"`
+}
+
 type planIn struct {
 	ApprovalID string `json:"approval_id"`
 	Plan       string `json:"plan" jsonschema:"what you will do once the user decides, with the context you need (e.g. the user's original request)"`
@@ -328,6 +336,30 @@ func (s *Server) registerCoreTools() {
 				o["warning"] = "No agent webhook is set up, so Rubi can't wake you. Ask the user to tell you when they're done."
 			}
 			return nil, o, nil
+		})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_notifications",
+		Description: "Which Rubi notifications wake you (you = agent, your Bot's name as connected to Rubi). Without sources: shows your current choice and what's available. With sources: replaces it, e.g. [\"icloud-mail\"] to hear about replies to tracked emails, \"rubi\" for Rubi's own events (updates, plugin problems). Each wake costs the user's quota; subscribe only to what your role needs. Results of approvals you asked for always reach you."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in notifyIn) (*mcp.CallToolResult, out, error) {
+			if locked := s.lockedResponse(); locked != nil {
+				return nil, locked, nil
+			}
+			if in.Sources != nil {
+				if _, err := s.core.SetSubscriptions(in.Agent, *in.Sources); err != nil {
+					return nil, nil, err
+				}
+			}
+			var me any
+			for _, a := range s.core.Agents() {
+				if strings.EqualFold(a.Name, strings.TrimSpace(in.Agent)) {
+					me = a
+				}
+			}
+			if me == nil {
+				return nil, nil, errors.New("you aren't connected to Rubi under that name; connect first: send the user rubi_link(\"agent:<your Bot name>\")")
+			}
+			return nil, out{"you": me, "available": s.core.Sources(),
+				"note": "Events nobody subscribed to go to the default agent."}, nil
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_confirm",

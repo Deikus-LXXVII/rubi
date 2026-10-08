@@ -48,7 +48,7 @@ type Data struct {
 	Webhook *Webhook `json:"webhook,omitempty"`
 	// Agents are the user's Grok Bots that Rubi can wake, each through its own routine webhook.
 	Agents []*Agent `json:"agents,omitempty"`
-	Locale       string                  `json:"locale,omitempty"`
+	Locale string   `json:"locale,omitempty"`
 	// Approvers are public keys of the user's passkeys, used to verify action approvals.
 	Approvers []Approver `json:"approvers,omitempty"`
 	// PasswordApproveKey verifies password-based approvals (HMAC). It is derived on the user's device
@@ -93,8 +93,6 @@ type Integration struct {
 	Secrets  map[string]string `json:"secrets,omitempty"`
 	// State is integration-private runtime state (e.g. tracked messages), kept encrypted with the rest.
 	State json.RawMessage `json:"state,omitempty"`
-	// Agent receives this plugin's events (e.g. replies); "" means the default agent.
-	Agent string `json:"agent,omitempty"`
 }
 
 // Agent is one Bot Rubi can wake. Events for it go to its routine webhook.
@@ -102,7 +100,10 @@ type Agent struct {
 	Name    string `json:"name"`
 	URL     string `json:"url"`
 	Key     string `json:"key"`
-	Default bool   `json:"default,omitempty"` // gets events that belong to no particular agent
+	Default bool   `json:"default,omitempty"` // gets events nobody subscribed to
+	// Subscriptions are the event sources this agent hears about: plugin ids, and "rubi" for Rubi's own
+	// events (updates, plugin problems).
+	Subscriptions []string `json:"subscriptions,omitempty"`
 }
 
 type Webhook struct {

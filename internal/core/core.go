@@ -66,7 +66,7 @@ type Core struct {
 	// can't even fetch the wrapped keys.
 	tickets map[string]ticket
 	plans   map[string]pendingPlan // approval id -> what the agent will do once it is decided
-	seen    map[string]bool   // approvals whose outcome the agent already got from rubi_approval
+	seen    map[string]bool        // approvals whose outcome the agent already got from rubi_approval
 	upd     updateState
 	mkt     marketState
 	integ   integrity.Result

@@ -13,14 +13,15 @@ import (
 // Several Grok Bots can share one Rubi (they share one computer, and the same MCP server). Each Bot that
 // wants to be woken registers as an agent with its own routine webhook. Rubi routes:
 //   - an approval's outcome to the agent that asked to be woken (rubi_continue_after);
-//   - a plugin's events (e.g. replies) to the agent the plugin is assigned to;
-//   - everything else to the default agent.
+//   - other events to every agent subscribed to their source (a plugin, or "rubi");
+//   - events nobody subscribed to, to the default agent.
 
 // AgentInfo is an agent as the agent and the panel see it (never the key).
 type AgentInfo struct {
-	Name    string `json:"name"`
-	Host    string `json:"host"`
-	Default bool   `json:"default"`
+	Name          string   `json:"name"`
+	Host          string   `json:"host"`
+	Default       bool     `json:"default"`
+	Subscriptions []string `json:"subscriptions"`
 }
 
 const maxAgentName = 40
@@ -66,7 +67,8 @@ func (c *Core) Agents() []AgentInfo {
 	_ = c.Vault.View(func(d *vault.Data) error {
 		def := defaultAgent(d)
 		for _, a := range d.Agents {
-			out = append(out, AgentInfo{Name: a.Name, Host: redactURL(a.URL), Default: a == def})
+			subs := append([]string{}, a.Subscriptions...)
+			out = append(out, AgentInfo{Name: a.Name, Host: redactURL(a.URL), Default: a == def, Subscriptions: subs})
 		}
 		return nil
 	})
@@ -132,7 +134,7 @@ func (c *Core) RemoveAgent(ctx context.Context, name string) (string, error) {
 		return "", fmt.Errorf("no agent %q (agents: %s)", name, c.agentNames())
 	}
 	return c.RequestChange(ctx, "Stop waking "+name, map[string]any{"agent": name,
-		"effect": "Rubi won't send events to this Bot any more. Its plugins' events go to the default agent."},
+		"effect": "Rubi won't send events to this Bot any more."},
 		func(d *vault.Data) error {
 			a := findAgent(d, name)
 			var kept []*vault.Agent
@@ -145,11 +147,6 @@ func (c *Core) RemoveAgent(ctx context.Context, name string) (string, error) {
 				kept[0].Default = true
 			}
 			d.Agents = kept
-			for _, i := range d.Integrations {
-				if a != nil && strings.EqualFold(i.Agent, a.Name) {
-					i.Agent = ""
-				}
-			}
 			return nil
 		}, nil)
 }
@@ -160,7 +157,7 @@ func (c *Core) SetDefaultAgent(ctx context.Context, name string) (string, error)
 		return "", fmt.Errorf("no agent %q (agents: %s)", name, c.agentNames())
 	}
 	return c.RequestChange(ctx, "Make "+name+" the default agent", map[string]any{"agent": name,
-		"effect": "Gets Rubi's own events (updates, plugin problems) and those of plugins not assigned to another agent."},
+		"effect": "Gets the events no Bot subscribed to."},
 		func(d *vault.Data) error {
 			a := findAgent(d, name)
 			for _, x := range d.Agents {
@@ -170,53 +167,73 @@ func (c *Core) SetDefaultAgent(ctx context.Context, name string) (string, error)
 		}, nil)
 }
 
-// RoutePlugin requests approval to send a plugin's events (e.g. replies) to an agent ("" = default).
-func (c *Core) RoutePlugin(ctx context.Context, plugin, agent string) (string, error) {
-	m, ok := c.Store.Get(plugin)
-	if !ok {
-		return "", fmt.Errorf("plugin %q is not installed", plugin)
+// Sources lists what an agent can subscribe to: installed plugins, and "rubi" for Rubi's own events.
+func (c *Core) Sources() []map[string]string {
+	out := []map[string]string{{"id": "rubi", "name": "Rubi (updates, plugin problems)"}}
+	for _, m := range c.Store.Installed() {
+		out = append(out, map[string]string{"id": m.ID, "name": m.Name})
 	}
-	if agent != "" && !c.HasAgent(agent) {
-		return "", fmt.Errorf("no agent %q (agents: %s)", agent, c.agentNames())
-	}
-	target := agent
-	if target == "" {
-		target = "the default agent"
-	}
-	return c.RequestChange(ctx, "Send "+m.Name+" events to "+target, map[string]any{"plugin": m.Name, "agent": target},
-		func(d *vault.Data) error {
-			i := d.Integrations[plugin]
-			if i == nil {
-				return errors.New(m.Name + " isn't connected yet")
-			}
-			i.Agent = agent
-			return nil
-		}, nil)
+	return out
 }
 
-// pluginAgent is the agent a plugin's events go to ("" = default).
-func (c *Core) pluginAgent(plugin string) string {
-	name := ""
-	_ = c.Vault.View(func(d *vault.Data) error {
-		if i := d.Integrations[plugin]; i != nil {
-			name = i.Agent
+// SetSubscriptions replaces which event sources an agent hears about. It needs no approval: it only
+// distributes events among webhooks the user already approved, and the user can change it in settings.
+func (c *Core) SetSubscriptions(agent string, sources []string) ([]string, error) {
+	valid := map[string]bool{}
+	for _, s := range c.Sources() {
+		valid[s["id"]] = true
+	}
+	clean := []string{}
+	seen := map[string]bool{}
+	for _, s := range sources {
+		s = strings.TrimSpace(s)
+		if !valid[s] {
+			return nil, fmt.Errorf("unknown source %q (use \"rubi\" or an installed plugin id)", s)
 		}
+		if !seen[s] {
+			seen[s] = true
+			clean = append(clean, s)
+		}
+	}
+	names := c.agentNames()
+	err := c.Vault.Update(func(d *vault.Data) error {
+		a := findAgent(d, agent)
+		if a == nil {
+			return fmt.Errorf("no agent %q (agents: %s)", agent, names)
+		}
+		a.Subscriptions = clean
 		return nil
 	})
-	return name
+	if err == nil {
+		c.Audit.Record("agent.subscriptions", map[string]any{"agent": agent, "sources": clean})
+	}
+	return clean, err
 }
 
-// agentFor resolves an event target to an agent (unknown or "" falls back to the default).
-func (c *Core) agentFor(target string) *vault.Agent {
-	var out *vault.Agent
+// recipients are the agents an event goes to: its explicit target, else everyone subscribed to its
+// source, else the default agent.
+func (c *Core) recipients(target, source string) []vault.Agent {
+	var out []vault.Agent
 	_ = c.Vault.View(func(d *vault.Data) error {
-		a := findAgent(d, target)
-		if a == nil || target == "" {
-			a = defaultAgent(d)
+		if target != "" {
+			if a := findAgent(d, target); a != nil {
+				out = append(out, *a)
+				return nil
+			}
+		} else {
+			for _, a := range d.Agents {
+				for _, s := range a.Subscriptions {
+					if s == source {
+						out = append(out, *a)
+						break
+					}
+				}
+			}
 		}
-		if a != nil {
-			cp := *a
-			out = &cp
+		if len(out) == 0 {
+			if a := defaultAgent(d); a != nil {
+				out = append(out, *a)
+			}
 		}
 		return nil
 	})

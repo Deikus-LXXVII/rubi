@@ -292,7 +292,7 @@ function parseWebhook(text) {
 
 // agentForm asks for an agent's routine webhook in one paste box. fixedName locks the name (agent links).
 function agentForm(ctx, { fixedName, onSaved, err }) {
-  const name = h("input", { type: "text", placeholder: "Bot name, e.g. Main", autocomplete: "off", value: fixedName || "", required: true });
+  const name = h("input", { type: "text", placeholder: "The Grok Bot's name*", autocomplete: "off", value: fixedName || "", required: true });
   if (fixedName) name.readOnly = true;
   const paste = h("textarea", { rows: "4", placeholder: "Paste here: the \u201cPOST to\u201d address and the \u201cheader\u201d (or \u201ckey\u201d)", autocapitalize: "none", spellcheck: "false", required: true });
   const parsed = h("p", { class: "muted small" });
@@ -315,7 +315,7 @@ function agentForm(ctx, { fixedName, onSaved, err }) {
         confirmChange(ctx, res, () => onSaved(name.value.trim()), "Finish");
       }).catch((x) => showError(err, x));
     },
-  }, fixedName ? null : h("label", { class: "field" }, h("span", {}, "Bot name"), name),
+  }, fixedName ? null : h("label", { class: "field" }, h("span", {}, "Name"), name),
   h("label", { class: "field" }, h("span", {}, "Webhook"), paste), parsed, go);
   return form;
 }
@@ -903,7 +903,7 @@ async function settingsScreen(ctx) {
     h("p", { class: "muted" }, "How each action is approved. Changing these always needs Face ID or your password."),
     ...policyRows,
     savePolicy,
-    ...(hook.agents ? agentsSection(ctx, hook, change, err, back) : [h("h2", {}, "Agent webhook")]),
+    ...(hook.agents ? agentsSection(ctx, hook) : [h("h2", {}, "Agent webhook")]),
     ...(hook.agents ? [] : [
     h("p", { class: "muted" }, hook.configured
       ? `Events go to ${hook.url}`
@@ -924,42 +924,108 @@ async function settingsScreen(ctx) {
   );
 }
 
-// agentsSection lists the Bots Rubi can wake and where each plugin's events go.
-function agentsSection(ctx, data, change, err, back) {
+// The message the user sends to each Grok Bot that should hear from Rubi.
+const CONNECT_PROMPT = "Connect yourself to Rubi so it can wake you: create a routine named \"Rubi events\" " +
+  "with a webhook trigger and no schedule, whose instruction is \"A Rubi event arrived. Follow next_step in the " +
+  "JSON body.\" Then send me rubi_link(\"agent:<your Bot name>\"). Once I've connected it, choose which Rubi " +
+  "notifications you need with rubi_notifications.";
+
+// agentsSection is the summary in settings; the details live on their own page.
+function agentsSection(ctx, data) {
   const agents = data.agents || [];
-  const list = agents.length ? h("div", { class: "list" }, agents.map((a) => h("div", { class: "item plugin" },
-    h("div", {}, h("strong", {}, a.name), " ", a.default ? h("span", { class: "tag" }, "Default") : null,
-      h("div", { class: "muted small" }, a.host)),
-    h("div", { class: "actions" },
-      h("button", { class: "secondary small", onclick: async (e) => {
-        await busy(e.target, () => ctx.client.call("webhook.test", { name: a.name }))
-          .then(() => { e.target.textContent = "Sent"; }).catch((x) => showError(err, x));
-      } }, "Test"),
-      a.default ? null : h("button", { class: "link small", onclick: change("agent.default", () => ({ name: a.name })) }, "Make default"),
-      h("button", { class: "link small", onclick: change("agent.remove", () => ({ name: a.name })) }, "Remove")))))
-    : h("p", { class: "error" }, "No agent is connected, so Rubi can't wake your Bots. Setup isn't finished.");
-  const routes = (data.plugins || []).map((p) => {
-    const sel = h("select", {}, h("option", { value: "", selected: !p.agent }, "Default agent"),
-      agents.map((a) => h("option", { value: a.name, selected: p.agent && p.agent.toLowerCase() === a.name.toLowerCase() }, a.name)));
-    sel.addEventListener("change", async () => {
-      try {
-        confirmChange(ctx, await ctx.client.call("plugin.route", { id: p.id, agent: sel.value }), back);
-      } catch (x) {
-        showError(err, x);
-      }
-    });
-    return h("label", { class: "field row-field" }, h("span", {}, `${p.name} events`, h("small", {}, "e.g. replies")), sel);
-  });
-  const add = h("details", { class: "sideload" }, h("summary", {}, "Connect another Bot"),
-    h("p", { class: "muted" }, "Easiest: ask that Bot to connect itself to Rubi; it sends you a link. Or do it here:"),
-    agentHowTo(""), agentForm(ctx, { err, onSaved: () => back() }));
   return [
-    h("h2", {}, "Agents"),
-    h("p", { class: "muted" }, "Your Grok Bots that Rubi can wake through their \u201cRubi events\u201d routine. Each one gets the results of what it asked for."),
-    list,
-    ...(routes.length && agents.length > 1 ? [h("p", { class: "muted" }, "Who hears about each plugin:"), ...routes] : []),
-    add,
+    h("h2", {}, "Grok Bot"),
+    h("p", { class: agents.length ? "muted" : "error" }, agents.length
+      ? `${agents.length === 1 ? "1 Bot is" : agents.length + " Bots are"} connected: ${agents.map((a) => a.name).join(", ")}.`
+      : "No Bot is connected, so Rubi can't wake your agent. Setup isn't finished."),
+    h("button", { class: "secondary", onclick: () => grokBotScreen(ctx) }, "Grok Bot connections"),
   ];
+}
+
+// grokBotScreen manages the Bots Rubi can wake: one webhook per Bot, any number of them, each with the
+// notifications it hears about.
+async function grokBotScreen(ctx) {
+  const err = errorBox();
+  let data;
+  try {
+    data = await ctx.client.call("agents.get");
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  const again = () => grokBotScreen(ctx);
+  const back = () => settingsScreen(ctx);
+  const sources = data.sources || [];
+  const change = (op, args) => async (e) => {
+    await busy(e.target, async () => confirmChange(ctx, await ctx.client.call(op, args), again)).catch((x) => showError(err, x));
+  };
+
+  const prompt = h("div", { class: "prompt" }, CONNECT_PROMPT);
+  const copy = h("button", { class: "secondary small", onclick: async () => {
+    try {
+      await navigator.clipboard.writeText(CONNECT_PROMPT);
+      copy.textContent = "Copied";
+    } catch (_) {
+      const r = document.createRange();
+      r.selectNodeContents(prompt);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+      copy.textContent = "Selected: copy it";
+    }
+  } }, "Copy");
+
+  const cards = (data.agents || []).map((a) => {
+    const subs = new Set(a.subscriptions || []);
+    const saved = h("span", { class: "muted small" });
+    const boxes = sources.map((src) => {
+      const box = h("input", { type: "checkbox", checked: subs.has(src.id) });
+      box.addEventListener("change", async () => {
+        const want = sources.filter((x) => x.id === src.id ? box.checked : subs.has(x.id)).map((x) => x.id);
+        saved.textContent = "Saving…";
+        try {
+          const res = await ctx.client.call("agent.subscribe", { name: a.name, sources: want });
+          subs.clear();
+          for (const x of res.subscriptions) subs.add(x);
+          saved.textContent = "Saved";
+        } catch (x) {
+          box.checked = !box.checked;
+          saved.textContent = "";
+          showError(err, x);
+        }
+      });
+      return h("label", { class: "check" }, box, h("span", {}, src.name));
+    });
+    return h("div", { class: "agent-card" },
+      h("div", { class: "agent-head" },
+        h("div", {}, h("strong", {}, a.name), " ", a.default ? h("span", { class: "tag" }, "Default") : null,
+          h("div", { class: "muted small" }, a.host)),
+        h("div", { class: "actions" },
+          h("button", { class: "secondary small", onclick: async (e) => {
+            await busy(e.target, () => ctx.client.call("webhook.test", { name: a.name }))
+              .then(() => { e.target.textContent = "Sent"; }).catch((x) => showError(err, x));
+          } }, "Test"),
+          a.default ? null : h("button", { class: "link small", onclick: change("agent.default", { name: a.name }) }, "Make default"),
+          h("button", { class: "link small", onclick: change("agent.remove", { name: a.name }) }, "Remove"))),
+      h("p", { class: "muted small" }, "Notifies this Bot about:"),
+      h("div", { class: "checks" }, boxes), saved);
+  });
+
+  screen(
+    header(ctx.hello),
+    h("h1", {}, "Grok Bot connections"),
+    h("p", {}, "Rubi wakes a Grok Bot through that Bot's own routine webhook: when you approve something it asked for, or when something it follows happens (like a reply to a tracked email). The routine runs only then, never on a schedule."),
+    err,
+    h("h2", {}, "1. Ask the Bot to connect itself"),
+    h("p", { class: "muted" }, "Send this to each Grok Bot that should hear from Rubi. It creates the routine and sends you a link; open that link in the Grok Bot desktop app, where the webhook is shown."),
+    prompt, copy,
+    h("h2", {}, "2. Or add a webhook here"),
+    agentHowTo(""),
+    agentForm(ctx, { err, onSaved: () => again() }),
+    h("p", { class: "footnote" }, "* Name each webhook exactly like its Grok Bot. Bots identify themselves to Rubi by name, so they can then choose for themselves which notifications they receive. You can always change it below."),
+    h("h2", {}, "Connected Bots"),
+    cards.length ? h("div", { class: "agent-list" }, cards) : h("p", { class: "error" }, "None yet. Setup isn't finished until at least one Bot is connected."),
+    cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. Notifications no Bot chose go to the default Bot.") : null,
+    h("button", { class: "link", onclick: back }, "Back to settings"),
+  );
 }
 
 // ---------- store ----------

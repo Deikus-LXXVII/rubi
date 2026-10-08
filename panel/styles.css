@@ -373,3 +373,13 @@ button.is-busy {
 textarea { width: 100%; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
 .steps-list { margin: 8px 0 14px; padding-left: 20px; color: var(--muted); }
 .steps-list li { margin: 4px 0; }
+
+.prompt { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0; padding: 12px 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--bg-2); font-size: 0.85rem; user-select: all; }
+.footnote { color: var(--muted); font-size: 0.8rem; margin-top: 8px; }
+.agent-list { display: flex; flex-direction: column; gap: 10px; }
+.agent-card { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; }
+.agent-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.checks { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 6px; }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { width: 18px; height: 18px; padding: 0; accent-color: var(--accent); }

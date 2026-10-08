@@ -29,8 +29,10 @@ Open the link on your iPhone (or any device with a browser):
    is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without
    you writing to it. The routine runs only when something happens, not on a schedule.
 
-   Several Bots? Each one connects itself the same way. In Settings > Agents you choose which Bot hears
-   about each plugin (for example, replies go to your mail Bot).
+   Several Bots? Settings > **Grok Bot connections** has a ready-made message to send to each Bot, and you
+   can add any number of webhooks there yourself. Name each webhook exactly like its Grok Bot: Bots then
+   choose for themselves which notifications they need (for example, your mail Bot takes iCloud Mail
+   replies). You can change that per Bot on the same page.
 
 Rubi is now unlocked. After every restart it locks itself again, and your agent sends you an unlock link.
 
@@ -80,7 +82,7 @@ Ask your agent for the settings link. There you can:
 
 - install, update, connect, disconnect or remove plugins;
 - choose how each action is approved: no approval, buttons in chat, or Face ID / password;
-- manage the connected Bots (agents) and which one hears about each plugin;
+- manage Grok Bot connections: which Bots Rubi can wake and what each one hears about;
 - see recent unlocks and lock Rubi.
 
 Every settings change needs Face ID or your password. Your agent can't change settings.

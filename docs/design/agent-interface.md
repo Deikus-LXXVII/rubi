@@ -50,7 +50,8 @@ what to do.
 | `rubi_plugin_update(id)` / `rubi_plugin_remove(id)` | Update or remove a plugin (strong approval) |
 | `rubi_call(tool, arguments)` | Call a plugin tool by name, for agents that don't refresh their tool list |
 | `rubi_approval(approval_id, wait_seconds=0..25)` | Status of a pending approval (`pending`, `approved`, `denied`, `expired`, `executed`) and the action result. Long-polls up to `wait_seconds` (max 25). |
-| `rubi_continue_after(approval_id, plan)` | The agent's own note for after a strong approval is decided; returned with `approval.decided` |
+| `rubi_continue_after(approval_id, plan, agent)` | The agent's own note for after a strong approval is decided; returned with `approval.decided` to that agent |
+| `rubi_notifications(agent, sources?)` | Which event sources (plugin ids, `rubi`) wake this agent; several Bots share one Rubi |
 | `rubi_confirm(approval_id, user_response)` | Only for `chat`-level approvals: the exact plain-text label the user pressed |
 | `rubi_events(include_acked=false)` / `rubi_ack(event_id)` | Pull and acknowledge events (e.g. a reply arrived) |
 | `rubi_update()` | Ask the user (strong approval) to update to the latest signed release; Rubi restarts into it and stays unlocked |

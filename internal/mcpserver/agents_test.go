@@ -93,12 +93,18 @@ func TestSeveralAgents(t *testing.T) {
 	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
 	waitHit(t, mainCh, "demo.ping") // unassigned plugin: the default agent
 
-	// Route the plugin's events to the mail Bot.
-	settings := r.panel("settings")
-	if err := settings.Call("plugin.route", map[string]any{"id": "demo", "agent": "Mail"}, &res); err != nil {
-		t.Fatal(err)
+	// The mail Bot subscribes itself to the plugin's events (no approval needed: it only routes among
+	// webhooks the user approved). Unknown sources and agents are refused.
+	if e := r.ag.call("rubi_notifications", map[string]any{"agent": "Mail", "sources": []string{"nope"}}); e["tool_error"] == nil {
+		t.Fatalf("unknown source accepted: %v", e)
 	}
-	r.approveChange(settings, res)
+	if e := r.ag.call("rubi_notifications", map[string]any{"agent": "Ghost"}); e["tool_error"] == nil {
+		t.Fatalf("unknown agent accepted: %v", e)
+	}
+	me := r.ag.call("rubi_notifications", map[string]any{"agent": "mail", "sources": []string{"demo"}})
+	if subs := me["you"].(map[string]any)["subscriptions"].([]any); len(subs) != 1 || subs[0] != "demo" {
+		t.Fatalf("subscribe: %v", me)
+	}
 	r.ag.call("demo_ping", nil)
 	if h := waitHit(t, mailCh, "demo.ping"); h.auth != "Bearer crsr_mail" {
 		t.Fatalf("mail Bot auth: %q", h.auth)

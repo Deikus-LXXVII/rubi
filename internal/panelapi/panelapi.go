@@ -215,7 +215,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	case "integration.catalog", "integration.setup", "integration.disconnect",
 		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
 		"store.list", "plugin.install", "plugin.update", "plugin.remove",
-		"agents.get", "agent.add", "agent.remove", "agent.default", "plugin.route":
+		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -512,7 +512,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		URL     string            `json:"url"`
 		Key     string            `json:"key"`
 		Name    string            `json:"name"`
-		Agent   string            `json:"agent"`
+		Sources []string          `json:"sources"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -524,7 +524,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		name := strings.TrimPrefix(purpose, "agent:")
 		switch env.Op {
 		case "agents.get":
-		case "agent.add", "webhook.test":
+		case "agent.add", "webhook.test", "agent.subscribe":
 			if !strings.EqualFold(strings.TrimSpace(args.Name), strings.TrimSpace(name)) {
 				return nil, errors.New("this link is for connecting " + name)
 			}
@@ -582,19 +582,15 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		out := map[string]any{"agents": s.core.Agents()}
 		if strings.HasPrefix(purpose, "agent:") {
 			out["name"] = strings.TrimPrefix(purpose, "agent:")
-			return out, nil
 		}
-		var routes []map[string]any
-		_ = s.core.Vault.View(func(d *vault.Data) error {
-			for _, m := range s.core.Store.Installed() {
-				if i := d.Integrations[m.ID]; i != nil && i.Enabled {
-					routes = append(routes, map[string]any{"id": m.ID, "name": m.Name, "agent": i.Agent})
-				}
-			}
-			return nil
-		})
-		out["plugins"] = routes
+		out["sources"] = s.core.Sources()
 		return out, nil
+	case "agent.subscribe":
+		subs, err := s.core.SetSubscriptions(args.Name, args.Sources)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"subscriptions": subs}, nil
 	case "webhook.test":
 		ev := s.core.TestWebhook(args.Name)
 		return map[string]any{"event_id": ev.ID}, nil
@@ -604,8 +600,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		approvalID, err = s.core.RemoveAgent(ctx, args.Name)
 	case "agent.default":
 		approvalID, err = s.core.SetDefaultAgent(ctx, args.Name)
-	case "plugin.route":
-		approvalID, err = s.core.RoutePlugin(ctx, args.ID, args.Agent)
+
 	case "integration.setup":
 		approvalID, err = s.core.ConnectIntegration(ctx, args.ID, args.Fields, args.Secrets)
 	case "integration.disconnect":
