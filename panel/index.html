@@ -8,7 +8,7 @@
   <meta name="color-scheme" content="dark light">
   <meta name="theme-color" content="#0f0d0d" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#faf7f5" media="(prefers-color-scheme: light)">
-  <meta name="description" content="Rubi lets your AI agent use your accounts, starting with iCloud Mail, only with your approval. Self-hosted, encrypted with a key only you hold.">
+  <meta name="description" content="Rubi lets your AI agent use your mail, chats, games and home, only with your approval. Self-hosted, open source, encrypted with a key only you hold.">
   <meta name="apple-mobile-web-app-title" content="Rubi">
   <title>Rubi: your agent acts, you approve</title>
   <link rel="icon" href="assets/rubi.svg" type="image/svg+xml">
@@ -25,15 +25,25 @@
     </header>
 
     <section class="hero">
-      <img class="hero-mascot" src="assets/rubi.svg" alt="Rubi" width="132" height="132">
-      <h1>Your agent does the work.<br>You keep the keys.</h1>
-      <p class="lede">Rubi lets your AI agent use your accounts, starting with iCloud Mail. Everything is encrypted with a key only you hold, and anything sensitive waits for your passkey (Face ID or Touch ID).</p>
-      <div class="install">
-        <p class="install-label">Tell your Grok Bot:</p>
-        <div class="install-box">
-          <code id="install-cmd">Install Rubi-Project: run curl -fsSL https://rubi-panel.com/install.sh | sh</code>
-          <button type="button" id="copy-install" class="copy" hidden>Copy</button>
+      <div class="hero-copy">
+        <p class="eyebrow">Self-hosted · open source · yours</p>
+        <h1 id="hero-title">Your agent does the work. You keep the keys.</h1>
+        <p class="lede">Rubi lets your AI agent use your mail, chats, games and home, and nothing that matters happens without you. Your accounts are encrypted with a key only you hold; sensitive actions wait for your passkey.</p>
+        <div class="cta">
+          <a class="btn primary" href="#demo">Try the demo</a>
+          <a class="btn ghost" href="https://github.com/Deikus-LXXVII/rubi" rel="noopener noreferrer">Read the source</a>
         </div>
+        <div class="install">
+          <p class="install-label">To install, tell your Grok Bot:</p>
+          <div class="install-box">
+            <code id="install-cmd">Install Rubi-Project: run curl -fsSL https://rubi-panel.com/install.sh | sh</code>
+            <button type="button" id="copy-install" class="copy" hidden>Copy</button>
+          </div>
+        </div>
+      </div>
+      <div class="hero-stage">
+        <img class="hero-mascot" id="hero-mascot" src="assets/rubi.svg" alt="Rubi" width="240" height="240">
+        <div class="story" id="story" aria-hidden="true"></div>
       </div>
     </section>
 
@@ -42,7 +52,7 @@
       <ol>
         <li><span class="num">1</span><div><h3>Install from the chat</h3><p>Your agent installs Rubi on its own computer and sends you a link.</p></div></li>
         <li><span class="num">2</span><div><h3>Set up a passkey</h3><p>Rubi is locked with a passkey on your phone. Your agent never sees your key or your passwords.</p></div></li>
-        <li><span class="num">3</span><div><h3>Approve what matters</h3><p>Reading and drafts can run freely. Sending waits for you: the panel shows the exact email, and your passkey approves it.</p></div></li>
+        <li><span class="num">3</span><div><h3>Approve what matters</h3><p>Reading can run freely. Sending, unlocking a door or revealing a private message waits for you: the panel shows exactly what, and your passkey approves it.</p></div></li>
       </ol>
     </section>
 
@@ -58,7 +68,12 @@
       <p>Rubi starts bare. Add integrations as plugins: each one is signed, reviewed, and shows what it can do before you approve it.</p>
       <div class="chips">
         <span class="chip on">iCloud Mail</span>
-        <span class="chip">More coming</span>
+        <span class="chip on">Gmail</span>
+        <span class="chip on">Telegram</span>
+        <span class="chip on">Steam</span>
+        <span class="chip on">Philips Hue</span>
+        <span class="chip on">Apple Home</span>
+        <span class="chip on">Location</span>
       </div>
     </section>
 

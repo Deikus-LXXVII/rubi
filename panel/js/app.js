@@ -221,6 +221,7 @@ function showPanel() {
 function showLanding() {
   root.hidden = true;
   document.getElementById("landing").hidden = false;
+  enhanceLanding();
   const btn = document.getElementById("copy-install");
   const cmd = document.getElementById("install-cmd");
   if (btn && cmd && navigator.clipboard) {
@@ -304,6 +305,81 @@ function savePin(instance, k, version) {
   } catch {
     /* private mode: pinning just isn't remembered */
   }
+}
+
+// ---------- landing: the live mascot and the approval story ----------
+
+let landingDone = false;
+function enhanceLanding() {
+  if (landingDone) return;
+  landingDone = true;
+  document.documentElement.classList.add("js");
+
+  // Rubi, alive, watching the pointer. Clicking it makes it hop.
+  const img = document.getElementById("hero-mascot");
+  if (img) {
+    const svg = mascot("idle", 240, { follow: true });
+    svg.classList.add("hero-mascot");
+    svg.addEventListener("click", async () => {
+      setMood(svg, "happy");
+      await react(svg, "hop");
+      setTimeout(() => setMood(svg, "idle"), 500);
+    });
+    img.replaceWith(svg);
+    react(svg, "pop", 200);
+    landingMascot = svg;
+  }
+
+  // The headline arrives word by word.
+  const title = document.getElementById("hero-title");
+  if (title && !reducedMotion()) {
+    const words = title.textContent.split(" ");
+    title.replaceChildren(...words.flatMap((w, i) => [h("span", { class: "word", style: `--w:${i}` }, w), " "]));
+  }
+
+  // A small story of what Rubi does, on a loop: the agent asks, you approve, it's done.
+  const story = document.getElementById("story");
+  if (story) startStory(story);
+
+  // Blocks below the fold rise as they scroll into view.
+  if ("IntersectionObserver" in window && !reducedMotion()) {
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) if (e.isIntersecting) { e.target.classList.add("seen"); io.unobserve(e.target); }
+    }, { threshold: 0.15 });
+    document.querySelectorAll(".steps li, .feature, .integrations .chip").forEach((el, i) => {
+      el.classList.add("reveal");
+      el.style.setProperty("--d", `${(i % 4) * 70}ms`);
+      io.observe(el);
+    });
+  }
+}
+let landingMascot = null;
+
+const STORY = [
+  { who: "agent", text: "Send Anna the dinner invite?", sub: "iCloud Mail · Send email" },
+  { who: "you", text: "Approve with Passkey", sub: "Face ID" },
+  { who: "rubi", text: "Sent", sub: "Rubi will tell your agent when Anna replies" },
+];
+
+function startStory(story) {
+  const card = h("div", { class: "story-card" });
+  story.append(card);
+  let i = 0;
+  const show = () => {
+    const step = STORY[i];
+    const next = h("div", { class: `story-step who-${step.who}` },
+      h("span", { class: "story-icon" }, icon(step.who === "agent" ? "bot" : step.who === "you" ? "passkey" : "check", 18)),
+      h("div", {}, h("strong", {}, step.text), h("small", {}, step.sub)));
+    card.replaceChildren(next);
+    if (landingMascot) {
+      setMood(landingMascot, step.who === "rubi" ? "happy" : step.who === "you" ? "alert" : "idle");
+      if (step.who === "rubi") react(landingMascot, "hop");
+      if (step.who === "agent") react(landingMascot, "nod");
+    }
+    i = (i + 1) % STORY.length;
+  };
+  show();
+  if (!reducedMotion()) setInterval(() => { if (!document.hidden) show(); }, 2800);
 }
 
 // ---------- entry ----------
