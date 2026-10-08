@@ -30,38 +30,63 @@ function h(tag, attrs = {}, ...children) {
 
 // screen replaces the panel's content. An optional first argument {cls, focus} adds a class to the card
 // and controls autofocus (off for screens where a keyboard popping up would get in the way).
+// Screens change with a view transition where the browser has one: the old card fades out, the new one's
+// blocks rise in turn, and Rubi flies from where it was to where it is now (the "rubi" transition name).
 function screen(...children) {
   let opts = {};
   if (children[0] && !(children[0] instanceof Node) && typeof children[0] === "object") opts = children.shift();
   showPanel();
   const main = h("main", { class: "card" + (opts.cls ? " " + opts.cls : "") }, ...children);
-  root.replaceChildren(main);
-  animateIn(main);
-  if (opts.focus !== false) root.querySelector("input:not([type=checkbox])")?.focus({ preventScroll: true });
+  const hero = main.querySelector(".screen-mascot .mascot") || main.querySelector(".mascot");
+  const before = root.querySelector("[data-vt=rubi]");
+  if (hero) {
+    hero.style.viewTransitionName = "rubi";
+    hero.dataset.vt = "rubi";
+  }
+  const morph = !!(hero && before && document.startViewTransition && !reducedMotion() && !document.hidden);
+  const swap = () => {
+    root.replaceChildren(main);
+    window.scrollTo({ top: 0 });
+    animateIn(main);
+    for (const svg of main.querySelectorAll(".mascot")) svg.enter?.(morph && svg === hero);
+    if (opts.focus !== false) root.querySelector("input:not([type=checkbox]):not([type=radio])")?.focus({ preventScroll: true });
+  };
+  if (document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden) {
+    const vt = document.startViewTransition(swap);
+    vt.ready.catch(() => {}); // skipped (e.g. the tab went to the background): the swap still happens
+    vt.finished.catch(() => {});
+  } else {
+    swap();
+  }
 }
+
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // animateIn staggers the entrance of a screen's blocks.
 function animateIn(main) {
-  const items = main.querySelectorAll(":scope > *:not(.req-grid), .req-grid > section > *, .req-grid > aside > *");
+  const items = main.querySelectorAll(":scope > *:not(.req-grid):not(.screen-mascot), .req-grid > section > *, .req-grid > aside > *");
   items.forEach((el, i) => {
     el.classList.add("rise");
-    el.style.setProperty("--d", `${Math.min(i, 9) * 55}ms`);
+    el.style.setProperty("--d", `${Math.min(i, 10) * 40}ms`);
   });
 }
 
 // face is the mascot at the top of a screen; its eyes show Rubi's state.
+// face is the mascot at the top of a screen. It pops in (or, when it flew in from the last screen, just
+// lands), then plays the mood's reaction: a double hop when happy, `then` otherwise (a sigh, a shake).
 function face(mood, size = 76, then) {
   const wrap = h("div", { class: `screen-mascot mood-${mood}` });
   const svg = mascot(mood, size);
-  wrap.append(svg);
-  requestAnimationFrame(async () => {
-    await react(svg, "pop");
+  svg.enter = async (morphed) => {
+    if (!morphed) await react(svg, "pop");
+    else await new Promise((r) => setTimeout(r, 380));
     if (mood === "happy") {
       await react(svg, "hop");
       await react(svg, "hop", 120);
     }
     if (then) react(svg, then);
-  });
+  };
+  wrap.append(svg);
   return wrap;
 }
 
@@ -233,9 +258,15 @@ async function busy(button, fn) {
   button.disabled = true;
   button.classList.add("is-busy");
   button.setAttribute("aria-busy", "true");
+  // If it takes a while, Rubi starts thinking.
+  const face = root.querySelector(".screen-mascot .mascot, .req-top .mascot");
+  const mood = face?.dataset.mood;
+  const slow = setTimeout(() => face && setMood(face, "thinking"), 1500);
   try {
     return await fn();
   } finally {
+    clearTimeout(slow);
+    if (face?.isConnected && face.dataset.mood === "thinking") setMood(face, mood);
     button.disabled = false;
     button.classList.remove("is-busy");
     button.removeAttribute("aria-busy");
