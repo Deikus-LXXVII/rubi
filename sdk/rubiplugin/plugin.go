@@ -127,6 +127,10 @@ func (p *Plugin) handle(ctx context.Context, method string, params json.RawMessa
 			in.Secrets = map[string]string{}
 		}
 		settings, account, err := p.Validate(ctx, in.Fields, in.Secrets)
+		var more *NeedMore
+		if errors.As(err, &more) {
+			return ValidateResult{NeedMore: more}, nil
+		}
 		if err != nil {
 			return nil, err
 		}

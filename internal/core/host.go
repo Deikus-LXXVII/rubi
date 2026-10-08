@@ -61,12 +61,24 @@ func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secret
 	for _, sec := range m.Secrets {
 		in.Secrets[sec.Key] = secrets[sec.Key]
 	}
+	if step := fields[rubiplugin.StepField]; step != "" {
+		// A later setup step: the plugin asked for these inputs itself (NeedMore).
+		if err := passExtra(in.Fields, fields); err != nil {
+			return "", "", err
+		}
+		if err := passExtra(in.Secrets, secrets); err != nil {
+			return "", "", err
+		}
+	}
 	var res rubiplugin.ValidateResult
 	if err := c.Runner.Call(ctx, id, "validate", in, &res); err != nil {
 		if errors.Is(err, plugins.ErrNotRunning) {
 			return "", "", errors.New(m.Name + " isn't running; ask your agent to check rubi_status")
 		}
 		return "", "", err
+	}
+	if res.NeedMore != nil {
+		return "", "", res.NeedMore
 	}
 	stored := in.Secrets
 	if res.Secrets != nil {
@@ -288,4 +300,21 @@ func (c *Core) deliverTo(hook vault.Agent, ev events.Event) {
 func (c *Core) TestWebhook(agent string) events.Event {
 	return c.Events.EmitFor(agent, false, "rubi", "webhook.test", map[string]any{"agent": agent,
 		"message": "Test event from Rubi: the webhook works. Tell the user it arrived."}, nil)
+}
+
+// passExtra copies the inputs of later setup steps, within limits.
+func passExtra(dst, src map[string]string) error {
+	if len(src) > 24 {
+		return errors.New("too many setup inputs")
+	}
+	for k, v := range src {
+		if _, ok := dst[k]; ok {
+			continue
+		}
+		if len(k) > 64 || len(v) > 4096 {
+			return errors.New("setup input too long")
+		}
+		dst[k] = v
+	}
+	return nil
 }

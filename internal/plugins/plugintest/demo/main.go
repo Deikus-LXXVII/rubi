@@ -46,6 +46,16 @@ func main() {
 		Egress: []string{"example.com:443"},
 	})
 	p.Validate = func(_ context.Context, fields, secrets map[string]string) (any, string, error) {
+		if secrets["token"] == "2fa" { // a two-step login: the code comes in a second step
+			if fields[rubiplugin.StepField] != "code-sent" {
+				return nil, "", &rubiplugin.NeedMore{Message: "Enter the code we sent.", Step: "code-sent",
+					Fields: []rubiplugin.Field{{Key: "code", Label: "Code", Type: "number", Required: true}}}
+			}
+			if fields["code"] != "123" {
+				return nil, "", errors.New("wrong code")
+			}
+			return map[string]string{"user": fields["user"]}, fields["user"], nil
+		}
 		if secrets["token"] != "good" {
 			return nil, "", errors.New("wrong token")
 		}

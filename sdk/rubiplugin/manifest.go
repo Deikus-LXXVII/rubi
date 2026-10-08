@@ -89,10 +89,12 @@ type Publisher struct {
 type Field struct {
 	Key         string `json:"key"`
 	Label       string `json:"label"`
-	Type        string `json:"type"` // "text" | "email"
+	Type        string `json:"type"` // "text" | "email" | "tel" | "number" | "choice"
 	Placeholder string `json:"placeholder,omitempty"`
 	Help        string `json:"help,omitempty"`
 	Required    bool   `json:"required,omitempty"`
+	// Options are the choices of a "choice" field.
+	Options []Option `json:"options,omitempty"`
 }
 
 // Secret is a value the user enters in the panel and Rubi keeps encrypted (e.g. an app password).
@@ -103,6 +105,11 @@ type Secret struct {
 	HelpURL string `json:"help_url,omitempty"`
 	// HelpLink is the label of the HelpURL button, e.g. "Open Google app passwords".
 	HelpLink string `json:"help_link,omitempty"`
+	// Optional secrets may be left empty.
+	Optional bool `json:"optional,omitempty"`
+	// Internal secrets aren't asked in the setup form: the plugin fills them during setup (e.g. a login
+	// session obtained in a later NeedMore step) and returns them for safekeeping.
+	Internal bool `json:"internal,omitempty"`
 }
 
 type Action struct {
@@ -184,7 +191,25 @@ type ValidateResult struct {
 	Account  string          `json:"account"`
 	// Secrets, if set, replaces what is stored (for example trimmed of whitespace).
 	Secrets map[string]string `json:"secrets,omitempty"`
+	// NeedMore, if set, means the account isn't connected yet: the user must enter more (see NeedMore).
+	NeedMore *NeedMore `json:"need_more,omitempty"`
 }
+
+// StepField is the field that carries NeedMore.Step back to Validate.
+const StepField = "_step"
+
+// NeedMore, returned as the error from Validate, asks the user for more before the account can be
+// connected, e.g. the login code a service just sent. The panel shows Message and the new inputs, then
+// calls Validate again with the fields entered so far, the new ones, and fields[StepField] = Step. The
+// plugin keeps whatever it needs between the steps (in memory, keyed by Step).
+type NeedMore struct {
+	Message string   `json:"message"`
+	Fields  []Field  `json:"fields,omitempty"`
+	Secrets []Secret `json:"secrets,omitempty"`
+	Step    string   `json:"step"`
+}
+
+func (n *NeedMore) Error() string { return "more input needed: " + n.Message }
 
 type ToolParams struct {
 	Name      string          `json:"name"`

@@ -28,6 +28,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 	"github.com/Deikus-LXXVII/rubi/internal/webauthn"
+	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
 
 const (
@@ -660,6 +661,10 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		approvalID, err = s.core.SetPolicy(ctx, args.Levels)
 	case "webhook.set":
 		approvalID, err = s.core.SetWebhook(ctx, args.URL, args.Key)
+	}
+	var more *rubiplugin.NeedMore
+	if errors.As(err, &more) {
+		return map[string]any{"need_more": more}, nil
 	}
 	if err != nil {
 		return nil, err

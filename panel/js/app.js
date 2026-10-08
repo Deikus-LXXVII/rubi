@@ -977,46 +977,63 @@ async function setupScreen(ctx, id, back) {
     ? () => pluginConfigScreen(ctx, id, { intro: true, account, done: finish })
     : finish;
 
-  const inputs = {};
-  const fieldEls = (entry.fields || []).map((f) => {
-    inputs["f:" + f.key] = h("input", { type: f.type === "email" ? "email" : "text", placeholder: f.placeholder || "",
-      autocomplete: f.type === "email" ? "email" : "off", required: f.required, autocapitalize: "none" });
-    return h("label", { class: "field" }, h("span", {}, f.label), inputs["f:" + f.key], f.help ? h("small", {}, f.help) : null);
-  });
-  const secretEls = (entry.secrets || []).map((sec) => {
-    inputs["s:" + sec.key] = h("input", { type: "password", autocomplete: "off", required: true, autocapitalize: "none", spellcheck: "false" });
-    return h("label", { class: "field" }, h("span", {}, sec.label), inputs["s:" + sec.key],
-      sec.help ? h("small", {}, sec.help) : null,
-      sec.help_url ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, sec.help_link || "Open the account page") : null);
-  });
-  const go = h("button", { class: "primary", type: "submit" }, `Connect ${entry.name}`);
-  const form = h("form", {
-    onsubmit: (e) => {
-      e.preventDefault();
-      busy(go, async () => {
-        const fields = {}, secrets = {};
-        for (const [k, el] of Object.entries(inputs)) {
-          (k.startsWith("f:") ? fields : secrets)[k.slice(2)] = el.value;
-        }
-        go.textContent = "Checking your login…";
-        const res = await ctx.client.call("integration.setup", { id, fields, secrets });
-        account = res.account || "";
-        for (const el of Object.values(inputs)) el.value = "";
-        confirmChange(ctx, res, done);
-      }).catch((x) => showError(err, x));
-    },
-  }, ...fieldEls, ...secretEls, go);
+  // One form per setup step. A plugin may ask for more after the first (a login code, say); the fields
+  // entered so far go along with each later step.
+  const step = (fieldDefs, secretDefs, message, carried) => {
+    const inputs = {};
+    const fieldEls = fieldDefs.map((f) => {
+      let el;
+      if (f.type === "choice") {
+        el = h("select", { required: f.required }, ...(f.options || []).map((o) => h("option", { value: o.key }, o.label)));
+      } else {
+        el = h("input", { type: { email: "email", tel: "tel", number: "text" }[f.type] || "text",
+          inputmode: f.type === "number" ? "numeric" : null, placeholder: f.placeholder || "",
+          autocomplete: f.type === "email" ? "email" : f.type === "number" ? "one-time-code" : "off",
+          required: f.required, autocapitalize: "none" });
+      }
+      inputs["f:" + f.key] = el;
+      return h("label", { class: "field" }, h("span", {}, f.label), el, f.help ? h("small", {}, f.help) : null);
+    });
+    const secretEls = secretDefs.filter((sec) => !sec.internal).map((sec) => {
+      inputs["s:" + sec.key] = h("input", { type: "password", autocomplete: "off", required: !sec.optional, autocapitalize: "none", spellcheck: "false" });
+      return h("label", { class: "field" }, h("span", {}, sec.label), inputs["s:" + sec.key],
+        sec.help ? h("small", {}, sec.help) : null,
+        sec.help_url ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, sec.help_link || "Open the account page") : null);
+    });
+    const go = h("button", { class: "primary", type: "submit" }, message ? "Continue" : `Connect ${entry.name}`);
+    const form = h("form", {
+      onsubmit: (e) => {
+        e.preventDefault();
+        busy(go, async () => {
+          const fields = { ...carried }, secrets = {};
+          for (const [k, el] of Object.entries(inputs)) {
+            (k.startsWith("f:") ? fields : secrets)[k.slice(2)] = el.value;
+          }
+          go.textContent = "Checking…";
+          const res = await ctx.client.call("integration.setup", { id, fields, secrets });
+          for (const [k, el] of Object.entries(inputs)) if (k.startsWith("s:")) el.value = "";
+          if (res.need_more) {
+            const more = res.need_more;
+            return step(more.fields || [], more.secrets || [], more.message, { ...fields, _step: more.step });
+          }
+          account = res.account || "";
+          confirmChange(ctx, res, done);
+        }).catch((x) => showError(err, x));
+      },
+    }, ...fieldEls, ...secretEls, go);
 
-  screen(
-    header(ctx.hello),
-    h("h1", {}, `Connect ${entry.name}`),
-    entry.connected ? h("p", { class: "muted" }, "This adds another account. Signing in to an account that is already connected updates its password and keeps its settings.") : null,
-    h("p", {}, entry.needs),
-    form,
-    err,
-    h("p", { class: "muted" }, `Rubi will connect only to ${(entry.egress || []).join(", ")}. The password is stored encrypted on your Rubi and never shown to your agent.`),
-    back ? h("button", { class: "link", onclick: back }, "Back to settings") : null,
-  );
+    screen(
+      header(ctx.hello),
+      h("h1", {}, `Connect ${entry.name}`),
+      !message && entry.connected ? h("p", { class: "muted" }, "This adds another account. Signing in to an account that is already connected updates its password and keeps its settings.") : null,
+      h("p", {}, message || entry.needs),
+      form,
+      err,
+      h("p", { class: "muted" }, `Rubi will connect only to ${(entry.egress || []).join(", ")}. What you enter is stored encrypted on your Rubi and never shown to your agent.`),
+      back ? h("button", { class: "link", onclick: back }, "Back to settings") : null,
+    );
+  };
+  step(entry.fields || [], entry.secrets || [], "", {});
 }
 
 // integrityLine shows whether the running Rubi binary matches the signed official release.

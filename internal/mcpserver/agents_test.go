@@ -323,3 +323,40 @@ func TestSeveralAccounts(t *testing.T) {
 		t.Fatalf("after disconnecting ann: %v", out)
 	}
 }
+
+// TestSetupSteps: a plugin may ask for more during setup (a login code); the panel sends it back with the
+// fields entered so far, and only then is the account connected.
+func TestSetupSteps(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	setup := r.panel("setup:demo")
+	var res map[string]any
+	if err := setup.Call("integration.setup", map[string]any{"id": "demo", "fields": map[string]string{"user": "dan"},
+		"secrets": map[string]string{"token": "2fa"}}, &res); err != nil {
+		t.Fatal(err)
+	}
+	more, _ := res["need_more"].(map[string]any)
+	if more == nil || more["step"] != "code-sent" || res["approval_id"] != nil {
+		t.Fatalf("first step: %v", res)
+	}
+	next := map[string]string{"user": "dan", "code": "000", "_step": "code-sent"}
+	err := setup.Call("integration.setup", map[string]any{"id": "demo", "fields": next, "secrets": map[string]string{"token": "2fa"}}, &res)
+	if err == nil || !strings.Contains(err.Error(), "wrong code") {
+		t.Fatalf("wrong code: %v %v", err, res)
+	}
+	next["code"] = "123"
+	res = nil
+	if err := setup.Call("integration.setup", map[string]any{"id": "demo", "fields": next, "secrets": map[string]string{"token": "2fa"}}, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res["account"] != "dan" || res["approval_id"] == nil {
+		t.Fatalf("second step: %v", res)
+	}
+	r.approveChange(setup, res)
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+	if out := r.ag.call("demo_who", nil); out["user"] != "dan" {
+		t.Fatalf("connected: %v", out)
+	}
+}
