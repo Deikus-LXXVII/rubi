@@ -191,3 +191,45 @@ func TestGatewayHooks(t *testing.T) {
 	case <-time.After(300 * time.Millisecond):
 	}
 }
+
+// An open subscription must never receive anyone's hook events.
+func TestGatewayHooksNeedRoute(t *testing.T) {
+	ann, _ := relay.NewKey()
+	g := New(ann.Public())
+	srv := httptest.NewServer(g.Handler())
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const route, id = "route_0123456789abcdef", "hook_0123456789abcdef"
+	ready := make(chan int, 4)
+	rubiKey, _ := relay.NewKey()
+	go (&relay.Server{Key: rubiKey, Relays: []string{wsURL(srv)}, Ready: func(n int) { ready <- n },
+		Handle: func(context.Context, []byte) (int, []byte) { return 200, nil },
+		Hooks:  &relay.Hooks{Relays: []string{wsURL(srv)}, Route: func() string { return route }, On: func(string, []byte) {}}}).Run(ctx)
+	<-ready
+	spy, _, err := websocket.Dial(ctx, wsURL(srv), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spy.CloseNow()
+	for _, f := range []string{`{}`, `{"kinds":[21779]}`} {
+		_ = spy.Write(ctx, websocket.MessageText, []byte(`["REQ","s`+f[1:2]+`",`+f+`]`))
+	}
+	time.Sleep(150 * time.Millisecond)
+	resp, err := http.Post(srv.URL+"/h/"+route+"/"+id, "application/json", strings.NewReader(`{"secret":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	rctx, rcancel := context.WithTimeout(ctx, 700*time.Millisecond)
+	defer rcancel()
+	for {
+		_, msg, err := spy.Read(rctx)
+		if err != nil {
+			return // nothing leaked
+		}
+		if strings.Contains(string(msg), route) || strings.Contains(string(msg), "secret") {
+			t.Fatalf("hook event leaked to an open subscription: %s", msg)
+		}
+	}
+}

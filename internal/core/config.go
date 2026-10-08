@@ -131,6 +131,12 @@ func (c *Core) SetPluginConfig(ctx context.Context, id, account string, values m
 	if len(changes) == 0 {
 		return "", fmt.Errorf("nothing changed")
 	}
+	changedFor := acctID // only one account's settings changed, or "" when any plugin-wide one did
+	for _, ch := range changes {
+		if !ch.perAccount {
+			changedFor = ""
+		}
+	}
 	return c.RequestChange(ctx, "Change "+m.Name+" settings", preview, func(d *vault.Data) error {
 		i := d.Integrations[id]
 		if i == nil || len(i.Accounts) == 0 {
@@ -158,7 +164,7 @@ func (c *Core) SetPluginConfig(ctx context.Context, id, account string, values m
 		go func() { // let the plugin react now (e.g. start watching), not at its next check
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_ = c.Runner.Call(ctx, id, "config.changed", map[string]string{"account": acctID}, nil)
+			_ = c.Runner.Call(ctx, id, "config.changed", map[string]string{"account": changedFor}, nil)
 		}()
 	})
 }

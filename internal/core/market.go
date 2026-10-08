@@ -345,6 +345,7 @@ func (c *Core) RequestPluginRemove(ctx context.Context, id string) (map[string]a
 			if err := c.Vault.Update(func(d *vault.Data) error {
 				delete(d.Plugins, id)
 				delete(d.Integrations, id)
+				dropHooks(d, id, "")
 				for kind := range d.Policy {
 					if strings.HasPrefix(kind, id+".") {
 						delete(d.Policy, kind)

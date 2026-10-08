@@ -143,6 +143,12 @@ func (h *Helper) saveLocked() error {
 	return vault.WriteFileAtomic(h.path(), b, 0o600)
 }
 
+// Fresh returns the configuration as it is on disk now (the CLI may have changed it).
+func (h *Helper) Fresh() Config {
+	_ = h.load()
+	return h.Config()
+}
+
 // Config returns a copy of the configuration.
 func (h *Helper) Config() Config {
 	h.mu.Lock()
@@ -195,6 +201,7 @@ func (h *Helper) paired(token string) bool {
 	if token == "" {
 		return false
 	}
+	_ = h.load() // pick up `rubi-home unpair` run from another process
 	want := tokenHash(token)
 	ok := false
 	for _, p := range h.Config().Paired {
@@ -290,7 +297,7 @@ func (h *Helper) pair(args json.RawMessage) (any, error) {
 	return h.hello(), nil
 }
 
-func (h *Helper) huePins() map[string]string { return h.Config().HuePins }
+func (h *Helper) huePins() map[string]string { return h.Fresh().HuePins }
 
 func (h *Helper) setHuePin(bridge, pin string) error {
 	return h.Update(func(c *Config) {

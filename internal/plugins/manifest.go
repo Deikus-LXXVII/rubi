@@ -75,6 +75,12 @@ func Check(m *Manifest) error {
 		if !namePattern.MatchString(s.Key) || s.Label == "" {
 			return fmt.Errorf("invalid secret %q", s.Key)
 		}
+		if s.HelpURL != "" && !strings.HasPrefix(s.HelpURL, "https://") {
+			return fmt.Errorf("secret %q: help_url must be https", s.Key)
+		}
+		if s.Renewable && !s.Internal {
+			return fmt.Errorf("secret %q: only internal secrets can be renewable", s.Key)
+		}
 		if err := unique("field", s.Key); err != nil {
 			return err
 		}

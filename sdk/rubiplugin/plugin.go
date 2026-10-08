@@ -423,7 +423,7 @@ func (h *Host) HomeCall(ctx context.Context, device, op string, args, out any) e
 	return json.Unmarshal(res.Result, out)
 }
 
-// SetSecretFor replaces an Internal secret of one account ("" = the default account), e.g. a login
+// SetSecretFor replaces a Renewable secret of one account ("" = the default account), e.g. a login
 // session the service renewed. Secrets the user entered can't be changed this way.
 func (h *Host) SetSecretFor(account, key, value string) error {
 	return h.conn.Call(context.Background(), "secret.set", map[string]string{"account": account, "key": key, "value": value}, nil)

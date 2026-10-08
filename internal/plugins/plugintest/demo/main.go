@@ -28,7 +28,7 @@ func main() {
 		Publisher: rubiplugin.Publisher{Name: "Test Publisher", Key: PublisherKey},
 		Entry:     "demo",
 		Fields:    []rubiplugin.Field{{Key: "user", Label: "User", Type: "text"}},
-		Secrets:   []rubiplugin.Secret{{Key: "token", Label: "Token"}, {Key: "session", Label: "Session", Internal: true}},
+		Secrets:   []rubiplugin.Secret{{Key: "token", Label: "Token"}, {Key: "session", Label: "Session", Internal: true, Renewable: true}},
 		Actions: []rubiplugin.Action{
 			{Kind: "demo.read", Title: "Read", DefaultLevel: rubiplugin.None},
 			{Kind: "demo.send", Title: "Send", DefaultLevel: rubiplugin.Strong,

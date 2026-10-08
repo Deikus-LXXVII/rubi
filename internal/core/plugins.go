@@ -299,16 +299,16 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			})
 			return map[string]any{"value": v}, err
 		case "secret.set":
-			// Only Internal secrets: what the plugin itself keeps for an account (e.g. a login session
+			// Only Renewable secrets: what the plugin itself keeps for an account (e.g. a login session
 			// the service renewed). Secrets the user entered are changed only by the user.
 			var in struct{ Key, Account, Value string }
 			_ = json.Unmarshal(params, &in)
-			internal := false
+			renewable := false
 			for _, s := range m.Secrets {
-				internal = internal || s.Key == in.Key && s.Internal
+				renewable = renewable || s.Key == in.Key && s.Internal && s.Renewable
 			}
-			if !internal {
-				return nil, fmt.Errorf("secret %q isn't an internal secret", in.Key)
+			if !renewable {
+				return nil, fmt.Errorf("secret %q isn't a renewable secret", in.Key)
 			}
 			if len(in.Value) > 64<<10 {
 				return nil, errors.New("secret too large")

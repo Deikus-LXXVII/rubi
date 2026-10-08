@@ -207,6 +207,10 @@ func TestHue(t *testing.T) {
 	if len(body.Data) != 1 {
 		t.Fatalf("body: %v", out)
 	}
+	if _, err := h.Hue.Do(ctx, HueRequest{Bridge: "001788fffe123456", IP: ip + "/api/appkey123/config?x=", Key: "appkey123",
+		Method: "GET", Path: "/clip/v2/resource/light"}); err == nil {
+		t.Error("a path smuggled in the address was accepted")
+	}
 	for _, bad := range []HueRequest{
 		{Method: "DELETE", Path: "/clip/v2/resource/light"},
 		{Method: "GET", Path: "/api/appkey123/config"},

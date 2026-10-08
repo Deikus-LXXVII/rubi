@@ -117,6 +117,9 @@ type Secret struct {
 	// Internal secrets aren't asked in the setup form: the plugin fills them during setup (e.g. a login
 	// session obtained in a later NeedMore step) and returns them for safekeeping.
 	Internal bool `json:"internal,omitempty"`
+	// Renewable internal secrets may be replaced by the plugin later (Host.SetSecretFor), e.g. a login
+	// session the service renews. Others can only change when the user sets the account up again.
+	Renewable bool `json:"renewable,omitempty"`
 }
 
 type Action struct {

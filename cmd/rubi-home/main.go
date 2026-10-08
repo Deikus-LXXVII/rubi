@@ -6,14 +6,18 @@
 //	rubi-home status         show what is paired and allowed
 //	rubi-home folder NAME    the Shortcuts folder Rubi may use (default: Rubi)
 //	rubi-home unpair         forget every paired Rubi
+//	rubi-home hue-forget ID  forget a Hue Bridge's recorded certificate (after replacing or resetting it)
 package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home"
@@ -45,6 +49,8 @@ func main() {
 	case "status":
 		cfg := h.Config()
 		fmt.Printf("Rubi Home %s on %q\n", version.Version, cfg.Name)
+		sum := sha256.Sum256([]byte(h.ID.PublicBundle()))
+		fmt.Printf("Fingerprint: %s\n", base64.RawURLEncoding.EncodeToString(sum[:6]))
 		fmt.Printf("Paired with %d Rubi\n", len(cfg.Paired))
 		fmt.Printf("Shortcuts folder: %s\n", cfg.ShortcutsFolder)
 		fmt.Printf("Hue Bridges paired: %d\n", len(cfg.HuePins))
@@ -61,6 +67,14 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println("Forgot every paired Rubi. Pair again with: rubi-home pair")
+	case "hue-forget":
+		if len(os.Args) != 3 {
+			usage()
+		}
+		if err := h.Update(func(c *home.Config) { delete(c.HuePins, strings.ToLower(os.Args[2])) }); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Forgot that bridge. Set Hue up again in the Rubi panel.")
 	case "version":
 		fmt.Println(version.Version)
 	default:
@@ -69,7 +83,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | version")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | version")
 	os.Exit(2)
 }
 

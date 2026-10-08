@@ -407,6 +407,17 @@ func TestHooks(t *testing.T) {
 	if nu == u || r.c.DeliverHook(parts[1], nil) {
 		t.Fatalf("rotate: %s %s", u, nu)
 	}
+	// Disconnecting the account drops its addresses.
+	np := strings.Split(strings.TrimPrefix(nu, "https://gw.example/h/"), "/")
+	settings := r.panel("settings")
+	var res map[string]any
+	if err := settings.Call("integration.disconnect", map[string]any{"id": "demo", "account": ""}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	if r.c.DeliverHook(np[1], nil) {
+		t.Fatal("a hook of a disconnected plugin still works")
+	}
 }
 
 // TestRubiHome: the user pairs a Rubi Home helper by pasting its code into the panel; a plugin then

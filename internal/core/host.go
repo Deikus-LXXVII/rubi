@@ -80,11 +80,14 @@ func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secret
 	if res.NeedMore != nil {
 		return "", "", res.NeedMore
 	}
-	stored := in.Secrets
+	src := in.Secrets
 	if res.Secrets != nil {
-		stored = map[string]string{}
-		for _, sec := range m.Secrets { // keep only declared secrets
-			stored[sec.Key] = res.Secrets[sec.Key]
+		src = res.Secrets
+	}
+	stored := map[string]string{}
+	for _, sec := range m.Secrets { // keep only declared secrets
+		if v := src[sec.Key]; v != "" {
+			stored[sec.Key] = v
 		}
 	}
 	account := res.Account
@@ -97,8 +100,14 @@ func (c *Core) ConnectIntegration(ctx context.Context, id string, fields, secret
 		summary += " (" + account + ")"
 	}
 	acctID := vault.AccountID(acctKey)
-	approvalID, err = c.RequestChange(ctx, summary,
-		map[string]any{"integration": m.Name, "account": account, "connects_to": strings.Join(m.Egress, ", ")},
+	preview := map[string]any{"integration": m.Name, "account": account, "connects_to": strings.Join(m.Egress, ", ")}
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if a := d.Integrations[id].Find(acctID); a != nil && a.ID == acctID {
+			preview["replaces"] = "the connected account " + a.Label + " (its settings are kept)"
+		}
+		return nil
+	})
+	approvalID, err = c.RequestChange(ctx, summary, preview,
 		func(d *vault.Data) error {
 			i := d.Integrations[id]
 			if i == nil {
@@ -152,6 +161,7 @@ func (c *Core) DisconnectIntegration(ctx context.Context, id, account string) (s
 	preview["effect"] = effect
 	return c.RequestChange(ctx, summary, preview,
 		func(d *vault.Data) error {
+			dropHooks(d, id, account)
 			i := d.Integrations[id]
 			if account == "" || i == nil {
 				delete(d.Integrations, id)

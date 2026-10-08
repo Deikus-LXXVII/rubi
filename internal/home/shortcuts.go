@@ -44,7 +44,7 @@ type shortcut struct {
 }
 
 func (h *Helper) shortcuts(ctx context.Context) ([]shortcut, error) {
-	folder := h.Config().ShortcutsFolder
+	folder := h.Fresh().ShortcutsFolder
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	out, err := h.Shortcuts(ctx, "list", "--folder-name", folder, "--show-identifiers")

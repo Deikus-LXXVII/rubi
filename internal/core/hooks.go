@@ -131,6 +131,9 @@ func (c *Core) DeliverHook(id string, body []byte) bool {
 	if hook == nil || !c.hookAllowed(hook.ID) {
 		return false
 	}
+	if m, ok := c.Store.Get(hook.Plugin); !ok || !m.Hooks {
+		return false
+	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -162,4 +165,20 @@ func (c *Core) hookAllowed(id string) bool {
 	}
 	c.hookHit[id] = append(recent, now)
 	return true
+}
+
+// dropHooks forgets the hooks of a plugin ("" account = all of them), e.g. when it is disconnected, so
+// a later account with the same id doesn't inherit an address that was handed out before.
+func dropHooks(d *vault.Data, plugin, account string) {
+	if d.Hooks == nil {
+		return
+	}
+	kept := d.Hooks.List[:0]
+	for _, h := range d.Hooks.List {
+		if h.Plugin == plugin && (account == "" || h.Account == account || h.Account == "" && len(d.Integrations[plugin].Accounts) <= 1) {
+			continue
+		}
+		kept = append(kept, h)
+	}
+	d.Hooks.List = kept
 }

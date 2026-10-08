@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -121,7 +122,7 @@ func (h *Hue) cloudDiscover(ctx context.Context) []string {
 
 // bridgeID asks a device for its bridge id (no key needed); it also proves the device is a bridge.
 func (h *Hue) bridgeID(ctx context.Context, ip string) (string, error) {
-	if net.ParseIP(ip) == nil && !h.Insecure {
+	if !h.validAddr(ip) {
 		return "", errors.New("not an IP address")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -194,13 +195,28 @@ func (h *Hue) Pair(ctx context.Context, ip string) (any, error) {
 	if out[0].Success == nil || out[0].Success.Username == "" {
 		return nil, errors.New("the bridge didn't give a key")
 	}
+	if old := h.Pins()[id]; old != "" && old != pin {
+		return nil, fmt.Errorf("this bridge's certificate differs from the one recorded when it was first paired; if you "+
+			"replaced or reset the bridge, run `rubi-home hue-forget %s` on the home computer and set Hue up again", id)
+	}
 	if err := h.SetPin(id, pin); err != nil {
 		return nil, err
 	}
 	return map[string]any{"bridge": id, "ip": ip, "key": out[0].Success.Username}, nil
 }
 
-func (h *Hue) url(ip, path string) string { return "https://" + ip + path }
+func (h *Hue) url(ip, path string) string {
+	return (&url.URL{Scheme: "https", Host: ip, Path: path}).String()
+}
+
+// validAddr accepts only an IP address (tests may add a port).
+func (h *Hue) validAddr(ip string) bool {
+	if h.Insecure {
+		host, _, err := net.SplitHostPort(ip)
+		return err == nil && net.ParseIP(host) != nil
+	}
+	return net.ParseIP(ip) != nil
+}
 
 // client returns an HTTP client that checks the bridge certificate with check (instead of a CA).
 func (h *Hue) client(check func(*x509.Certificate) error) *http.Client {
@@ -230,6 +246,9 @@ func (h *Hue) Do(ctx context.Context, in HueRequest) (any, error) {
 	}
 	if !resourcePath.MatchString(in.Path) {
 		return nil, errors.New("only the bridge's resource API (/clip/v2/resource/…) is allowed")
+	}
+	if !h.validAddr(in.IP) {
+		return nil, errors.New("the bridge address must be an IP address")
 	}
 	if len(in.Body) > 16<<10 {
 		return nil, errors.New("request too large")

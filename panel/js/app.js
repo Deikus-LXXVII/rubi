@@ -998,7 +998,7 @@ async function setupScreen(ctx, id, back) {
       inputs["s:" + sec.key] = h("input", { type: "password", autocomplete: "off", required: !sec.optional, autocapitalize: "none", spellcheck: "false" });
       return h("label", { class: "field" }, h("span", {}, sec.label), inputs["s:" + sec.key],
         sec.help ? h("small", {}, sec.help) : null,
-        sec.help_url ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, sec.help_link || "Open the account page") : null);
+        /^https:\/\//.test(sec.help_url || "") ? h("a", { href: sec.help_url, target: "_blank", rel: "noopener noreferrer", class: "button-link" }, sec.help_link || "Open the account page") : null);
     });
     const go = h("button", { class: "primary", type: "submit" }, message ? "Continue" : `Connect ${entry.name}`);
     const form = h("form", {

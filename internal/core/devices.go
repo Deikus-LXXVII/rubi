@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,8 +115,12 @@ func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
 	}
 	dev := &vault.Device{ID: randomID(), Name: name, Relay: pc.Relay, Bundle: pc.Bundle, Relays: pc.Relays, Token: token,
 		Paired: time.Now().UTC()}
-	return c.RequestChange(ctx, "Add Rubi Home on "+name, map[string]any{"computer": name,
-		"allows": "control Philips Hue on your home network and run the shortcuts in the folder \"" + hello.Folder + "\""},
+	sum := sha256.Sum256([]byte(pc.Bundle))
+	fingerprint := base64.RawURLEncoding.EncodeToString(sum[:6])
+	return c.RequestChange(ctx, "Add Rubi Home on "+name, map[string]any{"computer (as it calls itself)": name,
+		"fingerprint": fingerprint + " (rubi-home status shows the same)",
+		"check":       "Approve only if you just ran rubi-home on your own computer and pasted its code",
+		"allows":      "control Philips Hue on your home network and run the shortcuts in the folder \"" + hello.Folder + "\""},
 		func(d *vault.Data) error {
 			if len(d.Devices) >= 10 {
 				return errors.New("at most 10 Rubi Home computers")

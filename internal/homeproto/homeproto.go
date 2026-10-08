@@ -213,6 +213,9 @@ type Server struct {
 	seen map[string]time.Time
 }
 
+// processStart is when this process started; the replay memory doesn't go back further.
+var processStart = time.Now()
+
 func (s *Server) fresh(env Envelope) error {
 	now := time.Now()
 	ts := time.Unix(env.TS, 0)
@@ -221,6 +224,11 @@ func (s *Server) fresh(env Envelope) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Requests made before this process started may have been seen by an earlier run: the replay
+	// memory doesn't survive a restart, so they are refused (the caller just retries).
+	if ts.Before(processStart.Add(-time.Second)) {
+		return errors.New("stale request; try again")
+	}
 	if s.seen == nil {
 		s.seen = map[string]time.Time{}
 	}

@@ -93,9 +93,16 @@ func (s *Server) Handler() http.Handler {
 }
 
 func clientIP(r *http.Request) string {
-	// Behind the local TLS proxy the real address is in X-Forwarded-For (first hop).
-	if f := r.Header.Get("X-Forwarded-For"); f != "" && isLoopback(r.RemoteAddr) {
-		return strings.TrimSpace(strings.Split(f, ",")[0])
+	// Behind the tunnel the address is in CF-Connecting-IP (set by Cloudflare), else the last hop of
+	// X-Forwarded-For (earlier entries come from the client and can be forged).
+	if isLoopback(r.RemoteAddr) {
+		if ip := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); ip != "" {
+			return ip
+		}
+		if f := r.Header.Get("X-Forwarded-For"); f != "" {
+			parts := strings.Split(f, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
+		}
 	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	return host
@@ -187,7 +194,7 @@ func (s *Server) req(ctx context.Context, c *conn, msg []json.RawMessage) {
 	var fs []filter
 	for _, raw := range msg[2:] {
 		var f filter
-		if json.Unmarshal(raw, &f) == nil {
+		if json.Unmarshal(raw, &f) == nil && len(f.H) <= 2 {
 			fs = append(fs, f)
 		}
 	}
@@ -298,6 +305,9 @@ func (c *conn) write(ctx context.Context, v any) {
 }
 
 func matches(f filter, e *relay.Event) bool {
+	if e.Kind == relay.HookKind && len(f.H) == 0 {
+		return false // hook events go only to whoever names their (secret) route
+	}
 	if len(f.Kinds) > 0 && !containsInt(f.Kinds, e.Kind) {
 		return false
 	}
