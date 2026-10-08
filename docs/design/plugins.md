@@ -209,6 +209,8 @@ Both sides send requests. A message may be up to 4 MiB.
 | `stop` | `{}` | `{}`. Accounts changed or the last one was disconnected. Stop background work |
 | `tool` | `{name, arguments}` | Any JSON object, returned to the agent. Only called while connected |
 | `execute` | `{kind, option, payload}` | Any JSON object. An approved action runs; `payload` is what the plugin submitted |
+| `config.changed` | `{account}` | `{}`. The user changed the settings (optional to handle) |
+| `hook` | `{name, account, body, received_at}` | `{}`. A request arrived at one of the plugin's hook addresses |
 | `config.options` | `{key, account}` | `{options: [{key, label}]}`. Choices for a `dynamic` config field |
 | `shutdown` | `{}` | `{}`, then exit |
 
@@ -224,6 +226,9 @@ Both sides send requests. A message may be up to 4 MiB.
 | `level.get` | `{kind}` | `{level}` |
 | `event.emit` | `{type, data, agent?}` | `{event_id}`. The type must be declared; `untrusted_fields` come from the manifest. With `agent` (a connected Bot's name), only that Bot is woken; otherwise the Bots subscribed to the plugin |
 | `config.get` | `{account?}` | `{config}`: the user-only settings (`per_account` ones for that account), with defaults for anything not set |
+| `secret.set` | `{key, value, account?}` | `{}`. Only `internal` secrets (e.g. a renewed login session) |
+| `hook.url` | `{name, account?, rotate?}` | `{url}`. Needs `hooks` in the manifest (see below) |
+| `home.devices` / `home.call` | `{}` / `{device?, op, args}` | `{devices}` / `{result}`. Needs `home` in the manifest (see below) |
 | `audit` | `{event, fields}` | `{}` |
 
 Plugins log to stderr; Rubi saves it to `logs/plugin-<id>.log`.
@@ -233,6 +238,26 @@ per item, and the user approves any subset with a single passkey or password pro
 the chosen subset (the panel asks `approval.challenge` for it). `execute` then gets the option
 `items:<key>,<key>…` with the chosen keys, in item order (`rubiplugin.ChosenItems`); an approval in chat or
 at level none means every item.
+
+**Multi-step setup.** `validate` may answer `{need_more: {message, fields, secrets, step}}` instead of
+connecting (the SDK: return `*rubiplugin.NeedMore` as the error). The panel shows the message and the new
+inputs, then calls `validate` again with the fields entered so far, the new inputs, and `_step`. Secrets from
+earlier steps are not sent again; the plugin keeps a login in progress in memory. Used for login codes
+and for pressing a device's pairing button.
+
+**Hooks.** A plugin with `"hooks": true` can hand out private web addresses (`hook.url`), for things that can
+only send a plain web request, like an iPhone Shortcut. An address is `https://gateway.rubi-panel.com/h/<route>/<id>`
+(or the Tailscale address). Rubi subscribes to its random route only on Rubi Gateway, never on public
+relays; the gateway turns a POST into an event only it can publish. Anyone holding an address can call it,
+so the body is untrusted and the plugin can replace (`rotate`) an address. At most 20 requests per minute
+per hook, 4 KB each.
+
+**Rubi Home.** A plugin with `"home": ["hue"]` or `["shortcuts"]` can call the user's Rubi Home helper
+(`home.call`), but only operations of those capabilities (`hue.*`, `shortcuts.*`). See
+[rubi-home.md](rubi-home.md).
+
+**Info settings.** A config field of type `info` (with `dynamic` options) is read-only: the panel shows each
+option's label and value with a copy button, e.g. the hook addresses to paste into Shortcuts.
 
 Errors use JSON-RPC error objects. `execute` must perform exactly the action described by its `payload`.
 Review checks this, because the user approves what the preview shows.
