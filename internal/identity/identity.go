@@ -37,6 +37,9 @@ var b64 = base64.RawURLEncoding
 
 // LoadOrCreate reads the identity at path, creating a new one on first run.
 func LoadOrCreate(path string) (*Identity, error) {
+	if st, err := os.Stat(path); err == nil && st.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(path, 0o600) // copied or restored with looser permissions: only this user may read it
+	}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return create(path)

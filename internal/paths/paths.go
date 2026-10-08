@@ -79,3 +79,14 @@ func (l Layout) DaemonLog() string { return filepath.Join(l.Home, "daemon.log") 
 func (l Layout) Audit() string     { return filepath.Join(l.Home, "audit.log") }
 func (l Layout) Plugins() string   { return filepath.Join(l.Home, "plugins") }
 func (l Layout) Logs() string      { return filepath.Join(l.Home, "logs") }
+
+// OpenLog opens a log file for appending (0600). Logs are plain text on disk, so they are kept small:
+// past maxLog the file is moved to <name>.1 (one old file is kept) and a new one begins.
+func OpenLog(path string) (*os.File, error) {
+	if st, err := os.Stat(path); err == nil && st.Size() > maxLog {
+		_ = os.Rename(path, path+".1")
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
+
+const maxLog = 5 << 20

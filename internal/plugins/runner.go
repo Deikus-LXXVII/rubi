@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
 
@@ -114,7 +115,7 @@ func (r *Runner) launch(s *slot, initial bool) (err error) {
 	if err := os.MkdirAll(r.LogDir, 0o700); err != nil {
 		return errBeforeStart{err}
 	}
-	logf, err := os.OpenFile(filepath.Join(r.LogDir, "plugin-"+s.id+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logf, err := paths.OpenLog(filepath.Join(r.LogDir, "plugin-"+s.id+".log"))
 	if err != nil {
 		return errBeforeStart{err}
 	}

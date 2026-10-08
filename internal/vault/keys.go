@@ -30,6 +30,9 @@ type Keys struct {
 }
 
 func LoadKeys(path string) (*Keys, error) {
+	if st, err := os.Stat(path); err == nil && st.Mode().Perm()&0o077 != 0 {
+		_ = os.Chmod(path, 0o600)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

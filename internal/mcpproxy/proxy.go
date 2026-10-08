@@ -51,7 +51,7 @@ func startDaemon(layout paths.Layout) error {
 	if err != nil {
 		return err
 	}
-	logf, err := os.OpenFile(layout.DaemonLog(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	logf, err := paths.OpenLog(layout.DaemonLog())
 	if err != nil {
 		return err
 	}
