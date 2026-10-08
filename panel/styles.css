@@ -129,22 +129,46 @@ code, pre, kbd { font-family: var(--mono); }
 :focus-visible { outline: none; box-shadow: var(--focus); border-radius: var(--r-xs); }
 
 /* ============================================================ mascot */
+/* Moods morph the eyes with CSS (individual transform properties), reactions run on `transform` through
+   the Web Animations API (mascot.js), and breathing uses `scale`, so all three combine. */
 
-.mascot { overflow: visible; }
-.mascot-eyes rect, .mascot-eyes path:not(.eye-stroke), .mascot-eyes ellipse { fill: var(--eye); }
-.mascot-eyes .eye-stroke { stroke: var(--eye); }
-.mascot.mood-idle .mascot-eyes { transform-origin: 50% 48%; animation: blink 5s infinite; }
-.mascot.mood-alert { animation: nudge 0.6s ease-in-out 2; }
+.mascot { overflow: visible; display: block; }
+.mascot .mascot-body { transform-box: fill-box; transform-origin: 50% 100%; rotate: var(--lean, 0deg);
+  transition: rotate var(--t-gentle) var(--ease-out); animation: breathe 4.6s var(--ease-in-out) infinite; }
+.mascot .mascot-floor { transform-box: fill-box; transform-origin: 50% 50%; }
+.mascot .mascot-gaze { translate: var(--gx, 0px) var(--gy, 0px); transition: translate var(--t-gentle) var(--ease-out); }
+.mascot .mascot-eyes { transform-box: fill-box; transform-origin: 50% 50%; }
+.mascot .eye-pill, .mascot .eye-arc, .mascot .eye-lid, .mascot .eye-glint {
+  transform-box: fill-box; transform-origin: 50% 50%;
+  transition: scale var(--t-gentle) var(--spring), opacity var(--t-base) var(--ease-out), translate var(--t-gentle) var(--spring), rotate var(--t-gentle) var(--spring);
+}
+.mascot .eye-pill { fill: var(--eye); }
+.mascot .eye-stroke { stroke: var(--eye); }
+.mascot .eye-glint { fill: #fff; opacity: 0.85; }
+.mascot .eye-arc, .mascot .eye-lid { opacity: 0; scale: 0.6; }
 
-@keyframes blink {
-  0%, 94%, 100% { transform: scaleY(1); }
-  96% { transform: scaleY(0.1); }
-}
-@keyframes nudge {
-  0%, 100% { transform: rotate(0); }
-  30% { transform: rotate(-6deg); }
-  70% { transform: rotate(6deg); }
-}
+.mascot.mood-locked .eye-pill, .mascot.mood-happy .eye-pill { opacity: 0; scale: 1 0.12; }
+.mascot.mood-locked .eye-glint, .mascot.mood-happy .eye-glint { opacity: 0; scale: 0.2; }
+.mascot.mood-locked .eye-lid { opacity: 1; scale: 1; }
+.mascot.mood-locked .mascot-body { animation-duration: 6.5s; animation-name: breathe-deep; }
+.mascot.mood-happy .eye-arc { opacity: 1; scale: 1; }
+.mascot.mood-alert .eye-pill { scale: 1.14 1.18; }
+.mascot.mood-alert .eye-glint { scale: 1.25; }
+.mascot.mood-thinking .eye-pill { scale: 0.86 0.8; }
+.mascot.mood-thinking .mascot-gaze { translate: 2.5px -3px; }
+.mascot.mood-thinking .mascot-body { animation-name: sway; animation-duration: 2.8s; }
+.mascot.mood-concern .eye-pill { scale: 0.94 0.72; translate: 0 1.5px; }
+.mascot.mood-concern .eye-l .eye-pill { rotate: 14deg; }
+.mascot.mood-concern .eye-r .eye-pill { rotate: -14deg; }
+.mascot.mood-concern .mascot-gaze { translate: 0 1.5px; }
+
+.mascot.tiny .mascot-floor, .mascot.tiny .mascot-spec, .mascot.tiny .eye-glint { display: none; }
+.mascot.tiny .mascot-body { animation: none; }
+.mascot.tiny .eye-pill { scale: 1.15 1.08; }
+
+@keyframes breathe { 0%, 100% { scale: 1 1; } 50% { scale: 1.014 0.982; } }
+@keyframes breathe-deep { 0%, 100% { scale: 1 1; } 50% { scale: 1.022 0.97; } }
+@keyframes sway { 0%, 100% { scale: 1 1; rotate: -2deg; } 50% { scale: 1.01 0.99; rotate: 2deg; } }
 
 /* ============================================================ controls */
 
@@ -513,37 +537,6 @@ button.copy { width: auto; min-height: 36px; padding: 8px 14px; font-size: 0.85r
 @keyframes rise { from { opacity: 0; transform: translateY(14px); filter: blur(2px); } to { opacity: 1; transform: none; filter: none; } }
 @keyframes drop { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
 @keyframes pulse { 50% { opacity: 0.55; } }
-
-.pop .mascot { animation: pop var(--t-slow) var(--spring) both; }
-@keyframes pop {
-  0% { transform: scale(0.5) rotate(-10deg); opacity: 0; }
-  100% { transform: scale(1) rotate(0); opacity: 1; }
-}
-.pop.mood-happy .mascot { animation: pop var(--t-slow) var(--spring) both, hop 0.9s var(--ease-in-out) 0.7s 2; }
-@keyframes hop {
-  0%, 100% { transform: translateY(0); }
-  35% { transform: translateY(-14px) scaleY(1.04); }
-  60% { transform: translateY(0) scaleY(0.94) scaleX(1.05); }
-}
-.sigh .mascot { animation: pop var(--t-slow) var(--spring) both, sigh 1.2s var(--ease-in-out) 0.7s both; }
-@keyframes sigh {
-  0% { transform: none; }
-  50% { transform: translateY(6px) scaleY(0.94) scaleX(1.04); }
-  100% { transform: translateY(3px) scaleY(0.97); }
-}
-.mascot.mood-idle .mascot-gaze { animation: look 9s var(--ease-in-out) infinite; }
-@keyframes look {
-  0%, 18%, 100% { transform: none; }
-  24%, 40% { transform: translateX(-3px); }
-  48%, 62% { transform: translateX(3px) translateY(-1px); }
-  70% { transform: none; }
-}
-.mascot.nod { animation: nod 0.6s var(--ease-in-out); }
-@keyframes nod {
-  0%, 100% { transform: none; }
-  30% { transform: translateY(3px) rotate(4deg); }
-  65% { transform: translateY(-2px) rotate(-3deg); }
-}
 
 .sparks { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
 .sparks i {

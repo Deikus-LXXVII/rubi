@@ -6,7 +6,7 @@ import {
   approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
-import { mascot } from "./mascot.js";
+import { mascot, react, setMood } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
 
 const root = document.getElementById("app");
@@ -50,9 +50,18 @@ function animateIn(main) {
 }
 
 // face is the mascot at the top of a screen; its eyes show Rubi's state.
-function face(mood, size = 76) {
-  const wrap = h("div", { class: `screen-mascot pop mood-${mood}` });
-  wrap.append(mascot(mood, size));
+function face(mood, size = 76, then) {
+  const wrap = h("div", { class: `screen-mascot mood-${mood}` });
+  const svg = mascot(mood, size);
+  wrap.append(svg);
+  requestAnimationFrame(async () => {
+    await react(svg, "pop");
+    if (mood === "happy") {
+      await react(svg, "hop");
+      await react(svg, "hop", 120);
+    }
+    if (then) react(svg, then);
+  });
   return wrap;
 }
 
@@ -367,7 +376,7 @@ function demoScreen(ctx, which) {
 
 function fatal(message, danger = false) {
   const ub = danger ? null : updatesButton(); // never next to an impersonation warning
-  screen(ub ? h("div", { class: "top-actions" }, ub) : null, face("alert"), h("h1", {}, danger ? "Stop" : "Something's wrong"),
+  screen(ub ? h("div", { class: "top-actions" }, ub) : null, danger ? null : face("concern", 76, "shake"), h("h1", {}, danger ? "Stop" : "Something's wrong"),
     h("p", { class: danger ? "error" : "" }, message));
 }
 
@@ -844,11 +853,7 @@ async function approveScreen(ctx, id, opts = {}) {
     sw.addEventListener("change", () => {
       // Rubi nods when you ask to be notified.
       const m = root.querySelector(".req-top .mascot");
-      if (m && sw.checked) {
-        m.classList.remove("nod");
-        void m.getBoundingClientRect();
-        m.classList.add("nod");
-      }
+      if (m && sw.checked) react(m, "nod");
     });
     choiceUI = h("label", { class: "switch-row" }, h("span", {}, label), sw);
   } else if (a.options.length > 1) {
@@ -967,14 +972,14 @@ function resultScreen(ctx, a, onDone, extra = {}) {
     expired: "This request expired",
     cancelled: "This request was cancelled",
   };
-  const moods = { executed: "happy", failed: "alert" };
+  const moods = { executed: "happy", failed: "concern" };
   const p = extra.preview;
   const to = isMail(p) ? splitAddresses(p.to)[0] : null;
   const line = to ? `To ${to.name || to.email} · ${p.subject || "(no subject)"}` : a.summary;
   const tracking = a.state === "executed" && ((a.result && a.result.tracking) || (extra.option && /reply/i.test(extra.option.label)));
-  const mascotBlock = face(moods[a.state] || "idle", 104);
+  const sad = a.state === "denied" || a.state === "cancelled" || a.state === "expired";
+  const mascotBlock = face(moods[a.state] || "idle", 104, sad ? "sigh" : a.state === "failed" ? "shake" : null);
   if (a.state === "executed") mascotBlock.append(sparks());
-  if (a.state === "denied" || a.state === "cancelled" || a.state === "expired") mascotBlock.classList.add("sigh");
   if (a.state === "executed" && /^rubi\.(update|plugin\.)/.test(a.kind || "")) updatesCache = null; // versions changed
   const ub = updatesButton();
   screen(
