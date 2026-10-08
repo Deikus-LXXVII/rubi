@@ -539,6 +539,13 @@ function pairScreen(ctx) {
     const pw2 = h("input", { type: "password", autocomplete: "new-password", placeholder: "Repeat password", required: true });
     const user = h("input", { type: "text", autocomplete: "username", value: `Rubi ${hello.fingerprint}`, hidden: true, readonly: true });
     const go = h("button", { class: "primary", type: "submit" }, state.passkeyCanUnlock ? "Save backup password" : "Set password");
+    const meter = h("div", { class: "meter", "data-s": "0", "aria-hidden": "true" }, h("i"), h("i"), h("i"), h("i"));
+    const meterText = h("small", { class: "muted meter-text", "aria-live": "polite" }, "");
+    pw.addEventListener("input", () => {
+      const sc = strength(pw.value);
+      meter.dataset.s = String(sc);
+      meterText.textContent = pw.value ? ["Too short", "Weak", "Fair", "Good", "Strong"][sc] : "";
+    });
     const form = h("form", {
       onsubmit: (e) => {
         e.preventDefault();
@@ -546,9 +553,10 @@ function pairScreen(ctx) {
         if (pw.value !== pw2.value) return showError(err2, new UserError("The passwords don't match."));
         busy(go, () => finish(pw.value)).catch((x) => showError(err2, x));
       },
-    }, user, pw, pw2, go);
+    }, user, pwField(pw), h("div", { class: "meter-row" }, meter, meterText), pwField(pw2), go);
     screen(
       header(hello),
+      stepper(SETUP_STEPS, 1),
       h("h1", {}, state.passkeyCanUnlock ? "Add a backup password" : "Choose a password"),
       state.passkeyCanUnlock
         ? h("p", {}, "Recommended: if you ever lose your passkey, this is the only other way back in. Save it in your Passwords app.")
@@ -581,17 +589,21 @@ function pairScreen(ctx) {
     connectAgentScreen(settingsCtx);
   }
 
+  const option = (ic, title, text, tag, onclick) => h("button", { type: "button", class: "option-card", onclick },
+    h("span", { class: "option-icon" }, icon(ic, 22)),
+    h("span", { class: "option-text" }, h("strong", {}, title, tag ? h("span", { class: "tag" }, tag) : null), h("small", {}, text)),
+    icon("chevron", 18, "option-go"));
   screen(
     face("idle", 96),
     header(hello),
+    stepper(SETUP_STEPS, 0),
     h("h1", {}, "Set up Rubi"),
     h("p", {}, "Rubi will be locked with a key only you hold. Choose how you'll unlock it and approve your agent's actions."),
-    h("p", { class: "muted" }, `Instance ${hello.instance}`),
-    passkeysAvailable()
-      ? h("button", { class: "primary", onclick: (e) => addPasskey(e.target) }, "Use a Passkey")
-      : null,
-    h("button", { class: passkeysAvailable() ? "secondary" : "primary", onclick: passwordStep }, "Use a password only"),
+    h("div", { class: "options" },
+      passkeysAvailable() ? option("passkey", "Use a passkey", "Face ID, Touch ID or your phone. Nothing to remember.", "Recommended", (e) => addPasskey(e.currentTarget)) : null,
+      option("key", "Use a password only", "At least 12 characters. Save it in your Passwords app.", null, passwordStep)),
     err,
+    h("p", { class: "muted small center" }, `Instance ${hello.instance}`),
   );
 }
 
@@ -702,7 +714,7 @@ function connectAgentScreen(ctx) {
   screen(
     face("happy", 96),
     header(ctx.hello),
-    h("p", { class: "eyebrow" }, "Last step"),
+    stepper(SETUP_STEPS, 2),
     h("h1", {}, "Connect your agent"),
     h("p", {}, "Rubi is set up and unlocked. One more thing: let Rubi wake your agent when you approve something or a reply arrives."),
     h("p", {}, "Your agent sent you a link called \u201cConnect\u201d. Open it in the Grok Bot app on your computer, next to its \u201cRubi events\u201d routine: the routine\u2019s webhook is only shown there."),
@@ -758,7 +770,7 @@ async function unlockFlow(ctx, title, intro, onDone) {
         throw new UserError("Wrong password.");
       }).catch((x) => showError(err, x));
     },
-  }, user, pw, go) : null;
+  }, user, pwField(pw), go) : null;
 
   screen(
     face("locked", 96),
@@ -766,7 +778,7 @@ async function unlockFlow(ctx, title, intro, onDone) {
     h("h1", {}, title),
     h("p", {}, intro),
     passkeyWraps.length && passkeysAvailable()
-      ? h("button", { class: "primary", onclick: (e) => withPasskey(e.target) }, "Unlock with Passkey")
+      ? h("button", { class: "primary big", onclick: (e) => withPasskey(e.currentTarget) }, icon("passkey", 20), "Unlock with Passkey")
       : null,
     form,
     err,
@@ -1290,6 +1302,37 @@ function integrityLine(st) {
 
 
 // ---------- small components ----------
+
+// stepper shows where the user is in a short flow (setup: unlock method, backup, Bot).
+function stepper(labels, current) {
+  return h("ol", { class: "stepper", "aria-label": `Step ${current + 1} of ${labels.length}` }, labels.map((l, i) =>
+    h("li", { class: i < current ? "done" : i === current ? "now" : "" , "aria-current": i === current ? "step" : null },
+      h("span", {}, i < current ? icon("check", 12) : String(i + 1)), h("em", {}, l))));
+}
+const SETUP_STEPS = ["Unlock", "Password", "Your Bot"];
+
+// pwField adds a show/hide button to a password input.
+function pwField(input) {
+  const eye = h("button", { type: "button", class: "pw-eye", "aria-label": "Show password", title: "Show password" }, icon("eye", 18));
+  eye.onclick = () => {
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    eye.setAttribute("aria-label", show ? "Hide password" : "Show password");
+    eye.classList.toggle("on", show);
+    input.focus();
+  };
+  return h("div", { class: "pw-wrap" }, input, eye);
+}
+
+// strength rates a new password roughly (length and variety); 0–4.
+function strength(pw) {
+  if (!pw) return 0;
+  let score = pw.length >= 12 ? 2 : pw.length >= 8 ? 1 : 0;
+  const kinds = [/[a-z]/, /[A-Z]/, /\d/, /[^\w\s]/].filter((r) => r.test(pw)).length;
+  if (pw.length >= 16) score++;
+  if (kinds >= 3) score++;
+  return Math.min(4, score);
+}
 
 // backBar is the way back, at the top of a screen that was opened from another one.
 function backBar(label, onBack) {
