@@ -242,6 +242,8 @@ func randomCode() string {
 }
 
 // Submit gates req according to policy. For level none it executes immediately.
+const maxPendingPerIntegration = 20
+
 func (e *Engine) Submit(ctx context.Context, req Request) (map[string]any, error) {
 	if len(req.Options) == 0 || req.Execute == nil {
 		return nil, errors.New("approval request needs at least one option and an executor")
@@ -268,6 +270,16 @@ func (e *Engine) Submit(ctx context.Context, req Request) (map[string]any, error
 		expires: now.Add(e.cfg.TTL), state: Pending, done: make(chan struct{})}
 	e.mu.Lock()
 	e.pruneLocked(now)
+	pending := 0
+	for _, x := range e.items {
+		if x.state == Pending && x.req.Integration == req.Integration {
+			pending++
+		}
+	}
+	if pending >= maxPendingPerIntegration { // a runaway loop or a flood can't bury the user in requests
+		e.mu.Unlock()
+		return nil, errors.New("too many requests are already waiting for the user; wait for them to be decided or expire")
+	}
 	e.items[a.id] = a
 	e.mu.Unlock()
 	e.hooks.Audit("approval.requested", map[string]any{"approval_id": a.id, "kind": req.Kind, "level": level,

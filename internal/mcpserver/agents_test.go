@@ -522,4 +522,27 @@ func TestSettingsFromAnyLink(t *testing.T) {
 	if err := settings.Call("store.list", nil, nil); err != nil {
 		t.Fatalf("settings with the new ticket: %v", err)
 	}
+
+	// From a narrower link, settings open for viewing (and changes that ask for approval), but the few
+	// changes that need no approval stay with settings links.
+	narrow := r.panel("agent:Mail")
+	var vres struct {
+		Ticket   string
+		ViewOnly bool `json:"view_only"`
+	}
+	if err := narrow.Call("session.settings", nil, &vres); err != nil || !vres.ViewOnly {
+		t.Fatalf("narrow session.settings: %v %+v", err, vres)
+	}
+	vlink := narrow.Link
+	vlink.Ticket = vres.Ticket
+	view, _ := panelclient.New(vlink)
+	view.HTTP = narrow.HTTP
+	if err := view.Call("store.list", nil, nil); err != nil {
+		t.Fatalf("view-only settings can't list the store: %v", err)
+	}
+	for _, op := range []string{"agent.subscribe", "updates.notify"} {
+		if err := view.Call(op, map[string]any{"name": "Mail", "id": "rubi", "notify": false, "sources": []string{}}, nil); err == nil {
+			t.Fatalf("%s allowed from a view-only session", op)
+		}
+	}
 }

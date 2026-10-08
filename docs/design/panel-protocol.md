@@ -52,9 +52,13 @@ An undecryptable request gets a plain `400 bad request` with no details.
 {"ok": true, "result": {…}}        {"ok": false, "error": "human-readable message"}
 ```
 
-Requests more than 2 minutes off Rubi's clock and replayed `rid`s are rejected. After 20 failed attempts
-(bad pairing code, ticket, or key) within 10 minutes, authenticated operations are refused for the rest of
-the window.
+Requests more than 2 minutes off Rubi's clock and replayed `rid`s are rejected. Pairing codes, tickets and
+keys are random and can't be guessed, so wrong ones aren't throttled (a global limit would only let
+anyone holding an old link lock the user out). An approval is declined after 5 wrong proofs.
+
+A link made for something narrow (`approve:<id>`, `setup:<id>`, `agent:<name>`) can open Settings
+(`session.settings`) only for viewing and for changes that need an approval anyway; changes that need none
+(event subscriptions, update notices) need a `settings` or `unlock` link.
 
 ## Pairing a passkey
 
@@ -94,8 +98,9 @@ that integration) and an unlocked Rubi. Reads return data; every change returns
 ### Approval proofs
 
 The challenge for an option is
-`SHA-256("rubi-approve|v1|" + instance + "|" + approval_id + "|" + option + "|" + nonce + "|" + hex(SHA-256(preview JSON)))`,
-computed by Rubi; the panel only signs the bytes it is given.
+`SHA-256("rubi-approve|v2|" + instance + "|" + approval_id + "|" + option + "|" + nonce + "|" + hex(SHA-256(shown)))`,
+where `shown` is the JSON of everything the screen shows and the action does (kind, integration, summary,
+question, preview, items, expiry), computed by Rubi; the panel only signs the bytes it is given.
 
 - **Passkey:** `navigator.credentials.get` with that challenge, `userVerification: "required"`, limited to the
   registered credentials. Proof: `{"type":"passkey","credential_id","client_data_json","authenticator_data","signature"}`

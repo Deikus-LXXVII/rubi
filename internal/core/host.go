@@ -244,6 +244,23 @@ func validWebhookURL(raw string) error {
 	return errors.New("webhook URL must use https")
 }
 
+// webhookLabel shows a webhook as host plus the last characters of its path (the routine's id), never the
+// whole address.
+func webhookLabel(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(invalid)"
+	}
+	tail := strings.Trim(u.Path, "/")
+	if len(tail) > 8 {
+		tail = tail[len(tail)-8:]
+	}
+	if tail == "" {
+		return u.Scheme + "://" + u.Host
+	}
+	return u.Scheme + "://" + u.Host + "/…" + tail
+}
+
 func redactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {

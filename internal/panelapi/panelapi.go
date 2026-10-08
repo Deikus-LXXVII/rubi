@@ -35,8 +35,11 @@ const (
 	RPCPath     = "/v1/rpc"
 	maxBody     = 256 << 10
 	clockSkew   = 2 * time.Minute
-	failWindow  = 10 * time.Minute
-	maxFailures = 20
+	// A request may be retried with a wrong proof a few times (a mistyped password); after that it is
+	// declined. Links, tickets and keys are random and can't be guessed, so nothing else is throttled:
+	// a global limit would only let anyone holding an old link lock the user out.
+	maxProofFailures = 5
+	maxSeen          = 20000
 )
 
 // Envelope is the decrypted request body.
@@ -61,7 +64,7 @@ type Server struct {
 
 	mu       sync.Mutex
 	seen     map[string]time.Time // request ids within the replay window
-	failures []time.Time
+	proofFails map[string]int // per approval
 }
 
 func New(c *core.Core) *Server {
@@ -182,32 +185,28 @@ func (s *Server) checkFresh(env Envelope) error {
 	if _, dup := s.seen[env.RID]; dup {
 		return errors.New("replayed request")
 	}
+	if len(s.seen) >= maxSeen { // a flood within the replay window: refuse rather than grow
+		return errors.New("Rubi is busy; try again in a minute")
+	}
 	s.seen[env.RID] = now.Add(2 * clockSkew)
 	return nil
 }
 
-func (s *Server) throttled() bool {
+// settingsView is the settings ticket opened from a narrower link (see "session.settings").
+const settingsView = "settings:view"
+
+var errViewOnly = errors.New("to change this, open Settings from a settings link (ask your agent for one)")
+
+// proofFailed counts a wrong proof for an approval and reports whether it has now had too many.
+func (s *Server) proofFailed(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cutoff := s.now().Add(-failWindow)
-	kept := s.failures[:0]
-	for _, t := range s.failures {
-		if t.After(cutoff) {
-			kept = append(kept, t)
-		}
+	if s.proofFails == nil || len(s.proofFails) > 1000 {
+		s.proofFails = map[string]int{}
 	}
-	s.failures = kept
-	return len(s.failures) >= maxFailures
+	s.proofFails[id]++
+	return s.proofFails[id] >= maxProofFailures
 }
-
-func (s *Server) fail(err error) error {
-	s.mu.Lock()
-	s.failures = append(s.failures, s.now())
-	s.mu.Unlock()
-	return err
-}
-
-var errThrottled = errors.New("too many failed attempts; wait 10 minutes")
 
 func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	switch env.Op {
@@ -218,12 +217,9 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		return s.pair(env)
 	}
 
-	if s.throttled() {
-		return nil, errThrottled
-	}
 	purpose, ok := s.core.TicketPurpose(env.Ticket)
 	if !ok {
-		return nil, s.fail(errors.New("this link has expired; ask your agent for a new one"))
+		return nil, errors.New("this link has expired; ask your agent for a new one")
 	}
 	switch env.Op {
 	case "unlock.keys":
@@ -240,10 +236,20 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		s.core.Lock()
 		return map[string]any{"state": s.core.State()}, nil
 	case "session.settings":
-		// Settings are one tap away on every screen: any valid link can open them. Viewing them is
-		// harmless, and every change still needs the user's passkey or password.
-		return map[string]any{"ticket": s.core.MintTicket("settings")}, nil
-	case "updates.list", "updates.notify", "updates.rubi", "updates.plugin":
+		// Settings are one tap away on every screen, so any valid link can open them. A link made for
+		// something narrower (one approval, one setup) opens them for viewing and for changes that need
+		// the user's passkey or password anyway; the few changes that need none stay with settings links,
+		// so a forwarded approval link can't quietly reroute events or mute update notices.
+		if purpose == "settings" || purpose == "unlock" {
+			return map[string]any{"ticket": s.core.MintTicket("settings")}, nil
+		}
+		return map[string]any{"ticket": s.core.MintTicket(settingsView), "view_only": true}, nil
+	case "updates.notify":
+		if purpose != "settings" && purpose != "unlock" {
+			return nil, errViewOnly
+		}
+		return s.updates(ctx, env)
+	case "updates.list", "updates.rubi", "updates.plugin":
 		// The panel shows the Updates button on every screen, so any valid link may use it. Listing and
 		// notification switches are harmless; installing an update still needs a strong approval.
 		return s.updates(ctx, env)
@@ -293,9 +299,6 @@ type pairArgs struct {
 }
 
 func (s *Server) pair(env Envelope) (any, error) {
-	if s.throttled() {
-		return nil, errThrottled
-	}
 	var a pairArgs
 	if err := json.Unmarshal(env.Args, &a); err != nil {
 		return nil, errors.New("bad arguments")
@@ -304,7 +307,7 @@ func (s *Server) pair(env Envelope) (any, error) {
 		return nil, errors.New("Rubi is already paired")
 	}
 	if !s.core.CheckPairingCode(a.Code) {
-		return nil, s.fail(errors.New("this pairing link has expired; ask your agent for a new one"))
+		return nil, errors.New("this pairing link has expired; ask your agent for a new one")
 	}
 	dek, err := base64.RawURLEncoding.DecodeString(a.DEK)
 	if err != nil || len(dek) != vault.KeySize {
@@ -361,14 +364,14 @@ func (s *Server) unlock(env Envelope) (any, error) {
 	}
 	dek, err := base64.RawURLEncoding.DecodeString(a.DEK)
 	if err != nil || len(dek) != vault.KeySize {
-		return nil, s.fail(errors.New("bad data key"))
+		return nil, errors.New("bad data key")
 	}
 	if err := s.core.Unlock(dek, a.MinVaultVersion, a.Method, a.CredentialID); err != nil {
 		if errors.Is(err, vault.ErrVersion) {
 			return nil, errors.New("the stored data is older than what this device saw before; " +
 				"it may have been rolled back. Rubi stays locked")
 		}
-		return nil, s.fail(errors.New("unlock failed"))
+		return nil, errors.New("unlock failed")
 	}
 	v, _ := s.core.Vault.Version()
 	// The panel continues straight to connecting the agent's webhook, which needs a settings ticket.
@@ -409,10 +412,20 @@ func approvalTicket(purpose, id string) error {
 }
 
 // challenge binds a user's approval to one instance, one approval, one option, and the exact preview.
+// challenge is what the user's passkey or password signs: the exact approval, everything it shows and
+// does (kind, integration, summary, preview, items, expiry) and the chosen option.
 func (s *Server) challenge(d approvals.Detail, option string) []byte {
-	preview, _ := json.Marshal(d.Preview)
-	pd := sha256.Sum256(preview)
-	h := sha256.Sum256([]byte(strings.Join([]string{"rubi-approve", "v1", s.core.ID.InstanceID, d.ID, option,
+	shown, _ := json.Marshal(struct {
+		Kind        string           `json:"kind"`
+		Integration string           `json:"integration"`
+		Summary     string           `json:"summary"`
+		Question    string           `json:"question"`
+		Preview     any              `json:"preview"`
+		Items       []approvals.Item `json:"items"`
+		Expires     int64            `json:"expires"`
+	}{d.Kind, d.Integration, d.Summary, d.Question, d.Preview, d.Items, d.ExpiresAt.Unix()})
+	pd := sha256.Sum256(shown)
+	h := sha256.Sum256([]byte(strings.Join([]string{"rubi-approve", "v2", s.core.ID.InstanceID, d.ID, option,
 		d.Nonce, hex.EncodeToString(pd[:])}, "|")))
 	return h[:]
 }
@@ -471,25 +484,27 @@ func (s *Server) approvalDecide(ctx context.Context, purpose string, env Envelop
 	if !a.Approve { // declining needs no proof
 		return s.core.Approvals.DecideStrong(ctx, a.ApprovalID, "", false)
 	}
-	if s.throttled() {
-		return nil, errThrottled
-	}
 	d, err := s.core.Approvals.Detail(a.ApprovalID)
 	if err != nil {
 		return nil, err
 	}
 	ch := s.challenge(d, a.Option)
+	var perr error
 	switch a.Proof.Type {
 	case "passkey":
-		if err := s.verifyPasskey(a.Proof.Assertion, ch); err != nil {
-			return nil, s.fail(err)
-		}
+		perr = s.verifyPasskey(a.Proof.Assertion, ch)
 	case "password":
-		if err := s.verifyPassword(a.Proof.MAC, ch); err != nil {
-			return nil, s.fail(err)
-		}
+		perr = s.verifyPassword(a.Proof.MAC, ch)
 	default:
 		return nil, errors.New("approval needs a passkey or password proof")
+	}
+	if perr != nil {
+		if s.proofFailed(a.ApprovalID) {
+			_, _ = s.core.Approvals.DecideStrong(ctx, a.ApprovalID, "", false)
+			s.core.Audit.Record("approval.proof_limit", map[string]any{"approval_id": a.ApprovalID})
+			return nil, errors.New("too many failed attempts; this request was declined. Ask your agent to try again")
+		}
+		return nil, perr
 	}
 	s.core.Audit.Record("approval.proof_ok", map[string]any{"approval_id": a.ApprovalID, "method": a.Proof.Type})
 	return s.core.Approvals.DecideStrong(ctx, a.ApprovalID, a.Option, true)
@@ -563,7 +578,10 @@ func (s *Server) rpID() string {
 // panel can ask for the passkey (or the password) right away.
 
 func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (any, error) {
-	if purpose != "settings" && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
+	if purpose == settingsView && (env.Op == "agent.subscribe" || env.Op == "webhook.test") {
+		return nil, errViewOnly
+	}
+	if purpose != "settings" && purpose != settingsView && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
 		return nil, errors.New("this link can't change settings; ask your agent for a settings link")
 	}
 	if s.core.State() != core.Unlocked {

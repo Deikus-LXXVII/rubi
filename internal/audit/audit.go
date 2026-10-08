@@ -34,11 +34,11 @@ func Open(path string) *Log { return &Log{path: path} }
 func (l *Log) SetVaultKey(dek []byte) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	for i := range l.key { // the previous key, if any, doesn't linger in memory
+		l.key[i] = 0
+	}
+	l.key = nil
 	if dek == nil {
-		for i := range l.key {
-			l.key[i] = 0
-		}
-		l.key = nil
 		return
 	}
 	k := make([]byte, chacha20poly1305.KeySize)
@@ -54,9 +54,25 @@ type line struct {
 	Sealed string `json:"sealed,omitempty"`
 }
 
+// Limits keep the log useful and bounded: events come partly from plugins.
+const (
+	maxEventName = 64
+	maxFields    = 4 << 10
+	maxLogSize   = 8 << 20 // then the log is moved to audit.log.1 (one old file is kept)
+)
+
 func (l *Log) Record(event string, f Fields) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if len(event) > maxEventName {
+		event = event[:maxEventName]
+	}
+	if b, err := json.Marshal(f); err != nil || len(b) > maxFields {
+		f = Fields{"truncated": true}
+	}
+	if st, err := os.Stat(l.path); err == nil && st.Size() > maxLogSize {
+		_ = os.Rename(l.path, l.path+".1")
+	}
 	ln := line{TS: time.Now().UTC().Format(time.RFC3339), Event: event}
 	if len(f) > 0 && l.key != nil {
 		if s, err := seal(l.key, ln.TS+"|"+event, f); err == nil {

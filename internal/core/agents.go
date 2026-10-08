@@ -124,7 +124,19 @@ func (c *Core) AddAgent(ctx context.Context, name, rawURL, key string, subs []st
 	if key == "" {
 		return "", errors.New("the webhook key is missing")
 	}
-	preview := map[string]any{"agent": name, "webhook": redactURL(rawURL)}
+	// The end of the address identifies the routine, so the user can tell their own from a look-alike
+	// on the same host; replacing an existing Bot's webhook says so.
+	preview := map[string]any{"agent": name, "webhook": webhookLabel(rawURL)}
+	var current string
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if a := findAgent(d, name); a != nil && a.URL != "" && a.URL != rawURL {
+			current = webhookLabel(a.URL)
+		}
+		return nil
+	})
+	if current != "" {
+		preview["replaces"] = current
+	}
 	if subs != nil {
 		preview["notifies_about"] = c.describeSources(subs)
 	}
