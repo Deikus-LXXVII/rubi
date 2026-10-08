@@ -626,7 +626,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	case "plugin.config.set":
 		approvalID, err = s.core.SetPluginConfig(ctx, args.ID, args.Values)
 	case "agent.add":
-		approvalID, err = s.core.AddAgent(ctx, args.Name, args.URL, args.Key)
+		approvalID, err = s.core.AddAgent(ctx, args.Name, args.URL, args.Key, args.Sources)
 	case "agent.remove":
 		approvalID, err = s.core.RemoveAgent(ctx, args.Name)
 	case "agent.default":

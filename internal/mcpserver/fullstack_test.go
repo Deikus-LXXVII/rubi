@@ -227,7 +227,7 @@ func TestMarketplaceFullStack(t *testing.T) {
 	}
 	preview := previewOf(t, info)
 	if preview["review"] != "Reviewed by Rubi-Project" || preview["will_ask_for"] != "User, Token" ||
-		!strings.Contains(preview["can"].(string), "Send (Face ID / password)") || preview["connects_to"] != "example.com:443" {
+		!strings.Contains(preview["can"].(string), "Send (Passkey / password)") || preview["connects_to"] != "example.com:443" {
 		t.Fatalf("install preview: %v", preview)
 	}
 	if res := ag.call("rubi_confirm", map[string]any{"approval_id": out["approval_id"], "user_response": "Install"}); res["tool_error"] == nil {

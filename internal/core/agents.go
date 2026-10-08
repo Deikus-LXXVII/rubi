@@ -99,10 +99,17 @@ func (c *Core) HasAgent(name string) bool {
 
 // AddAgent requests approval to register an agent's webhook (or replace the webhook of an agent with the
 // same name). The first agent becomes the default.
-func (c *Core) AddAgent(ctx context.Context, name, rawURL, key string) (string, error) {
+// subs, when not nil, sets what the Bot hears about (sources: "rubi" or plugin ids), as part of the same
+// approval.
+func (c *Core) AddAgent(ctx context.Context, name, rawURL, key string, subs []string) (string, error) {
 	name, err := CleanAgentName(name)
 	if err != nil {
 		return "", err
+	}
+	if subs != nil {
+		if subs, err = c.cleanSources(subs); err != nil {
+			return "", err
+		}
 	}
 	if err := validWebhookURL(rawURL); err != nil {
 		return "", err
@@ -117,13 +124,21 @@ func (c *Core) AddAgent(ctx context.Context, name, rawURL, key string) (string, 
 	if key == "" {
 		return "", errors.New("the webhook key is missing")
 	}
-	return c.RequestChange(ctx, "Let Rubi wake "+name, map[string]any{"agent": name, "webhook": redactURL(rawURL)},
+	preview := map[string]any{"agent": name, "webhook": redactURL(rawURL)}
+	if subs != nil {
+		preview["notifies_about"] = c.describeSources(subs)
+	}
+	return c.RequestChange(ctx, "Let Rubi wake "+name, preview,
 		func(d *vault.Data) error {
-			if a := findAgent(d, name); a != nil {
-				a.URL, a.Key = rawURL, key
-				return nil
+			a := findAgent(d, name)
+			if a == nil {
+				a = &vault.Agent{Name: name, Default: len(d.Agents) == 0}
+				d.Agents = append(d.Agents, a)
 			}
-			d.Agents = append(d.Agents, &vault.Agent{Name: name, URL: rawURL, Key: key, Default: len(d.Agents) == 0})
+			a.URL, a.Key = rawURL, key
+			if subs != nil {
+				a.Subscriptions = subs
+			}
 			return nil
 		}, nil)
 }
@@ -179,6 +194,26 @@ func (c *Core) Sources() []map[string]string {
 // SetSubscriptions replaces which event sources an agent hears about. It needs no approval: it only
 // distributes events among webhooks the user already approved, and the user can change it in settings.
 func (c *Core) SetSubscriptions(agent string, sources []string) ([]string, error) {
+	clean, err := c.cleanSources(sources)
+	if err != nil {
+		return nil, err
+	}
+	names := c.agentNames()
+	err = c.Vault.Update(func(d *vault.Data) error {
+		a := findAgent(d, agent)
+		if a == nil {
+			return fmt.Errorf("no agent %q (agents: %s)", agent, names)
+		}
+		a.Subscriptions = clean
+		return nil
+	})
+	if err == nil {
+		c.Audit.Record("agent.subscriptions", map[string]any{"agent": agent, "sources": clean})
+	}
+	return clean, err
+}
+
+func (c *Core) cleanSources(sources []string) ([]string, error) {
 	valid := map[string]bool{}
 	for _, s := range c.Sources() {
 		valid[s["id"]] = true
@@ -195,19 +230,22 @@ func (c *Core) SetSubscriptions(agent string, sources []string) ([]string, error
 			clean = append(clean, s)
 		}
 	}
-	names := c.agentNames()
-	err := c.Vault.Update(func(d *vault.Data) error {
-		a := findAgent(d, agent)
-		if a == nil {
-			return fmt.Errorf("no agent %q (agents: %s)", agent, names)
-		}
-		a.Subscriptions = clean
-		return nil
-	})
-	if err == nil {
-		c.Audit.Record("agent.subscriptions", map[string]any{"agent": agent, "sources": clean})
+	return clean, nil
+}
+
+func (c *Core) describeSources(subs []string) string {
+	if len(subs) == 0 {
+		return "Only results of what this Bot asks for"
 	}
-	return clean, err
+	names := map[string]string{}
+	for _, s := range c.Sources() {
+		names[s["id"]] = s["name"]
+	}
+	out := make([]string, len(subs))
+	for i, s := range subs {
+		out[i] = names[s]
+	}
+	return strings.Join(out, ", ")
 }
 
 // recipients are the agents an event goes to: its explicit target, else everyone subscribed to its

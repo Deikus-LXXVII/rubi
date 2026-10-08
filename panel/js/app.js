@@ -164,7 +164,7 @@ async function updatesScreen(ctx) {
     header(ctx.hello),
     h("h1", {}, "Updates"),
     h("p", { class: "muted" }, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
-    h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off \u201cTell my agent\u201d for anything you'd rather update from here, without your agent bringing it up. Every update still needs your Face ID or password."),
+    h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off \u201cTell my agent\u201d for anything you'd rather update from here, without your agent bringing it up. Every update still needs your passkey or password."),
     err,
     h("div", { class: "agent-list" }, rows),
     h("button", { class: "link", onclick: back }, "Back"),
@@ -383,7 +383,7 @@ function pairScreen(ctx) {
     h("p", {}, "Rubi will be locked with a key only you hold. Choose how you'll unlock it and approve your agent's actions."),
     h("p", { class: "muted" }, `Instance ${hello.instance}`),
     passkeysAvailable()
-      ? h("button", { class: "primary", onclick: (e) => addPasskey(e.target) }, "Use Face ID / Touch ID")
+      ? h("button", { class: "primary", onclick: (e) => addPasskey(e.target) }, "Use a Passkey")
       : null,
     h("button", { class: passkeysAvailable() ? "secondary" : "primary", onclick: passwordStep }, "Use a password only"),
     err,
@@ -415,6 +415,23 @@ function agentForm(ctx, { fixedName, onSaved, err }) {
       : `${w.url ? "Address: " + w.url.replace(/^(https?:\/\/[^/]+).*$/, "$1/\u2026") : "Address: not found yet"} \u00b7 ${w.key ? "Key: \u2022\u2022\u2022\u2022" + w.key.slice(-4) : "Key: not found yet"}`;
   };
   paste.addEventListener("input", show);
+  // What this Bot will hear about, chosen before the connection is confirmed (part of the same approval).
+  const boxes = [];
+  const subsBox = h("fieldset", { class: "field", hidden: true }, h("legend", {}, "This Bot gets notified about"),
+    h("small", {}, "Results of what this Bot asks for always reach it. Notifications no Bot chose go to the default Bot."));
+  const subsList = h("div", { class: "checks" });
+  subsBox.insertBefore(subsList, subsBox.lastChild);
+  ctx.client.call("agents.get").then((data) => {
+    const existing = (data.agents || []).find((a) => fixedName && a.name.toLowerCase() === fixedName.toLowerCase());
+    const first = !(data.agents || []).length;
+    for (const src of data.sources || []) {
+      const checked = existing ? (existing.subscriptions || []).includes(src.id) : first;
+      const b = h("input", { type: "checkbox", value: src.id, checked });
+      boxes.push(b);
+      subsList.append(h("label", { class: "check" }, b, h("span", {}, src.name)));
+    }
+    subsBox.hidden = boxes.length === 0;
+  }).catch(() => {});
   const go = h("button", { class: "primary", type: "submit" }, "Connect");
   const form = h("form", {
     onsubmit: (e) => {
@@ -423,13 +440,15 @@ function agentForm(ctx, { fixedName, onSaved, err }) {
       if (!w.url) return showError(err, new UserError("Paste the webhook address (\u201cPOST to\u201d) as well."));
       if (!w.key) return showError(err, new UserError("Paste the webhook key or header as well."));
       busy(go, async () => {
-        const res = await ctx.client.call("agent.add", { name: name.value.trim(), url: w.url, key: w.key });
+        const args = { name: name.value.trim(), url: w.url, key: w.key };
+        if (boxes.length) args.sources = boxes.filter((b) => b.checked).map((b) => b.value);
+        const res = await ctx.client.call("agent.add", args);
         paste.value = "";
         confirmChange(ctx, res, () => onSaved(name.value.trim()), "Finish");
       }).catch((x) => showError(err, x));
     },
   }, fixedName ? null : h("label", { class: "field" }, h("span", {}, "Name"), name),
-  h("label", { class: "field" }, h("span", {}, "Webhook"), paste), parsed, go);
+  h("label", { class: "field" }, h("span", {}, "Webhook"), paste), parsed, subsBox, go);
   return form;
 }
 
@@ -540,7 +559,7 @@ async function unlockFlow(ctx, title, intro, onDone) {
     h("h1", {}, title),
     h("p", {}, intro),
     passkeyWraps.length && passkeysAvailable()
-      ? h("button", { class: "primary", onclick: (e) => withPasskey(e.target) }, "Unlock with Face ID / Touch ID")
+      ? h("button", { class: "primary", onclick: (e) => withPasskey(e.target) }, "Unlock with Passkey")
       : null,
     form,
     err,
@@ -591,7 +610,7 @@ const FIELD_LABELS = {
   from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", in_reply_to: "In reply to", body: "Message",
   plugin: "Plugin", about: "About", warning: "Warning", review: "Review", publisher: "Publisher",
   website: "Publisher website", source: "Source",
-  integration: "Integration", account: "Account", current: "Current version", new_version: "New version",
+  integration: "Integration", account: "Account", agent: "Bot", notifies_about: "Notifies about", current: "Current version", new_version: "New version",
   new_permissions: "New permissions", back_to: "Back to", will_ask_for: "Will ask you for", can: "Can", connects_to: "Connects to",
   can_notify_about: "Can notify your agent about", effect: "Effect", webhook: "Webhook",
   release_notes: "Release notes", verification: "Verification",
@@ -729,7 +748,7 @@ async function approveScreen(ctx, id, opts = {}) {
   const usePasskey = () => approverIds.length > 0 && passkeysAvailable() && pwBox.hidden;
 
   // Choosing among options: a switch for the common two-option case with a question ("Notify me when they
-  // reply?"), otherwise a list. The chosen option is what the user's Face ID signs.
+  // reply?"), otherwise a list. The chosen option is what the user's passkey signs.
   let chosen = a.options[0].key;
   let choiceUI = null;
   if (a.options.length === 2 && a.question) {
@@ -780,7 +799,7 @@ async function approveScreen(ctx, id, opts = {}) {
 
   const verb = a.options[0].label;
   const primary = h("button", { class: "primary big", type: "button" });
-  const setPrimary = () => { primary.textContent = usePasskey() ? `${verb} with Face ID` : `${verb} with password`; };
+  const setPrimary = () => { primary.textContent = usePasskey() ? `${verb} with Passkey` : `${verb} with password`; };
   setPrimary();
   primary.onclick = () => busy(primary, async () => {
     const proof = usePasskey()
@@ -901,7 +920,7 @@ async function whenUnlocked(ctx, next) {
   }
 }
 
-// confirmChange takes the {approval_id, ticket} a settings operation returns and asks for Face ID or the
+// confirmChange takes the {approval_id, ticket} a settings operation returns and asks for the passkey or the
 // password, using a client bound to that approval's ticket.
 function confirmChange(ctx, res, onDone, doneLabel) {
   const approvalCtx = { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
@@ -974,7 +993,7 @@ function integrityLine(st) {
   return h("p", { class: i.status === "modified" ? "error" : "muted" }, text);
 }
 
-const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Face ID / password" };
+const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Passkey / password" };
 
 async function settingsScreen(ctx) {
   currentView = () => settingsScreen(ctx);
@@ -1036,7 +1055,7 @@ async function settingsScreen(ctx) {
     pluginsList,
     h("button", { class: "secondary", onclick: () => storeScreen(ctx, back) }, "Open the store"),
     h("h2", {}, "Approval levels"),
-    h("p", { class: "muted" }, "How each action is approved. Changing these always needs Face ID or your password."),
+    h("p", { class: "muted" }, "How each action is approved. Changing these always needs your passkey or password."),
     ...policyRows,
     savePolicy,
     ...(hook.agents ? agentsSection(ctx, hook) : [h("h2", {}, "Agent webhook")]),
@@ -1166,7 +1185,7 @@ async function grokBotScreen(ctx) {
 }
 
 // pluginConfigScreen edits a plugin's user-only settings (like a privacy filter). Only the user can change
-// them, with Face ID or the password; the agent can't.
+// them, with the passkey or the password; the agent can't.
 async function pluginConfigScreen(ctx, id, opts = {}) {
   const err = errorBox();
   let cfg;
@@ -1233,7 +1252,7 @@ async function pluginConfigScreen(ctx, id, opts = {}) {
     header(ctx.hello),
     opts.intro ? h("p", { class: "eyebrow" }, "Last step") : null,
     h("h1", {}, opts.intro ? `What can your agent see in ${cfg.name}?` : `${cfg.name} settings`),
-    h("p", { class: "muted" }, "Only you can change these, with Face ID or your password. Your agent can't read or change them."),
+    h("p", { class: "muted" }, "Only you can change these, with your passkey or password. Your agent can't read or change them."),
     err,
     ...rows,
     save,
@@ -1286,7 +1305,7 @@ async function storeScreen(ctx, back) {
   screen(
     header(ctx.hello),
     h("h1", {}, "Store"),
-    h("p", { class: "muted" }, "Plugins reviewed by Rubi-Project. Installing one shows what it can do and needs Face ID or your password."),
+    h("p", { class: "muted" }, "Plugins reviewed by Rubi-Project. Installing one shows what it can do and needs your passkey or password."),
     err,
     store.catalog_error ? h("p", { class: "error" }, `The store is unavailable right now: ${store.catalog_error}`) : null,
     cards.length ? h("div", { class: "list" }, cards) : (store.catalog_error ? null : h("p", { class: "muted" }, "The store is empty.")),

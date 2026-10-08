@@ -134,7 +134,7 @@ func (c *Core) SetPolicy(ctx context.Context, levels map[string]string) (string,
 	if len(clean) == 0 {
 		return "", errors.New("nothing to change")
 	}
-	labels := map[string]string{"none": "No approval", "chat": "Buttons in chat", "strong": "Face ID / password"}
+	labels := map[string]string{"none": "No approval", "chat": "Buttons in chat", "strong": "Passkey / password"}
 	preview := map[string]any{}
 	for k, v := range clean {
 		name := k
@@ -156,7 +156,7 @@ func (c *Core) SetWebhook(ctx context.Context, rawURL, key string) (string, erro
 	if rawURL == "" {
 		return c.RemoveAgent(ctx, "Main")
 	}
-	return c.AddAgent(ctx, "Main", rawURL, key)
+	return c.AddAgent(ctx, "Main", rawURL, key, nil)
 }
 
 func validWebhookURL(raw string) error {

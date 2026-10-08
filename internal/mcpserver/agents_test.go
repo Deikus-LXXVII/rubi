@@ -80,10 +80,18 @@ func TestSeveralAgents(t *testing.T) {
 	if err := link.Call("policy.set", map[string]any{"levels": map[string]string{}}, &res); err == nil {
 		t.Fatal("an agent link changed other settings")
 	}
-	if err := link.Call("agent.add", map[string]any{"name": "mail", "url": mailSrv.URL, "key": "Authorization: Bearer crsr_mail"}, &res); err != nil {
+	if err := link.Call("agent.add", map[string]any{"name": "mail", "url": mailSrv.URL, "key": "x", "sources": []string{"nope"}}, &res); err == nil {
+		t.Fatal("unknown source accepted")
+	}
+	if err := link.Call("agent.add", map[string]any{"name": "mail", "url": mailSrv.URL, "key": "Authorization: Bearer crsr_mail", "sources": []string{"rubi"}}, &res); err != nil {
 		t.Fatal(err)
 	}
 	r.approveChange(link, res)
+	for _, a := range r.c.Agents() {
+		if a.Name == "mail" && (len(a.Subscriptions) != 1 || a.Subscriptions[0] != "rubi") {
+			t.Fatalf("subscriptions chosen at connect: %+v", a)
+		}
+	}
 	agents := r.ag.call("rubi_status", nil)["webhook"].(map[string]any)["agents"].([]any)
 	if len(agents) != 2 {
 		t.Fatalf("agents: %v", agents)

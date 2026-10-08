@@ -507,7 +507,7 @@ func newRecord(cand *plugins.Candidate) *vault.Plugin {
 }
 
 var levelNames = map[rubiplugin.Level]string{rubiplugin.None: "no approval", rubiplugin.Chat: "buttons in chat",
-	rubiplugin.Strong: "Face ID / password"}
+	rubiplugin.Strong: "Passkey / password"}
 
 // permissions describes what a plugin gets, for the install and update approval screens.
 func permissions(m plugins.Manifest, reviewed bool, source string) map[string]any {
