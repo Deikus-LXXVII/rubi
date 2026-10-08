@@ -1128,7 +1128,8 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved"
     : a.kind === "rubi.update" ? "Updating…" : a.kind === "rubi.plugin.install" ? "Installed"
     : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed"
-    : a.kind === "rubi.plugin.rollback" ? "Rolled back" : "Done";
+    : a.kind === "rubi.plugin.rollback" ? "Rolled back" : a.kind?.endsWith(".private") ? "Shown to your agent"
+    : a.kind?.endsWith(".folder") || a.kind?.endsWith(".chat_access") ? "Allowed" : a.kind?.endsWith(".draft") ? "Draft saved" : "Done";
   const titles = {
     executed: executedTitle,
     denied: "Declined",

@@ -43,6 +43,11 @@ const APPROVALS = {
     options: [{ key: "run", label: "Run" }],
     preview: { shortcut: "Unlock the front door", input: "(none)", rubi_home: "Mac mini" },
   },
+  connect: {
+    kind: "rubi.settings", summary: "Connect Unofficial Telegram (@alex)",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { integration: "Unofficial Telegram", account: "@alex", connects_to: "Telegram's servers" },
+  },
   settings: {
     kind: "rubi.settings", summary: "Add Rubi Home on Mac mini",
     options: [{ key: "apply", label: "Approve" }],
@@ -129,7 +134,7 @@ export class DemoClient {
           return { need_more: { step: "s1", message: "Telegram sent a code to your Telegram app. Enter it here.",
             fields: [{ key: "code", label: "Login code", type: "number", required: true }] } };
         }
-        return { approval_id: "settings", ticket: "demo", account: "@alex" };
+        return { approval_id: "connect", ticket: "demo", account: "@alex" };
       case "plugin.config.get":
         return { id: args.id, name: "iCloud Mail", account: "alex@icloud.com",
           accounts: [{ id: "alex@icloud.com", label: "alex@icloud.com", default: true }, { id: "work@icloud.com", label: "work@icloud.com" }],
