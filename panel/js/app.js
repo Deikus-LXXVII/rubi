@@ -1050,11 +1050,12 @@ const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Pa
 async function settingsScreen(ctx) {
   currentView = () => settingsScreen(ctx);
   const err = errorBox();
-  let store, policy, hook, st;
+  let store, policy, hook, st, devices;
   try {
-    [store, policy, hook, st] = await Promise.all([
+    [store, policy, hook, st, devices] = await Promise.all([
       ctx.client.call("store.list"), ctx.client.call("policy.get"),
       ctx.client.call("agents.get").catch(() => ctx.client.call("webhook.get")), ctx.client.call("status"),
+      ctx.client.call("devices.get").catch(() => null), // older Rubi: no Rubi Home
     ]);
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
@@ -1126,6 +1127,21 @@ async function settingsScreen(ctx) {
       await busy(e.target, () => ctx.client.call("webhook.test")).then(() => { e.target.textContent = "Test event sent"; }).catch((x) => showError(err, x));
     } }, "Send a test event") : null,
     hook.configured ? h("button", { class: "link", onclick: change("webhook.set", () => ({ url: "", key: "" })) }, "Remove webhook") : null])),
+    devices ? pane(h("h2", {}, "Rubi Home"),
+      h("p", { class: "muted" }, "A helper on a computer at home (a Mac that stays on) lets plugins control Philips Hue and run your Shortcuts."),
+      devices.devices.length ? h("div", { class: "list" }, devices.devices.map((d) => {
+        const state = h("span", { class: "muted small" }, "");
+        return h("div", { class: "account-row" }, h("span", {}, d.name, " ", state),
+          h("span", { class: "actions" },
+            h("button", { class: "link small", onclick: async (e) => {
+              await busy(e.target, async () => {
+                const r = await ctx.client.call("device.check", { id: d.id });
+                state.textContent = r.online ? `online · ${r.version || ""}` : "not answering";
+              }).catch((x) => showError(err, x));
+            } }, "Check"),
+            h("button", { class: "link small", onclick: change("device.remove", () => ({ id: d.id })) }, "Remove")));
+      })) : null,
+      h("button", { class: "secondary", onclick: () => homeDeviceScreen(ctx, back) }, "Add a home computer")) : null,
     pane(h("h2", {}, "Approval levels"),
       h("p", { class: "muted" }, "How each action is approved. Changing these always needs your passkey or password."),
       ...policyRows,
@@ -1137,6 +1153,43 @@ async function settingsScreen(ctx) {
         await busy(e.target, () => ctx.client.call("lock"));
         statusScreen(ctx, "Rubi is locked.");
       } }, "Lock Rubi now"))),
+  );
+}
+
+const HOME_INSTALL = "curl -fsSL https://rubi-panel.com/install-home.sh | sh";
+
+// homeDeviceScreen pairs a Rubi Home helper: install it on the computer at home, paste its code.
+function homeDeviceScreen(ctx, back) {
+  const err = errorBox();
+  const code = h("textarea", { rows: "4", placeholder: "rubi-home:…", autocapitalize: "none", spellcheck: "false" });
+  const copy = h("button", { class: "secondary small", onclick: async () => {
+    try {
+      await navigator.clipboard.writeText(HOME_INSTALL);
+      copy.textContent = "Copied";
+    } catch {
+      copy.textContent = "Select and copy";
+    }
+  } }, "Copy");
+  const pair = h("button", { class: "primary", onclick: async (e) => {
+    await busy(e.target, async () => {
+      e.target.textContent = "Reaching Rubi Home…";
+      const res = await ctx.client.call("device.pair", { code: code.value.trim() });
+      confirmChange(ctx, res, back);
+    }).catch((x) => showError(err, x));
+  } }, "Pair");
+  screen(
+    header(ctx.hello),
+    h("h1", {}, "Add a home computer"),
+    h("p", {}, "Rubi runs on your agent's machine and can't reach your home network. Rubi Home, a small helper on a computer at home, can: it talks to your Hue Bridge and runs the shortcuts you put in its folder."),
+    h("ol", { class: "steps" },
+      h("li", {}, "On a Mac at home that stays on (or a Linux box), open Terminal and run:",
+        h("div", { class: "info-row" }, h("span", {}, "Install Rubi Home"), h("code", {}, HOME_INSTALL), copy)),
+      h("li", {}, "It prints a pairing code starting with rubi-home:. Paste it here. (Later: rubi-home pair makes a new one.)"),
+      h("li", {}, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run.")),
+    h("label", { class: "field" }, h("span", {}, "Pairing code"), code),
+    err,
+    pair,
+    h("button", { class: "link", onclick: back }, "Back to settings"),
   );
 }
 
