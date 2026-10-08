@@ -1101,3 +1101,10 @@ button.primary:hover:not(:disabled), a.btn.primary:hover { background: var(--rub
 button.primary:focus-visible, a.btn.primary:focus-visible { box-shadow: var(--focus); }
 button.primary.is-done { box-shadow: none; }
 button.copy { box-shadow: none; }
+
+/* the corner button on every screen: settings, with the number of updates waiting */
+.settings-btn .icon { margin: 0; transition: rotate var(--t-gentle) var(--ease-out); }
+.settings-btn:hover .icon { rotate: 45deg; }
+.nav-count { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: var(--r-pill); background: var(--accent); color: #fff;
+  font: 700 0.7rem/20px var(--font); font-style: normal; text-align: center; }
+.settings-btn.is-busy .icon { opacity: 0; }

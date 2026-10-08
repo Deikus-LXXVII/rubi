@@ -239,6 +239,10 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	case "lock":
 		s.core.Lock()
 		return map[string]any{"state": s.core.State()}, nil
+	case "session.settings":
+		// Settings are one tap away on every screen: any valid link can open them. Viewing them is
+		// harmless, and every change still needs the user's passkey or password.
+		return map[string]any{"ticket": s.core.MintTicket("settings")}, nil
 	case "updates.list", "updates.notify", "updates.rubi", "updates.plugin":
 		// The panel shows the Updates button on every screen, so any valid link may use it. Listing and
 		// notification switches are harmless; installing an update still needs a strong approval.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/Deikus-LXXVII/rubi/internal/home"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/panelclient"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
 	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
@@ -496,5 +497,28 @@ func TestInternalSecrets(t *testing.T) {
 	out := r.ag.call("demo_session", map[string]any{"value": "s2"})
 	if out["before"] != "" || out["after"] != "s2" || out["token_refused"] != true || out["token"] != "good" {
 		t.Fatalf("secrets: %v", out)
+	}
+}
+
+// TestSettingsFromAnyLink: a link made for another purpose (here unlocking) can open the settings.
+func TestSettingsFromAnyLink(t *testing.T) {
+	r := newRig(t)
+	unlock := r.panel("unlock")
+	var res struct{ Ticket string }
+	if err := unlock.Call("session.settings", nil, &res); err != nil || res.Ticket == "" {
+		t.Fatalf("session.settings: %v %v", err, res)
+	}
+	if err := unlock.Call("store.list", nil, nil); err == nil {
+		t.Fatal("an unlock link reached the settings directly")
+	}
+	link := unlock.Link
+	link.Ticket = res.Ticket
+	settings, err := panelclient.New(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.HTTP = unlock.HTTP
+	if err := settings.Call("store.list", nil, nil); err != nil {
+		t.Fatalf("settings with the new ticket: %v", err)
 	}
 }

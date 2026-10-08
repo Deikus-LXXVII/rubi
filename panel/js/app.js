@@ -142,39 +142,43 @@ async function loadUpdates(force = false) {
   return res.updates;
 }
 
-// updateIcon draws a circular arrow with a down arrow inside (an "update" glyph).
-function updateIcon() {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", "18");
-  svg.setAttribute("height", "18");
-  svg.setAttribute("aria-hidden", "true");
-  for (const d of ["M20 12a8 8 0 1 1-2.34-5.66", "M20 4v4h-4", "M12 8v7", "M9 12.5l3 3 3-3"]) {
-    const path = document.createElementNS(ns, "path");
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "currentColor");
-    path.setAttribute("stroke-width", "2");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    svg.append(path);
+
+// openSettings goes to the settings from any screen. A link made for something else (an approval, an
+// unlock) first asks Rubi for a settings ticket; changes there still need the passkey or password.
+async function openSettings(ctx) {
+  if (ctx.demo || ctx.link.a === "settings") return whenUnlocked(ctx, () => settingsScreen(ctx));
+  let res;
+  try {
+    res = await ctx.client.call("session.settings");
+  } catch (e) {
+    return fatal(/unknown operation/.test(e.message)
+      ? "This Rubi is older and can't open its settings from here. Ask your agent for a settings link."
+      : (e instanceof UserError ? e.message : friendly(e)));
   }
-  return svg;
+  const link = { ...ctx.link, a: "settings", t: res.ticket };
+  const sctx = { ...ctx, link, client: tracked(new RubiClient(link)) };
+  activeCtx = sctx;
+  whenUnlocked(sctx, () => settingsScreen(sctx));
 }
 
+let onSettings = false; // the settings screen doesn't need a button to itself
+
+// updatesButton is the corner button on every screen: it opens the settings, and shows how many
+// updates are waiting (they're in the settings, under Updates).
 function updatesButton() {
-  if (!activeCtx || activeCtx.hello.state === "unpaired") return null;
+  if (!activeCtx || activeCtx.hello.state === "unpaired" || onSettings) return null;
   const badge = h("span", { class: "badge", hidden: true });
-  const btn = h("button", { class: "updates-btn", type: "button", title: "Updates", "aria-label": "Updates",
-    onclick: () => updatesScreen(activeCtx) }, updateIcon(), badge);
+  const btn = h("button", { class: "updates-btn settings-btn", type: "button", title: "Settings", "aria-label": "Settings" },
+    icon("gear", 18), badge);
+  btn.onclick = () => busy(btn, () => openSettings(activeCtx));
   loadUpdates().then((items) => {
     const n = outdated(items);
     if (n) {
       badge.textContent = String(n);
       badge.hidden = false;
       btn.classList.add("has-updates");
-      btn.setAttribute("aria-label", `Updates: ${n} available`);
+      btn.title = `Settings · ${n === 1 ? "1 update" : n + " updates"} available`;
+      btn.setAttribute("aria-label", btn.title);
     }
   }).catch(() => {});
   return btn;
@@ -224,7 +228,7 @@ async function updatesScreen(ctx) {
   screen(
     { cls: "wide", focus: false },
     header(ctx.hello),
-    backBar("Back", back),
+    backBar("Settings", () => openSettings(ctx)),
     h("h1", {}, "Updates"),
     h("p", {}, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
     err,
@@ -1422,6 +1426,7 @@ function segmented(options, value, onChange, disabled = false) {
 
 const SETTINGS_TABS = [
   ["plugins", "Plugins", "plug"],
+  ["updates", "Updates", "download"],
   ["bots", "Grok Bot", "bot"],
   ["home", "Rubi Home", "home"],
   ["approvals", "Approvals", "shield"],
@@ -1573,15 +1578,27 @@ async function settingsScreen(ctx, tab) {
     });
   };
   for (const [id, label, ic] of SETTINGS_TABS) {
+    if (id === "updates") { // its own page; the count shows here
+      const count = h("i", { class: "nav-count", hidden: true });
+      nav.append(h("button", { type: "button", "data-tab": id, onclick: () => updatesScreen(ctx) }, icon(ic, 18), h("span", {}, label), count));
+      loadUpdates().then((items) => {
+        const n = outdated(items);
+        if (n) { count.textContent = String(n); count.hidden = false; }
+      }).catch(() => {});
+      continue;
+    }
     if (!sections[id]) continue;
     nav.append(h("button", { type: "button", "data-tab": id, onclick: () => show(id) }, icon(ic, 18), h("span", {}, label),
       id === "bots" && !agents.length ? h("i", { class: "nav-dot", title: "Needs attention" }) : null,
-      id === "plugins" && installed.some((p) => p.update_available) ? h("i", { class: "nav-dot", title: "Updates" }) : null));
+      null));
   }
 
+  onSettings = true;
+  const head = header(ctx.hello);
+  onSettings = false;
   screen(
     { cls: "wide settings" },
-    header(ctx.hello),
+    head,
     h("h1", {}, "Settings"),
     err,
     h("div", { class: "settings-layout" }, nav, body),
