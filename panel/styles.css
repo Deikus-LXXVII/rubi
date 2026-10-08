@@ -1070,3 +1070,20 @@ button.primary.is-busy::before { display: none; }
 @keyframes card-in { from { opacity: 0.6; transform: translateY(6px) scale(0.99); } }
 .savebar button.primary { padding: 10px 14px; }
 .savebar button.link { text-decoration: none; font-weight: 600; }
+
+/* ============================================================ loading (iteration 16) */
+
+.topbar-progress { position: fixed; z-index: 100; left: 0; right: 0; top: 0; height: 3px; pointer-events: none; opacity: 0; overflow: hidden;
+  transition: opacity var(--t-base) var(--ease-out); }
+.topbar-progress.on { opacity: 1; }
+.topbar-progress::before { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; border-radius: 3px;
+  background: linear-gradient(90deg, transparent, var(--ruby-400), var(--ruby-300), var(--ruby-400), transparent);
+  box-shadow: 0 0 12px var(--ruby-400); animation: progress 1.1s var(--ease-in-out) infinite; }
+@keyframes progress { from { left: -40%; } to { left: 100%; } }
+
+.skeleton { display: flex; flex-direction: column; gap: 10px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2); }
+.skeleton i { display: block; height: 12px; border-radius: 6px; width: 100%;
+  background: linear-gradient(90deg, var(--raise) 25%, color-mix(in srgb, var(--raise) 40%, var(--line-2)) 50%, var(--raise) 75%);
+  background-size: 300% 100%; animation: shimmer 1.6s linear infinite; }
+.skeleton i.w80 { width: 80%; } .skeleton i.w60 { width: 60%; height: 16px; } .skeleton i.w40 { width: 40%; }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }

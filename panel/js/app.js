@@ -406,8 +406,8 @@ async function main() {
     return fatal("This browser is too old for Rubi's encryption. Update it (Safari 17+, Chrome 133+, Firefox 130+).");
   }
 
-  screen(h("p", { class: "muted" }, "Connecting to your Rubi…"));
-  const client = new RubiClient(link);
+  connecting();
+  const client = tracked(new RubiClient(link));
   let hello;
   try {
     hello = await client.call("hello");
@@ -436,7 +436,7 @@ async function main() {
 // ---------- demo: every screen with made-up data (see demo.js) ----------
 
 function demoMain(which) {
-  const ctx = { client: new DemoClient(), link: { a: "demo", k: "demo" }, hello: { ...DEMO_HELLO }, demo: true };
+  const ctx = { client: tracked(new DemoClient()), link: { a: "demo", k: "demo" }, hello: { ...DEMO_HELLO }, demo: true };
   activeCtx = ctx;
   const go = (name) => {
     history.replaceState(null, "", "#demo=" + name);
@@ -592,7 +592,7 @@ function pairScreen(ctx) {
     if (!args.wraps.length) throw new UserError("Add a password: this passkey can't unlock Rubi on its own.");
     const res = await ctx.client.call("pair", args);
     savePin(hello.instance, ctx.link.k, res.vault_version);
-    const settingsCtx = { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
+    const settingsCtx = { ...ctx, client: tracked(new RubiClient({ ...ctx.link, t: res.ticket })) };
     settingsCtx.hello = await settingsCtx.client.call("hello");
     connectAgentScreen(settingsCtx);
   }
@@ -1218,7 +1218,7 @@ async function whenUnlocked(ctx, next) {
 // confirmChange takes the {approval_id, ticket} a settings operation returns and asks for the passkey or the
 // password, using a client bound to that approval's ticket.
 function confirmChange(ctx, res, onDone, doneLabel) {
-  const approvalCtx = ctx.demo ? ctx : { ...ctx, client: new RubiClient({ ...ctx.link, t: res.ticket }) };
+  const approvalCtx = ctx.demo ? ctx : { ...ctx, client: tracked(new RubiClient({ ...ctx.link, t: res.ticket })) };
   return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone, doneLabel });
 }
 
@@ -1309,6 +1309,41 @@ function integrityLine(st) {
   return h("p", { class: i.status === "modified" ? "error" : "muted" }, text);
 }
 
+
+// ---------- loading: a thin ruby line at the top while Rubi takes a moment ----------
+
+let pending = 0;
+let barTimer = 0;
+const bar = h("div", { class: "topbar-progress", "aria-hidden": "true" });
+document.body.append(bar);
+
+// tracked wraps a client so every call shows the progress line after 250 ms.
+function tracked(client) {
+  if (client.tracked) return client;
+  const call = client.call.bind(client);
+  client.call = async (...args) => {
+    if (pending++ === 0) barTimer = setTimeout(() => bar.classList.add("on"), 250);
+    try {
+      return await call(...args);
+    } finally {
+      if (--pending === 0) {
+        clearTimeout(barTimer);
+        bar.classList.remove("on");
+      }
+    }
+  };
+  client.tracked = true;
+  return client;
+}
+
+// connecting is what the page shows while it reaches Rubi for the first time.
+function connecting() {
+  const note = h("p", { class: "muted center", "aria-live": "polite" }, "Connecting to your Rubi…");
+  const sk = h("div", { class: "skeleton", "aria-hidden": "true" }, h("i", { class: "w60" }), h("i"), h("i", { class: "w80" }), h("i", { class: "w40" }));
+  screen(face("thinking", 84), note, sk);
+  setTimeout(() => { if (note.isConnected) note.textContent = "Still connecting… Your Rubi may be starting up; this can take a few seconds."; }, 5000);
+  setTimeout(() => { if (note.isConnected) note.textContent = "Taking longer than usual. If it doesn't open, ask your agent for a new link."; }, 15000);
+}
 
 // ---------- small components ----------
 
