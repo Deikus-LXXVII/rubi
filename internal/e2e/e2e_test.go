@@ -63,3 +63,35 @@ func TestWrongInstanceOrPathOrTamper(t *testing.T) {
 		t.Fatal("client accepted a response from an impostor")
 	}
 }
+
+// A v2 request can't be read with the instance key alone: a leaked identity.json plus recorded traffic
+// reveal nothing, and a request for an earlier process's session is refused.
+func TestSessionForwardSecrecy(t *testing.T) {
+	ik, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	srv := Server{Key: ik, Session: NewSession()}
+	c := Client{InstanceKey: ik.PublicKey(), SessionKey: srv.Session.PublicKey()}
+	req, respKey, err := c.Seal("/v1/rpc", []byte("the vault key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !req.Forward() {
+		t.Fatal("not a v2 request")
+	}
+	plain, sk, err := srv.Open("/v1/rpc", req)
+	if err != nil || string(plain) != "the vault key" {
+		t.Fatalf("open: %v %q", err, plain)
+	}
+	resp, _ := SealResponse(sk, "rid", []byte("ok"))
+	if got, err := OpenResponse(respKey, "rid", resp); err != nil || string(got) != "ok" {
+		t.Fatalf("response: %v %q", err, got)
+	}
+	// The attacker has the instance's stored key, not the session key that lived in memory.
+	thief := Server{Key: ik, Session: NewSession()}
+	if _, _, err := thief.Open("/v1/rpc", req); err == nil {
+		t.Fatal("opened without the session key")
+	}
+	thief.Session = nil
+	if _, _, err := thief.Open("/v1/rpc", req); err == nil {
+		t.Fatal("opened with the instance key alone")
+	}
+}

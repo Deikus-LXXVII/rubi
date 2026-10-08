@@ -36,6 +36,9 @@ function relayFor(link) {
   return transports.get(link.n);
 }
 
+// Operations that must use forward secrecy (panelapi.sensitiveOps).
+const SENSITIVE = new Set(["pair", "unlock", "integration.setup"]);
+
 export class RubiClient {
   constructor(link) {
     this.link = link;
@@ -73,11 +76,25 @@ export class RubiClient {
   }
 
   async call(op, args) {
+    // Requests that carry keys or passwords are also sealed to the running Rubi's session key (forward
+    // secrecy). It changes whenever Rubi restarts, so it is fetched fresh right before.
+    let sessionPub;
+    if (SENSITIVE.has(op)) {
+      const hello = await this.call("hello");
+      // A Rubi from before session keys has none; it must still unlock (and update) with this panel.
+      if (hello.session_key) sessionPub = b64u.dec(hello.session_key);
+    }
     const rid = b64u.enc(rand(16));
     const env = { op, ts: Math.floor(Date.now() / 1000), rid };
     if (this.link.t) env.ticket = this.link.t;
     if (args !== undefined) env.args = args;
-    const { request, respKey } = await sealRequest(this.link.x25519, "/v1/rpc", utf8(JSON.stringify(env)));
+    // Pad to a size bucket so the carriers can't tell operations apart by size (panelapi.PadTarget).
+    const len = utf8(JSON.stringify(env)).length + ',"pad":""'.length;
+    let target = 1024;
+    while (target < len && target < 65536) target *= 2;
+    if (len > target) target = Math.ceil(len / 65536) * 65536;
+    if (target > len) env.pad = "0".repeat(target - len);
+    const { request, respKey } = await sealRequest(this.link.x25519, "/v1/rpc", utf8(JSON.stringify(env)), sessionPub);
 
     const raw = await this.post(JSON.stringify(request));
     let reply;

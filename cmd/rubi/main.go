@@ -46,7 +46,7 @@ Development:
 
 Environment:
   RUBI_HOME          state directory (default ~/.rubi)
-  RUBI_PANEL_ORIGIN  panel origin (default https://rubi-panel.com)
+  RUBI_PANEL_ORIGIN  panel origin (default https://rubi-panel.com); only before pairing
 `
 
 func main() {

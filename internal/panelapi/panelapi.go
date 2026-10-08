@@ -49,12 +49,48 @@ type Envelope struct {
 	RID    string          `json:"rid"` // random request id, single use
 	Ticket string          `json:"ticket,omitempty"`
 	Args   json.RawMessage `json:"args,omitempty"`
+	Pad    string          `json:"pad,omitempty"` // size padding, ignored
+	// forward: the request was sealed with forward secrecy (e2e v2), required for keys and passwords.
+	forward bool
 }
+
+// sensitiveOps carry the vault key or service passwords; they must be sealed to this process's session
+// key too, so a leaked identity.json and recorded relay traffic can't reveal them later.
+var sensitiveOps = map[string]bool{"pair": true, "unlock": true, "integration.setup": true}
+
+// Sensitive reports whether op must be sealed with forward secrecy (see sensitiveOps).
+func Sensitive(op string) bool { return sensitiveOps[op] }
 
 type reply struct {
 	OK     bool   `json:"ok"`
 	Result any    `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
+	Pad    string `json:"pad,omitempty"`
+}
+
+// padded marshals v with a "pad" field that brings the JSON to a size bucket (powers of two from 1 KB,
+// then multiples of 64 KB), so relays and tunnels can't tell operations apart by their size. Requests
+// from the panel are padded the same way (pad is ignored on arrival).
+func padded(v reply) []byte {
+	b, _ := json.Marshal(v)
+	target := PadTarget(len(b) + len(`,"pad":""`))
+	if n := target - len(b) - len(`,"pad":""`); n > 0 {
+		v.Pad = strings.Repeat("0", n)
+		b, _ = json.Marshal(v)
+	}
+	return b
+}
+
+// PadTarget is the size bucket for a message of n bytes.
+func PadTarget(n int) int {
+	t := 1024
+	for t < n && t < 64<<10 {
+		t *= 2
+	}
+	if n > t {
+		t = (n + 64<<10 - 1) / (64 << 10) * (64 << 10)
+	}
+	return t
 }
 
 type Server struct {
@@ -68,7 +104,7 @@ type Server struct {
 }
 
 func New(c *core.Core) *Server {
-	return &Server{core: c, ch: e2e.Server{Key: c.ID.Box}, now: time.Now, seen: map[string]time.Time{}}
+	return &Server{core: c, ch: e2e.Server{Key: c.ID.Box, Session: e2e.NewSession()}, now: time.Now, seen: map[string]time.Time{}}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -148,6 +184,7 @@ func (s *Server) HandleRPC(ctx context.Context, body []byte) (int, []byte) {
 	if err := json.Unmarshal(plain, &env); err != nil || env.RID == "" {
 		return http.StatusBadRequest, bad
 	}
+	env.forward = req.Forward()
 	var out reply
 	if err := s.checkFresh(env); err != nil {
 		out = reply{Error: err.Error()}
@@ -159,7 +196,7 @@ func (s *Server) HandleRPC(ctx context.Context, body []byte) (int, []byte) {
 			out = reply{OK: true, Result: res}
 		}
 	}
-	plainOut, _ := json.Marshal(out)
+	plainOut := padded(out)
 	sealed, err := e2e.SealResponse(respKey, env.RID, plainOut)
 	if err != nil {
 		return http.StatusInternalServerError, []byte("internal error")
@@ -209,9 +246,13 @@ func (s *Server) proofFailed(id string) bool {
 }
 
 func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
+	if sensitiveOps[env.Op] && !env.forward {
+		return nil, errors.New("this panel is out of date; reload the page and try again")
+	}
 	switch env.Op {
 	case "hello":
 		return map[string]any{"instance": s.core.ID.InstanceID, "fingerprint": s.core.ID.Fingerprint(),
+			"session_key": s.ch.SessionPublic(),
 			"state": s.core.State(), "version": version.Version}, nil
 	case "pair":
 		return s.pair(env)

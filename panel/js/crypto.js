@@ -88,11 +88,25 @@ export async function supportsX25519() {
 
 // ---- end-to-end channel ----
 
-export async function sealRequest(instancePub, path, plain) {
+// sealRequest seals a request to the instance key, and with sessionPub (e2e v2, see internal/e2e) also to
+// the running Rubi's in-memory session key, so a later leak of the instance key can't reveal it.
+export async function sealRequest(instancePub, path, plain, sessionPub) {
   const eph = await subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
-  const peer = await subtle.importKey("raw", instancePub, { name: "X25519" }, false, []);
-  const shared = new Uint8Array(await subtle.deriveBits({ name: "X25519", public: peer }, eph.privateKey, 256));
+  const dh = async (pub) => {
+    const peer = await subtle.importKey("raw", pub, { name: "X25519" }, false, []);
+    return new Uint8Array(await subtle.deriveBits({ name: "X25519", public: peer }, eph.privateKey, 256));
+  };
+  const shared = await dh(instancePub);
   const epk = new Uint8Array(await subtle.exportKey("raw", eph.publicKey));
+  if (sessionPub) {
+    const okm = await hkdf(concat(shared, await dh(sessionPub)), concat(epk, instancePub, sessionPub), "rubi e2e v2", 64);
+    shared.fill(0);
+    const { nonce, ct } = await sealGcm(okm.slice(0, 32), plain, "rubi-req|v2|" + path);
+    return {
+      request: { v: 2, epk: b64u.enc(epk), sk: b64u.enc(sessionPub), nonce: b64u.enc(nonce), ct: b64u.enc(ct) },
+      respKey: okm.slice(32),
+    };
+  }
   const okm = await hkdf(shared, concat(epk, instancePub), "rubi e2e v1", 64);
   const { nonce, ct } = await sealGcm(okm.slice(0, 32), plain, "rubi-req|v1|" + path);
   return {

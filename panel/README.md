@@ -29,4 +29,5 @@ live, serve `panel/` through any HTTPS tunnel and set `RUBI_PANEL_ORIGIN` to tha
 
 Any static host works. Serve the directory as is, over HTTPS, at the origin configured as Rubi's
 `RUBI_PANEL_ORIGIN` (default `https://rubi-panel.com`). Passkeys are bound to that domain, so it must stay
-stable.
+stable. Set it before pairing: an official build records the origin at pairing and ignores the variable
+afterwards, so an instruction to restart Rubi with another origin can't redirect the user's links.

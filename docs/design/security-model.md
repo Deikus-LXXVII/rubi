@@ -238,6 +238,29 @@ Integrations are plugins with their own signed releases (design in [plugins.md](
   Linux the daemon is non-dumpable, so plugins can't read its memory; still, review is what protects
   against a malicious plugin (§3: the agent has root anyway).
 
+## 10b. Hardening summary (2026-10-08)
+
+What a manipulated agent, a leaked backup, a hostile carrier or a stranger with an old link can no longer do:
+
+- **Phishing.** The panel origin is fixed at pairing (sealed in the vault; `RUBI_PANEL_ORIGIN` counts only
+  before pairing). The panel computes the fingerprint itself, checks that the wrapped keys belong to the
+  instance it verified, pins keys both ways and refuses to be framed.
+- **Leaked backups.** Keys and passwords travel with forward secrecy (panel-protocol.md, v2); password
+  wraps must use strong Argon2id settings (t 2–10, 46 MiB–1 GiB).
+- **Edited files.** Plugin permissions and approval levels come from the verified package, not from
+  `plugins/index.json`; an older Rubi than ever unlocked is reported; old store catalogs are refused.
+- **Lockout and floods.** No global failure counter; per-approval proof limits; bounded relay reassembly,
+  answers, gateway queues, pending approvals, events, plugin requests, hooks and logs.
+- **Hooks.** URLs carry a hash of the route secret, so one URL can't be used to listen for the others; the
+  gateway's answer doesn't reveal whether Rubi is online.
+- **Agent quota.** Plugin events have per-plugin and per-agent budgets; Rubi's own events always go out.
+- **Privacy filters.** Mail filters check the whole message before cutting it, and content searches can't
+  probe private bodies; shortcuts that unlock or disarm the home always ask first.
+- **Data at rest.** Plugin logs name accounts by a short code; logs rotate; key files are kept 0600.
+
+Open items: per-plugin OS sandboxing (Landlock on Linux), signing releases in a separate CI job without a
+checkout, a separate catalog key, and Rubi Home requests with forward secrecy.
+
 ## 11. Recovery
 
 If the user loses every passkey and the password, the vault is unrecoverable by design. They reset Rubi

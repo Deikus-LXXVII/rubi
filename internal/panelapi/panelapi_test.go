@@ -164,3 +164,4 @@ func TestCORSOnlyForPanelOrigin(t *testing.T) {
 }
 
 func nowUnix() int64 { return time.Now().Unix() }
+

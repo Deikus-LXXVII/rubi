@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdh"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -138,7 +139,31 @@ func (c *Client) Call(op string, args any, out any) error {
 	_, _ = rand.Read(ridBytes)
 	env := panelapi.Envelope{Op: op, TS: time.Now().Unix(), RID: b64.EncodeToString(ridBytes), Ticket: c.Link.Ticket, Args: raw}
 	plain, _ := json.Marshal(env)
-	req, respKey, err := c.ch.Seal(panelapi.RPCPath, plain)
+	if n := panelapi.PadTarget(len(plain)+len(`,"pad":""`)) - len(plain) - len(`,"pad":""`); n > 0 {
+		env.Pad = strings.Repeat("0", n)
+		plain, _ = json.Marshal(env)
+	}
+	ch := c.ch
+	if panelapi.Sensitive(op) {
+		// Keys and passwords go sealed to this Rubi process's session key as well (forward secrecy);
+		// it is fetched fresh, since it changes whenever Rubi restarts.
+		var hello struct {
+			SessionKey string `json:"session_key"`
+		}
+		if err := c.Call("hello", nil, &hello); err != nil {
+			return err
+		}
+		skb, err := b64.DecodeString(hello.SessionKey)
+		if err != nil {
+			return errors.New("this Rubi offers no session key")
+		}
+		sk, err := ecdh.X25519().NewPublicKey(skb)
+		if err != nil {
+			return errors.New("this Rubi offers no session key")
+		}
+		ch.SessionKey = sk
+	}
+	req, respKey, err := ch.Seal(panelapi.RPCPath, plain)
 	if err != nil {
 		return err
 	}

@@ -43,7 +43,30 @@ ct (response)         = AES-256-GCM(resp_key, nonce12, reply_json,    ad="rubi-r
 ```
 
 A response that fails to decrypt did not come from the pinned instance; the panel must stop.
-An undecryptable request gets a plain `400 bad request` with no details.
+An undecryptable request gets a plain `400 bad request` with no details over HTTPS, and no answer at all
+over relays.
+
+**Forward secrecy (v2).** Each Rubi process makes a session X25519 key that lives only in memory and
+announces its public half as `session_key` in `hello`. Requests that carry keys or passwords (`pair`,
+`unlock`, `integration.setup`) must be sealed to both keys; Rubi refuses them otherwise. The panel fetches
+`hello` right before each such request, since the session key changes when Rubi restarts.
+
+```
+shared                = X25519(eph.private, k.x25519) || X25519(eph.private, session_key)
+okm                   = HKDF-SHA256(ikm=shared, salt=eph.public || k.x25519 || session_key, info="rubi e2e v2", L=64)
+request               = {"v": 2, "epk": …, "sk": session_key, "nonce": …, "ct": AES-256-GCM(req_key, …, ad="rubi-req|v2|/v1/rpc")}
+```
+
+The response is sealed as in v1 with the v2 `resp_key`. A leaked `identity.json` plus recorded relay
+traffic therefore reveals neither the vault key nor service passwords.
+
+**Size padding.** Envelopes and replies carry a `pad` field (ignored) that brings their JSON to a size
+bucket: powers of two from 1 KB to 64 KB, then multiples of 64 KB. Carriers can't tell operations apart by
+size.
+
+**Checks in the panel.** The fingerprint the panel shows is computed from `k` in the link, and `hello`
+must report the same; `unlock.keys` must belong to the instance in `hello`; a key pinned for one instance
+can't claim another. The panel refuses to run inside a frame.
 
 ## Envelope and reply
 
