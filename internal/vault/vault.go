@@ -58,6 +58,9 @@ type Data struct {
 	Receipts []Receipt `json:"receipts,omitempty"`
 	// UpdateNotified is the last release the agent was told about, so each one is announced once.
 	UpdateNotified string `json:"update_notified,omitempty"`
+	// QuietUpdates lists what the agent is not told about when updates come out ("rubi" for Rubi itself,
+	// or plugin ids); those updates only show on the panel's Updates page and in rubi_updates.
+	QuietUpdates []string `json:"quiet_updates,omitempty"`
 	// Plugins records what the user approved installing. A plugin only starts if its files still match.
 	Plugins map[string]*Plugin `json:"plugins,omitempty"`
 }

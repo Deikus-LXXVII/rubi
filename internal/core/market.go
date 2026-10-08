@@ -166,7 +166,7 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 	}
 	m := cand.Manifest
 	preview := permissions(m, cand.Reviewed, cand.Source)
-	return c.submitPluginChange(ctx, cand, "rubi.plugin.install", "Install "+m.Name+" "+m.Version, preview, func() error {
+	return c.submitPluginChange(ctx, cand, "rubi.plugin.install", "Install "+m.Name+" "+m.Version, preview, func(option string) error {
 		if err := c.Store.Commit(cand, ""); err != nil {
 			return err
 		}
@@ -179,6 +179,7 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 		}
 		c.Audit.Record("plugin.installed", audit.Fields{"plugin": m.ID, "version": m.Version, "reviewed": cand.Reviewed,
 			"source": cand.Source})
+		_ = c.SetUpdateNotify(m.ID, option != "install_quiet") // chosen on the install screen
 		c.toolsChanged()
 		c.startInstalled(m.ID, m.Version, cand.Tree)
 		return nil
@@ -238,7 +239,7 @@ func (c *Core) RequestPluginUpdate(ctx context.Context, id string) (map[string]a
 	if added := newPermissions(old, m); added != "" {
 		preview["new_permissions"] = added
 	}
-	return c.submitPluginChange(ctx, cand, "rubi.plugin.update", "Update "+m.Name+" to "+m.Version, preview, func() error {
+	return c.submitPluginChange(ctx, cand, "rubi.plugin.update", "Update "+m.Name+" to "+m.Version, preview, func(string) error {
 		c.Runner.Stop(id)
 		if err := c.Store.Commit(cand, rec.Version); err != nil { // keep the old version for rollback
 			return err
@@ -359,18 +360,26 @@ func (c *Core) RequestPluginRemove(ctx context.Context, id string) (map[string]a
 
 // submitPluginChange wraps an install or update in a strong approval and cleans up if it isn't approved.
 func (c *Core) submitPluginChange(ctx context.Context, cand *plugins.Candidate, kind, summary string,
-	preview map[string]any, apply func() error, decorate func(map[string]any)) (map[string]any, error) {
+	preview map[string]any, apply func(option string) error, decorate func(map[string]any)) (map[string]any, error) {
 	c.mkt.mu.Lock()
 	if c.mkt.staged == nil {
 		c.mkt.staged = map[string]bool{}
 	}
 	c.mkt.staged[cand.Dir] = true
 	c.mkt.mu.Unlock()
+	options := []approvals.Option{{Key: "install", Label: "Update"}}
+	question := ""
+	if kind == "rubi.plugin.install" {
+		// The user picks, and signs, whether the agent hears about this plugin's updates.
+		question = "Tell your agent when new versions come out?"
+		options = []approvals.Option{{Key: "install_quiet", Label: "Install", Meaning: "updates wait on the Updates page"},
+			{Key: "install", Label: "Install and notify about updates", Meaning: "your agent tells you about new versions"}}
+	}
 	res, err := c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: kind, Summary: summary,
-		Preview: preview, Options: []approvals.Option{{Key: "install", Label: map[bool]string{true: "Install", false: "Update"}[kind == "rubi.plugin.install"]}},
-		Execute: func(context.Context, string) (any, error) {
+		Question: question, Preview: preview, Options: options,
+		Execute: func(_ context.Context, option string) (any, error) {
 			defer c.unstage(cand.Dir)
-			if err := apply(); err != nil {
+			if err := apply(option); err != nil {
 				return nil, err
 			}
 			out := map[string]any{"plugin": cand.Manifest.ID, "version": cand.Manifest.Version}
@@ -502,14 +511,21 @@ var levelNames = map[rubiplugin.Level]string{rubiplugin.None: "no approval", rub
 
 // permissions describes what a plugin gets, for the install and update approval screens.
 func permissions(m plugins.Manifest, reviewed bool, source string) map[string]any {
-	p := map[string]any{"plugin": m.Name, "new_version": m.Version, "publisher": m.Publisher.Name + " · key " +
-		plugins.Fingerprint(m.Publisher.Key)}
+	p := map[string]any{"plugin": m.Name, "about": m.Description, "new_version": m.Version,
+		"publisher": m.Publisher.Name + " · key " + plugins.Fingerprint(m.Publisher.Key)}
+	if m.Publisher.URL != "" {
+		p["website"] = m.Publisher.URL
+	}
+	if !reviewed {
+		p["source"] = source
+	} else if m.Source != "" {
+		p["source"] = m.Source
+	}
 	if reviewed {
 		p["review"] = "Reviewed by Rubi-Project"
 	} else {
 		p["review"] = "Not reviewed by Rubi-Project"
 		p["warning"] = "This plugin is not from the Rubi store. Install it only if you trust its publisher: it will run on your agent's computer with access to what you enter for it."
-		p["source"] = source
 	}
 	var asks []string
 	for _, f := range m.Fields {
@@ -621,8 +637,8 @@ func (c *Core) CheckPluginUpdates(ctx context.Context) {
 		} else if v, err := c.sideloadLatest(ctx, rec.Source); err == nil {
 			latest = v
 		}
-		if latest == "" || !update.Newer(latest, rec.Version) || rec.Notified == latest {
-			continue
+		if latest == "" || !update.Newer(latest, rec.Version) || rec.Notified == latest || c.QuietUpdates(id) {
+			continue // quiet ones wait on the Updates page (and are announced if notifications come back on)
 		}
 		m, _ := c.Store.Get(id)
 		c.Events.Emit("rubi", "plugin.update_available", map[string]any{"plugin": id, "name": m.Name,

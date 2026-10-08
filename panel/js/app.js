@@ -58,7 +58,117 @@ function face(mood, size = 76) {
 function header(hello) {
   const row = h("div", { class: "instance" });
   row.append(mascot(hello.state === "unlocked" ? "idle" : "locked", 22), `Rubi · ${hello.fingerprint}`);
+  const btn = updatesButton();
+  if (btn) row.append(btn);
   return row;
+}
+
+// ---------- updates button (on every screen) ----------
+
+let activeCtx = null; // the page's Rubi connection, once known
+let currentView = null; // re-renders the screen the Updates page was opened from
+let updatesCache = null; // {at, items}
+
+function outdated(items) {
+  return (items || []).filter((x) => x.available).length;
+}
+
+async function loadUpdates(force = false) {
+  if (!activeCtx || activeCtx.hello.state !== "unlocked") return null;
+  if (!force && updatesCache && Date.now() - updatesCache.at < 60000) return updatesCache.items;
+  const res = await activeCtx.client.call("updates.list");
+  updatesCache = { at: Date.now(), items: res.updates };
+  return res.updates;
+}
+
+// updateIcon draws a circular arrow with a down arrow inside (an "update" glyph).
+function updateIcon() {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "18");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of ["M20 12a8 8 0 1 1-2.34-5.66", "M20 4v4h-4", "M12 8v7", "M9 12.5l3 3 3-3"]) {
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.append(path);
+  }
+  return svg;
+}
+
+function updatesButton() {
+  if (!activeCtx || activeCtx.hello.state === "unpaired") return null;
+  const badge = h("span", { class: "badge", hidden: true });
+  const btn = h("button", { class: "updates-btn", type: "button", title: "Updates", "aria-label": "Updates",
+    onclick: () => updatesScreen(activeCtx) }, updateIcon(), badge);
+  loadUpdates().then((items) => {
+    const n = outdated(items);
+    if (n) {
+      badge.textContent = String(n);
+      badge.hidden = false;
+      btn.classList.add("has-updates");
+      btn.setAttribute("aria-label", `Updates: ${n} available`);
+    }
+  }).catch(() => {});
+  return btn;
+}
+
+async function updatesScreen(ctx) {
+  if (ctx.hello.state !== "unlocked") return whenUnlocked(ctx, () => updatesScreen(ctx));
+  const back = currentView || (() => statusScreen(ctx, ""));
+  const err = errorBox();
+  let items;
+  try {
+    items = await loadUpdates(true);
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  const again = () => updatesScreen(ctx);
+  const rows = items.map((it) => {
+    const notify = h("input", { type: "checkbox", checked: it.notify });
+    const saved = h("span", { class: "muted small" });
+    notify.addEventListener("change", async () => {
+      saved.textContent = "Saving…";
+      try {
+        await ctx.client.call("updates.notify", { id: it.id, notify: notify.checked });
+        saved.textContent = "Saved";
+      } catch (x) {
+        notify.checked = !notify.checked;
+        saved.textContent = "";
+        showError(err, x);
+      }
+    });
+    const update = it.available ? h("button", { class: "primary small", onclick: async (e) => {
+      await busy(e.target, async () => {
+        e.target.textContent = "Verifying…";
+        const op = it.id === "rubi" ? "updates.rubi" : "updates.plugin";
+        confirmChange(ctx, await ctx.client.call(op, { id: it.id }), again, "Back to updates");
+      }).catch((x) => showError(err, x));
+    } }, "Update") : null;
+    return h("div", { class: "agent-card" + (it.available ? " outdated" : "") },
+      h("div", { class: "agent-head" },
+        h("div", {}, h("strong", {}, it.name), " ",
+          it.available ? h("span", { class: "tag warn" }, "Update available") : h("span", { class: "tag" }, "Up to date"),
+          h("div", { class: "muted small" }, it.available ? `${it.current} \u2192 ${it.latest}` : it.current)),
+        h("div", { class: "actions" }, update)),
+      h("label", { class: "check" }, notify, h("span", {}, "Tell my agent when a new version is out")), saved);
+  });
+  const n = outdated(items);
+  screen(
+    header(ctx.hello),
+    h("h1", {}, "Updates"),
+    h("p", { class: "muted" }, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
+    h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off \u201cTell my agent\u201d for anything you'd rather update from here, without your agent bringing it up. Every update still needs your Face ID or password."),
+    err,
+    h("div", { class: "agent-list" }, rows),
+    h("button", { class: "link", onclick: back }, "Back"),
+  );
 }
 
 function showPanel() {
@@ -173,6 +283,7 @@ async function main() {
       "Someone may be impersonating it. Don't continue; tell your agent.", true);
   }
   const ctx = { client, link, hello, pin };
+  activeCtx = ctx;
 
   if (link.a === "pair") return pairScreen(ctx);
   if (hello.state === "unpaired") return fatal("This Rubi hasn't been set up yet. Ask your agent for a setup link.");
@@ -185,7 +296,9 @@ async function main() {
 }
 
 function fatal(message, danger = false) {
-  screen(face("alert"), h("h1", {}, danger ? "Stop" : "Something's wrong"), h("p", { class: danger ? "error" : "" }, message));
+  const ub = danger ? null : updatesButton(); // never next to an impersonation warning
+  screen(ub ? h("div", { class: "top-actions" }, ub) : null, face("alert"), h("h1", {}, danger ? "Stop" : "Something's wrong"),
+    h("p", { class: danger ? "error" : "" }, message));
 }
 
 // ---------- pairing ----------
@@ -445,6 +558,7 @@ async function unlockScreen(ctx) {
 }
 
 async function statusScreen(ctx, message) {
+  currentView = () => statusScreen(ctx, message);
   let st = null;
   try {
     st = await ctx.client.call("status");
@@ -475,7 +589,8 @@ async function statusScreen(ctx, message) {
 
 const FIELD_LABELS = {
   from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", in_reply_to: "In reply to", body: "Message",
-  plugin: "Plugin", warning: "Warning", review: "Review", publisher: "Publisher", source: "Installed from",
+  plugin: "Plugin", about: "About", warning: "Warning", review: "Review", publisher: "Publisher",
+  website: "Publisher website", source: "Source",
   integration: "Integration", account: "Account", current: "Current version", new_version: "New version",
   new_permissions: "New permissions", back_to: "Back to", will_ask_for: "Will ask you for", can: "Can", connects_to: "Connects to",
   can_notify_about: "Can notify your agent about", effect: "Effect", webhook: "Webhook",
@@ -582,6 +697,7 @@ function titleFor(a) {
 
 // approveScreen shows one pending approval. opts.onDone (for settings changes) adds a way back.
 async function approveScreen(ctx, id, opts = {}) {
+  currentView = () => approveScreen(ctx, id, opts);
   if (ctx.hello.state !== "unlocked") {
     try {
       return await unlockFlow(ctx, "Unlock Rubi to review", "Rubi is locked. Unlock it first, then review the request.",
@@ -620,6 +736,10 @@ async function approveScreen(ctx, id, opts = {}) {
     const sw = h("input", { type: "checkbox", role: "switch", class: "switch", onchange: () => {
       chosen = sw.checked ? a.options[1].key : a.options[0].key;
     } });
+    if (a.kind === "rubi.plugin.install") { // update notifications are on unless the user turns them off
+      sw.checked = true;
+      chosen = a.options[1].key;
+    }
     const all = [...splitAddresses(a.preview?.to), ...splitAddresses(a.preview?.cc)];
     const label = !a.kind.endsWith(".send") || !all.length ? a.question.replace(/\?$/, "")
       : all.length === 1 ? `Notify me when ${all[0].name || all[0].email} replies` : "Notify me when someone replies";
@@ -682,6 +802,8 @@ async function approveScreen(ctx, id, opts = {}) {
   const top = h("div", { class: "req-top" });
   top.append(mascot("idle", 30), h("div", { class: "req-who" },
     h("strong", {}, "Rubi"), h("span", {}, `for your agent · ${ctx.hello.fingerprint}`)), timer);
+  const ub = updatesButton();
+  if (ub) top.append(ub);
 
   screen(
     { cls: "approve", focus: false },
@@ -730,8 +852,11 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   const mascotBlock = face(moods[a.state] || "idle", 104);
   if (a.state === "executed") mascotBlock.append(sparks());
   if (a.state === "denied" || a.state === "cancelled" || a.state === "expired") mascotBlock.classList.add("sigh");
+  if (a.state === "executed" && /^rubi\.(update|plugin\.)/.test(a.kind || "")) updatesCache = null; // versions changed
+  const ub = updatesButton();
   screen(
     { cls: "result" },
+    ub ? h("div", { class: "top-actions" }, ub) : null,
     mascotBlock,
     h("h1", { class: "center" }, titles[a.state] || a.state),
     h("p", { class: "center muted-strong" }, line),
@@ -852,6 +977,7 @@ function integrityLine(st) {
 const LEVEL_LABELS = { none: "No approval", chat: "Buttons in chat", strong: "Face ID / password" };
 
 async function settingsScreen(ctx) {
+  currentView = () => settingsScreen(ctx);
   const err = errorBox();
   let store, policy, hook, st;
   try {
@@ -955,6 +1081,7 @@ function agentsSection(ctx, data) {
 // grokBotScreen manages the Bots Rubi can wake: one webhook per Bot, any number of them, each with the
 // notifications it hears about.
 async function grokBotScreen(ctx) {
+  currentView = () => grokBotScreen(ctx);
   const err = errorBox();
   let data;
   try {
@@ -1117,6 +1244,7 @@ async function pluginConfigScreen(ctx, id, opts = {}) {
 // ---------- store ----------
 
 async function storeScreen(ctx, back) {
+  currentView = () => storeScreen(ctx, back);
   const err = errorBox();
   let store;
   try {

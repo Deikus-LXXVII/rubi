@@ -67,7 +67,13 @@ Face ID, and Rubi updates itself in a few seconds. It checks that the update is 
 and stays unlocked through the restart, so you don't have to unlock it again.
 
 Plugins update separately, the same way. If a new version wants something new (another server, another
-password), the approval screen lists it under **New permissions**.
+password), the approval screen lists it under **New permissions**. If an update causes trouble, you can roll
+the plugin back to the previous version (and forward again).
+
+Rubi hears about new versions within seconds. The update icon at the top of every panel screen shows how
+many updates are waiting and opens the **Updates** page. There, and on each plugin's install screen, you
+choose whether your agent should tell you about new versions; anything you turn off just waits on that
+page until you update it.
 
 ## Plugins from outside the store
 

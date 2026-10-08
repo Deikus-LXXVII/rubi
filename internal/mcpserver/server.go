@@ -220,6 +220,11 @@ type notifyIn struct {
 	Sources *[]string `json:"sources,omitempty" jsonschema:"omit to just look; otherwise the full list of sources you want (plugin ids and/or \"rubi\")"`
 }
 
+type notifyUpdatesIn struct {
+	ID     string `json:"id" jsonschema:"\"rubi\" or an installed plugin id"`
+	Notify bool   `json:"notify"`
+}
+
 type planIn struct {
 	ApprovalID string `json:"approval_id"`
 	Plan       string `json:"plan" jsonschema:"what you will do once the user decides, with the context you need (e.g. the user's original request)"`
@@ -291,6 +296,28 @@ func (s *Server) registerCoreTools() {
 			}
 			res, err := s.core.RequestPluginUpdate(ctx, in.ID)
 			return nil, s.withHint(res), err
+		})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_updates",
+		Description: "Rubi and installed plugins: current version, available update, and whether you're told about new versions (notify)."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
+			if locked := s.lockedResponse(); locked != nil {
+				return nil, locked, nil
+			}
+			return nil, out{"updates": s.core.Updates(ctx),
+				"how": "Update Rubi with rubi_update, a plugin with rubi_plugin_update(id); the user approves."}, nil
+		})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_update_notifications",
+		Description: "Turn update notifications on or off for Rubi (id \"rubi\") or a plugin. Off: you're not woken when it gets an update; it waits on the panel's Updates page and in rubi_updates. Change it when the user asks."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in notifyUpdatesIn) (*mcp.CallToolResult, out, error) {
+			if locked := s.lockedResponse(); locked != nil {
+				return nil, locked, nil
+			}
+			if err := s.core.SetUpdateNotify(in.ID, in.Notify); err != nil {
+				return nil, nil, err
+			}
+			return nil, out{"id": in.ID, "notify": in.Notify}, nil
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_rollback",

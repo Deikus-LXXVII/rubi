@@ -225,6 +225,10 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	case "lock":
 		s.core.Lock()
 		return map[string]any{"state": s.core.State()}, nil
+	case "updates.list", "updates.notify", "updates.rubi", "updates.plugin":
+		// The panel shows the Updates button on every screen, so any valid link may use it. Listing and
+		// notification switches are harmless; installing an update still needs a strong approval.
+		return s.updates(ctx, env)
 	case "approval.get":
 		return s.approvalGet(purpose, env)
 	case "approval.decide":
@@ -641,6 +645,44 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return nil, err
 	}
 	return map[string]any{"approval_id": approvalID, "ticket": s.core.MintTicket("approve:" + approvalID)}, nil
+}
+
+func (s *Server) updates(ctx context.Context, env Envelope) (any, error) {
+	if s.core.State() != core.Unlocked {
+		return nil, errors.New("Rubi is locked; unlock it first")
+	}
+	var args struct {
+		ID     string `json:"id"`
+		Notify bool   `json:"notify"`
+	}
+	if len(env.Args) > 0 {
+		if err := json.Unmarshal(env.Args, &args); err != nil {
+			return nil, errors.New("bad arguments")
+		}
+	}
+	var res map[string]any
+	var err error
+	switch env.Op {
+	case "updates.list":
+		return map[string]any{"updates": s.core.Updates(ctx)}, nil
+	case "updates.notify":
+		if err := s.core.SetUpdateNotify(args.ID, args.Notify); err != nil {
+			return nil, err
+		}
+		return map[string]any{"id": args.ID, "notify": args.Notify}, nil
+	case "updates.rubi":
+		res, err = s.core.RequestUpdate(ctx)
+	default:
+		res, err = s.core.RequestPluginUpdate(ctx, args.ID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	id, ok := res["approval_id"].(string)
+	if !ok {
+		return res, nil
+	}
+	return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
 }
 
 func (s *Server) catalog() any {

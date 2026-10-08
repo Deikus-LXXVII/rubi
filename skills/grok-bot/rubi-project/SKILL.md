@@ -58,7 +58,10 @@ new permissions. Rubi keeps running; only that plugin restarts. If an update bre
 `rubi_plugin_rollback(id)` (the user approves; calling it again switches forward).
 
 Rubi learns about new releases within seconds (signed announcements over its relays), so don't poll for
-updates.
+updates. The user chooses, per plugin and for Rubi itself, whether you're told about new versions (on the
+install screen, on the panel's Updates page, or by asking you): use `rubi_update_notifications(id,
+notify)` when they ask, and `rubi_updates` to list what's outdated. Updates you aren't told about wait on
+the panel's Updates page (the update icon on every panel screen).
 
 ## Add a plugin (e.g. iCloud Mail)
 

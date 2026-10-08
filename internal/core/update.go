@@ -69,7 +69,7 @@ func (c *Core) CheckForUpdate(ctx context.Context) UpdateInfo {
 // the agent's webhook, which is stored in the vault).
 func (c *Core) maybeNotifyUpdate() {
 	info := c.UpdateInfo()
-	if !info.Available || c.State() != Unlocked {
+	if !info.Available || c.State() != Unlocked || c.QuietUpdates("rubi") {
 		return
 	}
 	already := false

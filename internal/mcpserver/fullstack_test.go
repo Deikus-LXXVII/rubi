@@ -394,7 +394,10 @@ func TestSideload(t *testing.T) {
 	if p["review"] != "Not reviewed by Rubi-Project" || p["warning"] == nil || p["source"] != reg.Source() {
 		t.Fatalf("sideload preview: %v", p)
 	}
-	r.approve(out, "install")
+	r.approve(out, "install_quiet") // the user turned update notifications off on the install screen
+	if items := r.ag.call("rubi_updates", nil)["updates"].([]any); items[len(items)-1].(map[string]any)["notify"] != false {
+		t.Fatalf("notify choice ignored: %v", items)
+	}
 
 	// The publisher key is pinned: an update signed by someone else is refused.
 	_, other, _ := ed25519.GenerateKey(rand.Reader)

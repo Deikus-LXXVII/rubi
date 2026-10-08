@@ -1,6 +1,7 @@
 package mcpserver_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -179,4 +180,52 @@ func TestPluginConfigAndTargets(t *testing.T) {
 	r.ag.call("demo_notify", map[string]any{"agent": "Mail"})
 	waitHit(t, mailCh, "demo.ping")
 	noHit(t, mainCh, "demo.ping")
+}
+
+// TestQuietUpdates: with notifications off for a plugin, its update doesn't wake the agent but shows in
+// rubi_updates and on the panel's Updates page, which any link can open.
+func TestQuietUpdates(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+	if e := r.ag.call("rubi_update_notifications", map[string]any{"id": "nope", "notify": false}); e["tool_error"] == nil {
+		t.Fatal("unknown id accepted")
+	}
+	r.ag.call("rubi_update_notifications", map[string]any{"id": "demo", "notify": false})
+	reg.Review("v1.1.0", reg.Publish("v1.1.0", nil, nil), "")
+	r.c.CheckPluginUpdates(context.Background())
+	for _, e := range r.events() {
+		if e["type"] == "plugin.update_available" {
+			t.Fatalf("a quiet plugin woke the agent: %v", e)
+		}
+	}
+	items := r.ag.call("rubi_updates", nil)["updates"].([]any)
+	demo := items[len(items)-1].(map[string]any)
+	if demo["id"] != "demo" || demo["available"] != true || demo["latest"] != "v1.1.0" || demo["notify"] != false {
+		t.Fatalf("rubi_updates: %v", items)
+	}
+
+	// The Updates page works from any link, e.g. an approval link.
+	out := r.ag.call("demo_send", map[string]any{"to": "x"})
+	var list map[string]any
+	if err := r.panelLink(out["approval_url"].(string)).Call("updates.list", nil, &list); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(toString(list), `"latest":"v1.1.0"`) {
+		t.Fatalf("updates.list: %v", list)
+	}
+
+	// Back on: the next check tells the agent.
+	r.ag.call("rubi_update_notifications", map[string]any{"id": "demo", "notify": true})
+	r.c.CheckPluginUpdates(context.Background())
+	found := false
+	for _, e := range r.events() {
+		found = found || e["type"] == "plugin.update_available"
+	}
+	if !found {
+		t.Fatal("no update event after turning notifications back on")
+	}
 }

@@ -16,7 +16,7 @@ type Server struct {
 	Ready func(connected int)
 	// Announce, when set, also follows release announcements (see announce.go).
 	Announce *Announcements
-	Logf  func(format string, args ...any)
+	Logf     func(format string, args ...any)
 }
 
 // Run serves until ctx ends.

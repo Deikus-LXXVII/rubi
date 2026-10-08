@@ -146,6 +146,11 @@ The flow:
    with a `plugin.update_available` event. The update approval lists **new permissions** separately. Rubi
    stops the plugin, swaps the files and starts it again; secrets, settings and state stay. The replaced
    version stays on disk.
+   The install screen also shows the plugin's description, publisher and website, and lets the user choose
+   (and sign with the same approval) whether the agent is told about the plugin's updates. Quiet updates
+   only appear on the panel's Updates page and in `rubi_updates`; the agent or the user can change this
+   any time (`rubi_update_notifications`, or the Updates page), without an approval, since it only
+   decides whether the agent is woken.
 3. **Rollback.** `rubi_plugin_rollback` (or the panel) switches back to the replaced version after a strong
    approval, re-checking its files against the tree hash recorded at install. Doing it again switches
    forward. Settings, secrets and state stay.
