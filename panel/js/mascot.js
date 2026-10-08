@@ -101,7 +101,8 @@ export function setMood(svg, mood) {
 
 // ---------- reactions ----------
 
-const SPRING = "linear(0, 0.009, 0.035 2.1%, 0.141 4.4%, 0.723 12.9%, 0.938 16.7%, 1.017 19.4%, 1.067, 1.099 24.3%, 1.108 26%, 1.103, 1.085 31.4%, 1.019 39.1%, 0.998 43.5%, 0.991 47.6%, 1.001 62.4%, 1)";
+// Transitions ease in smoothly, with no overshoot (docs/brand/brand-book.md, Motion).
+const EASE_OUT = "cubic-bezier(.16, 1, .3, 1)";
 
 const REACTIONS = {
   hop: {
@@ -154,23 +155,19 @@ const REACTIONS = {
     easing: "cubic-bezier(.65, 0, .35, 1)",
   },
   land: {
-    body: [
-      { transform: "translateY(0) scale(1.06, 0.93)" },
-      { transform: "translateY(-3%) scale(0.98, 1.03)", offset: 0.45 },
-      { transform: "none" },
-    ],
-    floor: [{ transform: "scale(1.1)" }, { transform: "scale(0.94)", offset: 0.45 }, { transform: "scale(1)" }],
-    duration: 520,
-    easing: "cubic-bezier(.34, 1.4, .64, 1)",
+    body: [{ transform: "scale(1.03, 0.97)" }, { transform: "none" }],
+    floor: [{ transform: "scale(1.05)" }, { transform: "scale(1)" }],
+    duration: 480,
+    easing: EASE_OUT,
   },
   pop: {
     body: [
-      { transform: "scale(0.4) rotate(-12deg)", opacity: 0 },
-      { transform: "scale(1) rotate(0)", opacity: 1 },
+      { transform: "translateY(6%) scale(0.86)", opacity: 0 },
+      { transform: "none", opacity: 1 },
     ],
-    floor: [{ transform: "scale(0.3)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }],
-    duration: 760,
-    easing: SPRING,
+    floor: [{ transform: "scale(0.6)", opacity: 0 }, { transform: "scale(1)", opacity: 1 }],
+    duration: 700,
+    easing: EASE_OUT,
   },
 };
 

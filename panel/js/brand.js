@@ -44,7 +44,7 @@ for (const [name, tokens] of groups) {
 
 // Motion: each curve moves a dot when pressed.
 const curves = [
-  ["--ease-out", "Arriving"], ["--ease-in", "Leaving"], ["--ease-in-out", "Moving in place"], ["--spring", "Rubi, switches, success"],
+  ["--ease-out", "Arriving"], ["--ease-in", "Leaving"], ["--ease-in-out", "Moving in place"],
 ];
 for (const [token, use] of curves) {
   const dot = h("i", { class: "bb-dot" });

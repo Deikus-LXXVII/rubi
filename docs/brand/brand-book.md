@@ -110,13 +110,14 @@ Motion explains what happened and where things went. It is quick, soft and never
 - `--ease-out` cubic-bezier(.16, 1, .3, 1): things arriving.
 - `--ease-in` cubic-bezier(.7, 0, .84, 0): things leaving (shorter than arriving).
 - `--ease-in-out` cubic-bezier(.65, 0, .35, 1): moving in place.
-- `--spring` a `linear()` curve with one soft overshoot: the mascot, switches, success.
+- No bounce: transitions never overshoot. Even Rubi's entrances and the switch knob use `--ease-out`;
+  only Rubi's own hop on success is a jump (a character action, not a transition).
 
 **Patterns:**
 
 - Screen change: the old card fades and drops 8 px (160 ms), the new one rises 16 px with a slight blur
   clearing (420 ms), its blocks staggered 40 ms apart.
-- Press: buttons scale to 0.97 on press and spring back.
+- Press: buttons scale to 0.97 on press and ease back.
 - Waiting: the button keeps its size and shows three soft dots; after 1.5 s the mascot starts "thinking".
 - Success: the mascot hops (squash, stretch, land), a ring of ruby sparks, the title rises.
 - Decline / expired: the mascot sighs; no sparks.
@@ -126,7 +127,7 @@ Motion explains what happened and where things went. It is quick, soft and never
   drifts very slowly).
 - Waiting: a thin ruby line runs along the top of the page while Rubi takes more than 250 ms; the first
   connection shows a thinking mascot and a shimmering outline of the card.
-- Toggles and checks: the switch knob, radio dot and check mark spring in; the segmented control's
+- Toggles and checks: the switch knob, radio dot and check mark ease in; the segmented control's
   highlight slides to the chosen option.
 - Reduced motion: every animation becomes a short fade; the mascot keeps blinking only.
 
