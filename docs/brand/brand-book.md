@@ -36,6 +36,13 @@ face is two dark eyes; the eyes carry nearly all emotion.
 | alert | something needs attention | tall, wide open | quick double nudge |
 | concern | an error | slanted, a little lower | small sigh (sink and recover) |
 
+Attention (the mascot shows it is paying attention to the user, not to itself):
+
+- While a password is typed, Rubi closes its eyes and turns a little away.
+- Pointing at the primary button makes Rubi look at it.
+- On the landing page Rubi follows the pointer and hops when clicked.
+- Between screens Rubi flies from its old place and size to the new one, then lands with a small squash.
+
 Rules:
 
 - One mascot per screen, at the top, at most 120 px; 20–32 px in headers.
@@ -115,7 +122,12 @@ Motion explains what happened and where things went. It is quick, soft and never
 - Decline / expired: the mascot sighs; no sparks.
 - Error: the message slides down; the field shakes twice, small (6 px).
 - Expand / collapse: height and opacity together, 420 ms.
-- Ambient: the mascot breathes and blinks; nothing else moves on its own.
+- Ambient: the mascot breathes and blinks; nothing else moves on its own (the landing page's aurora
+  drifts very slowly).
+- Waiting: a thin ruby line runs along the top of the page while Rubi takes more than 250 ms; the first
+  connection shows a thinking mascot and a shimmering outline of the card.
+- Toggles and checks: the switch knob, radio dot and check mark spring in; the segmented control's
+  highlight slides to the chosen option.
 - Reduced motion: every animation becomes a short fade; the mascot keeps blinking only.
 
 ## 8. UX principles
@@ -131,3 +143,4 @@ Motion explains what happened and where things went. It is quick, soft and never
 7. **Accessible.** Keyboard reachable, visible focus, labels on every control, AA contrast, no
    information carried by colour or motion alone.
 8. **Calm.** No badges that shout, no fake urgency; a countdown appears only when a request really expires.
+9. **Try before trusting.** The demo (`#demo`) is the real panel with made-up data, one tap from the landing page.
