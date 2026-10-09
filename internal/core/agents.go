@@ -175,6 +175,18 @@ func (c *Core) RemoveAgent(ctx context.Context, name string) (string, error) {
 				kept[0].Default = true
 			}
 			d.Agents = kept
+			// It no longer has any account assigned (a later Bot with the same name starts with none).
+			for _, i := range d.Integrations {
+				for _, acc := range i.Accounts {
+					var left []string
+					for _, n := range acc.Agents {
+						if a == nil || !strings.EqualFold(n, a.Name) {
+							left = append(left, n)
+						}
+					}
+					acc.Agents = left
+				}
+			}
 			return nil
 		}, nil)
 }

@@ -1325,6 +1325,32 @@ async function setupScreen(ctx, id, back) {
   step(entry.fields || [], entry.secrets || [], "", {});
 }
 
+// accountBotsScreen chooses which Bots may use one plugin account (a mailbox, say) when several Bots share
+// Rubi. They get access codes when they ask; any other Bot needs the user's approval each time.
+function accountBotsScreen(ctx, plugin, acct, agents, back) {
+  const err = errorBox();
+  const chosen = new Set(acct.agents || []);
+  const rows = agents.map((a) => {
+    const b = h("input", { type: "checkbox", checked: chosen.has(a.name) });
+    b.addEventListener("change", () => (b.checked ? chosen.add(a.name) : chosen.delete(a.name)));
+    return h("label", { class: "check" }, b, h("span", {}, a.name, a.default ? h("span", { class: "tag" }, "Administrator") : null));
+  });
+  const save = h("button", { class: "primary", onclick: async (e) => {
+    await busy(e.currentTarget, async () => confirmChange(ctx, await ctx.client.call("account.agents",
+      { id: plugin.id, account: acct.id, agents: agents.map((a) => a.name).filter((n) => chosen.has(n)) }), back)).catch((x) => showError(err, x));
+  } }, "Save");
+  screen(
+    header(ctx.hello),
+    backBar("Settings", back),
+    h("div", { class: "title-row" }, badge(plugin.name, 44), h("h1", {}, "Bots with access")),
+    h("p", {}, `Which of your Bots may use ${plugin.name} (${acct.label || acct.id}). They get a short-lived access code when they ask; any other Bot needs your approval each time.`),
+    h("div", { class: "checks" }, rows),
+    h("p", { class: "muted small" }, "With none checked, only the administrator."),
+    err,
+    save,
+  );
+}
+
 // integrityLine shows whether the running Rubi binary matches the signed official release.
 function integrityLine(st) {
   const i = st?.integrity;
@@ -1519,10 +1545,13 @@ async function settingsScreen(ctx, tab) {
         icon("download", 16), `Update to ${p.update_available}`) : null,
       accts.length ? h("ul", { class: "acct-list" }, accts.map((a) => h("li", {},
         h("span", { class: "avatar-dot small" }, (a.label || a.id || "?").charAt(0).toUpperCase()),
-        h("span", { class: "acct-name" }, a.label || a.id, a.default && accts.length > 1 ? h("span", { class: "tag" }, "Default") : null),
+        h("span", { class: "acct-name" }, a.label || a.id, a.default && accts.length > 1 ? h("span", { class: "tag" }, "Default") : null,
+          (hook.agents || []).length > 1 ? h("span", { class: "muted small acct-bots" }, icon("bot", 12), " ",
+            (a.agents || []).length ? a.agents.join(", ") : "Administrator") : null),
         p.has_config ? h("button", { class: "icon-btn", title: "Settings", "aria-label": `Settings for ${a.label || a.id}`,
           onclick: () => pluginConfigScreen(ctx, p.id, { account: a.id }) }, icon("gear", 18)) : null,
         menu(`More for ${a.label || a.id}`, [
+          (hook.agents || []).length > 1 ? h("button", { type: "button", onclick: () => accountBotsScreen(ctx, p, a, hook.agents, back) }, icon("bot", 16), "Bots with access") : null,
           h("button", { type: "button", class: "danger-item", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, icon("close", 16), "Disconnect"),
         ])))) : h("p", { class: "muted small" }, "Not connected yet."),
       h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));

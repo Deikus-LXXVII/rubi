@@ -215,7 +215,14 @@ func (c *Core) CallTool(ctx context.Context, name string, args json.RawMessage) 
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
-	err := c.Runner.Call(ctx, m.ID, "tool", rubiplugin.ToolParams{Name: name, Arguments: args}, &raw)
+	args, reply, err := c.checkAccess(m, name, args)
+	if err != nil {
+		return nil, err
+	}
+	if reply != nil {
+		return reply, nil
+	}
+	err = c.Runner.Call(ctx, m.ID, "tool", rubiplugin.ToolParams{Name: name, Arguments: args}, &raw)
 	if errors.Is(err, plugins.ErrNotRunning) {
 		return map[string]any{"status": "plugin_not_running",
 			"message": m.Name + " isn't running (it may be starting, or it crashed). Try again shortly; if it persists, check rubi_events and tell the user."}, nil

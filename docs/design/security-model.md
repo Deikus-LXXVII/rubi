@@ -205,7 +205,13 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   block codes for that name for 30 minutes and warn the administrator. Codes are never kept in the event
   list (the administrator would see them there).
 - Dropping a subscription is immediate; adding one gives a Bot that plugin's events, so the user approves
-  it (a Bot can't simply subscribe itself to the mail plugin). Adding or removing a
+  it (a Bot can't simply subscribe itself to the mail plugin).
+- **Access to plugin accounts.** With two or more Bots, every plugin account (a mailbox, a Telegram
+  account, a home) has the Bots the user assigned to it (none: the administrator). A Bot asks for access
+  with its name, task and duration (at most 2 hours); an assigned Bot gets a code at once, any other only
+  after the user approves. The code goes through the Bot's own webhook and is bound to that Bot, plugin
+  and account; every plugin call carries it and is logged with the Bot's name. With a single Bot, plugins
+  work without codes. Adding or removing a
   webhook always needs the user's approval.
 - Waking an agent costs the user's Grok Bot quota, so Rubi wakes only when needed: when an agent left a plan
   for an approval it hasn't seen decided, and for plugin events such as replies.

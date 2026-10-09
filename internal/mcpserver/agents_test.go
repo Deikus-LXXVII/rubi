@@ -107,7 +107,52 @@ func TestSeveralAgents(t *testing.T) {
 
 	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
 	r.connectDemo()
-	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+
+	// Two Bots share Rubi, so plugin accounts need access codes.
+	if out := r.ag.call("demo_ping", nil); out["status"] != "access_needed" {
+		t.Fatalf("plugin call without access: %v", out)
+	}
+	accessOf := func(agent string, ch chan hookHit) string {
+		t.Helper()
+		out := r.ag.call("rubi_access", map[string]any{"agent": agent, "plugin": "demo", "task": "test the plugin", "minutes": 30})
+		if out["status"] == "awaiting_approval" {
+			r.approve(out, "allow")
+		} else if out["status"] != "sent" {
+			t.Fatalf("access for %s: %v", agent, out)
+		}
+		return toString(waitHit(t, ch, "rubi.access.granted").data["access_code"])
+	}
+	mainAccess := accessOf("Main", mainCh) // the administrator: nobody is assigned, so it's let in at once
+	dcall := func(tool string, args map[string]any) map[string]any {
+		if args == nil {
+			args = map[string]any{}
+		}
+		args["rubi_agent"], args["rubi_access"] = "Main", strings.Trim(mainAccess, `"`)
+		return r.ag.call(tool, args)
+	}
+	r.waitFor("plugin", func() bool { return dcall("demo_ping", nil)["started"] == true })
+	if out := r.ag.call("demo_ping", map[string]any{"rubi_agent": "mail", "rubi_access": strings.Trim(mainAccess, `"`)}); out["status"] != "access_needed" {
+		t.Fatalf("another Bot used the administrator's code: %v", out)
+	}
+	// The mail Bot isn't assigned: the user approves its access.
+	mailAccess := strings.Trim(accessOf("mail", mailCh), `"`)
+	if out := r.ag.call("demo_ping", map[string]any{"rubi_agent": "mail", "rubi_access": mailAccess}); out["started"] != true {
+		t.Fatalf("approved access: %v", out)
+	}
+	// Once the user assigns the mail Bot to the account, its requests skip the approval (here it is turned
+	// away only because a code went out a moment ago).
+	settings := r.panel("settings")
+	var asg map[string]any
+	if err := settings.Call("account.agents", map[string]any{"id": "demo", "account": "", "agents": []string{"mail"}}, &asg); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, asg)
+	if out := r.ag.call("rubi_access", map[string]any{"agent": "mail", "plugin": "demo", "task": "again"}); !strings.Contains(toString(out["tool_error"]), "a moment ago") {
+		t.Fatalf("assigned Bot: %v", out)
+	}
+	if out := r.ag.call("rubi_access", map[string]any{"agent": "Main", "plugin": "demo", "task": "x", "minutes": 500}); out["tool_error"] == nil {
+		t.Fatalf("more than 2 hours accepted: %v", out)
+	}
 	// A plugin no Bot subscribed to wakes no one; its events wait for the administrator in the list.
 	noHit(t, mainCh, "demo.ping")
 	noHit(t, mailCh, "demo.ping")
@@ -171,14 +216,14 @@ func TestSeveralAgents(t *testing.T) {
 	if subs := me["you"].(map[string]any)["subscriptions"].([]any); len(subs) != 1 || subs[0] != "demo" {
 		t.Fatalf("subscribe: %v", me)
 	}
-	r.ag.call("demo_ping", nil)
+	dcall("demo_ping", nil)
 	if h := waitHit(t, mailCh, "demo.ping"); h.auth != "Bearer crsr_mail" {
 		t.Fatalf("mail Bot auth: %q", h.auth)
 	}
 	noHit(t, mainCh, "demo.ping")
 
 	// An approval wakes the Bot that asked; unknown names are refused.
-	out := r.ag.call("demo_send", map[string]any{"to": "x"})
+	out := dcall("demo_send", map[string]any{"to": "x"})
 	if e := r.ag.call("rubi_continue_after", map[string]any{"approval_id": out["approval_id"], "plan": "p", "agent": "Nobody"}); !strings.Contains(toString(e["tool_error"]), "no agent") {
 		t.Fatalf("unknown agent: %v", e)
 	}
@@ -209,9 +254,10 @@ func TestPluginConfigAndTargets(t *testing.T) {
 	r.approveChange(settings, res)
 	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
 	r.connectDemo()
-	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+	call := grantAccess(t, r, "Main", mainCh) // two Bots: plugin calls carry an access code
+	r.waitFor("plugin", func() bool { return call("demo_ping", nil)["started"] == true })
 
-	if cfg := r.ag.call("demo_config", nil); cfg["strict"] != true || toString(cfg["hidden"]) != `["code"]` {
+	if cfg := call("demo_config", nil); cfg["strict"] != true || toString(cfg["hidden"]) != `["code"]` {
 		t.Fatalf("defaults: %v", cfg)
 	}
 	if err := settings.Call("plugin.config.set", map[string]any{"id": "demo", "values": map[string]any{"hidden": "nope"}}, &res); err == nil {
@@ -221,7 +267,7 @@ func TestPluginConfigAndTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.approveChange(settings, res)
-	if cfg := r.ag.call("demo_config", nil); cfg["strict"] != false || toString(cfg["hidden"]) != `["code","pin"]` {
+	if cfg := call("demo_config", nil); cfg["strict"] != false || toString(cfg["hidden"]) != `["code","pin"]` {
 		t.Fatalf("after change: %v", cfg)
 	}
 	// Dynamic choices come from the plugin; a choice must be one of the offered keys.
@@ -242,7 +288,7 @@ func TestPluginConfigAndTargets(t *testing.T) {
 	for len(mainCh) > 0 {
 		<-mainCh
 	}
-	r.ag.call("demo_notify", map[string]any{"agent": "Mail"})
+	call("demo_notify", map[string]any{"agent": "Mail"})
 	waitHit(t, mailCh, "demo.ping")
 	noHit(t, mainCh, "demo.ping")
 }
@@ -595,5 +641,25 @@ func TestSettingsFromAnyLink(t *testing.T) {
 		if err := view.Call(op, map[string]any{"name": "Mail", "id": "rubi", "notify": false, "sources": []string{}}, nil); err == nil {
 			t.Fatalf("%s allowed from a view-only session", op)
 		}
+	}
+}
+
+// grantAccess asks for an access code for agent (approving if needed), as a Bot would, and returns a
+// function that calls plugin tools with it.
+func grantAccess(t *testing.T, r *rig, agent string, ch chan hookHit) func(string, map[string]any) map[string]any {
+	t.Helper()
+	out := r.ag.call("rubi_access", map[string]any{"agent": agent, "plugin": "demo", "task": "test", "minutes": 60})
+	if out["status"] == "awaiting_approval" {
+		r.approve(out, "allow")
+	} else if out["status"] != "sent" {
+		t.Fatalf("access for %s: %v", agent, out)
+	}
+	code := strings.Trim(toString(waitHit(t, ch, "rubi.access.granted").data["access_code"]), `"`)
+	return func(tool string, args map[string]any) map[string]any {
+		if args == nil {
+			args = map[string]any{}
+		}
+		args["rubi_agent"], args["rubi_access"] = agent, code
+		return r.ag.call(tool, args)
 	}
 }

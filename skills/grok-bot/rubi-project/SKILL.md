@@ -45,6 +45,10 @@ connections"). Then:
   your own webhook. Never use another Bot's name: its code goes to that Bot, which reports it. Rubi's
   administrator (the Bot the user put in charge, in settings) sees every event and gets Rubi's own; other
   Bots see only their own. Subscribing to a new plugin needs the user's approval.
+- With several Bots, plugin accounts need access codes: call `rubi_access(agent, plugin, account, task,
+  minutes)` (at most 120). The code comes to your webhook and starts a run of yours; do the task there,
+  passing `rubi_agent` and `rubi_access` to the plugin's tools. Bots the user assigned to an account get
+  the code at once; others wait for the user's approval.
 - `rubi_status` (field `webhook.agents`) lists the connected Bots and what each one hears about.
 
 ## Updates

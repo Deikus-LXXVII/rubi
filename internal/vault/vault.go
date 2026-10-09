@@ -176,6 +176,9 @@ type Account struct {
 	Settings json.RawMessage            `json:"settings,omitempty"`
 	Secrets  map[string]string          `json:"secrets,omitempty"`
 	Config   map[string]json.RawMessage `json:"config,omitempty"`
+	// Agents are the Bots the user assigned to this account (none: the administrator). With several Bots,
+	// they get access codes when they ask; others need the user's approval (core/access.go).
+	Agents []string `json:"agents,omitempty"`
 }
 
 // Find returns the account named by ref (id or label, any case), or the default account for "".

@@ -84,7 +84,8 @@ type Core struct {
 	integ   integrity.Result
 	hookHit map[string][]time.Time // recent deliveries per hook, for rate limiting
 
-	agentAuth agentAuth // codes that prove which Bot is calling (agentauth.go)
+	agentAuth agentAuth    // codes that prove which Bot is calling (agentauth.go)
+	access    accessGrants // access codes for plugin accounts (access.go)
 	devs      deviceClients
 }
 

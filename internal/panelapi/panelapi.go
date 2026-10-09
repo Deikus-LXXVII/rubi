@@ -322,7 +322,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check":
+		"devices.get", "device.pair", "device.remove", "device.check", "account.agents":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -638,6 +638,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Key     string            `json:"key"`
 		Name    string            `json:"name"`
 		Sources []string          `json:"sources"`
+		Agents  []string          `json:"agents"`
 		Values  map[string]any    `json:"values"`
 		Account string            `json:"account"`
 		Code    string            `json:"code"`
@@ -744,6 +745,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		approvalID, err = s.core.RemoveAgent(ctx, args.Name)
 	case "agent.default":
 		approvalID, err = s.core.SetDefaultAgent(ctx, args.Name)
+	case "account.agents":
+		approvalID, err = s.core.SetAccountAgents(ctx, args.ID, args.Account, args.Agents)
 
 	case "integration.setup":
 		approvalID, account, err = s.core.ConnectIntegration(ctx, args.ID, args.Fields, args.Secrets)

@@ -1110,3 +1110,4 @@ button.copy { box-shadow: none; }
 .nav-count { margin-left: auto; min-width: 20px; padding: 0 6px; border-radius: var(--r-pill); background: var(--accent); color: #fff;
   font: 700 0.7rem/20px var(--font); font-style: normal; text-align: center; }
 .settings-btn.is-busy .icon { opacity: 0; }
+.acct-name .acct-bots { width: 100%; }
