@@ -215,8 +215,15 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   webhook always needs the user's approval.
 - Waking an agent costs the user's Grok Bot quota, so Rubi wakes only when needed: when an agent left a plan
   for an approval it hasn't seen decided, and for plugin events such as replies.
-- Background work (e.g. watching for replies) runs only while Rubi is unlocked. When an event can't be
-  checked because Rubi is locked, the agent tells the user on their next conversation.
+- Background work (e.g. watching for replies) runs only while Rubi is unlocked; afterwards plugins catch
+  up from where they stopped (mail from its last checked message).
+- **While locked, nothing is lost.** Events not yet reported are kept sealed in the vault as they happen,
+  so neither a lock nor a restart drops them. Hook requests that arrive while locked are sealed to the
+  lockbox key, whose private half is in the vault, kept on disk (at most 500 / 2 MB), and handed to their
+  plugins after unlocking; nobody can read them in between. (After a restart Rubi learns its hook route
+  only at unlock, so hook requests between a restart and the next unlock are lost.)
+- **After unlocking,** every Bot with events waiting gets one notice: Rubi was locked from ... to ..., and
+  how many events wait for it.
 
 ## 10. Updates
 

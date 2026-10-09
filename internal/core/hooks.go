@@ -35,9 +35,12 @@ func randomID() string {
 }
 
 // HookRoute is this Rubi's hook route, "" while there are no hooks or Rubi is locked.
+// While locked it is the route last known, so hook requests keep arriving and wait sealed (backlog.go).
 func (c *Core) HookRoute() string {
 	if c.State() != Unlocked {
-		return ""
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.hookRoute
 	}
 	var route string
 	_ = c.Vault.View(func(d *vault.Data) error {
@@ -46,6 +49,9 @@ func (c *Core) HookRoute() string {
 		}
 		return nil
 	})
+	c.mu.Lock()
+	c.hookRoute = route
+	c.mu.Unlock()
 	return route
 }
 
@@ -123,7 +129,8 @@ func (c *Core) DeliverHookAt(route, id string, body []byte) bool {
 // DeliverHook passes a hook request to its plugin. It reports whether the hook exists.
 func (c *Core) DeliverHook(id string, body []byte) bool {
 	if c.State() != Unlocked {
-		return false
+		// Kept sealed for the next unlock (the hook id is checked then).
+		return c.State() == Locked && c.hookAllowed("locked") && c.keepHookWhileLocked(id, body)
 	}
 	var hook *vault.Hook
 	_ = c.Vault.View(func(d *vault.Data) error {

@@ -89,6 +89,18 @@ func (s *Store) Ack(id string) bool {
 	return false
 }
 
+// Restore puts back events saved before Rubi was locked or restarted (ids are kept, nothing is delivered).
+func (s *Store) Restore(list []Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range list {
+		e := list[i]
+		if _, ok := s.events[e.ID]; !ok && e.ID != "" {
+			s.events[e.ID] = &e
+		}
+	}
+}
+
 // Clear drops everything (on lock, event data is private).
 func (s *Store) Clear() {
 	s.mu.Lock()

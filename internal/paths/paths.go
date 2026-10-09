@@ -38,6 +38,11 @@ func (l Layout) Ensure() error {
 func (l Layout) Identity() string { return filepath.Join(l.Home, "identity.json") }
 func (l Layout) Keys() string     { return filepath.Join(l.Home, "keys.json") }
 
+// Lockbox is the public key that seals hook requests arriving while Rubi is locked; HooksWaiting holds
+// them, sealed, until the next unlock (core/backlog.go).
+func (l Layout) Lockbox() string      { return filepath.Join(l.Home, "lockbox.pub") }
+func (l Layout) HooksWaiting() string { return filepath.Join(l.Home, "hooks-waiting") }
+
 // PanelOrigin records the panel origin this instance was paired with (see core.Open).
 func (l Layout) PanelOrigin() string { return filepath.Join(l.Home, "panel-origin") }
 func (l Layout) Vault() string       { return filepath.Join(l.Home, "vault.sealed") }

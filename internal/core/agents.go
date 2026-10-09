@@ -408,7 +408,9 @@ func (c *Core) AckFor(agent, code, id string) (bool, error) {
 	}
 	for _, e := range visible {
 		if e.ID == id {
-			return c.Events.Ack(id), nil
+			ok := c.Events.Ack(id)
+			c.saveEvents()
+			return ok, nil
 		}
 	}
 	return false, nil

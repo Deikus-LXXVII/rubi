@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Deikus-LXXVII/rubi/internal/events"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -75,6 +76,12 @@ type Data struct {
 	CatalogSeen time.Time `json:"catalog_seen,omitempty"`
 	// HighestVersion is the newest Rubi version ever unlocked; unlocking an older one is reported.
 	HighestVersion string `json:"highest_version,omitempty"`
+	// PendingEvents are the events not yet reported to the user, kept so a lock or restart doesn't lose them.
+	PendingEvents []events.Event `json:"pending_events,omitempty"`
+	// LockedAt is when Rubi last locked itself (for "locked from ... to ..." after unlocking).
+	LockedAt time.Time `json:"locked_at,omitempty"`
+	// LockboxKey opens the hook requests that arrived while Rubi was locked (core/backlog.go).
+	LockboxKey []byte `json:"lockbox_key,omitempty"`
 }
 
 // Device is a paired Rubi Home helper: how to reach it and the token that proves it's us.

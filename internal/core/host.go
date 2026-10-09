@@ -274,6 +274,7 @@ func redactURL(raw string) string {
 var webhookBackoff = []time.Duration{0, 5 * time.Second, 30 * time.Second, 2 * time.Minute, 10 * time.Minute}
 
 func (c *Core) deliverEvent(ev events.Event) {
+	c.saveEvents() // unreported events survive a lock or restart
 	if ev.Quiet {
 		return
 	}

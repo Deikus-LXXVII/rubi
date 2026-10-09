@@ -3,6 +3,7 @@ package mcpserver_test
 import (
 	"context"
 	"encoding/json"
+	"github.com/Deikus-LXXVII/rubi/internal/core"
 	"github.com/Deikus-LXXVII/rubi/internal/home"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/panelclient"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -501,6 +503,44 @@ func TestHooks(t *testing.T) {
 		}
 		return false
 	})
+	// While Rubi is locked, a hook request waits sealed; after unlocking it reaches the plugin, and the
+	// Bot hears that Rubi was locked and what waited.
+	core.BacklogSettle = 200 * time.Millisecond
+	r.ag.call("rubi_lock", nil)
+	if !r.c.DeliverHookAt(parts[0], parts[1], []byte(`{"x":"while locked"}`)) {
+		t.Fatal("a hook request while locked was dropped")
+	}
+	if b, _ := os.ReadFile(r.c.Layout.HooksWaiting()); len(b) == 0 || strings.Contains(string(b), "while locked") {
+		t.Fatalf("waiting hook not sealed: %q", b)
+	}
+	if _, err := r.panel("unlock").UnlockWithPassword(pw, 0); err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor("late hook", func() bool {
+		for _, e := range r.c.Events.List(true) {
+			if e.Type == "hooked" && e.Data["body"] == `{"x":"while locked"}` {
+				return true
+			}
+		}
+		return false
+	})
+	r.waitFor("backlog notice", func() bool {
+		for _, e := range r.c.Events.List(true) {
+			if e.Integration == "rubi" && e.Type == "backlog" {
+				return true
+			}
+		}
+		return false
+	})
+	// The event from before the lock is still there (it was never reported).
+	found := false
+	for _, e := range r.c.Events.List(false) {
+		found = found || e.Type == "hooked" && e.Data["body"] == `{"x":1}`
+	}
+	if !found {
+		t.Fatal("an unreported event was lost across the lock")
+	}
+
 	// Rotating: the old address stops working.
 	nu := r.ag.call("demo_hook", map[string]any{"name": "home:arrive", "rotate": true})["url"].(string)
 	if nu == u || r.c.DeliverHook(parts[1], nil) {

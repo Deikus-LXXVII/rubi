@@ -85,6 +85,8 @@ type Core struct {
 	hookHit map[string][]time.Time // recent deliveries per hook, for rate limiting
 
 	agentAuth agentAuth    // codes that prove which Bot is calling (agentauth.go)
+	started   time.Time    // when this process started (Rubi is locked since then after a restart)
+	hookRoute string       // the hook route, kept while locked so hook requests still arrive (backlog.go)
 	access    accessGrants // access codes for plugin accounts (access.go)
 	devs      deviceClients
 }
@@ -131,6 +133,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		Audit:       audit.Open(layout.Audit()),
 		Store:       store,
 		PanelOrigin: DefaultPanelOrigin,
+		started:     time.Now().UTC(),
 		tickets:     map[string]ticket{},
 		plans:       map[string]pendingPlan{},
 		seen:        map[string]bool{},
@@ -362,6 +365,7 @@ func (c *Core) validPurpose(p string) error {
 
 // Lock wipes keys and private data from memory and cancels pending approvals. Always allowed.
 func (c *Core) Lock() {
+	c.beforeLock()
 	c.stopPlugins()
 	c.Approvals.CancelAll()
 	c.Events.Clear()
@@ -385,6 +389,7 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 	c.addReceipt("unlocked", method, credentialID)
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
 	c.startPlugins()
+	c.afterUnlock()
 	if c.OnHookRoute != nil {
 		c.OnHookRoute()
 	}
@@ -415,6 +420,7 @@ func (c *Core) Pair(dek []byte, keys *vault.Keys, data *vault.Data, method, cred
 		return err
 	}
 	c.addReceipt("paired", method, credentialID)
+	c.ensureLockbox()
 	c.maybeNotifyUpdate()
 	return nil
 }
