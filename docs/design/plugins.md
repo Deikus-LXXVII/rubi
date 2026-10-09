@@ -258,6 +258,13 @@ per hook, 4 KB each.
 (`home.call`), but only operations of those capabilities (`hue.*`, `shortcuts.*`). See
 [rubi-home.md](rubi-home.md).
 
+**A page in the panel.** A plugin can name a page of its own (`"panel": "notes"`); the panel shows it with
+the plugin and calls the plugin's `OnPanel` with the user's own requests (only from a settings link, since
+the page may show what the agent must not see). The agent never reaches it.
+
+**Nothing to set up.** A plugin with no fields and no secrets is connected right after the user approves
+installing it; the install approval covers it.
+
 **Info settings.** A config field of type `info` (with `dynamic` options) is read-only: the panel shows each
 option's label and value with a copy button, e.g. the hook addresses to paste into Shortcuts.
 

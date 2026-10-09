@@ -322,7 +322,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set":
+		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -751,6 +751,20 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		approvalID, err = s.core.SetDefaultAgent(ctx, args.Name)
 	case "account.agents":
 		approvalID, err = s.core.SetAccountAgents(ctx, args.ID, args.Account, args.Agents)
+	case "plugin.panel":
+		// A plugin's own page (e.g. notes): what it shows can be private, so only a settings link opens it.
+		if purpose != "settings" {
+			return nil, errViewOnly
+		}
+		var pa struct {
+			ID   string          `json:"id"`
+			Op   string          `json:"op"`
+			Args json.RawMessage `json:"args"`
+		}
+		if err := json.Unmarshal(env.Args, &pa); err != nil {
+			return nil, errors.New("bad arguments")
+		}
+		return s.core.PanelCall(ctx, pa.ID, pa.Op, pa.Args)
 	case "watch.set":
 		approvalID, err = s.core.SetWatch(ctx, core.WatchSettings{Gateway: args.Gateway, Home: args.Home})
 

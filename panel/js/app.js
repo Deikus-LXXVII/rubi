@@ -523,6 +523,8 @@ function demoScreen(ctx, which) {
       return grokBotScreen(ctx);
     case "updates":
       return updatesScreen(ctx);
+    case "notes":
+      return notesScreen(ctx, "notes", back);
     case "status":
       return statusScreen(ctx, "Unlocked. You can go back to your agent.");
     case "sent": case "declined": case "failed": {
@@ -1554,7 +1556,8 @@ async function settingsScreen(ctx, tab) {
           (hook.agents || []).length > 1 ? h("button", { type: "button", onclick: () => accountBotsScreen(ctx, p, a, hook.agents, back) }, icon("bot", 16), "Bots with access") : null,
           h("button", { type: "button", class: "danger-item", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, icon("close", 16), "Disconnect"),
         ])))) : h("p", { class: "muted small" }, "Not connected yet."),
-      h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
+      p.panel === "notes" ? h("button", { class: "secondary small", onclick: () => notesScreen(ctx, p.id, back) }, icon("doc", 16), "Open notes") : null,
+      p.panel ? null : h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
   };
 
   // ----- approval levels, grouped by plugin
@@ -1820,6 +1823,81 @@ async function grokBotScreen(ctx) {
 
 // pluginConfigScreen edits a plugin's user-only settings (like a privacy filter). Only the user can change
 // them, with the passkey or the password; the agent can't.
+// ---------- notes: the Notes plugin's page (the user's own, so private notes show here) ----------
+
+async function notesScreen(ctx, id, back, query = "") {
+  currentView = () => notesScreen(ctx, id, back, query);
+  const err = errorBox();
+  const call = (op, args) => ctx.client.call("plugin.panel", { id, op, args });
+  let data;
+  try {
+    data = await call("list", { query });
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  const again = (q = query) => notesScreen(ctx, id, back, q);
+  const search = h("input", { type: "search", placeholder: "Search notes", value: query, autocapitalize: "none" });
+  const searchForm = h("form", { class: "notes-search", onsubmit: (e) => { e.preventDefault(); again(search.value.trim()); } }, search);
+  const notes = data.notes || [];
+  const cards = notes.map((n) => h("button", { class: "note-card", type: "button", onclick: () => noteEditor(ctx, id, n, () => again()) },
+    h("strong", {}, n.pinned ? h("span", { class: "note-pin", title: "Pinned" }, icon("pin", 13), " ") : null, n.title),
+    h("span", { class: "muted small note-snippet" }, (n.body || "").slice(0, 160)),
+    h("span", { class: "note-meta muted small" },
+      n.private ? h("span", { class: "tag" }, icon("lock", 12), " Private") : null,
+      ...(n.tags || []).map((t) => h("span", { class: "tag" }, "#" + t)),
+      h("span", {}, n.by === "agent" ? "by your agent" : "by you", " · ", new Date(n.updated).toLocaleDateString()))));
+  screen(
+    { cls: "wide", focus: false },
+    header(ctx.hello),
+    backBar("Settings", back),
+    h("div", { class: "section-head" }, h("h1", {}, "Notes"),
+      h("button", { class: "primary small", onclick: () => noteEditor(ctx, id, null, () => again()) }, icon("plus", 16), "New note")),
+    h("p", { class: "muted" }, "Kept in your Rubi, sealed with your key. Your agent sees and writes notes too, except the ones you mark private."),
+    searchForm,
+    err,
+    cards.length ? h("div", { class: "notes-grid" }, cards)
+      : h("div", { class: "empty" }, face("idle", 64), h("p", {}, query ? "No note matches." : "No notes yet.")),
+  );
+}
+
+function noteEditor(ctx, id, n, done) {
+  const err = errorBox();
+  const call = (op, args) => ctx.client.call("plugin.panel", { id, op, args });
+  const title = h("input", { type: "text", value: n?.title || "", placeholder: "Title", maxlength: "200" });
+  const body = h("textarea", { rows: "12", placeholder: "Write here", class: "note-body" });
+  body.value = n?.body || "";
+  const tags = h("input", { type: "text", value: (n?.tags || []).join(", "), placeholder: "tags, comma separated", autocapitalize: "none" });
+  const priv = h("input", { type: "checkbox", checked: !!n?.private });
+  const pin = h("input", { type: "checkbox", checked: !!n?.pinned });
+  const save = h("button", { class: "primary", type: "submit" }, "Save");
+  const del = n ? h("button", { class: "danger", type: "button", onclick: async (e) => {
+    if (!confirm("Delete this note?")) return;
+    await busy(e.currentTarget, async () => { await call("delete", { id: n.id }); done(); }).catch((x) => showError(err, x));
+  } }, icon("trash", 16), "Delete") : null;
+  const form = h("form", { class: "note-form", onsubmit: (e) => {
+    e.preventDefault();
+    busy(save, async () => {
+      await call("save", { id: n?.id || "", title: title.value, body: body.value,
+        tags: tags.value.split(",").map((t) => t.trim()).filter(Boolean), private: priv.checked, pinned: pin.checked });
+      done();
+    }).catch((x) => showError(err, x));
+  } },
+  h("label", { class: "field" }, h("span", {}, "Title"), title),
+  h("label", { class: "field" }, h("span", {}, "Text"), body),
+  h("label", { class: "field" }, h("span", {}, "Tags"), tags),
+  h("label", { class: "check" }, priv, h("span", {}, "Private", h("small", { class: "muted" }, "Your agent doesn't see this note at all."))),
+  h("label", { class: "check" }, pin, h("span", {}, "Pinned")),
+  err, save);
+  screen(
+    { cls: "wide" },
+    header(ctx.hello),
+    backBar("Notes", done),
+    h("h1", {}, n ? "Edit note" : "New note"),
+    form,
+    del,
+  );
+}
+
 async function pluginConfigScreen(ctx, id, opts = {}) {
   const err = errorBox();
   let cfg;

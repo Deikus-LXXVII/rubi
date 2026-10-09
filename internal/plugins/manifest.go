@@ -27,7 +27,12 @@ var (
 )
 
 // Check enforces the manifest rules: valid id, everything in the plugin's own namespace, a usable key.
+var panelPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
 func Check(m *Manifest) error {
+	if m.Panel != "" && !panelPattern.MatchString(m.Panel) {
+		return fmt.Errorf("invalid panel page %q", m.Panel)
+	}
 	if m.Schema != 1 {
 		return fmt.Errorf("unsupported manifest schema %d", m.Schema)
 	}

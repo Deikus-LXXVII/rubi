@@ -70,6 +70,8 @@ const PLUGINS = [
   { id: "steam", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Prices, sales and your wishlist; deal alerts.", name: "Steam", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     update_available: "v1.1.0", accounts: [{ id: "76561198000000000", label: "Alex", default: true }] },
   { id: "presence", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Home or away, from your iPhone. Never coordinates.", name: "Location", version: "v1.0.0", installed: true, reviewed: true, connected: false, has_config: true },
+  { id: "notes", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Notes kept in Rubi, sealed with your key.", name: "Notes", version: "v1.0.0", installed: true, reviewed: true, connected: true, panel: "notes",
+    accounts: [{ id: "notes", label: "Notes", default: true }] },
   { id: "hue", name: "Philips Hue", latest: "v1.0.0", installed: false, reviewed: true, publisher: "Rubi-Project", summary: "Lights and scenes, through Rubi Home." },
   { id: "telegram", name: "Unofficial Telegram", latest: "v1.0.0", installed: false, reviewed: true, publisher: "Rubi-Project", summary: "A bot or your personal account. Sending waits for you." },
   { id: "apple-home", name: "Apple Home", latest: "v1.0.0", installed: false, reviewed: true, publisher: "Rubi-Project", summary: "Your Shortcuts, run by your agent with your say." },
@@ -161,6 +163,22 @@ export class DemoClient {
       case "updates.plugin":
       case "updates.rubi":
         return { approval_id: "settings", ticket: "demo" };
+      case "plugin.panel": {
+        const notes = DEMO_NOTES;
+        if (args.op === "save") {
+          const a = args.args;
+          const n = notes.find((x) => x.id === a.id) || { id: "n" + (notes.length + 1), by: "you" };
+          Object.assign(n, { title: a.title || (a.body || "").split("\n")[0], body: a.body, tags: a.tags, private: a.private, pinned: a.pinned, updated: iso(now()) });
+          if (!notes.includes(n)) notes.unshift(n);
+          return { saved: true, id: n.id };
+        }
+        if (args.op === "delete") {
+          notes.splice(notes.findIndex((x) => x.id === args.args.id), 1);
+          return { deleted: true };
+        }
+        const q = (args.args?.query || "").toLowerCase();
+        return { notes: notes.filter((n) => !q || (n.title + n.body).toLowerCase().includes(q)) };
+      }
       case "updates.notify":
       case "agent.subscribe":
         return { subscriptions: args.sources || [] };
@@ -171,6 +189,12 @@ export class DemoClient {
     throw new Error(`The demo doesn't do "${op}".`);
   }
 }
+
+const DEMO_NOTES = [
+  { id: "n1", title: "Gift ideas for Anna", body: "Ceramics class\nThe novel she mentioned (ask Bob for the title)", tags: ["birthday"], pinned: true, by: "agent", updated: iso(now() - 3600e3) },
+  { id: "n2", title: "Door code for the new office", body: "Ask reception on Monday", tags: ["work"], private: true, by: "you", updated: iso(now() - 86400e3) },
+  { id: "n3", title: "Trip to Lisbon", body: "Flights booked. Hotel: check-in after 15:00.\nMuseum tickets for Saturday.", tags: ["travel"], by: "agent", updated: iso(now() - 86400e3 * 3) },
+];
 
 // The screens the gallery offers, in the order a new user meets them.
 export const DEMO_SCREENS = [
@@ -189,6 +213,7 @@ export const DEMO_SCREENS = [
   ["home", "Add a home computer"],
   ["bots", "Grok Bot connections"],
   ["updates", "Updates"],
+  ["notes", "Notes"],
   ["sent", "Sent"],
   ["declined", "Declined"],
   ["failed", "It didn't work"],

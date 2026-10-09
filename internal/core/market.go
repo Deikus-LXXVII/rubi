@@ -123,8 +123,13 @@ func (c *Core) describeInstalled(item map[string]any, id string, records map[str
 	if rec.Previous != nil {
 		item["previous_version"] = rec.Previous.Version
 	}
-	if m, ok := c.Store.Get(id); ok && len(m.Config) > 0 {
-		item["has_config"] = true
+	if m, ok := c.Store.Get(id); ok {
+		if len(m.Config) > 0 {
+			item["has_config"] = true
+		}
+		if m.Panel != "" {
+			item["panel"] = m.Panel
+		}
 	}
 	if accts := connected[id]; len(accts) > 0 {
 		item["connected"], item["accounts"] = true, accts
@@ -197,6 +202,9 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 		_ = c.SetUpdateNotify(m.ID, option != "install_quiet") // chosen on the install screen
 		c.toolsChanged()
 		c.startInstalled(m.ID, m.Version, cand.Tree)
+		if len(m.Fields)+len(m.Secrets) == 0 {
+			go c.autoConnect(m) // nothing to enter: the install approval covers connecting it
+		}
 		return nil
 	}, func(res map[string]any) {
 		if len(m.Fields)+len(m.Secrets) > 0 {

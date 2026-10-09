@@ -1111,3 +1111,16 @@ button.copy { box-shadow: none; }
   font: 700 0.7rem/20px var(--font); font-style: normal; text-align: center; }
 .settings-btn.is-busy .icon { opacity: 0; }
 .acct-name .acct-bots { width: 100%; }
+
+/* notes */
+.notes-search input { width: 100%; }
+.notes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.note-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; width: 100%;
+  min-height: 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--card-2); font-weight: 400; }
+.note-card:hover:not(:disabled) { border-color: color-mix(in srgb, var(--text) 22%, var(--line-2)); background: var(--raise); }
+.note-card strong { font-weight: 650; overflow-wrap: anywhere; }
+.note-snippet { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
+.note-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.note-pin .icon { vertical-align: -1px; color: var(--accent); }
+.note-body { min-height: 220px; font: inherit; line-height: 1.5; }
+.note-form { display: flex; flex-direction: column; gap: 12px; }

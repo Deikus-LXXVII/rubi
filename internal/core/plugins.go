@@ -560,3 +560,58 @@ func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json
 	}
 	return c.Approvals.Submit(ctx, req)
 }
+
+// autoConnect connects a plugin that needs nothing from the user (no fields, no secrets) right after it
+// was installed: the install approval already covers it, so the user isn't asked twice.
+func (c *Core) autoConnect(m plugins.Manifest) {
+	for i := 0; i < 120 && !c.Runner.Running(m.ID); i++ {
+		time.Sleep(250 * time.Millisecond)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var res rubiplugin.ValidateResult
+	if err := c.Runner.Call(ctx, m.ID, "validate", rubiplugin.ValidateParams{Fields: map[string]string{}, Secrets: map[string]string{}}, &res); err != nil {
+		c.pluginProblem(m.ID, "plugin.failed", "couldn't set up "+m.Name+": "+err.Error())
+		return
+	}
+	label := res.Account
+	if label == "" {
+		label = m.Name
+	}
+	key := res.AccountID
+	if key == "" {
+		key = label
+	}
+	if err := c.Vault.Update(func(d *vault.Data) error {
+		if d.Integrations[m.ID] == nil {
+			d.Integrations[m.ID] = &vault.Integration{Enabled: true, Accounts: []*vault.Account{{ID: vault.AccountID(key),
+				Label: label, Default: true, Settings: res.Settings}}}
+		}
+		return nil
+	}); err != nil {
+		return
+	}
+	c.restartPluginWork(m.ID)
+	c.Audit.Record("integration.connected", audit.Fields{"integration": m.ID, "account": label})
+}
+
+// PanelCall passes a request from the plugin's page in the panel (the user's own) to the plugin.
+func (c *Core) PanelCall(ctx context.Context, id, op string, args json.RawMessage) (any, error) {
+	if c.State() != Unlocked {
+		return nil, errors.New("Rubi is locked")
+	}
+	m, ok := c.Store.Get(id)
+	if !ok || m.Panel == "" {
+		return nil, fmt.Errorf("plugin %q has no page in the panel", id)
+	}
+	if len(op) > 64 {
+		return nil, errors.New("bad operation")
+	}
+	var raw json.RawMessage
+	if err := c.Runner.Call(ctx, id, "panel", map[string]any{"op": op, "args": args}, &raw); err != nil {
+		return nil, err
+	}
+	var out any
+	_ = json.Unmarshal(raw, &out)
+	return out, nil
+}

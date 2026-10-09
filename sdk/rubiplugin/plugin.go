@@ -35,6 +35,9 @@ type Plugin struct {
 	// OnConfigChanged is called after the user changed the plugin's settings (account is set when they
 	// were one account's settings).
 	OnConfigChanged func(h *Host, account string)
+	// OnPanel answers the plugin's page in the Rubi panel (Manifest.Panel). Only the user, signed in to
+	// the panel, reaches it; the agent never does.
+	OnPanel func(ctx context.Context, h *Host, op string, args json.RawMessage) (any, error)
 
 	m     Manifest
 	tools map[string]func(ctx context.Context, h *Host, args json.RawMessage) (any, error)
@@ -184,6 +187,18 @@ func (p *Plugin) handle(ctx context.Context, method string, params json.RawMessa
 			return nil, nil
 		}
 		return nil, p.OnHook(ctx, p.host, ev)
+	case "panel":
+		var in struct {
+			Op   string          `json:"op"`
+			Args json.RawMessage `json:"args"`
+		}
+		if err := json.Unmarshal(params, &in); err != nil {
+			return nil, err
+		}
+		if p.OnPanel == nil {
+			return nil, &Error{Code: -32601, Message: "this plugin has no panel page"}
+		}
+		return p.OnPanel(ctx, p.host, in.Op, in.Args)
 	case "config.options":
 		var in struct {
 			Key     string `json:"key"`

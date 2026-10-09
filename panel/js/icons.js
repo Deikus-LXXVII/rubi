@@ -33,6 +33,8 @@ const PATHS = {
   plus: ["M12 5v14", "M5 12h14"],
   search: ["M10.5 18a7.5 7.5 0 1 0 0-15 7.5 7.5 0 0 0 0 15Z", "m16 16 4.5 4.5"],
   link: ["M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1", "M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"],
+  doc: ["M6 3.5h8l4 4v13H6z", "M14 3.5v4h4", "M9 12h6", "M9 15.5h6"],
+  pin: ["M9 4h6l-1 6 3 3H7l3-3z", "M12 13v7"],
 };
 
 // icon returns an inline SVG icon. size in CSS pixels.
