@@ -4,7 +4,7 @@ name: pages
 on:
   push:
     branches: [main]
-    paths: ["panel/**", "marketplace/**"]
+    paths: ["panel/**", "marketplace/**", "deploy/pages/**", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
