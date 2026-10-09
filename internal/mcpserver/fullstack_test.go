@@ -5,12 +5,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +65,31 @@ type rig struct {
 	t  *testing.T
 	c  *core.Core
 	ag agent
+
+	codeMu sync.Mutex
+	code   string // the latest agent_code that reached the rig's own webhook
+}
+
+// codeHook records the agent_code of each webhook it receives, as a Bot's routine would see it.
+func (r *rig) codeHook(w http.ResponseWriter, req *http.Request) {
+	b, _ := io.ReadAll(req.Body)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	if c, _ := m["agent_code"].(string); c != "" {
+		r.codeMu.Lock()
+		r.code = c
+		r.codeMu.Unlock()
+	}
+}
+
+// agentCode returns a current code for the rig's Bot, asking Rubi to send one if none arrived yet.
+func (r *rig) agentCode(name string) string {
+	get := func() string { r.codeMu.Lock(); defer r.codeMu.Unlock(); return r.code }
+	if get() == "" {
+		r.ag.call("rubi_verify", map[string]any{"agent": name})
+		r.waitFor("agent code", func() bool { return get() != "" })
+	}
+	return get()
 }
 
 func newRig(t *testing.T) *rig {
@@ -90,7 +117,7 @@ func newRig(t *testing.T) *rig {
 	if out := r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}); !strings.Contains(toString(out["tool_error"]), "agent webhook") {
 		t.Fatalf("install before the webhook: %v", out)
 	}
-	sink := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {}))
+	sink := httptest.NewServer(http.HandlerFunc(r.codeHook))
 	t.Cleanup(sink.Close)
 	r.setWebhook(sink.URL)
 	return r
@@ -197,9 +224,9 @@ func (r *rig) waitFor(what string, cond func() bool) {
 func (r *rig) events() []map[string]any {
 	var out []map[string]any
 	var args map[string]any
-	for _, a := range r.c.Agents() { // the administrator reads every event
+	for _, a := range r.c.Agents() { // the administrator reads every event, with its code
 		if a.Default {
-			args = map[string]any{"agent": a.Name}
+			args = map[string]any{"agent": a.Name, "code": r.agentCode(a.Name)}
 		}
 	}
 	for _, e := range r.ag.call("rubi_events", args)["events"].([]any) {

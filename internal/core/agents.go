@@ -227,6 +227,49 @@ func (c *Core) SetSubscriptions(agent string, sources []string) ([]string, error
 	return clean, err
 }
 
+// RequestSubscriptions is a Bot choosing what it hears about. Dropping sources takes effect at once;
+// adding one gives that Bot the plugin's events (including their content), so the user approves it.
+// It returns an approval id when one is needed.
+func (c *Core) RequestSubscriptions(ctx context.Context, agent string, sources []string) (clean []string, approvalID string, err error) {
+	if clean, err = c.cleanSources(sources); err != nil {
+		return nil, "", err
+	}
+	var current map[string]bool
+	var name string
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if a := findAgent(d, agent); a != nil {
+			name = a.Name
+			current = map[string]bool{}
+			for _, s := range a.Subscriptions {
+				current[s] = true
+			}
+		}
+		return nil
+	})
+	if current == nil {
+		return nil, "", fmt.Errorf("no agent %q (agents: %s)", agent, c.agentNames())
+	}
+	var added []string
+	for _, s := range clean {
+		if !current[s] {
+			added = append(added, s)
+		}
+	}
+	if len(added) == 0 {
+		_, err = c.SetSubscriptions(name, clean)
+		return clean, "", err
+	}
+	id, err := c.RequestChange(ctx, "Let "+name+" hear about "+c.describeSources(added), map[string]any{"agent": name,
+		"effect": "This Bot gets these events, with what they contain (for example who wrote and the subject), and is woken by them."},
+		func(d *vault.Data) error {
+			if a := findAgent(d, name); a != nil {
+				a.Subscriptions = clean
+			}
+			return nil
+		}, nil)
+	return clean, id, err
+}
+
 func (c *Core) cleanSources(sources []string) ([]string, error) {
 	valid := map[string]bool{}
 	for _, s := range c.Sources() {
@@ -298,7 +341,22 @@ func (c *Core) recipients(target, source string) []vault.Agent {
 // EventsFor is the event list as one agent may see it. The administrator sees every event; another Bot
 // sees the events addressed to it and those of the sources it subscribed to. Before any Bot is connected
 // (setup) the list is whole.
-func (c *Core) EventsFor(agent string, includeAcked bool) ([]events.Event, error) {
+// Reading needs the Bot's current code (see agentauth.go).
+func (c *Core) EventsFor(agent, code string, includeAcked bool) ([]events.Event, error) {
+	if err := c.checkAgentCode(agent, code); err != nil {
+		return nil, err
+	}
+	return c.eventsVisible(agent, includeAcked)
+}
+
+// WaitingFor counts the unreported events agent may see, without needing its code (a number reveals
+// nothing; the agent then asks for its code).
+func (c *Core) WaitingFor(agent string) int {
+	list, _ := c.eventsVisible(agent, false)
+	return len(list)
+}
+
+func (c *Core) eventsVisible(agent string, includeAcked bool) ([]events.Event, error) {
 	all := c.Events.List(includeAcked)
 	var admin bool
 	var subs map[string]bool
@@ -331,8 +389,8 @@ func (c *Core) EventsFor(agent string, includeAcked bool) ([]events.Event, error
 }
 
 // AckFor marks an event as reported, if agent may see it.
-func (c *Core) AckFor(agent, id string) (bool, error) {
-	visible, err := c.EventsFor(agent, false)
+func (c *Core) AckFor(agent, code, id string) (bool, error) {
+	visible, err := c.EventsFor(agent, code, false)
 	if err != nil {
 		return false, err
 	}

@@ -22,6 +22,7 @@ import (
 type hookHit struct {
 	typ  string
 	auth string
+	code string
 	data map[string]any
 }
 
@@ -32,7 +33,8 @@ func hookServer(t *testing.T) (*httptest.Server, chan hookHit) {
 		var m map[string]any
 		_ = json.Unmarshal(b, &m)
 		d, _ := m["data"].(map[string]any)
-		ch <- hookHit{typ: toString(m["type"]), auth: req.Header.Get("Authorization"), data: d}
+		code, _ := m["agent_code"].(string)
+		ch <- hookHit{typ: toString(m["type"]), auth: req.Header.Get("Authorization"), code: code, data: d}
 	}))
 	t.Cleanup(s.Close)
 	return s, ch
@@ -109,19 +111,46 @@ func TestSeveralAgents(t *testing.T) {
 	// A plugin no Bot subscribed to wakes no one; its events wait for the administrator in the list.
 	noHit(t, mainCh, "demo.ping")
 	noHit(t, mailCh, "demo.ping")
-	findPing := func(agent string) bool {
-		for _, e := range r.ag.call("rubi_events", map[string]any{"agent": agent})["events"].([]any) {
+	// Reading needs a code that only the Bot's own webhook receives.
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main"}); e["needs_code"] != true || e["events"] != nil {
+		t.Fatalf("events without a code: %v", e)
+	}
+	codeOf := func(agent string, ch chan hookHit) string {
+		t.Helper()
+		if e := r.ag.call("rubi_verify", map[string]any{"agent": agent}); e["status"] != "sent" {
+			t.Fatalf("verify: %v", e)
+		}
+		return waitHit(t, ch, "rubi.agent.code").code
+	}
+	mainCode, mailCode := codeOf("Main", mainCh), codeOf("mail", mailCh)
+	findPing := func(agent, code string) bool {
+		for _, e := range r.ag.call("rubi_events", map[string]any{"agent": agent, "code": code})["events"].([]any) {
 			if e.(map[string]any)["type"] == "ping" {
 				return true
 			}
 		}
 		return false
 	}
-	if !findPing("Main") || findPing("mail") {
+	if !findPing("Main", mainCode) || findPing("mail", mailCode) {
 		t.Fatal("the administrator should see the unassigned event, the mail Bot not")
 	}
-	if e := r.ag.call("rubi_events", map[string]any{"agent": "Ghost"}); e["tool_error"] == nil {
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Ghost", "code": "x"}); e["tool_error"] == nil {
 		t.Fatalf("an unknown Bot read events: %v", e)
+	}
+	// Posing as the administrator: its own code doesn't work for another name, and asking for one sends it
+	// to the real Bot. Repeated wrong codes block the name and warn the administrator.
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": mailCode}); e["tool_error"] == nil {
+		t.Fatalf("another Bot's code accepted: %v", e)
+	}
+	r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": "guess1"})
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": "guess2"}); !strings.Contains(toString(e["tool_error"]), "blocked") {
+		t.Fatalf("no block after wrong codes: %v", e)
+	}
+	if h := waitHit(t, mainCh, "rubi.agent.suspicious"); h.data["agent"] != "Main" {
+		t.Fatalf("warning: %v", h)
+	}
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": mainCode}); e["tool_error"] == nil {
+		t.Fatalf("a blocked name still reads: %v", e)
 	}
 
 	// The mail Bot subscribes itself to the plugin's events (no approval needed: it only routes among
@@ -132,7 +161,13 @@ func TestSeveralAgents(t *testing.T) {
 	if e := r.ag.call("rubi_notifications", map[string]any{"agent": "Ghost"}); e["tool_error"] == nil {
 		t.Fatalf("unknown agent accepted: %v", e)
 	}
+	// Hearing about a plugin gives a Bot its events: the user approves it.
 	me := r.ag.call("rubi_notifications", map[string]any{"agent": "mail", "sources": []string{"demo"}})
+	if subs := me["you"].(map[string]any)["subscriptions"].([]any); len(subs) != 1 || subs[0] != "rubi" {
+		t.Fatalf("subscribed before approval: %v", me)
+	}
+	r.approve(me, "apply")
+	me = r.ag.call("rubi_notifications", map[string]any{"agent": "mail"})
 	if subs := me["you"].(map[string]any)["subscriptions"].([]any); len(subs) != 1 || subs[0] != "demo" {
 		t.Fatalf("subscribe: %v", me)
 	}

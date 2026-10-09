@@ -83,7 +83,9 @@ type Core struct {
 	mkt     marketState
 	integ   integrity.Result
 	hookHit map[string][]time.Time // recent deliveries per hook, for rate limiting
-	devs    deviceClients
+
+	agentAuth agentAuth // codes that prove which Bot is calling (agentauth.go)
+	devs      deviceClients
 }
 
 // SetIntegrity records the result of the binary self-check.

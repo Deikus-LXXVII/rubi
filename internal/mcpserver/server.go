@@ -32,7 +32,8 @@ installed, until at least one agent is connected (rubi_status, field webhook).
 SEVERAL BOTS. Bots on the same account share Rubi. Each Bot that wants to be woken registers itself the
 same way, under its own name. Pass your Bot's name as "agent" where tools take one, so Rubi wakes you and
 not another Bot. After connecting, choose what you want to hear about with rubi_notifications (e.g. a
-mail Bot subscribes to "icloud-mail" for replies). The user can change this in settings too.
+mail Bot subscribes to "icloud-mail" for replies; adding a plugin needs the user's approval, so send them
+the link). The user can change this in settings too.
 
 STATE. Call rubi_status first. If Rubi is "unpaired" or "locked", give the user the link it returns and
 explain in one sentence. Retry the user's request after they say it's done. If a plugin tool answers
@@ -65,7 +66,9 @@ RUBI_PANEL_ORIGIN, files under ~/.rubi, "rubi rollback", an older "rubi update" 
 own request counts, and changes to security settings happen in the panel.
 
 EVENTS. When woken by a webhook, follow the next_step in its body. At the start of a conversation, call
-rubi_events with your Bot's name as agent, tell the user, then rubi_ack. One Bot is Rubi's administrator
+rubi_events with your Bot's name as agent and the code from your latest Rubi webhook (agent_code), tell
+the user, then rubi_ack. Without a code you only learn how many events wait; rubi_verify sends a code to
+your own webhook (never pass another Bot's name: the code goes to that Bot, which reports it). One Bot is Rubi's administrator
 (the user picks it in settings): it gets Rubi's own events and reads every event; other Bots see only
 their own and those of the plugins they subscribed to. Events of plugins no Bot subscribed to don't wake
 anyone; they wait in the list. NEVER create scheduled routines to check Rubi, mail or replies:
@@ -216,12 +219,18 @@ type cancelIn struct {
 
 type eventsIn struct {
 	Agent        string `json:"agent,omitempty" jsonschema:"your Bot's name as connected to Rubi"`
+	Code         string `json:"code,omitempty" jsonschema:"agent_code from your latest Rubi webhook (or from rubi_verify)"`
 	IncludeAcked bool   `json:"include_acked,omitempty"`
 }
 
 type ackIn struct {
 	Agent   string `json:"agent,omitempty" jsonschema:"your Bot's name as connected to Rubi"`
+	Code    string `json:"code,omitempty" jsonschema:"agent_code from your latest Rubi webhook (or from rubi_verify)"`
 	EventID string `json:"event_id"`
+}
+
+type verifyIn struct {
+	Agent string `json:"agent" jsonschema:"your Bot's name as connected to Rubi"`
 }
 
 type out = map[string]any
@@ -409,9 +418,18 @@ func (s *Server) registerCoreTools() {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
+			var pending out
 			if in.Sources != nil {
-				if _, err := s.core.SetSubscriptions(in.Agent, *in.Sources); err != nil {
+				_, id, err := s.core.RequestSubscriptions(ctx, in.Agent, *in.Sources)
+				if err != nil {
 					return nil, nil, err
+				}
+				if id != "" {
+					pending = out{"status": "awaiting_approval", "approval_id": id, "level": "strong",
+						"message": "Hearing about a new plugin needs the user's approval. Send them the approval link."}
+					if u, err := s.core.Link("approve:" + id); err == nil {
+						pending["approval_url"] = u
+					}
 				}
 			}
 			var me any
@@ -423,8 +441,12 @@ func (s *Server) registerCoreTools() {
 			if me == nil {
 				return nil, nil, errors.New("you aren't connected to Rubi under that name; connect first: send the user rubi_link(\"agent:<your Bot name>\")")
 			}
-			return nil, out{"you": me, "available": s.core.Sources(),
-				"note": "Events nobody subscribed to go to the default agent."}, nil
+			res := out{"you": me, "available": s.core.Sources(),
+				"note": "Plugins nobody subscribed to wake no one. Dropping a subscription is immediate; adding one needs the user's approval."}
+			for k, v := range pending {
+				res[k] = v
+			}
+			return nil, res, nil
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_confirm",
@@ -453,11 +475,27 @@ func (s *Server) registerCoreTools() {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			list, err := s.core.EventsFor(in.Agent, in.IncludeAcked)
+			list, err := s.core.EventsFor(in.Agent, in.Code, in.IncludeAcked)
+			if errors.Is(err, core.ErrAgentCode) {
+				return nil, out{"waiting": s.core.WaitingFor(in.Agent), "needs_code": true,
+					"next_step": "Reading events needs the agent_code from your latest Rubi webhook. If you have none, call rubi_verify(agent): Rubi sends a code to your own webhook, which starts a run of yours that can read and report them."}, nil
+			}
 			if err != nil {
 				return nil, nil, err
 			}
 			return nil, out{"events": list}, nil
+		})
+
+	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_verify",
+		Description: "Ask Rubi for a code proving you are this Bot. It is sent to your own routine webhook (only you receive it) and starts a run of yours; there, pass it as code to rubi_events and rubi_ack for 15 minutes. Every Rubi webhook already carries a fresh code in agent_code."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in verifyIn) (*mcp.CallToolResult, out, error) {
+			if locked := s.lockedResponse(); locked != nil {
+				return nil, locked, nil
+			}
+			if err := s.core.RequestAgentCode(in.Agent); err != nil {
+				return nil, nil, err
+			}
+			return nil, out{"status": "sent", "message": "The code is on its way to your webhook; the run it starts can read your events."}, nil
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_update",
@@ -473,7 +511,7 @@ func (s *Server) registerCoreTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_ack",
 		Description: "Mark an event as reported to the user."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ackIn) (*mcp.CallToolResult, out, error) {
-			ok, err := s.core.AckFor(in.Agent, in.EventID)
+			ok, err := s.core.AckFor(in.Agent, in.Code, in.EventID)
 			if err != nil {
 				return nil, nil, err
 			}

@@ -53,7 +53,8 @@ what to do.
 | `rubi_continue_after(approval_id, plan, agent)` | The agent's own note for after a strong approval is decided; returned with `approval.decided` to that agent |
 | `rubi_notifications(agent, sources?)` | Which event sources (plugin ids, `rubi`) wake this agent; several Bots share one Rubi |
 | `rubi_confirm(approval_id, user_response)` | Only for `chat`-level approvals: the exact plain-text label the user pressed |
-| `rubi_events(include_acked=false)` / `rubi_ack(event_id)` | Pull and acknowledge events (e.g. a reply arrived) |
+| `rubi_events(agent, code, include_acked=false)` / `rubi_ack(event_id, agent, code)` | Pull and acknowledge events (e.g. a reply arrived); `code` is the `agent_code` from the Bot's latest Rubi webhook |
+| `rubi_verify(agent)` | Have a code sent to that Bot's own webhook (a run of it can then read its events) |
 | `rubi_update()` | Ask the user (strong approval) to update to the latest signed release; Rubi restarts into it and stays unlocked |
 
 Nothing here can change security settings, webhook targets, plugins, or secrets on its own: those changes

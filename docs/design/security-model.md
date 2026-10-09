@@ -196,9 +196,16 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   subscribed to their source. Rubi's own events nobody subscribed to go to the **administrator**, the Bot
   the user made responsible for Rubi (an approved setting); plugin events nobody subscribed to wake no one
   and wait in the event list. The administrator reads the whole list; other Bots see only the events
-  addressed to them and those of their subscriptions. Agents name themselves and may change their own
-  subscriptions without approval. This keeps each Bot to its own events, but it isn't hard isolation:
-  Bots on one account share a computer and the MCP server, so a Bot could claim another's name. Adding or removing a
+  addressed to them and those of their subscriptions.
+- **Which Bot is calling.** Bots on one account share a computer and the MCP server and name themselves,
+  so a name proves nothing. What only the real Bot has is its routine webhook: the platform delivers a POST
+  there to that Bot alone. Every Rubi webhook carries the woken Bot's current code (`agent_code`, valid
+  15 minutes), and `rubi_verify` sends one on request — always to the named Bot's webhook, so a Bot posing
+  as another only alerts the real one. Reading and acknowledging events need the code. Three wrong codes
+  block codes for that name for 30 minutes and warn the administrator. Codes are never kept in the event
+  list (the administrator would see them there).
+- Dropping a subscription is immediate; adding one gives a Bot that plugin's events, so the user approves
+  it (a Bot can't simply subscribe itself to the mail plugin). Adding or removing a
   webhook always needs the user's approval.
 - Waking an agent costs the user's Grok Bot quota, so Rubi wakes only when needed: when an agent left a plan
   for an approval it hasn't seen decided, and for plugin events such as replies.
