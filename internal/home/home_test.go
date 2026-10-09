@@ -3,12 +3,15 @@ package home
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
+	"github.com/Deikus-LXXVII/rubi/internal/watch"
 	"math/big"
 	"net"
 	"net/http"
@@ -263,5 +266,35 @@ func TestComputerNameHasNoOwner(t *testing.T) {
 		if got := computerName(host); got != want {
 			t.Errorf("%q: %q, want %q", host, got, want)
 		}
+	}
+}
+
+// A Rubi's beats reach the helper's watcher without a pairing token (a locked Rubi can't read its token),
+// but only signed and with a registration sealed to this helper.
+func TestWatchBeats(t *testing.T) {
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Watch = watch.New(h.ID.Box)
+	_, rubiKey, _ := ed25519.GenerateKey(rand.Reader)
+	reg := watch.Registration{WatchKey: base64.RawURLEncoding.EncodeToString(rubiKey.Public().(ed25519.PublicKey)),
+		Name: "r", Admin: "Main", URL: "https://example.com/hook", Key: "k"}
+	sealed, err := watch.Seal(h.ID.Box.PublicKey(), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(watch.NewMessage(rubiKey, "locked", "", sealed))
+	if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "watch.beat", Args: args}); err != nil {
+		t.Fatalf("beat refused: %v", err)
+	}
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	bad, _ := json.Marshal(watch.NewMessage(other, "locked", "", sealed))
+	if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "watch.beat", Args: bad}); err == nil {
+		t.Fatal("a forged beat was accepted")
+	}
+	// Everything else still needs the pairing.
+	if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "shortcuts.list"}); err == nil {
+		t.Fatal("an unpaired call went through")
 	}
 }

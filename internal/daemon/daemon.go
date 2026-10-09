@@ -79,6 +79,7 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		return err
 	}
 	go checkUpdates(ctx, c)
+	go c.RunWatch(ctx) // beats to the watchers the user chose (core/watchdog.go)
 
 	go func() {
 		r := integrity.Check(ctx, version.Version)
@@ -107,6 +108,8 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		// Only reached if exec failed. The new binary is installed; the next start runs it, locked.
 		log.Printf("restart into the update failed: %v", err)
 	}
+	// Tell the administrator (and the watchers) before going: a stopped Rubi starts again locked.
+	c.Stopping("Rubi's process was stopped (its computer may be restarting or updating, or Rubi is being restarted)")
 	c.Lock()
 	_ = os.Remove(layout.Socket())
 	log.Printf("rubi daemon stopped")

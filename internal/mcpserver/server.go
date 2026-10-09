@@ -323,7 +323,7 @@ func (s *Server) registerCoreTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_lock",
 		Description: "Lock Rubi now: wipes keys from memory and cancels pending approvals. The user unlocks it again in the panel."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
-			s.core.Lock()
+			s.core.LockWith("locked by a Bot (rubi_lock)")
 			return nil, out{"state": s.core.State()}, nil
 		})
 

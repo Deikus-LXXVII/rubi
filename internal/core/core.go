@@ -364,8 +364,19 @@ func (c *Core) validPurpose(p string) error {
 }
 
 // Lock wipes keys and private data from memory and cancels pending approvals. Always allowed.
-func (c *Core) Lock() {
-	c.beforeLock()
+func (c *Core) Lock() { c.LockWith("") }
+
+// LockWith locks Rubi, first telling the administrator why (when a reason is given).
+func (c *Core) LockWith(reason string) {
+	if reason != "" && c.State() == Unlocked {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		c.tellAdmin(ctx, "locked", reason)
+		cancel()
+	}
+	c.beforeLock(reason)
+	if reason != "" {
+		go c.beat(context.Background(), "locked", reason)
+	}
 	c.stopPlugins()
 	c.Approvals.CancelAll()
 	c.Events.Clear()
@@ -390,6 +401,7 @@ func (c *Core) Unlock(dek []byte, minVersion uint64, method, credentialID string
 	c.Audit.Record("rubi.unlocked", audit.Fields{"method": method, "credential_id": credentialID})
 	c.startPlugins()
 	c.afterUnlock()
+	go c.refreshWatch()
 	if c.OnHookRoute != nil {
 		c.OnHookRoute()
 	}

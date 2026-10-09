@@ -55,13 +55,13 @@ func (c *Core) saveEvents() {
 }
 
 // beforeLock records when Rubi locked and keeps the unreported events.
-func (c *Core) beforeLock() {
+func (c *Core) beforeLock(reason string) {
 	if c.State() != Unlocked {
 		return
 	}
 	c.saveEvents()
 	_ = c.Vault.Update(func(d *vault.Data) error {
-		d.LockedAt = time.Now().UTC()
+		d.LockedAt, d.LockReason = time.Now().UTC(), reason
 		return nil
 	})
 }
@@ -70,20 +70,21 @@ func (c *Core) beforeLock() {
 func (c *Core) afterUnlock() {
 	var saved []events.Event
 	var lockedAt time.Time
+	var reason string
 	_ = c.Vault.View(func(d *vault.Data) error {
-		saved, lockedAt = d.PendingEvents, d.LockedAt
+		saved, lockedAt, reason = d.PendingEvents, d.LockedAt, d.LockReason
 		return nil
 	})
 	c.Events.Restore(saved)
 	c.ensureLockbox()
 	if lockedAt.IsZero() || c.started.After(lockedAt) {
-		lockedAt = c.started // a restart: locked since this process started
+		lockedAt, reason = c.started, "Rubi restarted" // locked since this process started
 	}
 	unlockedAt := time.Now().UTC()
 	go func() {
 		hooks := c.replayHooks()
 		time.Sleep(BacklogSettle) // let the replayed hooks and the plugins' catch-up emit their events
-		c.noticeBacklog(lockedAt, unlockedAt, hooks)
+		c.noticeBacklog(lockedAt, unlockedAt, reason, hooks)
 	}()
 }
 
@@ -91,7 +92,7 @@ func (c *Core) afterUnlock() {
 var BacklogSettle = 20 * time.Second
 
 // noticeBacklog tells each Bot with waiting events that Rubi was locked and how many wait for it.
-func (c *Core) noticeBacklog(lockedAt, unlockedAt time.Time, hooks int) {
+func (c *Core) noticeBacklog(lockedAt, unlockedAt time.Time, reason string, hooks int) {
 	if c.State() != Unlocked {
 		return
 	}
@@ -113,9 +114,9 @@ func (c *Core) noticeBacklog(lockedAt, unlockedAt time.Time, hooks int) {
 		if n == 0 {
 			continue
 		}
-		data := map[string]any{"locked_from": lockedAt, "unlocked_at": unlockedAt, "waiting": n,
-			"next_step": fmt.Sprintf("Rubi was locked from %s to %s, so it couldn't act or watch meanwhile. %d events wait for you: read them with rubi_events, tell the user what matters, then rubi_ack each.",
-				lockedAt.Format(time.RFC3339), unlockedAt.Format(time.RFC3339), n)}
+		data := map[string]any{"locked_from": lockedAt, "unlocked_at": unlockedAt, "waiting": n, "reason": reason,
+			"next_step": fmt.Sprintf("Rubi was locked from %s to %s (%s), so it couldn't act or watch meanwhile. %d events wait for you: read them with rubi_events, tell the user what matters, then rubi_ack each.",
+				lockedAt.Format(time.RFC3339), unlockedAt.Format(time.RFC3339), orUnknown(reason), n)}
 		if hooks > 0 {
 			data["hooks_delivered_late"] = hooks
 		}
@@ -250,4 +251,11 @@ func (c *Core) waitForHookPlugin(id string) {
 	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline) && !c.Runner.Running(plugin); {
 		time.Sleep(250 * time.Millisecond)
 	}
+}
+
+func orUnknown(reason string) string {
+	if reason == "" {
+		return "reason unknown"
+	}
+	return reason
 }

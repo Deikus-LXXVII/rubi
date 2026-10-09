@@ -274,7 +274,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	case "status":
 		return s.status(purpose), nil
 	case "lock":
-		s.core.Lock()
+		s.core.LockWith("locked from the Rubi panel")
 		return map[string]any{"state": s.core.State()}, nil
 	case "session.settings":
 		// Settings are one tap away on every screen, so any valid link can open them. A link made for
@@ -322,7 +322,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "account.agents":
+		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -639,6 +639,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Name    string            `json:"name"`
 		Sources []string          `json:"sources"`
 		Agents  []string          `json:"agents"`
+		Gateway bool              `json:"gateway"`
+		Home    bool              `json:"home"`
 		Values  map[string]any    `json:"values"`
 		Account string            `json:"account"`
 		Code    string            `json:"code"`
@@ -717,6 +719,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 			out["name"] = strings.TrimPrefix(purpose, "agent:")
 		}
 		out["sources"] = s.core.Sources()
+		out["watch"] = s.core.WatchSettings()
+		out["devices"] = len(s.core.Devices())
 		return out, nil
 	case "agent.subscribe":
 		subs, err := s.core.SetSubscriptions(args.Name, args.Sources)
@@ -747,6 +751,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		approvalID, err = s.core.SetDefaultAgent(ctx, args.Name)
 	case "account.agents":
 		approvalID, err = s.core.SetAccountAgents(ctx, args.ID, args.Account, args.Agents)
+	case "watch.set":
+		approvalID, err = s.core.SetWatch(ctx, core.WatchSettings{Gateway: args.Gateway, Home: args.Home})
 
 	case "integration.setup":
 		approvalID, account, err = s.core.ConnectIntegration(ctx, args.ID, args.Fields, args.Secrets)

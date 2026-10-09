@@ -222,8 +222,15 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   lockbox key, whose private half is in the vault, kept on disk (at most 500 / 2 MB), and handed to their
   plugins after unlocking; nobody can read them in between. (After a restart Rubi learns its hook route
   only at unlock, so hook requests between a restart and the next unlock are lost.)
-- **After unlocking,** every Bot with events waiting gets one notice: Rubi was locked from ... to ..., and
-  how many events wait for it.
+- **After unlocking,** every Bot with events waiting gets one notice: Rubi was locked from ... to ... (and
+  why), and how many events wait for it.
+- **When Rubi is down or stays locked.** Before Rubi locks or stops by itself, it tells the administrator
+  why. A computer that is switched off can't warn, and a locked Rubi can't reach anyone (its Bot's address
+  is in the closed vault), so the user can also let Rubi Gateway and/or their Rubi Home computers watch it
+  (`internal/watch`, an approved setting). Rubi sends them a beat every minute, signed with a watch key and
+  carrying the administrator's webhook sealed to each watcher; Rubi keeps only the sealed copies outside
+  the vault and can't read them while locked. Watchers wake the administrator when beats stop (5 min), when
+  Rubi stays locked (10 min) and when it is back. A watcher posts only to public internet addresses.
 
 ## 10. Updates
 

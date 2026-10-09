@@ -30,6 +30,13 @@ someone obtained from an older code ends at the next `rubi-home pair`. `rubi-hom
 pairing with its time. The helper introduces itself by its model ("MacBook Pro"), not by a hostname that
 often carries its owner's name.
 
+## Watching Rubi
+
+If the user chooses it, the helper also watches its Rubi: Rubi sends it a signed beat every minute (op
+`watch.beat`, which needs no pairing token, since a locked Rubi can't read its token, but must be signed
+by Rubi's watch key and carry a registration sealed to this helper). When beats stop or Rubi stays locked,
+the helper wakes Rubi's administrator Bot. It watches only while this computer is on.
+
 ## What it does
 
 The helper does only what it was built for, whatever Rubi asks:

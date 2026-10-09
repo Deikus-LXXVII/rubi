@@ -82,6 +82,15 @@ type Data struct {
 	LockedAt time.Time `json:"locked_at,omitempty"`
 	// LockboxKey opens the hook requests that arrived while Rubi was locked (core/backlog.go).
 	LockboxKey []byte `json:"lockbox_key,omitempty"`
+	// LockReason is why Rubi last locked itself, told to the Bots after unlocking.
+	LockReason string `json:"lock_reason,omitempty"`
+	// Watch is which watchers tell the administrator when Rubi is down or locked (core/watchdog.go).
+	Watch *Watch `json:"watch,omitempty"`
+}
+
+type Watch struct {
+	Gateway bool `json:"gateway,omitempty"`
+	Home    bool `json:"home,omitempty"`
 }
 
 // Device is a paired Rubi Home helper: how to reach it and the token that proves it's us.

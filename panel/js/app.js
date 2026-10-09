@@ -1717,6 +1717,25 @@ const CONNECT_PROMPT = "Connect yourself to Rubi so it can wake you: create a ro
 
 // grokBotScreen manages the Bots Rubi can wake: one webhook per Bot, any number of them, each with the
 // notifications it hears about.
+// watchSection: who tells the administrator Bot when Rubi is down or stays locked. Rubi can't say so
+// itself then (a locked Rubi can't read its Bot's address), so others watch it.
+function watchSection(ctx, w, change, devices) {
+  const gw = h("input", { type: "checkbox", checked: !!w.gateway });
+  const home = h("input", { type: "checkbox", checked: !!w.home, disabled: !devices && !w.home });
+  const save = h("button", { class: "secondary small", disabled: true,
+    onclick: (e) => change("watch.set", { gateway: gw.checked, home: home.checked })(e) }, "Save");
+  const dirty = () => { save.disabled = gw.checked === !!w.gateway && home.checked === !!w.home; };
+  gw.addEventListener("change", dirty);
+  home.addEventListener("change", dirty);
+  return h("section", { class: "watch-box" },
+    h("h2", {}, "When Rubi is down"),
+    h("p", { class: "muted" }, "Rubi tells the administrator before it locks or stops by itself, and why. To hear also when it stops without warning (its computer restarts) or stays locked, let something else watch it:"),
+    h("label", { class: "check" }, gw, h("span", {}, "Rubi Gateway", h("small", { class: "muted" }, "Always on. Gets your administrator Bot's webhook, sealed so only the gateway can read it."))),
+    h("label", { class: "check" }, home, h("span", {}, "My Rubi Home computers", h("small", { class: "muted" },
+      devices ? "Only while that computer is on." : "Add a home computer first."))),
+    save);
+}
+
 async function grokBotScreen(ctx) {
   currentView = () => grokBotScreen(ctx);
   const err = errorBox();
@@ -1786,6 +1805,7 @@ async function grokBotScreen(ctx) {
     h("div", { class: "section-head" }, h("h2", {}, "Connected Bots")),
     cards.length ? h("div", { class: "agent-list" }, cards) : h("div", { class: "empty" }, face("concern", 56), h("p", {}, "None yet. Setup isn't finished until at least one Bot is connected.")),
     cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. The administrator is responsible for Rubi: it gets Rubi's own events and is the only Bot that reads every event; the others see only their own. Plugins no Bot chose wake no one.") : null,
+    cards.length ? watchSection(ctx, data.watch || {}, change, data.devices || 0) : null,
     h("div", { class: "section-head" }, h("h2", {}, "Add a Bot")),
     h("div", { class: "panes" },
       pane(h("h3", {}, h("span", { class: "num-s" }, "A"), "Ask the Bot to connect itself"),

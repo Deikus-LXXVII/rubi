@@ -24,6 +24,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
+	"github.com/Deikus-LXXVII/rubi/internal/watch"
 )
 
 func main() {
@@ -100,6 +101,9 @@ func run(h *home.Helper) {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Watching the Rubi uses this helper's own key: Rubi seals its registration to it.
+	h.Watch = watch.New(h.ID.Box)
+	go h.Watch.Run(ctx)
 	rpc := &homeproto.Server{Key: h.ID.Box, Handle: h.Handle}
 	relays := h.Relays()
 	last := -1

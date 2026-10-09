@@ -43,6 +43,9 @@ func (l Layout) Keys() string     { return filepath.Join(l.Home, "keys.json") }
 func (l Layout) Lockbox() string      { return filepath.Join(l.Home, "lockbox.pub") }
 func (l Layout) HooksWaiting() string { return filepath.Join(l.Home, "hooks-waiting") }
 
+// Watch holds the watch key and the registrations sealed to the watchers (core/watchdog.go).
+func (l Layout) Watch() string { return filepath.Join(l.Home, "watch.json") }
+
 // PanelOrigin records the panel origin this instance was paired with (see core.Open).
 func (l Layout) PanelOrigin() string { return filepath.Join(l.Home, "panel-origin") }
 func (l Layout) Vault() string       { return filepath.Join(l.Home, "vault.sealed") }

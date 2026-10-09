@@ -10,6 +10,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -24,6 +25,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
+	"github.com/Deikus-LXXVII/rubi/internal/watch"
 )
 
 // Limits protect the gateway from abuse.
@@ -76,6 +78,9 @@ type Server struct {
 	// local proxy (Cloudflare Tunnel: CF-Connecting-IP). Requests from loopback without it share one
 	// bucket, so a proxy that doesn't set it can't be used to dodge the per-address limits.
 	ClientIPHeader string
+	// Watch, when set, watches Rubis that ask to be watched and wakes their administrator when one goes
+	// down or stays locked (POST /watch; its key at GET /watch/key). See internal/watch.
+	Watch *watch.Watcher
 
 	mu       sync.Mutex
 	conns    map[*conn]bool
@@ -99,6 +104,10 @@ func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/h/") {
 			s.serveHook(w, r)
+			return
+		}
+		if s.Watch != nil && (r.URL.Path == "/watch" || r.URL.Path == "/watch/key") {
+			s.serveWatch(w, r)
 			return
 		}
 		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
@@ -541,5 +550,34 @@ func (s *Server) serveHook(w http.ResponseWriter, r *http.Request) {
 	s.broadcast(e)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
+}
+
+// ---- watch ----
+
+func (s *Server) serveWatch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path == "/watch/key" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"x25519": base64.RawURLEncoding.EncodeToString(s.Watch.Key.PublicKey().Bytes())})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "use POST", http.StatusMethodNotAllowed)
+		return
+	}
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now().Add(15 * time.Second))
+	if !s.allow("watch:"+s.clientIP(r), 10, 10) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+	var m watch.Message
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&m); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := s.Watch.Receive(m); err != nil {
+		http.Error(w, "refused", http.StatusBadRequest)
+		return
+	}
 	_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
 }

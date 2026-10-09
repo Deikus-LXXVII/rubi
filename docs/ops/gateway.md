@@ -9,6 +9,11 @@ It also accepts hook requests (`POST /h/<route>/<id>`, at most 4 KB, rate-limite
 route) and hands each to the Rubi subscribed with that route's secret; see `docs/design/plugins.md` (Hooks). The
 tunnel already routes every path to the gateway, so nothing changes in the deployment.
 
+It also watches Rubis whose users turned it on (`POST /watch`, its key at `GET /watch/key`; see
+`internal/watch`): when a Rubi stops beating or stays locked, it wakes that Rubi's administrator Bot. It
+keeps registrations in memory only (each beat carries one, sealed to the gateway), and its watch key in
+the systemd state directory (`StateDirectory=rubi-gateway`), which must survive redeploys.
+
 ## Layout
 
 ```

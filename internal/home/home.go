@@ -26,6 +26,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
+	"github.com/Deikus-LXXVII/rubi/internal/watch"
 )
 
 // Config is kept in config.json in the helper's directory (0600).
@@ -62,6 +63,8 @@ type Helper struct {
 	// Shortcuts runs the shortcuts command (a seam for tests).
 	Shortcuts func(ctx context.Context, args ...string) ([]byte, error)
 	Hue       *Hue
+	// Watch, when set, watches the paired Rubi and wakes its administrator when it goes down or stays locked.
+	Watch *watch.Watcher
 
 	mu  sync.Mutex
 	cfg Config
@@ -216,6 +219,15 @@ func (h *Helper) paired(token string) bool {
 func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error) {
 	if env.Op == "pair" {
 		return h.pair(env.Args)
+	}
+	if env.Op == "watch.beat" && h.Watch != nil {
+		// Signed by Rubi's watch key and carrying a registration sealed to this helper: no token needed,
+		// so a locked Rubi (which can't read its pairing) can still say it is alive.
+		var m watch.Message
+		if json.Unmarshal(env.Args, &m) != nil {
+			return nil, errors.New("bad arguments")
+		}
+		return nil, h.Watch.Receive(m)
 	}
 	if !h.paired(env.Token) {
 		return nil, errors.New(homeproto.NotPairedMessage)

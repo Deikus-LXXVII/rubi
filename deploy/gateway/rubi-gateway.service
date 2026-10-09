@@ -9,6 +9,9 @@ Restart=always
 RestartSec=2
 # Runs as a throwaway user with no access to the rest of the system.
 DynamicUser=yes
+# Keeps the watch key across restarts (Rubis seal their registrations to it); passed as $STATE_DIRECTORY.
+StateDirectory=rubi-gateway
+StateDirectoryMode=0700
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

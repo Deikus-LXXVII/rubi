@@ -2,13 +2,17 @@ package mcpserver_test
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/json"
 	"github.com/Deikus-LXXVII/rubi/internal/core"
+	"github.com/Deikus-LXXVII/rubi/internal/gateway"
 	"github.com/Deikus-LXXVII/rubi/internal/home"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/panelclient"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
+	"github.com/Deikus-LXXVII/rubi/internal/watch"
 	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 	"io"
 	"net/http"
@@ -702,4 +706,49 @@ func grantAccess(t *testing.T, r *rig, agent string, ch chan hookHit) func(strin
 		args["rubi_agent"], args["rubi_access"] = agent, code
 		return r.ag.call(tool, args)
 	}
+}
+
+// TestWatchAndLockNotices: Rubi tells its administrator why it locks, and a watcher (Rubi Gateway here)
+// wakes the administrator when Rubi stays locked.
+func TestWatchAndLockNotices(t *testing.T) {
+	r := newRig(t)
+	mainSrv, mainCh := hookServer(t)
+	r.setWebhook(mainSrv.URL)
+
+	g := gateway.New("")
+	wk, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	g.Watch = watch.New(wk)
+	g.Watch.Cfg.Insecure, g.Watch.Cfg.Client = true, http.DefaultClient
+	g.Watch.Cfg.LockedAfter = time.Millisecond
+	gw := httptest.NewServer(g.Handler())
+	defer gw.Close()
+	r.c.HookBase = func() string { return gw.URL }
+
+	settings := r.panel("settings")
+	var res map[string]any
+	if err := settings.Call("watch.set", map[string]any{"gateway": true}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go r.c.RunWatch(ctx) // the first beat registers this Rubi with the gateway
+	r.waitFor("watch file", func() bool {
+		b, _ := os.ReadFile(r.c.Layout.Watch())
+		return strings.Contains(string(b), `"kind": "gateway"`)
+	})
+
+	r.ag.call("rubi_lock", nil)
+	if h := waitHit(t, mainCh, "rubi.locked"); !strings.Contains(toString(h.data["reason"]), "rubi_lock") {
+		t.Fatalf("lock notice: %v", h)
+	}
+	r.waitFor("locked beat", func() bool {
+		g.Watch.Check()
+		select {
+		case h := <-mainCh:
+			return h.typ == `"rubi.watch.locked"`
+		default:
+			return false
+		}
+	})
 }
