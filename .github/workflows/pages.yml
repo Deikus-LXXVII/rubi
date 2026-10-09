@@ -54,6 +54,9 @@ jobs:
           rm -f "$RUNNER_TEMP/key.pem"
           openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in panel/marketplace/catalog.json \
             -sigfile panel/marketplace/catalog.json.sig
+      - name: Version the panel's files
+        # Browsers may keep rubi-panel.com files for hours; versioned URLs make a new release load at once.
+        run: python3 deploy/pages/version-assets.py panel "${GITHUB_SHA::12}"
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
