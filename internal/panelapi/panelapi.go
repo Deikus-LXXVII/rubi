@@ -32,9 +32,9 @@ import (
 )
 
 const (
-	RPCPath     = "/v1/rpc"
-	maxBody     = 256 << 10
-	clockSkew   = 2 * time.Minute
+	RPCPath   = "/v1/rpc"
+	maxBody   = 256 << 10
+	clockSkew = 2 * time.Minute
 	// A request may be retried with a wrong proof a few times (a mistyped password); after that it is
 	// declined. Links, tickets and keys are random and can't be guessed, so nothing else is throttled:
 	// a global limit would only let anyone holding an old link lock the user out.
@@ -98,9 +98,9 @@ type Server struct {
 	ch   e2e.Server
 	now  func() time.Time
 
-	mu       sync.Mutex
-	seen     map[string]time.Time // request ids within the replay window
-	proofFails map[string]int // per approval
+	mu         sync.Mutex
+	seen       map[string]time.Time // request ids within the replay window
+	proofFails map[string]int       // per approval
 }
 
 func New(c *core.Core) *Server {
@@ -253,7 +253,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 	case "hello":
 		return map[string]any{"instance": s.core.ID.InstanceID, "fingerprint": s.core.ID.Fingerprint(),
 			"session_key": s.ch.SessionPublic(),
-			"state": s.core.State(), "version": version.Version}, nil
+			"state":       s.core.State(), "version": version.Version}, nil
 	case "pair":
 		return s.pair(env)
 	}

@@ -102,7 +102,9 @@ func (c *Conn) Run(ctx context.Context) error {
 				}()
 			default:
 				if len(m.ID) > 0 {
-					go func() { _ = c.write(message{ID: m.ID, Error: &Error{Code: -32000, Message: "too many requests at once"}}) }()
+					go func() {
+						_ = c.write(message{ID: m.ID, Error: &Error{Code: -32000, Message: "too many requests at once"}})
+					}()
 				}
 			}
 		case len(m.ID) > 0:
