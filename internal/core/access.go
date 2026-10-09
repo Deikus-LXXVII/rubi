@@ -240,7 +240,13 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 			if err := c.rememberAccess(hook.Name, allowed, key); err != nil {
 				return nil, err
 			}
-			if err := c.issueAccess(*hook, all, task, d); err != nil {
+			// The code lasts as long as the user allowed, not just the Bot's task. (Codes live in memory:
+			// after a restart the Bot asks again, and an assigned Bot gets a new one at once.)
+			codeFor := map[string]time.Duration{"day": 24 * time.Hour, "week": 7 * 24 * time.Hour, "always": 30 * 24 * time.Hour}[key]
+			if codeFor < d {
+				codeFor = d
+			}
+			if err := c.issueAccess(*hook, all, task, codeFor); err != nil {
 				return nil, err
 			}
 			// What the user allowed, in their words, for the receipt (not the duration the Bot asked for).
@@ -355,7 +361,7 @@ func (c *Core) issueAccess(hook vault.Agent, granted []resolved, task string, d 
 	// Straight to the Bot's webhook; never kept in the event list.
 	ev := events.Event{ID: "evt_access_" + randomID()[:8], Integration: "rubi", Type: "access.granted", CreatedAt: time.Now().UTC(),
 		Data: map[string]any{"accounts": names, "task": task, "expires_at": time.Now().Add(d).UTC(), "access_code": code,
-			"next_step": "Continue your task: " + task + ". Pass rubi_agent=\"" + hook.Name + "\" and rubi_access=<data.access_code> to the tools of these accounts: " + what + ". The code works only for you and only for them, until expires_at; don't share it."}}
+			"next_step": "Continue your task: " + task + ". Pass rubi_agent=\"" + hook.Name + "\" and rubi_access=<data.access_code> to the tools of these accounts: " + what + ". The code works only for you and only for them, until expires_at; don't share it. If it stops working earlier (Rubi restarted), ask again with rubi_access: what the user allowed for longer is granted again without asking."}}
 	go c.deliverTo(hook, ev)
 	return nil
 }

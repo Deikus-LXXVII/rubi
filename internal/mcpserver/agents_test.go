@@ -796,7 +796,11 @@ func TestGroupedAccess(t *testing.T) {
 	if r2, err := link.ApproveWithPassword(out["approval_id"].(string), "day|items:"+annKey, pw); err != nil || r2["state"] != "executed" {
 		t.Fatalf("approve some: %v %v", r2, err)
 	}
-	code := strings.Trim(toString(waitHit(t, mailCh, "rubi.access.granted").data["access_code"]), `"`)
+	granted := waitHit(t, mailCh, "rubi.access.granted")
+	code := strings.Trim(toString(granted.data["access_code"]), `"`)
+	if until, _ := time.Parse(time.RFC3339, strings.Trim(toString(granted.data["expires_at"]), `"`)); time.Until(until) < 23*time.Hour {
+		t.Fatalf("\"for a day\" gave a code until %v", until)
+	}
 	call := func(account string) map[string]any {
 		return r.ag.call("demo_who", map[string]any{"account": account, "rubi_agent": "Mail", "rubi_access": code})
 	}
