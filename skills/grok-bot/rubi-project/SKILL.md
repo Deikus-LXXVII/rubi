@@ -46,8 +46,9 @@ connections"). Then:
   administrator (the Bot the user put in charge, in settings) sees every event and gets Rubi's own; other
   Bots see only their own. Subscribing to a new plugin needs the user's approval.
 - With several Bots, plugin accounts need access codes: call `rubi_access(agent, plugin, accounts, task,
-  minutes)` (at most 120), or `resources: [{plugin, account}]` for several plugins. Ask for everything a
-  task needs in one request: the user approves it on one screen and you get one code. The code comes to your webhook and starts a run of yours; do the task there,
+  minutes)` (at most 120); across plugins use `plugins: ["gmail", "icloud-mail"]` (all their accounts) or
+  `resources: [{plugin, account}, ...]`. Ask for everything a task needs in ONE call, never one per
+  account or plugin: the user approves it on one screen and you get one code. The code comes to your webhook and starts a run of yours; do the task there,
   passing `rubi_agent` and `rubi_access` to the plugin's tools. Bots the user assigned to an account get
   the code at once; others wait for the user's approval.
 - `rubi_status` (field `webhook.agents`) lists the connected Bots and what each one hears about.

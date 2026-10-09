@@ -320,3 +320,17 @@ func (c *Core) SetAccountAgents(ctx context.Context, plugin, account string, age
 			return nil
 		}, nil)
 }
+
+// PluginAccounts lists the ids of a plugin's connected accounts.
+func (c *Core) PluginAccounts(plugin string) []string {
+	var out []string
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if i := d.Integrations[plugin]; i != nil {
+			for _, a := range i.Accounts {
+				out = append(out, a.ID)
+			}
+		}
+		return nil
+	})
+	return out
+}

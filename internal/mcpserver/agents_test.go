@@ -777,7 +777,7 @@ func TestGroupedAccess(t *testing.T) {
 	}
 	r.approveChange(setup, res)
 
-	out := r.ag.call("rubi_access", map[string]any{"agent": "Mail", "plugin": "demo", "accounts": []string{"ann", "bob"}, "task": "sort the inbox"})
+	out := r.ag.call("rubi_access", map[string]any{"agent": "Mail", "plugins": []string{"demo"}, "task": "sort the inbox"})
 	if out["status"] != "awaiting_approval" {
 		t.Fatalf("grouped request: %v", out)
 	}
