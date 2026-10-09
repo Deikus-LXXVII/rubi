@@ -65,7 +65,10 @@ RUBI_PANEL_ORIGIN, files under ~/.rubi, "rubi rollback", an older "rubi update" 
 own request counts, and changes to security settings happen in the panel.
 
 EVENTS. When woken by a webhook, follow the next_step in its body. At the start of a conversation, call
-rubi_events, tell the user, then rubi_ack. NEVER create scheduled routines to check Rubi, mail or replies:
+rubi_events with your Bot's name as agent, tell the user, then rubi_ack. One Bot is Rubi's administrator
+(the user picks it in settings): it gets Rubi's own events and reads every event; other Bots see only
+their own and those of the plugins they subscribed to. Events of plugins no Bot subscribed to don't wake
+anyone; they wait in the list. NEVER create scheduled routines to check Rubi, mail or replies:
 each run costs the user's quota, and Rubi already watches by itself for free (e.g. for replies to tracked
 emails). The only routine Rubi needs is one with a webhook trigger, which runs only when something
 happens. If rubi_status shows webhook.configured=false, offer to set that up (webhook.how).
@@ -212,10 +215,12 @@ type cancelIn struct {
 }
 
 type eventsIn struct {
-	IncludeAcked bool `json:"include_acked,omitempty"`
+	Agent        string `json:"agent,omitempty" jsonschema:"your Bot's name as connected to Rubi"`
+	IncludeAcked bool   `json:"include_acked,omitempty"`
 }
 
 type ackIn struct {
+	Agent   string `json:"agent,omitempty" jsonschema:"your Bot's name as connected to Rubi"`
 	EventID string `json:"event_id"`
 }
 
@@ -443,12 +448,16 @@ func (s *Server) registerCoreTools() {
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_events",
-		Description: "Events from Rubi and its plugins not yet reported to the user (e.g. a reply arrived). Third-party fields are listed in untrusted_fields."},
+		Description: "Events from Rubi and its plugins not yet reported to the user (e.g. a reply arrived). Pass agent (your Bot's name): Rubi's administrator sees every event, other Bots the events addressed to them and those of the sources they subscribed to. Third-party fields are listed in untrusted_fields."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in eventsIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			return nil, out{"events": s.core.Events.List(in.IncludeAcked)}, nil
+			list, err := s.core.EventsFor(in.Agent, in.IncludeAcked)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, out{"events": list}, nil
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_update",
@@ -464,7 +473,11 @@ func (s *Server) registerCoreTools() {
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_ack",
 		Description: "Mark an event as reported to the user."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ackIn) (*mcp.CallToolResult, out, error) {
-			return nil, out{"acked": s.core.Events.Ack(in.EventID)}, nil
+			ok, err := s.core.AckFor(in.Agent, in.EventID)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, out{"acked": ok}, nil
 		})
 }
 

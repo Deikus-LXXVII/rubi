@@ -106,7 +106,23 @@ func TestSeveralAgents(t *testing.T) {
 	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
 	r.connectDemo()
 	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
-	waitHit(t, mainCh, "demo.ping") // unassigned plugin: the default agent
+	// A plugin no Bot subscribed to wakes no one; its events wait for the administrator in the list.
+	noHit(t, mainCh, "demo.ping")
+	noHit(t, mailCh, "demo.ping")
+	findPing := func(agent string) bool {
+		for _, e := range r.ag.call("rubi_events", map[string]any{"agent": agent})["events"].([]any) {
+			if e.(map[string]any)["type"] == "ping" {
+				return true
+			}
+		}
+		return false
+	}
+	if !findPing("Main") || findPing("mail") {
+		t.Fatal("the administrator should see the unassigned event, the mail Bot not")
+	}
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Ghost"}); e["tool_error"] == nil {
+		t.Fatalf("an unknown Bot read events: %v", e)
+	}
 
 	// The mail Bot subscribes itself to the plugin's events (no approval needed: it only routes among
 	// webhooks the user approved). Unknown sources and agents are refused.

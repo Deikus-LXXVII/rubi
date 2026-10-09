@@ -677,7 +677,7 @@ function agentForm(ctx, { fixedName, onSaved, err }) {
   // What this Bot will hear about, chosen before the connection is confirmed (part of the same approval).
   const boxes = [];
   const subsBox = h("fieldset", { class: "field", hidden: true }, h("legend", {}, "This Bot gets notified about"),
-    h("small", {}, "Results of what this Bot asks for always reach it. Notifications no Bot chose go to the default Bot."));
+    h("small", {}, "Results of what this Bot asks for always reach it. Plugins no Bot chose wake no one; the administrator sees their events."));
   const subsList = h("div", { class: "checks" });
   subsBox.insertBefore(subsList, subsBox.lastChild);
   ctx.client.call("agents.get").then((data) => {
@@ -1563,7 +1563,7 @@ async function settingsScreen(ctx, tab) {
         ? `${agents.length === 1 ? "1 Bot is" : agents.length + " Bots are"} connected. Rubi wakes them when something they follow happens.`
         : "No Bot is connected, so Rubi can't wake your agent. Setup isn't finished."),
       agents.length ? h("ul", { class: "acct-list" }, agents.map((a) => h("li", {},
-        h("span", { class: "avatar-dot small" }, icon("bot", 14)), h("span", { class: "acct-name" }, a.name, a.default ? h("span", { class: "tag" }, "Default") : null)))) : null,
+        h("span", { class: "avatar-dot small" }, icon("bot", 14)), h("span", { class: "acct-name" }, a.name, a.default ? h("span", { class: "tag" }, "Administrator") : null)))) : null,
       h("button", { class: "secondary", onclick: () => grokBotScreen(ctx) }, "Manage Grok Bot connections"),
     ],
     home: () => [
@@ -1731,7 +1731,7 @@ async function grokBotScreen(ctx) {
     return h("div", { class: "agent-card" },
       h("div", { class: "agent-head" },
         h("span", { class: "avatar-dot" }, icon("bot", 16)),
-        h("div", { class: "agent-name" }, h("strong", {}, a.name), " ", a.default ? h("span", { class: "tag" }, "Default") : null,
+        h("div", { class: "agent-name" }, h("strong", {}, a.name), " ", a.default ? h("span", { class: "tag" }, "Administrator") : null,
           h("div", { class: "muted small" }, a.host)),
         h("div", { class: "actions" },
           h("button", { class: "ghost small", onclick: async (e) => {
@@ -1740,7 +1740,7 @@ async function grokBotScreen(ctx) {
               .then(() => { b.textContent = "Sent"; }).catch((x) => showError(err, x));
           } }, "Test"),
           menu(`More for ${a.name}`, [
-            a.default ? null : h("button", { type: "button", onclick: change("agent.default", { name: a.name }) }, icon("check", 16), "Make default"),
+            a.default ? null : h("button", { type: "button", onclick: change("agent.default", { name: a.name }) }, icon("check", 16), "Make administrator"),
             h("button", { type: "button", class: "danger-item", onclick: change("agent.remove", { name: a.name }) }, icon("trash", 16), "Remove"),
           ]))),
       h("p", { class: "muted small" }, "Wakes this Bot for:"),
@@ -1756,7 +1756,7 @@ async function grokBotScreen(ctx) {
     err,
     h("div", { class: "section-head" }, h("h2", {}, "Connected Bots")),
     cards.length ? h("div", { class: "agent-list" }, cards) : h("div", { class: "empty" }, face("concern", 56), h("p", {}, "None yet. Setup isn't finished until at least one Bot is connected.")),
-    cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. Notifications no Bot chose go to the default Bot.") : null,
+    cards.length ? h("p", { class: "muted small" }, "Results of approvals always go to the Bot that asked. The administrator is responsible for Rubi: it gets Rubi's own events and is the only Bot that reads every event; the others see only their own. Plugins no Bot chose wake no one.") : null,
     h("div", { class: "section-head" }, h("h2", {}, "Add a Bot")),
     h("div", { class: "panes" },
       pane(h("h3", {}, h("span", { class: "num-s" }, "A"), "Ask the Bot to connect itself"),

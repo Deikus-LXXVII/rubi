@@ -193,9 +193,12 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   agent can't redirect events elsewhere.
 - Several Bots can share one Rubi (they share the computer and the MCP server). Each registered agent has
   its own webhook; an approval's outcome goes to the agent that asked for it, other events to every agent
-  subscribed to their source, and the rest to the default agent. Agents name themselves and may change
-  their own subscriptions without approval: this only distributes events among webhooks the user approved,
-  and isn't access control (all Bots on the account can already use the same tools). Adding or removing a
+  subscribed to their source. Rubi's own events nobody subscribed to go to the **administrator**, the Bot
+  the user made responsible for Rubi (an approved setting); plugin events nobody subscribed to wake no one
+  and wait in the event list. The administrator reads the whole list; other Bots see only the events
+  addressed to them and those of their subscriptions. Agents name themselves and may change their own
+  subscriptions without approval. This keeps each Bot to its own events, but it isn't hard isolation:
+  Bots on one account share a computer and the MCP server, so a Bot could claim another's name. Adding or removing a
   webhook always needs the user's approval.
 - Waking an agent costs the user's Grok Bot quota, so Rubi wakes only when needed: when an agent left a plan
   for an approval it hasn't seen decided, and for plugin events such as replies.

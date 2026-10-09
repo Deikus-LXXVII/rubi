@@ -196,7 +196,13 @@ func (r *rig) waitFor(what string, cond func() bool) {
 
 func (r *rig) events() []map[string]any {
 	var out []map[string]any
-	for _, e := range r.ag.call("rubi_events", nil)["events"].([]any) {
+	var args map[string]any
+	for _, a := range r.c.Agents() { // the administrator reads every event
+		if a.Default {
+			args = map[string]any{"agent": a.Name}
+		}
+	}
+	for _, e := range r.ag.call("rubi_events", args)["events"].([]any) {
 		out = append(out, e.(map[string]any))
 	}
 	return out

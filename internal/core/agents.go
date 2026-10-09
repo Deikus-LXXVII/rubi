@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/Deikus-LXXVII/rubi/internal/events"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
 
@@ -178,13 +179,14 @@ func (c *Core) RemoveAgent(ctx context.Context, name string) (string, error) {
 		}, nil)
 }
 
-// SetDefaultAgent requests approval to change which agent gets events that belong to no particular one.
+// SetDefaultAgent requests approval to make an agent Rubi's administrator: the Bot responsible for Rubi,
+// which gets Rubi's own events and is the only one that reads the whole event list.
 func (c *Core) SetDefaultAgent(ctx context.Context, name string) (string, error) {
 	if !c.HasAgent(name) {
 		return "", fmt.Errorf("no agent %q (agents: %s)", name, c.agentNames())
 	}
-	return c.RequestChange(ctx, "Make "+name+" the default agent", map[string]any{"agent": name,
-		"effect": "Gets the events no Bot subscribed to."},
+	return c.RequestChange(ctx, "Make "+name+" Rubi's administrator", map[string]any{"agent": name,
+		"effect": "Gets Rubi's own events (approvals, updates, problems) and is the only Bot that reads every event. Other Bots see only their own."},
 		func(d *vault.Data) error {
 			a := findAgent(d, name)
 			for _, x := range d.Agents {
@@ -280,7 +282,10 @@ func (c *Core) recipients(target, source string) []vault.Agent {
 				}
 			}
 		}
-		if len(out) == 0 {
+		// Rubi's own events (approval outcomes, updates, problems) go to the administrator when no one
+		// else asked for them. A plugin's events no Bot subscribed to wake no one: they wait in the
+		// event list, which the administrator reads in full.
+		if len(out) == 0 && source == "rubi" {
 			if a := defaultAgent(d); a != nil {
 				out = append(out, *a)
 			}
@@ -288,4 +293,53 @@ func (c *Core) recipients(target, source string) []vault.Agent {
 		return nil
 	})
 	return out
+}
+
+// EventsFor is the event list as one agent may see it. The administrator sees every event; another Bot
+// sees the events addressed to it and those of the sources it subscribed to. Before any Bot is connected
+// (setup) the list is whole.
+func (c *Core) EventsFor(agent string, includeAcked bool) ([]events.Event, error) {
+	all := c.Events.List(includeAcked)
+	var admin bool
+	var subs map[string]bool
+	var known, none bool
+	_ = c.Vault.View(func(d *vault.Data) error {
+		none = len(d.Agents) == 0
+		if a := findAgent(d, agent); a != nil {
+			known = true
+			admin = a == defaultAgent(d)
+			subs = map[string]bool{}
+			for _, s := range a.Subscriptions {
+				subs[s] = true
+			}
+		}
+		return nil
+	})
+	if none || admin {
+		return all, nil
+	}
+	if !known {
+		return nil, fmt.Errorf("pass agent: your Bot's name as connected to Rubi (agents: %s)", c.agentNames())
+	}
+	out := []events.Event{}
+	for _, e := range all {
+		if strings.EqualFold(e.Target, agent) || e.Target == "" && subs[e.Integration] {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// AckFor marks an event as reported, if agent may see it.
+func (c *Core) AckFor(agent, id string) (bool, error) {
+	visible, err := c.EventsFor(agent, false)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range visible {
+		if e.ID == id {
+			return c.Events.Ack(id), nil
+		}
+	}
+	return false, nil
 }

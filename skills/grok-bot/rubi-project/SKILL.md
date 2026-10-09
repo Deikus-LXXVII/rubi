@@ -39,7 +39,9 @@ connections"). Then:
 - Pass your Bot's name as `agent` to `rubi_continue_after`, so the outcome wakes you and not another Bot.
 - Choose what you hear about with `rubi_notifications(agent, sources)`: plugin ids (e.g. `icloud-mail` for
   replies to tracked emails) and `rubi` for Rubi's own events. Pick only what your role needs: every wake
-  costs the user's quota. Notifications no Bot chose go to the default Bot.
+  costs the user's quota. Plugins no Bot chose wake no one; their events wait in the list.
+- Pass your name as `agent` to `rubi_events` and `rubi_ack`. Rubi's administrator (the Bot the user put in
+  charge, in settings) sees every event and gets Rubi's own; other Bots see only their own.
 - `rubi_status` (field `webhook.agents`) lists the connected Bots and what each one hears about.
 
 ## Updates
