@@ -54,6 +54,13 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	// "version" needs nothing from the environment: an update runs the new binary with a bare environment
+	// to check it starts (internal/update smokeTest), and Rubi v0.6.0 passes only PATH.
+	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Println(version.Version)
+		return
+	}
 	layout, err := paths.Default()
 	if err != nil {
 		fail(err)
@@ -103,8 +110,6 @@ func main() {
 		}
 		stopDaemon(layout)
 		fmt.Println("Rolled back. Rubi restarts locked on its next use.")
-	case "version", "--version", "-v":
-		fmt.Println(version.Version)
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:

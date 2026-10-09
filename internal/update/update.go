@@ -269,7 +269,7 @@ func smokeTest(ctx context.Context, bin, version string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "version")
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH")} // it only prints its version: it needs nothing else
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME")} // it only prints its version
 	out, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("the new binary doesn't run on this machine: %w", err)
