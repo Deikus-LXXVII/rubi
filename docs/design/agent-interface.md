@@ -47,7 +47,7 @@ what to do.
 | `rubi_lock()` | Lock immediately. Always allowed. |
 | `rubi_store()` | Plugins in the store (reviewed) and installed ones: versions, connection state, updates |
 | `rubi_plugin_install(plugin)` | Install from the store by id, or sideload from a source URL. Verifies the package, then returns a strong approval |
-| `rubi_plugin_update(id)` / `rubi_plugin_remove(id)` | Update or remove a plugin (strong approval) |
+| `rubi_plugin_update(id \| ids \| all)` / `rubi_plugin_remove(id)` | Update one, several or all plugins with one approval (strong; any can be left out), or remove one |
 | `rubi_call(tool, arguments)` | Call a plugin tool by name, for agents that don't refresh their tool list |
 | `rubi_approval(approval_id, wait_seconds=0..25)` | Status of a pending approval (`pending`, `approved`, `denied`, `expired`, `executed`) and the action result. Long-polls up to `wait_seconds` (max 25). |
 | `rubi_continue_after(approval_id, plan, agent)` | The agent's own note for after a strong approval is decided; returned with `approval.decided` to that agent |

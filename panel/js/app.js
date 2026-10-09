@@ -230,12 +230,20 @@ async function updatesScreen(ctx) {
       h("label", { class: "urow-notify", title: "Tell my agent when a new version is out" }, h("span", { class: "muted small" }, "Tell agent"), notify, saved));
   });
   const n = outdated(items);
+  // Several plugin updates go to one approval, where each can still be left out.
+  const pluginIds = items.filter((it) => it.available && it.id !== "rubi").map((it) => it.id);
+  const updateAll = pluginIds.length > 1 ? h("button", { class: "secondary small", onclick: async (e) => {
+    await busy(e.currentTarget, async () => {
+      confirmChange(ctx, await ctx.client.call("updates.plugin", { ids: pluginIds }), again, "Back to updates");
+    }).catch((x) => showError(err, x));
+  } }, icon("download", 16), `Update all ${pluginIds.length} plugins`) : null;
   screen(
     { cls: "wide", focus: false },
     header(ctx.hello),
     backBar("Settings", () => openSettings(ctx)),
     h("h1", {}, "Updates"),
     h("p", {}, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
+    updateAll ? h("div", { class: "top-actions" }, updateAll) : null,
     err,
     h("div", { class: "ulist" }, rows),
     h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off “Tell agent” for anything you'd rather update from here, without your agent bringing it up. Every update still needs your passkey or password."),

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -209,76 +210,231 @@ func (c *Core) RequestPluginUpdate(ctx context.Context, id string) (map[string]a
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked")
 	}
+	u, done, err := c.preparePluginUpdate(ctx, id)
+	if err != nil || done != nil {
+		return done, err
+	}
+	return c.submitPluginChange(ctx, u.cand, "rubi.plugin.update", u.summary, u.preview, func(string) error {
+		return u.apply()
+	}, nil)
+}
+
+// pluginUpdate is a verified release waiting for the user's approval.
+type pluginUpdate struct {
+	core           *Core
+	id, name, from string
+	cand           *plugins.Candidate
+	summary        string
+	preview        map[string]any
+}
+
+// preparePluginUpdate downloads and verifies the newest release of id. done is set (and u nil) when
+// there is nothing to approve, e.g. the plugin is up to date.
+func (c *Core) preparePluginUpdate(ctx context.Context, id string) (u *pluginUpdate, done map[string]any, err error) {
 	rec := c.record(id)
 	old, _ := c.Store.Get(id)
 	if rec == nil {
-		return nil, fmt.Errorf("plugin %q is not installed", id)
+		return nil, nil, fmt.Errorf("plugin %q is not installed", id)
 	}
+	upToDate := map[string]any{"status": "up_to_date", "plugin": id, "version": rec.Version}
 	var cand *plugins.Candidate
-	var err error
 	if rec.Reviewed {
 		cat, cerr := c.catalog(ctx, true)
 		if cerr != nil {
-			return nil, cerr
+			return nil, nil, cerr
 		}
 		e, ok := cat.Entry(id)
 		if !ok {
-			return nil, fmt.Errorf("%s is no longer in the Rubi store", old.Name)
+			return nil, nil, fmt.Errorf("%s is no longer in the Rubi store", old.Name)
 		}
 		v, ok := e.Latest(version.Version)
 		if !ok || !update.Newer(v.Version, rec.Version) {
-			return map[string]any{"status": "up_to_date", "version": rec.Version}, nil
+			return nil, upToDate, nil
 		}
 		cand, err = c.fetchReviewed(ctx, e)
 	} else {
 		latest, lerr := c.sideloadLatest(ctx, rec.Source)
 		if lerr != nil {
-			return nil, lerr
+			return nil, nil, lerr
 		}
 		if !update.Newer(latest, rec.Version) {
-			return map[string]any{"status": "up_to_date", "version": rec.Version}, nil
+			return nil, upToDate, nil
 		}
 		cand, err = c.fetchSideload(ctx, rec.Source, rec.PublisherKey, nil)
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	m := cand.Manifest
 	if !update.Newer(m.Version, rec.Version) { // never an older (or the same) release as an "update"
 		os.RemoveAll(cand.Dir)
-		return map[string]any{"status": "up_to_date", "version": rec.Version}, nil
+		return nil, upToDate, nil
 	}
 	if m.ID != id {
 		os.RemoveAll(cand.Dir)
-		return nil, errors.New("the source now publishes a different plugin; refusing to update")
+		return nil, nil, errors.New("the source now publishes a different plugin; refusing to update")
 	}
 	preview := permissions(m, cand.Reviewed, cand.Source)
 	preview["current"] = rec.Version
 	if added := newPermissions(old, m); added != "" {
 		preview["new_permissions"] = added
 	}
-	return c.submitPluginChange(ctx, cand, "rubi.plugin.update", "Update "+m.Name+" to "+m.Version, preview, func(string) error {
-		c.Runner.Stop(id)
-		if err := c.Store.Commit(cand, rec.Version); err != nil { // keep the old version for rollback
-			return err
+	return &pluginUpdate{core: c, id: id, name: m.Name, from: rec.Version, cand: cand, preview: preview,
+		summary: "Update " + m.Name + " to " + m.Version}, nil, nil
+}
+
+// apply installs the approved release, keeping the replaced version for rollback.
+func (c *Core) applyPluginUpdate(u *pluginUpdate) error {
+	id, m, cand := u.id, u.cand.Manifest, u.cand
+	c.Runner.Stop(id)
+	if err := c.Store.Commit(cand, u.from); err != nil { // keep the old version for rollback
+		return err
+	}
+	if err := c.Vault.Update(func(d *vault.Data) error {
+		r := newRecord(cand)
+		if prev := d.Plugins[id]; prev != nil {
+			r.InstalledAt = prev.InstalledAt
+			old := prev.Current()
+			r.Previous = &old
 		}
-		if err := c.Vault.Update(func(d *vault.Data) error {
-			r := newRecord(cand)
-			if prev := d.Plugins[id]; prev != nil {
-				r.InstalledAt = prev.InstalledAt
-				old := prev.Current()
-				r.Previous = &old
-			}
-			d.Plugins[id] = r
-			return nil
-		}); err != nil {
-			return err
-		}
-		c.Audit.Record("plugin.updated", audit.Fields{"plugin": id, "from": rec.Version, "to": m.Version})
-		c.toolsChanged()
-		c.startInstalled(id, m.Version, cand.Tree)
+		d.Plugins[id] = r
 		return nil
-	}, nil)
+	}); err != nil {
+		return err
+	}
+	c.Audit.Record("plugin.updated", audit.Fields{"plugin": id, "from": u.from, "to": m.Version})
+	c.toolsChanged()
+	c.startInstalled(id, m.Version, cand.Tree)
+	return nil
+}
+
+func (u *pluginUpdate) apply() error { return u.core.applyPluginUpdate(u) }
+
+// RequestPluginUpdates updates several plugins with one approval: the user sees every plugin with its
+// permissions and can leave any of them out. No ids means every installed plugin with an update. A single
+// update is an ordinary update approval.
+func (c *Core) RequestPluginUpdates(ctx context.Context, ids []string) (map[string]any, error) {
+	if c.State() != Unlocked {
+		return nil, errors.New("Rubi is locked")
+	}
+	if len(ids) == 0 {
+		_ = c.Vault.View(func(d *vault.Data) error {
+			for id := range d.Plugins {
+				ids = append(ids, id)
+			}
+			return nil
+		})
+		sort.Strings(ids)
+	}
+	if len(ids) > 20 {
+		return nil, errors.New("at most 20 plugins at a time")
+	}
+	var ready []*pluginUpdate
+	var upToDate []string
+	failed := map[string]string{}
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		u, done, err := c.preparePluginUpdate(ctx, id)
+		switch {
+		case err != nil:
+			failed[id] = err.Error()
+		case done != nil:
+			upToDate = append(upToDate, id)
+		default:
+			ready = append(ready, u)
+		}
+	}
+	out := map[string]any{}
+	if len(upToDate) > 0 {
+		out["up_to_date"] = upToDate
+	}
+	if len(failed) > 0 {
+		out["failed"] = failed
+	}
+	switch len(ready) {
+	case 0:
+		out["status"] = "nothing_to_update"
+		return out, nil
+	case 1:
+		u := ready[0]
+		res, err := c.submitPluginChange(ctx, u.cand, "rubi.plugin.update", u.summary, u.preview,
+			func(string) error { return u.apply() }, nil)
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range out {
+			res[k] = v
+		}
+		return res, nil
+	}
+
+	items := make([]approvals.Item, len(ready))
+	byID := map[string]*pluginUpdate{}
+	for i, u := range ready {
+		items[i] = approvals.Item{Key: u.id, Label: u.name + " " + u.from + " → " + u.cand.Manifest.Version, Preview: u.preview}
+		byID[u.id] = u
+	}
+	c.mkt.mu.Lock()
+	if c.mkt.staged == nil {
+		c.mkt.staged = map[string]bool{}
+	}
+	for _, u := range ready {
+		c.mkt.staged[u.cand.Dir] = true
+	}
+	c.mkt.mu.Unlock()
+	unstageAll := func() {
+		for _, u := range ready {
+			c.unstage(u.cand.Dir)
+		}
+	}
+	res, err := c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: "rubi.plugin.update",
+		Summary: fmt.Sprintf("Update %d plugins", len(ready)),
+		Preview: map[string]any{"plugins": len(ready), "note": "Each plugin is verified against its signed release. Uncheck any you'd rather keep as it is."},
+		Options: []approvals.Option{{Key: "install", Label: "Update"}}, Items: items,
+		Execute: func(_ context.Context, option string) (any, error) {
+			defer unstageAll()
+			chosen := strings.Split(strings.TrimPrefix(option, approvals.ItemsPrefix), ",")
+			var updated []map[string]any
+			errs := map[string]string{}
+			for _, id := range chosen {
+				u := byID[id]
+				if u == nil {
+					continue
+				}
+				if err := u.apply(); err != nil {
+					errs[id] = err.Error()
+					continue
+				}
+				updated = append(updated, map[string]any{"plugin": id, "version": u.cand.Manifest.Version})
+			}
+			result := map[string]any{"updated": updated}
+			if len(errs) > 0 {
+				result["failed"] = errs
+			}
+			if len(updated) == 0 {
+				return result, errors.New("no plugin could be updated")
+			}
+			return result, nil
+		}})
+	if err != nil {
+		unstageAll()
+		return nil, err
+	}
+	if id, ok := res["approval_id"].(string); ok {
+		go func() {
+			for _, u := range ready {
+				c.cleanupWhenDone(id, u.cand.Dir)
+			}
+		}()
+	}
+	for k, v := range out {
+		res[k] = v
+	}
+	return res, nil
 }
 
 // RequestPluginRollback asks to switch a plugin back to the version it replaced. Doing it again switches

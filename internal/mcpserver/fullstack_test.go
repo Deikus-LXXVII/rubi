@@ -416,6 +416,19 @@ func TestSideload(t *testing.T) {
 	if res := r.approve(out, "install"); res["version"] != "v1.3.0" {
 		t.Fatalf("sideload update: %v", res)
 	}
+
+	// Several at once: what can be updated goes to one approval; the rest is reported.
+	reg.Publish("v1.4.0", nil, nil)
+	out = r.ag.call("rubi_plugin_update", map[string]any{"ids": []string{"demo", "nope"}})
+	if failed, _ := out["failed"].(map[string]any); failed["nope"] == nil || out["approval_url"] == nil {
+		t.Fatalf("batch update: %v", out)
+	}
+	if res := r.approve(out, "install"); res["version"] != "v1.4.0" {
+		t.Fatalf("batch update result: %v", res)
+	}
+	if out := r.ag.call("rubi_plugin_update", map[string]any{"all": true}); out["status"] != "nothing_to_update" {
+		t.Fatalf("all, nothing left: %v", out)
+	}
 }
 
 func previewOf(t *testing.T, info *panelclient.ApprovalInfo) map[string]any {

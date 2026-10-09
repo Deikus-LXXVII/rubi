@@ -272,7 +272,7 @@ Review checks this, because the user approves what the preview shows.
 |---|---|
 | `rubi_store(query?)` | Catalog plugins, with installed version and available updates |
 | `rubi_plugin_install(id or source)` | Verifies the package and returns an approval link |
-| `rubi_plugin_update(id)` / `rubi_plugin_remove(id)` | Same, for update and remove |
+| `rubi_plugin_update(id \| ids \| all)` / `rubi_plugin_remove(id)` | Same, for update (several plugins in one batch approval) and remove |
 | `rubi_call(tool, arguments)` | Calls a plugin tool by name, for agents that don't refresh their tool list after an install |
 
 Plugin tools are added to the MCP server when a plugin is installed. The server sends

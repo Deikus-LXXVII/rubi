@@ -41,7 +41,8 @@ explain in one sentence. Retry the user's request after they say it's done. If a
 PLUGINS. Integrations (like iCloud Mail) are plugins from the Rubi store. rubi_store lists them. To add
 one, call rubi_plugin_install with its id and send the user the approval link; after they approve, send
 the setup link if the result says so. Plugin updates are separate from Rubi updates: on a
-"plugin.update_available" event, ask the user and call rubi_plugin_update. If a newly installed plugin's
+"plugin.update_available" event, ask the user and call rubi_plugin_update. When several plugins have
+updates, update them together (rubi_plugin_update with ids, or all): the user approves them on one screen. If a newly installed plugin's
 tools don't show up in your tool list, call them through rubi_call.
 
 APPROVALS. Some tools return status "awaiting_approval" instead of acting.
@@ -244,6 +245,12 @@ type pluginIDIn struct {
 	ID string `json:"id" jsonschema:"installed plugin id"`
 }
 
+type pluginUpdateIn struct {
+	ID  string   `json:"id,omitempty" jsonschema:"one installed plugin id"`
+	IDs []string `json:"ids,omitempty" jsonschema:"several plugin ids, updated with one approval"`
+	All bool     `json:"all,omitempty" jsonschema:"every installed plugin that has an update, with one approval"`
+}
+
 type callIn struct {
 	Tool      string         `json:"tool"`
 	Arguments map[string]any `json:"arguments,omitempty"`
@@ -294,12 +301,23 @@ func (s *Server) registerCoreTools() {
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_update",
-		Description: "Update an installed plugin to its newest verified release. The user approves in the panel (new permissions are shown); Rubi itself keeps running."},
-		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginIDIn) (*mcp.CallToolResult, out, error) {
+		Description: "Update installed plugins to their newest verified releases: one (id), several (ids) or all that have an update (all). Several plugins go to the user as ONE approval, where they see each plugin's permissions and can leave any out; prefer this over one request per plugin. Rubi itself keeps running."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginUpdateIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			res, err := s.core.RequestPluginUpdate(ctx, in.ID)
+			var res map[string]any
+			var err error
+			switch {
+			case in.All:
+				res, err = s.core.RequestPluginUpdates(ctx, nil)
+			case len(in.IDs) > 0:
+				res, err = s.core.RequestPluginUpdates(ctx, in.IDs)
+			case in.ID != "":
+				res, err = s.core.RequestPluginUpdate(ctx, in.ID)
+			default:
+				err = errors.New("name a plugin (id), several (ids), or pass all")
+			}
 			return nil, s.withHint(res), err
 		})
 

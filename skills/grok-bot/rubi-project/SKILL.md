@@ -58,7 +58,9 @@ and `~/.rubi/bin/rubi rollback`.
 
 **Plugins.** On a `plugin.update_available` event, tell the user (the event says whether the new version
 is reviewed). If they want it, call `rubi_plugin_update(id)` and send the approval link; the panel lists any
-new permissions. Rubi keeps running; only that plugin restarts. If an update breaks something, offer
+new permissions. When several plugins have updates, update them together with
+`rubi_plugin_update(ids: [...])` or `rubi_plugin_update(all: true)`: the user approves them on one screen
+and can leave any out. Rubi keeps running; only those plugins restart. If an update breaks something, offer
 `rubi_plugin_rollback(id)` (the user approves; calling it again switches forward).
 
 Rubi learns about new releases within seconds (signed announcements over its relays), so don't poll for

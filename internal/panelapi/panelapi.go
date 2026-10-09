@@ -773,8 +773,9 @@ func (s *Server) updates(ctx context.Context, env Envelope) (any, error) {
 		return nil, errors.New("Rubi is locked; unlock it first")
 	}
 	var args struct {
-		ID     string `json:"id"`
-		Notify bool   `json:"notify"`
+		ID     string   `json:"id"`
+		IDs    []string `json:"ids"`
+		Notify bool     `json:"notify"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -784,6 +785,12 @@ func (s *Server) updates(ctx context.Context, env Envelope) (any, error) {
 	var res map[string]any
 	var err error
 	switch env.Op {
+	case "updates.plugin":
+		if len(args.IDs) > 0 { // several plugins, one approval
+			res, err = s.core.RequestPluginUpdates(ctx, args.IDs)
+		} else {
+			res, err = s.core.RequestPluginUpdate(ctx, args.ID)
+		}
 	case "updates.list":
 		return map[string]any{"updates": s.core.Updates(ctx)}, nil
 	case "updates.notify":

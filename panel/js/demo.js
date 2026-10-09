@@ -121,7 +121,7 @@ export class DemoClient {
         return { updates: [
           { id: "rubi", name: "Rubi", current: "v0.6.0", available: false, notify: true },
           { id: "steam", name: "Steam", current: "v1.0.0", latest: "v1.1.0", available: true, notify: true },
-          { id: "icloud-mail", name: "iCloud Mail", current: "v2.0.0", available: false, notify: false },
+          { id: "icloud-mail", name: "iCloud Mail", current: "v2.0.0", latest: "v2.0.1", available: true, notify: false },
         ] };
       case "integration.catalog":
         return { integrations: [{ id: "telegram", name: "Unofficial Telegram", connected: false, has_config: true,
