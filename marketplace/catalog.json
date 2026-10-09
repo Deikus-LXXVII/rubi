@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-10-09T09:00:00Z",
+  "updated_at": "2026-10-09T21:00:00Z",
   "plugins": [
     {
       "id": "icloud-mail",
@@ -41,6 +41,11 @@
           "version": "v2.1.0",
           "sums_sha256": "263ff6fc7ec40e45220c6f743977b5dc8f189f67095c8eb9afd2330efad3f21b",
           "min_rubi": "v0.6.1"
+        },
+        {
+          "version": "v2.1.1",
+          "sums_sha256": "c5a7f245e14bd5045dff5fd12584507069e5fd0d5f91f0e82c0d0e4dc0cd59aa",
+          "min_rubi": "v0.6.1"
         }
       ]
     },
@@ -67,6 +72,11 @@
         {
           "version": "v1.1.0",
           "sums_sha256": "ee8fa4177d199b96d76f637c9f3904dfeccba1e399cf305c3f4640756afb6ba3",
+          "min_rubi": "v0.6.1"
+        },
+        {
+          "version": "v1.1.1",
+          "sums_sha256": "10980e4cd16bac5957a231b40bafc36892bcbd91b5311644856195ca9d169a55",
           "min_rubi": "v0.6.1"
         }
       ]
