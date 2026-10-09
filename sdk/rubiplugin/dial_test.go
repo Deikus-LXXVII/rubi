@@ -50,11 +50,17 @@ func connectProxy(t *testing.T) string {
 			go func() {
 				br := bufio.NewReader(c)
 				line, _ := br.ReadString('\n')
+				hasUA := false
 				for {
 					l, _ := br.ReadString('\n')
+					hasUA = hasUA || strings.HasPrefix(strings.ToLower(l), "user-agent:")
 					if l == "\r\n" || l == "" {
 						break
 					}
+				}
+				if !hasUA { // a strict proxy, like some egress proxies: no answer at all
+					c.Close()
+					return
 				}
 				target := strings.Fields(line)[1]
 				up, err := net.Dial("tcp", target)

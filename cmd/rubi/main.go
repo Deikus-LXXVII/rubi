@@ -4,14 +4,17 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
@@ -23,6 +26,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/update"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
+	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
 
 const usage = `rubi — self-hosted integrations for AI agents, gated by your approval
@@ -36,6 +40,9 @@ Usage:
                   check for or install a signed release (the agent's rubi_update tool does this without
                   locking Rubi; this command restarts it locked)
   rubi rollback   go back to the previous version
+  rubi net-check [host:port ...]
+                  check that plugins can reach the internet from here (through the machine's egress proxy if
+                  it has one), step by step; default: the iCloud and Gmail mail servers
   rubi transport [gateway | relays | tailscale]
                   show or choose how the panel reaches Rubi (Rubi Gateway, public relays, or your own
                   Tailscale network); Rubi restarts locked to apply a change
@@ -110,6 +117,10 @@ func main() {
 		}
 		stopDaemon(layout)
 		fmt.Println("Rolled back. Rubi restarts locked on its next use.")
+	case "net-check":
+		if !netCheck(os.Args[2:]) {
+			os.Exit(1)
+		}
 	case "help", "--help", "-h":
 		fmt.Print(usage)
 	default:
@@ -279,4 +290,52 @@ func stopDaemon(layout paths.Layout) {
 	if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 	}
+}
+
+// netCheck connects to each address the way plugins do (rubiplugin.Dial, through the egress proxy if the
+// machine has one) and opens TLS, printing every step.
+func netCheck(targets []string) bool {
+	if len(targets) == 0 {
+		targets = []string{"imap.mail.me.com:993", "smtp.mail.me.com:587", "imap.gmail.com:993", "smtp.gmail.com:587"}
+	}
+	rubiplugin.Trace = func(format string, args ...any) { fmt.Printf("    "+format+"\n", args...) }
+	ok := true
+	for _, t := range targets {
+		fmt.Printf("%s\n", t)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		conn, err := rubiplugin.Dial(ctx, t)
+		if err != nil {
+			cancel()
+			fmt.Printf("  FAILED: %v\n", err)
+			ok = false
+			continue
+		}
+		host, port, _ := net.SplitHostPort(t)
+		if port == "587" || port == "25" { // STARTTLS: the server speaks first in plain text
+			_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+			line, err := bufio.NewReader(conn).ReadString('\n')
+			conn.Close()
+			cancel()
+			if err != nil {
+				fmt.Printf("  FAILED: no greeting from the server: %v\n", err)
+				ok = false
+				continue
+			}
+			fmt.Printf("  ok: %s\n", strings.TrimSpace(line))
+			continue
+		}
+		tc := tls.Client(conn, &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12})
+		err = tc.HandshakeContext(ctx)
+		cancel()
+		if err != nil {
+			conn.Close()
+			fmt.Printf("  FAILED: TLS: %v\n", err)
+			ok = false
+			continue
+		}
+		cert := tc.ConnectionState().PeerCertificates[0]
+		fmt.Printf("  ok: TLS with %s (issued by %s)\n", cert.Subject.CommonName, cert.Issuer.CommonName)
+		tc.Close()
+	}
+	return ok
 }

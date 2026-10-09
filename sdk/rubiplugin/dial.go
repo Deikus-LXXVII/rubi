@@ -30,15 +30,27 @@ func Dial(ctx context.Context, addr string) (net.Conn, error) {
 	if proxy == nil {
 		return d.DialContext(ctx, "tcp", addr)
 	}
+	trace("egress proxy %s (%s)", proxy.Host, proxy.Scheme)
 	conn, perr := dialVia(ctx, d, proxy, addr)
 	if perr == nil {
 		return conn, nil
 	}
+	trace("through the proxy: %v; trying directly", perr)
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("%w (through the proxy: %v)", err, perr)
+		// The proxy is the way out here: its error is the one that explains.
+		return nil, fmt.Errorf("through the egress proxy %s: %v (directly: %v)", proxy.Host, perr, err)
 	}
 	return conn, nil
+}
+
+// Trace, when set, is told each step of Dial (rubi net-check uses it to show what happens).
+var Trace func(format string, args ...any)
+
+func trace(format string, args ...any) {
+	if Trace != nil {
+		Trace(format, args...)
+	}
 }
 
 // EgressProxyEnv lists the environment variables that name an egress proxy, in order of preference. Rubi
@@ -87,7 +99,8 @@ func dialCONNECT(ctx context.Context, d *net.Dialer, proxy *url.URL, addr string
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
-	req := "CONNECT " + addr + " HTTP/1.1\r\nHost: " + addr + "\r\n"
+	// The headers curl sends: strict proxies close connections that lack them.
+	req := "CONNECT " + addr + " HTTP/1.1\r\nHost: " + addr + "\r\nUser-Agent: Rubi\r\nProxy-Connection: Keep-Alive\r\n"
 	if u := proxy.User; u != nil {
 		p, _ := u.Password()
 		req += "Proxy-Authorization: Basic " + basic(u.Username(), p) + "\r\n"
@@ -96,8 +109,14 @@ func dialCONNECT(ctx context.Context, d *net.Dialer, proxy *url.URL, addr string
 		conn.Close()
 		return nil, err
 	}
+	trace("CONNECT %s sent", addr)
 	br := bufio.NewReader(conn)
 	status, err := br.ReadString('\n')
+	trace("proxy answered %q (%v)", strings.TrimSpace(status), err)
+	if status == "" { // no answer at all: not a protocol question, the proxy turned the request down
+		conn.Close()
+		return nil, fmt.Errorf("the proxy closed the connection without answering CONNECT (%v)", err)
+	}
 	if !strings.HasPrefix(status, "HTTP/") { // a SOCKS proxy answers a few bytes and hangs up
 		conn.Close()
 		return nil, errNotHTTP
