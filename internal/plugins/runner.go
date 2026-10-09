@@ -179,7 +179,10 @@ func pluginEnv(id, home string) []string {
 	tmp := filepath.Join(home, "tmp")
 	_ = os.MkdirAll(tmp, 0o700)
 	env := []string{"HOME=" + home, "TMPDIR=" + tmp, "RUBI_PLUGIN_ID=" + id, pluginAPIEnv + "=" + strconv.Itoa(rubiplugin.API)}
-	for _, k := range []string{"PATH", "LANG", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"} {
+	// The machine's egress proxy, if any: some agent machines let only web traffic out directly, and
+	// plugins reach mail servers and the like through it (rubiplugin.Dial).
+	keys := append([]string{"PATH", "LANG", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"}, rubiplugin.EgressProxyEnv...)
+	for _, k := range keys {
 		if v, ok := os.LookupEnv(k); ok {
 			env = append(env, k+"="+v)
 		}
