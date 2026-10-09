@@ -335,6 +335,10 @@ type ApprovalInfo struct {
 		Question string           `json:"question"`
 		Preview  json.RawMessage  `json:"preview"`
 		Options  []approvalOption `json:"options"`
+		Items    []struct {
+			Key   string `json:"key"`
+			Label string `json:"label"`
+		} `json:"items"`
 	} `json:"approval"`
 	Challenges map[string]string `json:"challenges"`
 	Password   bool              `json:"password"`

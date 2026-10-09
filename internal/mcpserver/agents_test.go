@@ -752,3 +752,56 @@ func TestWatchAndLockNotices(t *testing.T) {
 		}
 	})
 }
+
+// TestGroupedAccess: a Bot asks for several accounts in one request; the user ticks some on one screen,
+// and the Bot gets one code for exactly those.
+func TestGroupedAccess(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	mainSrv, _ := hookServer(t)
+	mailSrv, mailCh := hookServer(t)
+	r.setWebhook(mainSrv.URL)
+	settings := r.panel("settings")
+	var res map[string]any
+	if err := settings.Call("agent.add", map[string]any{"name": "Mail", "url": mailSrv.URL, "key": "k"}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo() // ann
+	setup := r.panel("setup:demo")
+	if err := setup.Call("integration.setup", map[string]any{"id": "demo", "fields": map[string]string{"user": "bob"},
+		"secrets": map[string]string{"token": "good"}}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(setup, res)
+
+	out := r.ag.call("rubi_access", map[string]any{"agent": "Mail", "plugin": "demo", "accounts": []string{"ann", "bob"}, "task": "sort the inbox"})
+	if out["status"] != "awaiting_approval" {
+		t.Fatalf("grouped request: %v", out)
+	}
+	link := r.panelLink(out["approval_url"].(string))
+	info, err := link.ApprovalInfo(out["approval_id"].(string))
+	if err != nil || len(info.Approval.Items) != 2 {
+		t.Fatalf("one screen with both accounts: %+v %v", info, err)
+	}
+	// The user lets it use only ann's account.
+	var annKey string
+	for _, it := range info.Approval.Items {
+		if strings.Contains(it.Label, "ann") {
+			annKey = it.Key
+		}
+	}
+	if r2, err := link.ApproveWithPassword(out["approval_id"].(string), "items:"+annKey, pw); err != nil || r2["state"] != "executed" {
+		t.Fatalf("approve some: %v %v", r2, err)
+	}
+	code := strings.Trim(toString(waitHit(t, mailCh, "rubi.access.granted").data["access_code"]), `"`)
+	call := func(account string) map[string]any {
+		return r.ag.call("demo_who", map[string]any{"account": account, "rubi_agent": "Mail", "rubi_access": code})
+	}
+	r.waitFor("plugin", func() bool { return call("ann")["user"] == "ann" })
+	if out := call("bob"); out["status"] != "access_needed" {
+		t.Fatalf("an account the user left out was let in: %v", out)
+	}
+}

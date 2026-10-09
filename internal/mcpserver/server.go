@@ -63,7 +63,7 @@ Rubi links are the user's: never ask for them, never use them yourself; they go 
 
 ACCESS. When several Bots share Rubi, each plugin account (a mailbox, a Telegram account, a home) belongs
 to the Bots the user assigned to it. Before using one, call rubi_access(agent, plugin, account, task,
-minutes up to 120). The code arrives at your own webhook and starts a run of yours: tell the user the task
+minutes up to 120), asking for every account the task needs in one request. The code arrives at your own webhook and starts a run of yours: tell the user the task
 is underway, and do it in that run, passing rubi_agent and rubi_access to the plugin's tools. A plugin
 tool that answers "access_needed" means exactly this. Ask only for what the task needs.
 
@@ -255,11 +255,13 @@ type ackIn struct {
 }
 
 type accessIn struct {
-	Agent   string `json:"agent" jsonschema:"your Bot's name as connected to Rubi"`
-	Plugin  string `json:"plugin" jsonschema:"plugin id, e.g. icloud-mail"`
-	Account string `json:"account,omitempty" jsonschema:"which account (e.g. the mailbox address); default: the default one"`
-	Task    string `json:"task" jsonschema:"what you will do with it; shown to the user and kept in Rubi's log"`
-	Minutes int    `json:"minutes,omitempty" jsonschema:"how long you need it, 1 to 120 (default 60)"`
+	Agent     string                `json:"agent" jsonschema:"your Bot's name as connected to Rubi"`
+	Plugin    string                `json:"plugin,omitempty" jsonschema:"plugin id, e.g. icloud-mail"`
+	Account   string                `json:"account,omitempty" jsonschema:"one account of that plugin (e.g. the mailbox address); default: the default one"`
+	Accounts  []string              `json:"accounts,omitempty" jsonschema:"several accounts of that plugin, in one request"`
+	Resources []core.AccessResource `json:"resources,omitempty" jsonschema:"accounts of different plugins, in one request: [{plugin, account}]"`
+	Task      string                `json:"task" jsonschema:"what you will do with it; shown to the user and kept in Rubi's log"`
+	Minutes   int                   `json:"minutes,omitempty" jsonschema:"how long you need it, 1 to 120 (default 60)"`
 }
 
 type verifyIn struct {
@@ -520,12 +522,19 @@ func (s *Server) registerCoreTools() {
 		})
 
 	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_access",
-		Description: "When several Bots share Rubi: ask for access to one plugin account (e.g. one mailbox) for a task, up to 120 minutes. If the user assigned you to that account, the code comes at once; otherwise the user approves first. The code arrives at your own webhook and starts a run of yours that carries on with the task; there, pass rubi_agent and rubi_access to that plugin's tools."},
+		Description: "When several Bots share Rubi: ask for access to plugin accounts (e.g. mailboxes) for a task, up to 120 minutes. Ask for everything the task needs in ONE request (accounts, or resources for several plugins): accounts you are assigned to are granted at once, and the user approves the others on one screen, ticking the ones to allow. You get one code for all of them at your own webhook, which starts a run of yours that carries on with the task; there, pass rubi_agent and rubi_access to those plugins' tools."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in accessIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			res, err := s.core.RequestAccess(ctx, in.Agent, in.Plugin, in.Account, in.Task, in.Minutes)
+			want := append([]core.AccessResource{}, in.Resources...)
+			for _, a := range in.Accounts {
+				want = append(want, core.AccessResource{Plugin: in.Plugin, Account: a})
+			}
+			if len(want) == 0 && in.Plugin != "" {
+				want = append(want, core.AccessResource{Plugin: in.Plugin, Account: in.Account})
+			}
+			res, err := s.core.RequestAccess(ctx, in.Agent, want, in.Task, in.Minutes)
 			return nil, s.withHint(res), err
 		})
 

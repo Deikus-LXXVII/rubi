@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,12 +42,20 @@ const (
 type accessGrants struct {
 	mu     sync.Mutex
 	grants map[string]accessGrant // by code
-	issued map[string]time.Time   // agent|plugin|account -> last issue
+	issued map[string]time.Time   // agent|resources -> last issue
 }
 
+// accessGrant is one code: one Bot, the plugin accounts it may use (plugin|account), until expires.
 type accessGrant struct {
-	agent, plugin, account string
-	expires                time.Time
+	agent     string
+	resources map[string]bool
+	expires   time.Time
+}
+
+// AccessResource names one plugin account a Bot asks for ("" account: the plugin's default one).
+type AccessResource struct {
+	Plugin  string `json:"plugin"`
+	Account string `json:"account,omitempty"`
 }
 
 // AccessRequired reports whether plugin calls need access codes (two or more Bots connected).
@@ -107,14 +116,26 @@ func (c *Core) validAccess(agent, code, plugin, account string) bool {
 	}
 	for k, gr := range g.grants {
 		if subtle.ConstantTimeCompare([]byte(k), []byte(code)) == 1 {
-			return strings.EqualFold(gr.agent, agent) && gr.plugin == plugin && gr.account == account
+			return strings.EqualFold(gr.agent, agent) && gr.resources[plugin+"|"+account]
 		}
 	}
 	return false
 }
 
-// RequestAccess is a Bot asking to use one plugin account for a task, for a while.
-func (c *Core) RequestAccess(ctx context.Context, agent, plugin, account, task string, minutes int) (map[string]any, error) {
+// resolved is one requested plugin account, checked.
+type resolved struct {
+	plugin, name, account, label string
+	assigned                     bool
+}
+
+func (r resolved) key() string   { return r.plugin + "|" + r.account }
+func (r resolved) title() string { return r.name + " (" + r.label + ")" }
+
+// RequestAccess is a Bot asking to use plugin accounts for a task, for a while: one request for any number
+// of accounts, even of different plugins. Those it is assigned to are granted at once; for the others the
+// user gets one approval with every account listed, and ticks the ones to allow. Either way the Bot gets
+// one code, for everything granted, through its webhook.
+func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessResource, task string, minutes int) (map[string]any, error) {
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked")
 	}
@@ -132,13 +153,12 @@ func (c *Core) RequestAccess(ctx context.Context, agent, plugin, account, task s
 	if d > maxAccess {
 		return nil, errors.New("access lasts at most 120 minutes; ask again when you need more")
 	}
-	m, ok := c.Store.Get(plugin)
-	if !ok {
-		return nil, fmt.Errorf("plugin %q is not installed", plugin)
+	if len(want) == 0 || len(want) > 50 {
+		return nil, errors.New("name between 1 and 50 plugin accounts")
 	}
 	var hook *vault.Agent
-	var acctID, label string
-	assigned := false
+	var items []resolved
+	seen := map[string]bool{}
 	if err := c.Vault.View(func(dd *vault.Data) error {
 		a := findAgent(dd, agent)
 		if a == nil {
@@ -146,44 +166,99 @@ func (c *Core) RequestAccess(ctx context.Context, agent, plugin, account, task s
 		}
 		cp := *a
 		hook = &cp
-		acc, err := accountOf(dd, plugin, account)
-		if err != nil {
-			return err
-		}
-		acctID, label = acc.ID, acc.Label
-		if len(acc.Agents) == 0 {
-			assigned = a == defaultAgent(dd) // nobody assigned: the administrator
-		}
-		for _, n := range acc.Agents {
-			assigned = assigned || strings.EqualFold(n, a.Name)
+		for _, w := range want {
+			m, ok := c.Store.Get(w.Plugin)
+			if !ok {
+				return fmt.Errorf("plugin %q is not installed", w.Plugin)
+			}
+			acc, err := accountOf(dd, w.Plugin, w.Account)
+			if err != nil {
+				return fmt.Errorf("%s: %w", m.Name, err)
+			}
+			r := resolved{plugin: m.ID, name: m.Name, account: acc.ID, label: acc.Label}
+			if seen[r.key()] {
+				continue
+			}
+			seen[r.key()] = true
+			if len(acc.Agents) == 0 {
+				r.assigned = a == defaultAgent(dd) // nobody assigned: the administrator
+			}
+			for _, n := range acc.Agents {
+				r.assigned = r.assigned || strings.EqualFold(n, a.Name)
+			}
+			items = append(items, r)
 		}
 		return nil
 	}); err != nil {
 		return nil, err
 	}
-	what := m.Name + " (" + label + ")"
-	if assigned {
-		if err := c.issueAccess(*hook, m, acctID, label, task, d); err != nil {
+	var granted, ask []resolved
+	for _, r := range items {
+		if r.assigned {
+			granted = append(granted, r)
+		} else {
+			ask = append(ask, r)
+		}
+	}
+	if len(ask) == 0 {
+		if err := c.issueAccess(*hook, granted, task, d); err != nil {
 			return nil, err
 		}
 		return map[string]any{"status": "sent", "message": "The code is on its way to your webhook. The run it starts continues with your task; tell the user it's underway."}, nil
 	}
-	return c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: "rubi.access",
-		Summary: fmt.Sprintf("Let %s use %s for %s", hook.Name, what, d),
-		Preview: map[string]any{"bot": hook.Name, "plugin": m.Name, "account": label, "task": task, "for": d.String(),
-			"note": hook.Name + " isn't assigned to this account. Approving lets it in once, for this long."},
-		Options: []approvals.Option{{Key: "allow", Label: "Allow"}},
-		Execute: func(context.Context, string) (any, error) {
-			if err := c.issueAccess(*hook, m, acctID, label, task, d); err != nil {
+	preview := map[string]any{"bot": hook.Name, "task": task, "for": d.String(),
+		"note": hook.Name + " isn't assigned to these accounts. Tick the ones to let it use, this once, for this long."}
+	if len(granted) > 0 {
+		var names []string
+		for _, r := range granted {
+			names = append(names, r.title())
+		}
+		preview["already_allowed"] = strings.Join(names, ", ")
+	}
+	req := approvals.Request{Integration: "rubi", Kind: "rubi.access",
+		Preview: preview, Options: []approvals.Option{{Key: "allow", Label: "Allow"}},
+		Execute: func(_ context.Context, option string) (any, error) {
+			chosen := map[string]bool{}
+			for _, k := range strings.Split(strings.TrimPrefix(option, approvals.ItemsPrefix), ",") {
+				chosen[k] = true
+			}
+			all := append([]resolved{}, granted...)
+			for _, r := range ask {
+				if chosen[r.key()] || len(ask) == 1 {
+					all = append(all, r)
+				}
+			}
+			if err := c.issueAccess(*hook, all, task, d); err != nil {
 				return nil, err
 			}
-			return map[string]any{"granted": true, "for": d.String()}, nil
-		}})
+			return map[string]any{"granted": len(all), "for": d.String()}, nil
+		}}
+	if len(ask) == 1 {
+		req.Summary = fmt.Sprintf("Let %s use %s for %s", hook.Name, ask[0].title(), d)
+	} else {
+		req.Summary = fmt.Sprintf("Let %s use %d accounts for %s", hook.Name, len(ask), d)
+		for _, r := range ask {
+			req.Items = append(req.Items, approvals.Item{Key: r.key(), Label: r.title()})
+		}
+	}
+	return c.Approvals.Submit(ctx, req)
 }
 
-func (c *Core) issueAccess(hook vault.Agent, m plugins.Manifest, acct, label, task string, d time.Duration) error {
+// issueAccess makes one code for all the granted accounts and sends it to the Bot's webhook.
+func (c *Core) issueAccess(hook vault.Agent, granted []resolved, task string, d time.Duration) error {
+	if len(granted) == 0 {
+		return errors.New("nothing was allowed")
+	}
+	res := map[string]bool{}
+	var keys, names []string
+	for _, r := range granted {
+		res[r.key()] = true
+		keys = append(keys, r.key())
+		names = append(names, r.title())
+	}
+	sort.Strings(keys)
 	g := &c.access
-	key := strings.ToLower(hook.Name) + "|" + m.ID + "|" + acct
+	key := strings.ToLower(hook.Name) + "|" + strings.Join(keys, ",")
 	g.mu.Lock()
 	if g.grants == nil {
 		g.grants, g.issued = map[string]accessGrant{}, map[string]time.Time{}
@@ -195,15 +270,15 @@ func (c *Core) issueAccess(hook vault.Agent, m plugins.Manifest, acct, label, ta
 	b := make([]byte, 18)
 	_, _ = rand.Read(b)
 	code := base64.RawURLEncoding.EncodeToString(b)
-	g.grants[code] = accessGrant{agent: hook.Name, plugin: m.ID, account: acct, expires: time.Now().Add(d)}
+	g.grants[code] = accessGrant{agent: hook.Name, resources: res, expires: time.Now().Add(d)}
 	g.issued[key] = time.Now()
 	g.mu.Unlock()
-	c.Audit.Record("access.granted", audit.Fields{"agent": hook.Name, "plugin": m.ID, "account": label, "task": task, "minutes": int(d.Minutes())})
+	what := strings.Join(names, ", ")
+	c.Audit.Record("access.granted", audit.Fields{"agent": hook.Name, "accounts": what, "task": task, "minutes": int(d.Minutes())})
 	// Straight to the Bot's webhook; never kept in the event list.
 	ev := events.Event{ID: "evt_access_" + randomID()[:8], Integration: "rubi", Type: "access.granted", CreatedAt: time.Now().UTC(),
-		Data: map[string]any{"plugin": m.ID, "account": label, "task": task, "expires_at": time.Now().Add(d).UTC(),
-			"access_code": code,
-			"next_step":   "Continue your task: " + task + ". Pass rubi_agent=\"" + hook.Name + "\" and rubi_access=<data.access_code> to every " + m.Name + " tool. The code works only for you, for " + label + ", until expires_at; don't share it."}}
+		Data: map[string]any{"accounts": names, "task": task, "expires_at": time.Now().Add(d).UTC(), "access_code": code,
+			"next_step": "Continue your task: " + task + ". Pass rubi_agent=\"" + hook.Name + "\" and rubi_access=<data.access_code> to the tools of these accounts: " + what + ". The code works only for you and only for them, until expires_at; don't share it."}}
 	go c.deliverTo(hook, ev)
 	return nil
 }

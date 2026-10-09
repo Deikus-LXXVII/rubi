@@ -55,7 +55,7 @@ what to do.
 | `rubi_confirm(approval_id, user_response)` | Only for `chat`-level approvals: the exact plain-text label the user pressed |
 | `rubi_events(agent, code, include_acked=false)` / `rubi_ack(event_id, agent, code)` | Pull and acknowledge events (e.g. a reply arrived); `code` is the `agent_code` from the Bot's latest Rubi webhook |
 | `rubi_verify(agent)` | Have a code sent to that Bot's own webhook (a run of it can then read its events) |
-| `rubi_access(agent, plugin, account, task, minutes≤120)` | With several Bots: ask for access to one plugin account; assigned Bots get a code at once, others after the user approves. The code comes through the Bot's webhook; plugin tools then take `rubi_agent` and `rubi_access` |
+| `rubi_access(agent, plugin + account \| accounts, or resources, task, minutes≤120)` | With several Bots: ask for access to plugin accounts, all a task needs in one request. Assigned ones are granted at once; the user approves the others on one screen, ticking the ones to allow. One code for everything granted comes through the Bot's webhook; plugin tools then take `rubi_agent` and `rubi_access` |
 | `rubi_update()` | Ask the user (strong approval) to update to the latest signed release; Rubi restarts into it and stays unlocked |
 
 Nothing here can change security settings, webhook targets, plugins, or secrets on its own: those changes
