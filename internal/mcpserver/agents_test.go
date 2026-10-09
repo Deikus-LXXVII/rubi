@@ -810,7 +810,7 @@ func TestGroupedAccess(t *testing.T) {
 	}
 	// "Always" for bob: assigned for good.
 	out = r.ag.call("rubi_access", map[string]any{"agent": "Mail", "plugin": "demo", "account": "bob", "task": "bob too"})
-	if res := r.approve(out, "always"); res["kept"] != "always" {
+	if res := r.approve(out, "always"); res["kept"] != "always" || !strings.Contains(toString(res["receipt"]), "from now on") {
 		t.Fatalf("always: %v", res)
 	}
 	bobCode := strings.Trim(toString(waitHit(t, mailCh, "rubi.access.granted").data["access_code"]), `"`)

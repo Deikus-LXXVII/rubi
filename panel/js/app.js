@@ -1187,7 +1187,7 @@ function resultScreen(ctx, a, onDone, extra = {}) {
     : a.kind === "rubi.update" ? "Updating…" : a.kind === "rubi.plugin.install" ? "Installed"
     : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed"
     : a.kind === "rubi.plugin.rollback" ? "Rolled back" : a.kind?.endsWith(".private") ? "Shown to your agent"
-    : a.kind?.endsWith(".folder") || a.kind?.endsWith(".chat_access") ? "Allowed" : a.kind?.endsWith(".draft") ? "Draft saved" : "Done";
+    : a.kind?.endsWith(".folder") || a.kind?.endsWith(".chat_access") || a.kind === "rubi.access" ? "Allowed" : a.kind?.endsWith(".draft") ? "Draft saved" : "Done";
   const titles = {
     executed: executedTitle,
     denied: "Declined",
@@ -1198,7 +1198,8 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   const moods = { executed: "happy", failed: "concern" };
   const p = extra.preview;
   const to = isMail(p) ? splitAddresses(p.to)[0] : null;
-  const line = to ? `To ${to.name || to.email} · ${p.subject || "(no subject)"}` : a.summary;
+  // A result may say in its own words what was done (e.g. how long the user let a Bot in).
+  const line = to ? `To ${to.name || to.email} · ${p.subject || "(no subject)"}` : (a.state === "executed" && a.result?.receipt) || a.summary;
   const tracking = a.state === "executed" && ((a.result && a.result.tracking) || (extra.option && /reply/i.test(extra.option.label)));
   const sad = a.state === "denied" || a.state === "cancelled" || a.state === "expired";
   const ok = a.state === "executed";

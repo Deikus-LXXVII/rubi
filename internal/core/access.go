@@ -204,7 +204,7 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 		}
 		return map[string]any{"status": "sent", "message": "The code is on its way to your webhook. The run it starts continues with your task; tell the user it's underway."}, nil
 	}
-	preview := map[string]any{"bot": hook.Name, "task": task, "for": d.String(),
+	preview := map[string]any{"bot": hook.Name, "task": task, "asks_for": humanDuration(d),
 		"note": hook.Name + " isn't assigned to these accounts. Choose how long to let it in, and (when there are several) which accounts."}
 	if len(granted) > 0 {
 		var names []string
@@ -218,7 +218,7 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 	req := approvals.Request{Integration: "rubi", Kind: "rubi.access", Preview: preview,
 		Question: "How long may " + hook.Name + " use them?",
 		Options: []approvals.Option{
-			{Key: "allow", Label: "Allow", Meaning: "for this task, " + d.String()},
+			{Key: "allow", Label: "Allow for this task", Meaning: humanDuration(d)},
 			{Key: "day", Label: "Allow for a day", Meaning: "it won't need to ask again until tomorrow"},
 			{Key: "week", Label: "Allow for a week"},
 			{Key: "always", Label: "Always allow", Meaning: "assigns it to these accounts; you can undo it in Settings"},
@@ -243,12 +243,22 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 			if err := c.issueAccess(*hook, all, task, d); err != nil {
 				return nil, err
 			}
-			return map[string]any{"granted": len(all), "for": d.String(), "kept": key}, nil
+			// What the user allowed, in their words, for the receipt (not the duration the Bot asked for).
+			var names []string
+			for _, r := range allowed {
+				names = append(names, r.title())
+			}
+			how := map[string]string{"day": "for a day", "week": "for a week", "always": "from now on"}[key]
+			if how == "" {
+				how = "for " + humanDuration(d)
+			}
+			return map[string]any{"granted": len(all), "for": d.String(), "kept": key,
+				"receipt": hook.Name + " may use " + strings.Join(names, ", ") + " " + how + "."}, nil
 		}}
 	if len(ask) == 1 {
-		req.Summary = fmt.Sprintf("Let %s use %s for %s", hook.Name, ask[0].title(), d)
+		req.Summary = fmt.Sprintf("Let %s use %s", hook.Name, ask[0].title())
 	} else {
-		req.Summary = fmt.Sprintf("Let %s use %d accounts for %s", hook.Name, len(ask), d)
+		req.Summary = fmt.Sprintf("Let %s use %d accounts", hook.Name, len(ask))
 		for _, r := range ask {
 			req.Items = append(req.Items, approvals.Item{Key: r.key(), Label: r.title()})
 		}
@@ -427,4 +437,21 @@ func (c *Core) PluginAccounts(plugin string) []string {
 		return nil
 	})
 	return out
+}
+
+// humanDuration says a duration the way a person would ("2 hours", "45 minutes").
+func humanDuration(d time.Duration) string {
+	m := int(d.Round(time.Minute).Minutes())
+	switch {
+	case m%60 == 0 && m >= 60:
+		if m == 60 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", m/60)
+	case m > 60:
+		return fmt.Sprintf("%d h %d min", m/60, m%60)
+	case m == 1:
+		return "1 minute"
+	}
+	return fmt.Sprintf("%d minutes", m)
 }
