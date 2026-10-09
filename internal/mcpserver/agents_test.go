@@ -793,7 +793,7 @@ func TestGroupedAccess(t *testing.T) {
 			annKey = it.Key
 		}
 	}
-	if r2, err := link.ApproveWithPassword(out["approval_id"].(string), "items:"+annKey, pw); err != nil || r2["state"] != "executed" {
+	if r2, err := link.ApproveWithPassword(out["approval_id"].(string), "day|items:"+annKey, pw); err != nil || r2["state"] != "executed" {
 		t.Fatalf("approve some: %v %v", r2, err)
 	}
 	code := strings.Trim(toString(waitHit(t, mailCh, "rubi.access.granted").data["access_code"]), `"`)
@@ -803,5 +803,27 @@ func TestGroupedAccess(t *testing.T) {
 	r.waitFor("plugin", func() bool { return call("ann")["user"] == "ann" })
 	if out := call("bob"); out["status"] != "access_needed" {
 		t.Fatalf("an account the user left out was let in: %v", out)
+	}
+	// "For a day": asking again for ann needs no approval (turned away only because a code just went out).
+	if out := r.ag.call("rubi_access", map[string]any{"agent": "Mail", "plugin": "demo", "account": "ann", "task": "again"}); !strings.Contains(toString(out["tool_error"]), "a moment ago") {
+		t.Fatalf("a day's permission didn't hold: %v", out)
+	}
+	// "Always" for bob: assigned for good.
+	out = r.ag.call("rubi_access", map[string]any{"agent": "Mail", "plugin": "demo", "account": "bob", "task": "bob too"})
+	if res := r.approve(out, "always"); res["kept"] != "always" {
+		t.Fatalf("always: %v", res)
+	}
+	bobCode := strings.Trim(toString(waitHit(t, mailCh, "rubi.access.granted").data["access_code"]), `"`)
+	var store map[string]any
+	if err := settings.Call("store.list", nil, &store); err != nil || !strings.Contains(toString(store), `"agents":["Mail"]`) {
+		t.Fatalf("not assigned for good: %v %v", toString(store), err)
+	}
+	// The user takes bob's mailbox back in settings: the code stops working at once.
+	if err := settings.Call("account.agents", map[string]any{"id": "demo", "account": "bob", "agents": []string{}}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	if out := r.ag.call("demo_who", map[string]any{"account": "bob", "rubi_agent": "Mail", "rubi_access": bobCode}); out["status"] != "access_needed" {
+		t.Fatalf("a revoked code still works: %v", out)
 	}
 }

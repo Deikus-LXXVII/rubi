@@ -1124,3 +1124,4 @@ button.copy { box-shadow: none; }
 .note-pin .icon { vertical-align: -1px; color: var(--accent); }
 .note-body { min-height: 220px; font: inherit; line-height: 1.5; }
 .note-form { display: flex; flex-direction: column; gap: 12px; }
+.check.sub { margin-left: 30px; }

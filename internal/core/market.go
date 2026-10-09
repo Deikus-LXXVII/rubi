@@ -69,7 +69,7 @@ func (c *Core) StoreList(ctx context.Context) (map[string]any, error) {
 		}
 		for id, i := range d.Integrations {
 			for _, a := range i.Accounts {
-				connected[id] = append(connected[id], map[string]any{"id": a.ID, "label": a.Label, "default": a == i.Find(""), "agents": a.Agents})
+				connected[id] = append(connected[id], map[string]any{"id": a.ID, "label": a.Label, "default": a == i.Find(""), "agents": a.Agents, "temp_agents": a.TempAgents})
 			}
 		}
 		return nil

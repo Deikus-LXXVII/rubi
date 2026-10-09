@@ -195,6 +195,23 @@ type Account struct {
 	// Agents are the Bots the user assigned to this account (none: the administrator). With several Bots,
 	// they get access codes when they ask; others need the user's approval (core/access.go).
 	Agents []string `json:"agents,omitempty"`
+	// TempAgents are Bots the user let in for a while (until the time given), from an access request.
+	TempAgents map[string]time.Time `json:"temp_agents,omitempty"`
+}
+
+// AgentAllowed reports whether a Bot is assigned to this account, for good or (still) for a while.
+func (a *Account) AgentAllowed(name string, now time.Time) bool {
+	for _, n := range a.Agents {
+		if strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	for n, until := range a.TempAgents {
+		if strings.EqualFold(n, name) && now.Before(until) {
+			return true
+		}
+	}
+	return false
 }
 
 // Find returns the account named by ref (id or label, any case), or the default account for "".

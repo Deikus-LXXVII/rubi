@@ -1048,6 +1048,8 @@ async function approveScreen(ctx, id, opts = {}) {
   // Choosing among options: a switch for the common two-option case with a question ("Notify me when they
   // reply?"), otherwise a list. The chosen option is what the user's passkey signs.
   let chosen = a.options[0].key;
+  let optKey = a.options[0].key; // the chosen option; in a batch with several options it goes with the items
+  let syncItems = null;
   let choiceUI = null;
   if (a.options.length === 2 && a.question) {
     const sw = h("input", { type: "checkbox", role: "switch", class: "switch", onchange: () => {
@@ -1069,7 +1071,7 @@ async function approveScreen(ctx, id, opts = {}) {
     choiceUI = h("label", { class: "switch-row" }, h("span", {}, label), sw);
   } else if (a.options.length > 1) {
     choiceUI = h("div", { class: "choices", role: "radiogroup" }, a.options.map((o, i) => {
-      const r = h("input", { type: "radio", name: "opt", value: o.key, checked: i === 0, onchange: () => { chosen = o.key; } });
+      const r = h("input", { type: "radio", name: "opt", value: o.key, checked: i === 0, onchange: () => { chosen = optKey = o.key; syncItems?.(); } });
       return h("label", { class: "choice" }, r, h("span", {}, o.label, o.meaning ? h("small", {}, o.meaning) : null));
     }));
   }
@@ -1080,7 +1082,7 @@ async function approveScreen(ctx, id, opts = {}) {
   if ((a.items || []).length) {
     const sync = () => {
       const keys = itemBoxes.filter((x) => x.b.checked).map((x) => x.key);
-      chosen = "items:" + keys.join(",");
+      chosen = (a.options.length > 1 ? optKey + "|" : "") + "items:" + keys.join(",");
       primary.disabled = keys.length === 0;
       count.textContent = `${keys.length} of ${itemBoxes.length} selected`;
     };
@@ -1091,6 +1093,7 @@ async function approveScreen(ctx, id, opts = {}) {
       return h("label", { class: "batch-item" }, b, h("div", {}, h("strong", {}, it.label),
         it.preview && typeof it.preview === "object" ? fieldList(it.preview) : null));
     }));
+    syncItems = sync;
     queueMicrotask(sync);
   }
 
@@ -1133,7 +1136,7 @@ async function approveScreen(ctx, id, opts = {}) {
       primary.replaceChildren(icon("check", 22), "Done");
       await new Promise((r) => setTimeout(r, reducedMotion() ? 0 : 560));
     }
-    resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === chosen), notified, doneLabel: opts.doneLabel });
+    resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === optKey), notified, doneLabel: opts.doneLabel });
   }).catch((e) => { showError(err, e); setPrimary(); });
 
   const decline = h("button", { class: "link decline", type: "button", onclick: (e) => busy(e.target, async () =>
@@ -1332,14 +1335,27 @@ async function setupScreen(ctx, id, back) {
 function accountBotsScreen(ctx, plugin, acct, agents, back) {
   const err = errorBox();
   const chosen = new Set(acct.agents || []);
+  const temp = {};
+  for (const [n, until] of Object.entries(acct.temp_agents || {})) if (new Date(until) > new Date()) temp[n] = until;
+  const keep = new Set(Object.keys(temp));
   const rows = agents.map((a) => {
     const b = h("input", { type: "checkbox", checked: chosen.has(a.name) });
     b.addEventListener("change", () => (b.checked ? chosen.add(a.name) : chosen.delete(a.name)));
-    return h("label", { class: "check" }, b, h("span", {}, a.name, a.default ? h("span", { class: "tag" }, "Administrator") : null));
+    const t = temp[a.name];
+    let tempRow = null;
+    if (t) {
+      const k = h("input", { type: "checkbox", checked: true });
+      k.addEventListener("change", () => (k.checked ? keep.add(a.name) : keep.delete(a.name)));
+      tempRow = h("label", { class: "check sub" }, k, h("span", {}, `Allowed until ${new Date(t).toLocaleString()}`,
+        h("small", { class: "muted" }, "Untick to end it now; tick the box above to allow it for good.")));
+    }
+    return h("div", {}, h("label", { class: "check" }, b, h("span", {}, a.name, a.default ? h("span", { class: "tag" }, "Administrator") : null,
+      h("small", { class: "muted" }, "Always allowed"))), tempRow);
   });
   const save = h("button", { class: "primary", onclick: async (e) => {
     await busy(e.currentTarget, async () => confirmChange(ctx, await ctx.client.call("account.agents",
-      { id: plugin.id, account: acct.id, agents: agents.map((a) => a.name).filter((n) => chosen.has(n)) }), back)).catch((x) => showError(err, x));
+      { id: plugin.id, account: acct.id, agents: agents.map((a) => a.name).filter((n) => chosen.has(n)),
+        temp: [...keep].filter((n) => !chosen.has(n)) }), back)).catch((x) => showError(err, x));
   } }, "Save");
   screen(
     header(ctx.hello),
@@ -1549,7 +1565,7 @@ async function settingsScreen(ctx, tab) {
         h("span", { class: "avatar-dot small" }, (a.label || a.id || "?").charAt(0).toUpperCase()),
         h("span", { class: "acct-name" }, a.label || a.id, a.default && accts.length > 1 ? h("span", { class: "tag" }, "Default") : null,
           (hook.agents || []).length > 1 ? h("span", { class: "muted small acct-bots" }, icon("bot", 12), " ",
-            (a.agents || []).length ? a.agents.join(", ") : "Administrator") : null),
+            [...(a.agents || []), ...Object.entries(a.temp_agents || {}).filter(([, u]) => new Date(u) > new Date()).map(([n, u]) => `${n} (until ${new Date(u).toLocaleDateString()})`)].join(", ") || "Administrator") : null),
         p.has_config ? h("button", { class: "icon-btn", title: "Settings", "aria-label": `Settings for ${a.label || a.id}`,
           onclick: () => pluginConfigScreen(ctx, p.id, { account: a.id }) }, icon("gear", 18)) : null,
         menu(`More for ${a.label || a.id}`, [

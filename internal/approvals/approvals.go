@@ -96,6 +96,20 @@ func (r *Request) normalize(option string) (string, error) {
 		}
 		return option, nil
 	}
+	// A batch with several options carries both: "<option>|items:a,b" (e.g. how long, and for which).
+	key := ""
+	if k, rest, ok := strings.Cut(option, "|"+ItemsPrefix); ok && len(r.Options) > 1 {
+		valid := false
+		for _, o := range r.Options {
+			valid = valid || o.Key == k
+		}
+		if !valid {
+			return "", fmt.Errorf("unknown option %q", k)
+		}
+		key, option, isOption = k, ItemsPrefix+rest, false
+	} else if isOption && len(r.Options) > 1 {
+		key = option
+	}
 	chosen := map[string]bool{}
 	if isOption {
 		for _, it := range r.Items {
@@ -121,7 +135,25 @@ func (r *Request) normalize(option string) (string, error) {
 	if len(keys) == 0 {
 		return "", errors.New("choose at least one item")
 	}
+	if key != "" {
+		return key + "|" + ItemsPrefix + strings.Join(keys, ","), nil
+	}
 	return ItemsPrefix + strings.Join(keys, ","), nil
+}
+
+// SplitOption takes apart a normalized option: the option key ("" for a single-option batch) and the
+// chosen items (nil when the request has none).
+func SplitOption(option string) (key string, items []string) {
+	if k, rest, ok := strings.Cut(option, "|"+ItemsPrefix); ok {
+		key, option = k, ItemsPrefix+rest
+	}
+	if rest, ok := strings.CutPrefix(option, ItemsPrefix); ok {
+		return key, strings.Split(rest, ",")
+	}
+	if key == "" {
+		key = option
+	}
+	return key, nil
 }
 
 // CheckOption validates an option for a pending approval (the panel asks before signing a batch subset).

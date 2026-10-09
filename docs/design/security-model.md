@@ -210,7 +210,10 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   account, a home) has the Bots the user assigned to it (none: the administrator). A Bot asks for access
   with its name, task and duration (at most 2 hours); an assigned Bot gets a code at once, any other only
   after the user approves. One request can name many accounts, of several plugins: the user approves
-  them on one screen, ticking which to allow, and the Bot gets one code for exactly those. The code goes
+  them on one screen, ticking which to allow, and the Bot gets one code for exactly those. The user also
+  picks how long: this task only, a day, a week, or always (which assigns the Bot to those accounts);
+  settings show and end these permissions, and taking an account away ends the Bot's codes for it at once.
+  The code goes
   through the Bot's own webhook and is bound to that Bot and those accounts; every plugin call carries it and is logged with the Bot's name. With a single Bot, plugins
   work without codes. Adding or removing a
   webhook always needs the user's approval.

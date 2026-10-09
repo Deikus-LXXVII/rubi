@@ -363,7 +363,7 @@ func (c *Client) ApproveWithPassword(id, option, password string) (map[string]an
 		return nil, err
 	}
 	chB64 := info.Challenges[option]
-	if chB64 == "" && strings.HasPrefix(option, "items:") { // a chosen subset of a batch
+	if chB64 == "" && strings.Contains(option, "items:") { // a chosen subset of a batch (maybe with an option)
 		var r struct {
 			Challenge string `json:"challenge"`
 		}

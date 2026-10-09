@@ -183,9 +183,7 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 			if len(acc.Agents) == 0 {
 				r.assigned = a == defaultAgent(dd) // nobody assigned: the administrator
 			}
-			for _, n := range acc.Agents {
-				r.assigned = r.assigned || strings.EqualFold(n, a.Name)
-			}
+			r.assigned = r.assigned || acc.AgentAllowed(a.Name, time.Now())
 			items = append(items, r)
 		}
 		return nil
@@ -207,7 +205,7 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 		return map[string]any{"status": "sent", "message": "The code is on its way to your webhook. The run it starts continues with your task; tell the user it's underway."}, nil
 	}
 	preview := map[string]any{"bot": hook.Name, "task": task, "for": d.String(),
-		"note": hook.Name + " isn't assigned to these accounts. Tick the ones to let it use, this once, for this long."}
+		"note": hook.Name + " isn't assigned to these accounts. Choose how long to let it in, and (when there are several) which accounts."}
 	if len(granted) > 0 {
 		var names []string
 		for _, r := range granted {
@@ -215,23 +213,37 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 		}
 		preview["already_allowed"] = strings.Join(names, ", ")
 	}
-	req := approvals.Request{Integration: "rubi", Kind: "rubi.access",
-		Preview: preview, Options: []approvals.Option{{Key: "allow", Label: "Allow"}},
+	// The user decides how long: this task only, a day, a week, or for good. Longer than the task makes
+	// the Bot assigned to those accounts for that long (later requests are granted without asking).
+	req := approvals.Request{Integration: "rubi", Kind: "rubi.access", Preview: preview,
+		Question: "How long may " + hook.Name + " use them?",
+		Options: []approvals.Option{
+			{Key: "allow", Label: "Allow", Meaning: "for this task, " + d.String()},
+			{Key: "day", Label: "Allow for a day", Meaning: "it won't need to ask again until tomorrow"},
+			{Key: "week", Label: "Allow for a week"},
+			{Key: "always", Label: "Always allow", Meaning: "assigns it to these accounts; you can undo it in Settings"},
+		},
 		Execute: func(_ context.Context, option string) (any, error) {
+			key, items := approvals.SplitOption(option)
 			chosen := map[string]bool{}
-			for _, k := range strings.Split(strings.TrimPrefix(option, approvals.ItemsPrefix), ",") {
+			for _, k := range items {
 				chosen[k] = true
 			}
 			all := append([]resolved{}, granted...)
+			var allowed []resolved
 			for _, r := range ask {
-				if chosen[r.key()] || len(ask) == 1 {
+				if chosen[r.key()] || items == nil {
 					all = append(all, r)
+					allowed = append(allowed, r)
 				}
+			}
+			if err := c.rememberAccess(hook.Name, allowed, key); err != nil {
+				return nil, err
 			}
 			if err := c.issueAccess(*hook, all, task, d); err != nil {
 				return nil, err
 			}
-			return map[string]any{"granted": len(all), "for": d.String()}, nil
+			return map[string]any{"granted": len(all), "for": d.String(), "kept": key}, nil
 		}}
 	if len(ask) == 1 {
 		req.Summary = fmt.Sprintf("Let %s use %s for %s", hook.Name, ask[0].title(), d)
@@ -242,6 +254,61 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 		}
 	}
 	return c.Approvals.Submit(ctx, req)
+}
+
+// rememberAccess keeps a longer permission: "day" and "week" assign the Bot to the accounts for that
+// long, "always" for good; "allow" keeps nothing beyond this task's code.
+func (c *Core) rememberAccess(agent string, accounts []resolved, how string) error {
+	var until time.Time
+	switch how {
+	case "day":
+		until = time.Now().Add(24 * time.Hour)
+	case "week":
+		until = time.Now().Add(7 * 24 * time.Hour)
+	case "always":
+	default:
+		return nil
+	}
+	err := c.Vault.Update(func(d *vault.Data) error {
+		for _, r := range accounts {
+			acc, err := accountOf(d, r.plugin, r.account)
+			if err != nil {
+				continue
+			}
+			if how == "always" {
+				found := false
+				for _, n := range acc.Agents {
+					found = found || strings.EqualFold(n, agent)
+				}
+				if !found {
+					acc.Agents = append(acc.Agents, agent)
+				}
+				delete(acc.TempAgents, agent)
+				continue
+			}
+			if acc.TempAgents == nil {
+				acc.TempAgents = map[string]time.Time{}
+			}
+			acc.TempAgents[agent] = until.UTC()
+		}
+		return nil
+	})
+	if err == nil {
+		c.Audit.Record("access.kept", audit.Fields{"agent": agent, "how": how, "accounts": len(accounts)})
+	}
+	return err
+}
+
+// revokeAccess ends the codes a Bot holds for one account (when the user takes the account away from it).
+func (c *Core) revokeAccess(agent, plugin, account string) {
+	g := &c.access
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for code, gr := range g.grants {
+		if strings.EqualFold(gr.agent, agent) && gr.resources[plugin+"|"+account] {
+			delete(g.grants, code)
+		}
+	}
 }
 
 // issueAccess makes one code for all the granted accounts and sends it to the Bot's webhook.
@@ -283,22 +350,27 @@ func (c *Core) issueAccess(hook vault.Agent, granted []resolved, task string, d 
 	return nil
 }
 
-// SetAccountAgents asks the user to choose which Bots may use one plugin account.
-func (c *Core) SetAccountAgents(ctx context.Context, plugin, account string, agents []string) (string, error) {
-	var label string
+// SetAccountAgents asks the user to choose which Bots may use one plugin account: agents for good, and of
+// those let in for a while, the ones to keep (keepTemp). Anyone dropped loses its codes for the account.
+func (c *Core) SetAccountAgents(ctx context.Context, plugin, account string, agents, keepTemp []string) (string, error) {
+	var label, acctID string
 	var clean []string
+	keep := map[string]bool{}
 	if err := c.Vault.View(func(d *vault.Data) error {
 		a, err := accountOf(d, plugin, account)
 		if err != nil {
 			return err
 		}
-		label = a.Label
+		label, acctID = a.Label, a.ID
 		for _, n := range agents {
 			x := findAgent(d, n)
 			if x == nil {
 				return fmt.Errorf("no agent %q", n)
 			}
 			clean = append(clean, x.Name)
+		}
+		for _, n := range keepTemp {
+			keep[strings.ToLower(n)] = true
 		}
 		return nil
 	}); err != nil {
@@ -309,6 +381,7 @@ func (c *Core) SetAccountAgents(ctx context.Context, plugin, account string, age
 	if who == "" {
 		who = "the administrator only"
 	}
+	var dropped []string
 	return c.RequestChange(ctx, "Bots for "+m.Name+" ("+label+"): "+who, map[string]any{"plugin": m.Name, "account": label, "bots": who,
 		"effect": "These Bots get access codes for this account when they ask; any other Bot needs your approval each time."},
 		func(d *vault.Data) error {
@@ -316,9 +389,30 @@ func (c *Core) SetAccountAgents(ctx context.Context, plugin, account string, age
 			if err != nil {
 				return err
 			}
+			now := map[string]bool{}
+			for _, n := range clean {
+				now[strings.ToLower(n)] = true
+			}
+			for _, n := range a.Agents {
+				if !now[strings.ToLower(n)] {
+					dropped = append(dropped, n)
+				}
+			}
+			for n := range a.TempAgents {
+				if !keep[strings.ToLower(n)] && !now[strings.ToLower(n)] {
+					delete(a.TempAgents, n)
+					dropped = append(dropped, n)
+				} else if now[strings.ToLower(n)] {
+					delete(a.TempAgents, n) // now for good
+				}
+			}
 			a.Agents = clean
 			return nil
-		}, nil)
+		}, func() {
+			for _, n := range dropped {
+				c.revokeAccess(n, plugin, acctID)
+			}
+		})
 }
 
 // PluginAccounts lists the ids of a plugin's connected accounts.

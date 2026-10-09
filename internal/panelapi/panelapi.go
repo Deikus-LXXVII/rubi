@@ -639,6 +639,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Name    string            `json:"name"`
 		Sources []string          `json:"sources"`
 		Agents  []string          `json:"agents"`
+		Temp    []string          `json:"temp"`
 		Gateway bool              `json:"gateway"`
 		Home    bool              `json:"home"`
 		Values  map[string]any    `json:"values"`
@@ -750,7 +751,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	case "agent.default":
 		approvalID, err = s.core.SetDefaultAgent(ctx, args.Name)
 	case "account.agents":
-		approvalID, err = s.core.SetAccountAgents(ctx, args.ID, args.Account, args.Agents)
+		approvalID, err = s.core.SetAccountAgents(ctx, args.ID, args.Account, args.Agents, args.Temp)
 	case "plugin.panel":
 		// A plugin's own page (e.g. notes): what it shows can be private, so only a settings link opens it.
 		if purpose != "settings" {
