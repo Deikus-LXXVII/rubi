@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -188,7 +189,7 @@ func (c *Core) CallTool(ctx context.Context, name string, args json.RawMessage) 
 		}
 	}
 	if !found {
-		return nil, fmt.Errorf("unknown tool %q; see rubi_store for installed plugins", name)
+		return nil, fmt.Errorf("unknown tool %q%s; see rubi_store for installed plugins", name, c.similarTools(name))
 	}
 	if st := c.State(); st != Unlocked {
 		purpose := "unlock"
@@ -614,4 +615,30 @@ func (c *Core) PanelCall(ctx context.Context, id, op string, args json.RawMessag
 	var out any
 	_ = json.Unmarshal(raw, &out)
 	return out, nil
+}
+
+// similarTools names installed tools close to an unknown name (a missing plugin prefix, another plugin's
+// spelling), or says when the plugin with that tool isn't installed or is out of date.
+func (c *Core) similarTools(name string) string {
+	want := strings.ToLower(strings.TrimSpace(name))
+	if want == "" {
+		return ""
+	}
+	var near []string
+	for _, pm := range c.Store.Installed() {
+		for _, t := range pm.Tools {
+			n := strings.ToLower(t.Name)
+			if strings.HasSuffix(n, "_"+want) || strings.Contains(n, want) || strings.Contains(want, n) {
+				near = append(near, t.Name)
+			}
+		}
+	}
+	sort.Strings(near)
+	if len(near) > 8 {
+		near = near[:8]
+	}
+	if len(near) == 0 {
+		return " (no installed plugin has it; it may need an update: rubi_updates)"
+	}
+	return " (did you mean " + strings.Join(near, ", ") + "?)"
 }

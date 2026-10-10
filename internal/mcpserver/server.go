@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -42,9 +43,10 @@ explain in one sentence. Retry the user's request after they say it's done. If a
 PLUGINS. Integrations (like iCloud Mail) are plugins from the Rubi store. rubi_store lists them. To add
 one, call rubi_plugin_install with its id and send the user the approval link; after they approve, send
 the setup link if the result says so. Plugin updates are separate from Rubi updates: on a
-"plugin.update_available" event, ask the user and call rubi_plugin_update. When several plugins have
-updates, update them together (rubi_plugin_update with ids, or all): the user approves them on one screen. If a newly installed plugin's
-tools don't show up in your tool list, call them through rubi_call.
+"plugin.update_available" event (it lists every plugin with a new version), ask the user and call
+rubi_plugin_update ONCE with all their ids (or all): the user approves them on one screen. If a newly installed plugin's
+tools, or Rubi's own tools (rubi_access after a Rubi update), don't show up in your tool list, call them
+through rubi_call; it reaches every tool Rubi has.
 
 APPROVALS. Some tools return status "awaiting_approval" instead of acting.
 - level "strong": send the user the approval_url with one sentence about what is waiting. They review and
@@ -95,6 +97,31 @@ type Server struct {
 
 	mu    sync.Mutex
 	tools map[string]string // plugin tool name -> definition currently registered
+
+	// own are Rubi's own tools by name, so rubi_call reaches them too: some agents keep the tool list
+	// they first saw and can't call tools added since (rubi_access after an update, for example).
+	own map[string]func(ctx context.Context, args json.RawMessage) (any, error)
+}
+
+// addCore registers one of Rubi's own tools, also callable through rubi_call.
+func addCore[In any](s *Server, t *mcp.Tool, h func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, out, error)) {
+	mcp.AddTool(s.mcp, t, h)
+	if s.own == nil {
+		s.own = map[string]func(context.Context, json.RawMessage) (any, error){}
+	}
+	s.own[t.Name] = func(ctx context.Context, args json.RawMessage) (any, error) {
+		var in In
+		if len(args) > 0 && string(args) != "null" {
+			if err := json.Unmarshal(args, &in); err != nil {
+				return nil, fmt.Errorf("arguments for %s: %w", t.Name, err)
+			}
+		}
+		r, o, err := h(ctx, &mcp.CallToolRequest{}, in) // handlers don't read the request
+		if r != nil {
+			return nil, fmt.Errorf("%s can't be called through rubi_call", t.Name)
+		}
+		return o, err
+	}
 }
 
 func New(c *core.Core) *Server {
@@ -121,7 +148,7 @@ type devApprovalIn struct {
 // registerDevTools adds tools for exercising the panel without a real integration. Never enabled unless
 // RUBI_DEV=1 is set for the daemon.
 func (s *Server) registerDevTools() {
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_dev_request_approval",
+	addCore(s, &mcp.Tool{Name: "rubi_dev_request_approval",
 		Description: "DEVELOPMENT ONLY: create a fake 'send email' approval that does nothing when approved."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in devApprovalIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -308,13 +335,13 @@ type callIn struct {
 }
 
 func (s *Server) registerCoreTools() {
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_status",
+	addCore(s, &mcp.Tool{Name: "rubi_status",
 		Description: "Rubi's state (unpaired / locked / unlocked), installed plugins, and the link the user needs next, if any."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
 			return nil, s.status(), nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_link",
+	addCore(s, &mcp.Tool{Name: "rubi_link",
 		Description: "A fresh Rubi panel link for the user: pair, unlock, settings (includes the store), setup:<plugin id>, or agent:<your Bot name> (connects your routine webhook so Rubi can wake you; the user opens it in the Grok Bot desktop app)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in linkIn) (*mcp.CallToolResult, out, error) {
 			u, err := s.core.Link(in.Purpose)
@@ -324,14 +351,14 @@ func (s *Server) registerCoreTools() {
 			return nil, out{"url": u, "expires_note": "links contain a one-time context; ask for a new one if it fails"}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_lock",
+	addCore(s, &mcp.Tool{Name: "rubi_lock",
 		Description: "Lock Rubi now: wipes keys from memory and cancels pending approvals. The user unlocks it again in the panel."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
 			s.core.LockWith("locked by a Bot (rubi_lock)")
 			return nil, out{"state": s.core.State()}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_store",
+	addCore(s, &mcp.Tool{Name: "rubi_store",
 		Description: "Plugins in the Rubi store (reviewed by Rubi-Project) and installed plugins: version, whether connected, available updates."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -341,7 +368,7 @@ func (s *Server) registerCoreTools() {
 			return nil, res, err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_install",
+	addCore(s, &mcp.Tool{Name: "rubi_plugin_install",
 		Description: "Install a plugin: pass its store id (e.g. \"icloud-mail\"), or a source URL (https://github.com/owner/repo) to install one from outside the store. Rubi verifies the signed package, then the user approves in the panel; send them the approval link."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginRefIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -351,7 +378,7 @@ func (s *Server) registerCoreTools() {
 			return nil, s.withHint(res), err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_update",
+	addCore(s, &mcp.Tool{Name: "rubi_plugin_update",
 		Description: "Update installed plugins to their newest verified releases: one (id), several (ids) or all that have an update (all). Several plugins go to the user as ONE approval, where they see each plugin's permissions and can leave any out; prefer this over one request per plugin. Rubi itself keeps running."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginUpdateIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -372,7 +399,7 @@ func (s *Server) registerCoreTools() {
 			return nil, s.withHint(res), err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_updates",
+	addCore(s, &mcp.Tool{Name: "rubi_updates",
 		Description: "Rubi and installed plugins: current version, available update, and whether you're told about new versions (notify)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -382,7 +409,7 @@ func (s *Server) registerCoreTools() {
 				"how": "Update Rubi with rubi_update, a plugin with rubi_plugin_update(id); the user approves."}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_update_notifications",
+	addCore(s, &mcp.Tool{Name: "rubi_update_notifications",
 		Description: "Turn update notifications on or off for Rubi (id \"rubi\") or a plugin. Off: you're not woken when it gets an update; it waits on the panel's Updates page and in rubi_updates. Change it when the user asks."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in notifyUpdatesIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -394,7 +421,7 @@ func (s *Server) registerCoreTools() {
 			return nil, out{"id": in.ID, "notify": in.Notify}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_rollback",
+	addCore(s, &mcp.Tool{Name: "rubi_plugin_rollback",
 		Description: "Switch a plugin back to the version it replaced (e.g. if an update broke something). The user approves in the panel; doing it again switches forward."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginIDIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -404,7 +431,7 @@ func (s *Server) registerCoreTools() {
 			return nil, s.withHint(res), err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_plugin_remove",
+	addCore(s, &mcp.Tool{Name: "rubi_plugin_remove",
 		Description: "Remove a plugin and erase what it stored (passwords, settings, state). The user approves in the panel."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginIDIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -414,15 +441,23 @@ func (s *Server) registerCoreTools() {
 			return nil, s.withHint(res), err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_call",
-		Description: "Call a plugin tool by name, for plugin tools that don't appear in your tool list (e.g. right after an install)."},
+	addCore(s, &mcp.Tool{Name: "rubi_call",
+		Description: "Call a tool by name when it doesn't appear in your tool list (right after an install or a Rubi update, or if your list is out of date): any plugin tool, or Rubi's own (rubi_access, rubi_verify, …)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in callIn) (*mcp.CallToolResult, out, error) {
 			args, _ := json.Marshal(in.Arguments)
+			if fn := s.own[in.Tool]; fn != nil && in.Tool != "rubi_call" {
+				res, err := fn(ctx, args)
+				if err != nil {
+					return nil, nil, err
+				}
+				o, _ := res.(out)
+				return nil, o, nil
+			}
 			res, err := s.core.CallTool(ctx, in.Tool, args)
 			return nil, s.withHint(res), err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_approval",
+	addCore(s, &mcp.Tool{Name: "rubi_approval",
 		Description: "Status of an approval (pending, executed, denied, expired, cancelled, failed) and the action's result. Optionally waits up to 25 s."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in approvalIn) (*mcp.CallToolResult, out, error) {
 			wait := min(max(in.WaitSeconds, 0), 25)
@@ -436,7 +471,7 @@ func (s *Server) registerCoreTools() {
 			return nil, out{"approval": snap, "later": s.core.WakeUp()}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_continue_after",
+	addCore(s, &mcp.Tool{Name: "rubi_continue_after",
 		Description: "Leave yourself a note for when the user decides a pending approval: what to do next and what for. Rubi sends it back with the decision through the webhook, so you can continue even in a new run."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in planIn) (*mcp.CallToolResult, out, error) {
 			if err := s.core.SetPlan(in.ApprovalID, in.Plan, in.Agent); err != nil {
@@ -449,7 +484,7 @@ func (s *Server) registerCoreTools() {
 			return nil, o, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_notifications",
+	addCore(s, &mcp.Tool{Name: "rubi_notifications",
 		Description: "Which Rubi notifications wake you (you = agent, your Bot's name as connected to Rubi). Without sources: shows your current choice and what's available. With sources: replaces it, e.g. [\"icloud-mail\"] to hear about replies to tracked emails, \"rubi\" for Rubi's own events (updates, plugin problems). Each wake costs the user's quota; subscribe only to what your role needs. Results of approvals you asked for always reach you."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in notifyIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -486,7 +521,7 @@ func (s *Server) registerCoreTools() {
 			return nil, res, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_confirm",
+	addCore(s, &mcp.Tool{Name: "rubi_confirm",
 		Description: "Only for chat-level approvals: report the exact label of the button the user pressed. Never call this unless the user pressed it."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in confirmIn) (*mcp.CallToolResult, out, error) {
 			snap, err := s.core.Approvals.ConfirmChat(ctx, in.ApprovalID, in.UserResponse)
@@ -496,7 +531,7 @@ func (s *Server) registerCoreTools() {
 			return nil, out{"approval": snap}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_cancel",
+	addCore(s, &mcp.Tool{Name: "rubi_cancel",
 		Description: "Cancel a pending approval (the user declined or wants changes). Nothing is executed."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in cancelIn) (*mcp.CallToolResult, out, error) {
 			snap, err := s.core.Approvals.Cancel(in.ApprovalID)
@@ -506,7 +541,7 @@ func (s *Server) registerCoreTools() {
 			return nil, out{"approval": snap}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_events",
+	addCore(s, &mcp.Tool{Name: "rubi_events",
 		Description: "Events from Rubi and its plugins not yet reported to the user (e.g. a reply arrived). Pass agent (your Bot's name): Rubi's administrator sees every event, other Bots the events addressed to them and those of the sources they subscribed to. Third-party fields are listed in untrusted_fields."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in eventsIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -523,7 +558,7 @@ func (s *Server) registerCoreTools() {
 			return nil, out{"events": list}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_access",
+	addCore(s, &mcp.Tool{Name: "rubi_access",
 		Description: "When several Bots share Rubi: ask for access to plugin accounts (e.g. mailboxes) for a task, up to 120 minutes. ALWAYS ask for everything the task needs in ONE call, across plugins too: plugins [\"gmail\",\"icloud-mail\"] for all their accounts, or resources [{plugin, account}, ...] for chosen ones (plugin + accounts for one plugin). Never one call per account or per plugin: accounts you are assigned to are granted at once, and the user approves all the others on ONE screen, ticking the ones to allow. You get one code for all of them at your own webhook, which starts a run of yours that carries on with the task; there, pass rubi_agent and rubi_access to those plugins' tools."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in accessIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -545,7 +580,7 @@ func (s *Server) registerCoreTools() {
 			return nil, s.withHint(res), err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_verify",
+	addCore(s, &mcp.Tool{Name: "rubi_verify",
 		Description: "Ask Rubi for a code proving you are this Bot. It is sent to your own routine webhook (only you receive it) and starts a run of yours; there, pass it as code to rubi_events and rubi_ack for 15 minutes. Every Rubi webhook already carries a fresh code in agent_code."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in verifyIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -557,7 +592,7 @@ func (s *Server) registerCoreTools() {
 			return nil, out{"status": "sent", "message": "The code is on its way to your webhook; the run it starts can read your events."}, nil
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_update",
+	addCore(s, &mcp.Tool{Name: "rubi_update",
 		Description: "Update Rubi to the latest signed release. Checks the release signature, then asks the user to approve in the panel; after approval Rubi installs it and restarts, staying unlocked."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
@@ -567,7 +602,7 @@ func (s *Server) registerCoreTools() {
 			return nil, s.withHint(res), err
 		})
 
-	mcp.AddTool(s.mcp, &mcp.Tool{Name: "rubi_ack",
+	addCore(s, &mcp.Tool{Name: "rubi_ack",
 		Description: "Mark an event as reported to the user."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ackIn) (*mcp.CallToolResult, out, error) {
 			ok, err := s.core.AckFor(in.Agent, in.Code, in.EventID)

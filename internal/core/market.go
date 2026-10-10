@@ -28,6 +28,17 @@ type marketState struct {
 	fetchedAt    time.Time
 	toolsChanged []func()
 	staged       map[string]bool // staging dirs of pending install approvals
+
+	// updMu makes plugin update requests one at a time; pendingUpdate is the one plugin-update approval
+	// that may wait at a time, so the user gets one link for all updates, however the Bot asks.
+	updMu         sync.Mutex
+	pendingUpdate *pendingUpdate
+}
+
+type pendingUpdate struct {
+	approvalID string
+	ids        map[string]bool
+	res        map[string]any
 }
 
 // Catalog returns the signed plugin catalog, cached for a few minutes.
@@ -219,13 +230,40 @@ func (c *Core) RequestPluginUpdate(ctx context.Context, id string) (map[string]a
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked")
 	}
-	u, done, err := c.preparePluginUpdate(ctx, id)
-	if err != nil || done != nil {
-		return done, err
+	rec := c.record(id)
+	if rec == nil {
+		return nil, fmt.Errorf("plugin %q is not installed", id)
 	}
-	return c.submitPluginChange(ctx, u.cand, "rubi.plugin.update", u.summary, u.preview, func(string) error {
-		return u.apply()
-	}, nil)
+	// Other plugins with updates go into the same approval (the user can untick any), so a Bot asking
+	// plugin by plugin still gives the user one link.
+	var others []string
+	_ = c.Vault.View(func(d *vault.Data) error {
+		for other := range d.Plugins {
+			if other != id {
+				others = append(others, other)
+			}
+		}
+		return nil
+	})
+	sort.Strings(others)
+	ids := []string{id}
+	for _, other := range others {
+		if len(ids) == 20 {
+			break
+		}
+		if ok, err := c.updateAvailable(ctx, other); ok && err == nil && !c.QuietUpdates(other) {
+			ids = append(ids, other)
+		}
+	}
+	res, err := c.requestUpdates(ctx, ids, map[string]bool{id: true})
+	if err != nil || res["status"] != "nothing_to_update" {
+		return res, err
+	}
+	// Nothing to approve: answer about the plugin the Bot named, as a single request always did.
+	if failed, _ := res["failed"].(map[string]string); failed[id] != "" {
+		return nil, errors.New(failed[id])
+	}
+	return map[string]any{"status": "up_to_date", "plugin": id, "version": rec.Version}, nil
 }
 
 // pluginUpdate is a verified release waiting for the user's approval.
@@ -323,6 +361,17 @@ func (u *pluginUpdate) apply() error { return u.core.applyPluginUpdate(u) }
 // permissions and can leave any of them out. No ids means every installed plugin with an update. A single
 // update is an ordinary update approval.
 func (c *Core) RequestPluginUpdates(ctx context.Context, ids []string) (map[string]any, error) {
+	explicit := map[string]bool{}
+	for _, id := range ids {
+		explicit[id] = true
+	}
+	return c.requestUpdates(ctx, ids, explicit)
+}
+
+// requestUpdates asks the user to approve updating ids (explicit: the ones the Bot named). One
+// plugin-update approval waits at a time: one that already covers these plugins is the answer; one that
+// doesn't is replaced by an approval for all of them, once that is ready.
+func (c *Core) requestUpdates(ctx context.Context, ids []string, explicit map[string]bool) (map[string]any, error) {
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked")
 	}
@@ -335,9 +384,81 @@ func (c *Core) RequestPluginUpdates(ctx context.Context, ids []string) (map[stri
 		})
 		sort.Strings(ids)
 	}
-	if len(ids) > 20 {
+	if len(explicit) > 20 {
 		return nil, errors.New("at most 20 plugins at a time")
 	}
+	c.mkt.updMu.Lock()
+	defer c.mkt.updMu.Unlock()
+	var old *pendingUpdate
+	if p := c.mkt.pendingUpdate; p != nil {
+		if snap, err := c.Approvals.Get(p.approvalID); err != nil || snap.State != approvals.Pending || time.Until(snap.ExpiresAt) < 2*time.Minute {
+			c.mkt.pendingUpdate = nil
+		} else {
+			covered := true
+			for _, id := range ids {
+				if p.ids[id] {
+					continue
+				}
+				// A plugin the Bot named that can't be checked isn't covered: the normal path reports why.
+				if ok, err := c.updateAvailable(ctx, id); ok || err != nil && explicit[id] {
+					covered = false
+				}
+			}
+			if covered {
+				return p.reply("These updates already wait for the user's approval at this link; send it if you haven't."), nil
+			}
+			old = p
+			have := map[string]bool{}
+			for _, id := range ids {
+				have[id] = true
+			}
+			for id := range p.ids {
+				if !have[id] {
+					ids = append(ids, id)
+				}
+			}
+		}
+	}
+	if len(ids) > 20 { // keep what the Bot named and what was already waiting, then others while there's room
+		keep := func(id string) bool { return explicit[id] || old != nil && old.ids[id] }
+		var kept []string
+		for _, id := range ids {
+			if keep(id) {
+				kept = append(kept, id)
+			}
+		}
+		for _, id := range ids {
+			if len(kept) < 20 && !keep(id) {
+				kept = append(kept, id)
+			}
+		}
+		ids = kept
+	}
+	res, err := c.submitUpdates(ctx, ids)
+	if old == nil {
+		if err == nil {
+			c.rememberUpdate(res)
+		}
+		return res, err
+	}
+	// Replace the waiting approval only once its successor exists, and only if the user hasn't just
+	// approved it.
+	if err != nil || res["approval_id"] == nil {
+		return old.reply("These updates still wait at this link; the others couldn't be added."), nil
+	}
+	if snap, _ := c.Approvals.Cancel(old.approvalID); snap.State != approvals.Cancelled {
+		if id, _ := res["approval_id"].(string); id != "" {
+			_, _ = c.Approvals.Cancel(id)
+		}
+		return old.reply("The user has just decided the earlier update link; ask again later for anything it didn't cover."), nil
+	}
+	c.rememberUpdate(res)
+	res["note"] = "This one link now covers all the updates; the earlier update link no longer works."
+	return res, nil
+}
+
+// submitUpdates prepares the updates of ids and submits one approval for those that have one.
+func (c *Core) submitUpdates(ctx context.Context, ids []string) (map[string]any, error) {
 	var ready []*pluginUpdate
 	var upToDate []string
 	failed := map[string]string{}
@@ -378,6 +499,7 @@ func (c *Core) RequestPluginUpdates(ctx context.Context, ids []string) (map[stri
 		for k, v := range out {
 			res[k] = v
 		}
+		res["plugins"] = []string{u.id}
 		return res, nil
 	}
 
@@ -443,7 +565,65 @@ func (c *Core) RequestPluginUpdates(ctx context.Context, ids []string) (map[stri
 	for k, v := range out {
 		res[k] = v
 	}
+	got := make([]string, len(ready))
+	for i, u := range ready {
+		got[i] = u.id
+	}
+	res["plugins"] = got
 	return res, nil
+}
+
+// rememberUpdate keeps the plugin-update approval that now waits, so later requests reuse its link.
+func (c *Core) rememberUpdate(res map[string]any) {
+	id, _ := res["approval_id"].(string)
+	if id == "" {
+		return
+	}
+	p := &pendingUpdate{approvalID: id, ids: map[string]bool{}, res: map[string]any{}}
+	if list, ok := res["plugins"].([]string); ok {
+		for _, pid := range list {
+			p.ids[pid] = true
+		}
+	}
+	for k, v := range res {
+		p.res[k] = v
+	}
+	c.mkt.pendingUpdate = p
+}
+
+// reply answers with the waiting approval's link.
+func (p *pendingUpdate) reply(note string) map[string]any {
+	out := map[string]any{}
+	for k, v := range p.res {
+		out[k] = v
+	}
+	out["note"] = note
+	return out
+}
+
+// updateAvailable reports whether the store or the plugin's source has a newer version than installed.
+func (c *Core) updateAvailable(ctx context.Context, id string) (bool, error) {
+	rec := c.record(id)
+	if rec == nil {
+		return false, fmt.Errorf("plugin %q is not installed", id)
+	}
+	if !rec.Reviewed {
+		v, err := c.sideloadLatest(ctx, rec.Source)
+		if err != nil {
+			return false, err
+		}
+		return update.Newer(v, rec.Version), nil
+	}
+	cat, err := c.catalog(ctx, false)
+	if err != nil {
+		return false, err
+	}
+	e, ok := cat.Entry(id)
+	if !ok {
+		return false, fmt.Errorf("%s is no longer in the Rubi store", id)
+	}
+	v, ok := e.Latest(version.Version)
+	return ok && update.Newer(v.Version, rec.Version), nil
 }
 
 // RequestPluginRollback asks to switch a plugin back to the version it replaced. Doing it again switches
@@ -827,6 +1007,7 @@ func (c *Core) CheckPluginUpdates(ctx context.Context) {
 		return
 	}
 	cat, _ := c.catalog(ctx, true)
+	var found []map[string]any
 	for id, rec := range records {
 		latest, notes := "", ""
 		if rec.Reviewed {
@@ -843,9 +1024,8 @@ func (c *Core) CheckPluginUpdates(ctx context.Context) {
 			continue // quiet ones wait on the Updates page (and are announced if notifications come back on)
 		}
 		m, _ := c.Store.Get(id)
-		c.Events.Emit("rubi", "plugin.update_available", map[string]any{"plugin": id, "name": m.Name,
-			"current": rec.Version, "new_version": latest, "reviewed": rec.Reviewed, "notes_url": notes,
-			"next_step": "Tell the user; if they want it, call rubi_plugin_update(\"" + id + "\") and send them the approval link."}, nil)
+		found = append(found, map[string]any{"plugin": id, "name": m.Name, "current": rec.Version, "new_version": latest,
+			"reviewed": rec.Reviewed, "notes_url": notes})
 		_ = c.Vault.Update(func(d *vault.Data) error {
 			if p := d.Plugins[id]; p != nil {
 				p.Notified = latest
@@ -854,6 +1034,24 @@ func (c *Core) CheckPluginUpdates(ctx context.Context) {
 		})
 		log.Printf("[plugin %s] update available: %s -> %s", id, rec.Version, latest)
 	}
+	if len(found) == 0 {
+		return
+	}
+	// One event for all of them: the Bot asks once, and the user approves them together.
+	sort.Slice(found, func(i, j int) bool { return found[i]["plugin"].(string) < found[j]["plugin"].(string) })
+	var ids []string
+	for _, f := range found {
+		ids = append(ids, `"`+f["plugin"].(string)+`"`)
+	}
+	data := map[string]any{"plugins": found,
+		"next_step": "Tell the user; if they want them, call rubi_plugin_update ONCE with ids [" + strings.Join(ids, ", ") +
+			"] (one approval for all) and send them the one approval link."}
+	if len(found) == 1 { // the fields of a single update, as before, for Bots that read only those
+		for k, v := range found[0] {
+			data[k] = v
+		}
+	}
+	c.Events.Emit("rubi", "plugin.update_available", data, nil)
 }
 
 // checkCatalogAge refuses a signed catalog older than one already seen: replaying an old one could bring

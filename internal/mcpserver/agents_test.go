@@ -831,3 +831,58 @@ func TestGroupedAccess(t *testing.T) {
 		t.Fatalf("a revoked code still works: %v", out)
 	}
 }
+
+// TestOneUpdateApproval: Rubi tells the Bot about all updates in one event, and however the Bot asks
+// (once per plugin, in separate runs), the user gets one approval link.
+func TestOneUpdateApproval(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+	reg.Review("v1.1.0", reg.Publish("v1.1.0", nil, nil), "")
+	r.c.CheckPluginUpdates(context.Background())
+	var ev map[string]any
+	for _, e := range r.events() {
+		if e["type"] == "plugin.update_available" {
+			ev = e
+		}
+	}
+	data, _ := ev["data"].(map[string]any)
+	if data == nil || len(data["plugins"].([]any)) != 1 || !strings.Contains(data["next_step"].(string), `ids ["demo"]`) {
+		t.Fatalf("update event: %v", ev)
+	}
+
+	first := r.ag.call("rubi_plugin_update", map[string]any{"id": "demo"})
+	again := r.ag.call("rubi_plugin_update", map[string]any{"ids": []string{"demo"}})
+	if first["approval_id"] == nil || again["approval_id"] != first["approval_id"] || again["note"] == nil {
+		t.Fatalf("a second request made another approval: %v / %v", first, again)
+	}
+	r.approve(again, "install")
+	if out := r.ag.call("rubi_plugin_update", map[string]any{"id": "demo"}); out["approval_id"] != nil {
+		t.Fatalf("an approval for an up-to-date plugin: %v", out)
+	}
+}
+
+// TestRubiCallReachesOwnTools: a Bot whose tool list is out of date reaches Rubi's own tools through
+// rubi_call, and an unknown name gets suggestions.
+func TestRubiCallReachesOwnTools(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+	direct := r.ag.call("rubi_updates", nil)
+	via := r.ag.call("rubi_call", map[string]any{"tool": "rubi_updates", "arguments": map[string]any{}})
+	if direct["updates"] == nil || toString(via["updates"]) != toString(direct["updates"]) {
+		t.Fatalf("rubi_call to an own tool: %v", via)
+	}
+	if out := r.ag.call("rubi_call", map[string]any{"tool": "rubi_call", "arguments": map[string]any{"tool": "rubi_call"}}); out["tool_error"] == nil {
+		t.Fatalf("rubi_call called itself: %v", out)
+	}
+	if out := r.ag.call("rubi_call", map[string]any{"tool": "ping"}); !strings.Contains(toString(out["tool_error"]), "demo_ping") {
+		t.Fatalf("no suggestion: %v", out)
+	}
+}
