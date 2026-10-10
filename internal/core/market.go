@@ -130,6 +130,7 @@ func (c *Core) describeInstalled(item map[string]any, id string, records map[str
 		if m.Panel != "" {
 			item["panel"] = m.Panel
 		}
+		item["setup"] = len(m.Fields)+len(m.Secrets) > 0 // the plugin connects accounts
 	}
 	if accts := connected[id]; len(accts) > 0 {
 		item["connected"], item["accounts"] = true, accts

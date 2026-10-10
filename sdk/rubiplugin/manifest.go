@@ -49,8 +49,12 @@ type Manifest struct {
 	Events      []EventType `json:"events,omitempty"`
 	Egress      []string    `json:"egress,omitempty"`
 	Tools       []Tool      `json:"tools,omitempty"`
-	// Panel names a page of the plugin's own in the Rubi panel ("notes"), where the user works with what
-	// the plugin keeps; the panel calls the plugin's OnPanel (the user's own requests, never the agent's).
+	// Panel names a page of the plugin's own in the Rubi panel, where the user works with what the plugin
+	// keeps; the panel calls the plugin's OnPanel (the user's own requests, never the agent's). "notes" is
+	// the notes page. "view" is a page the plugin describes itself: OnPanel answers op "view" with
+	// {title, note, refresh (seconds, 0 for none), sections: [{title, note, empty, items: [{title, detail,
+	// actions: [{label, op, args, danger, confirm}]}]}]}; a button calls its op with its args, then the page
+	// reloads. Requires Rubi v0.10.0.
 	Panel string `json:"panel,omitempty"`
 	// Config are settings only the user can change, in the Rubi panel and with their approval (for example
 	// a privacy filter). The agent can't read or change them through Rubi; the plugin reads them.

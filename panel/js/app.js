@@ -1574,7 +1574,8 @@ async function settingsScreen(ctx, tab) {
           h("button", { type: "button", class: "danger-item", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, icon("close", 16), "Disconnect"),
         ])))) : h("p", { class: "muted small" }, "Not connected yet."),
       p.panel === "notes" ? h("button", { class: "secondary small", onclick: () => notesScreen(ctx, p.id, back) }, icon("doc", 16), "Open notes") : null,
-      p.panel ? null : h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
+      p.panel === "view" && p.connected ? h("button", { class: "secondary small", onclick: () => pluginViewScreen(ctx, p.id, p.name, back) }, icon("doc", 16), "Open " + p.name) : null,
+      p.panel && !p.setup ? null : h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
   };
 
   // ----- approval levels, grouped by plugin
@@ -1875,6 +1876,54 @@ async function notesScreen(ctx, id, back, query = "") {
     cards.length ? h("div", { class: "notes-grid" }, cards)
       : h("div", { class: "empty" }, face("idle", 64), h("p", {}, query ? "No note matches." : "No notes yet.")),
   );
+}
+
+// pluginViewScreen shows a plugin's own page, described by the plugin: sections of items, each with
+// buttons. The plugin answers op "view"; a button calls its op with its args (the user's own request),
+// then the page reloads. Pages with refresh reload themselves (e.g. a countdown to sending).
+async function pluginViewScreen(ctx, id, name, back) {
+  currentView = () => pluginViewScreen(ctx, id, name, back);
+  const err = errorBox();
+  const call = (op, args) => ctx.client.call("plugin.panel", { id, op, args });
+  let data;
+  try {
+    data = await call("view", {});
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  const again = () => { if (currentView && currentView.viewId === id) pluginViewScreen(ctx, id, name, back); };
+  const act = (a) => async (e) => {
+    const btn = e.currentTarget;
+    if (a.confirm && !confirm(a.confirm)) return;
+    btn.disabled = true;
+    try {
+      await call(a.op, a.args || {});
+      again();
+    } catch (x) {
+      btn.disabled = false;
+      showError(err, x);
+    }
+  };
+  const sections = (data.sections || []).map((sec) => h("section", { class: "view-section" },
+    h("h2", {}, sec.title || ""),
+    sec.note ? h("p", { class: "muted small" }, sec.note) : null,
+    (sec.items || []).length ? h("ul", { class: "view-list" }, sec.items.map((it) => h("li", {},
+      h("div", { class: "view-text" }, h("strong", {}, it.title || ""), it.detail ? h("span", { class: "muted small" }, it.detail) : null),
+      h("div", { class: "view-actions" }, (it.actions || []).map((a) =>
+        h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, a.label))))))
+      : h("p", { class: "muted small" }, sec.empty || "Nothing here.")));
+  screen(
+    { cls: "wide", focus: false },
+    header(ctx.hello),
+    backBar("Settings", back),
+    h("div", { class: "section-head" }, h("h1", {}, data.title || name)),
+    data.note ? h("p", { class: "muted" }, data.note) : null,
+    err,
+    ...sections,
+  );
+  currentView.viewId = id;
+  const refresh = Number(data.refresh) || 0;
+  if (refresh > 0) setTimeout(again, Math.max(refresh, 2) * 1000);
 }
 
 function noteEditor(ctx, id, n, done) {

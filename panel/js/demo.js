@@ -65,7 +65,7 @@ const PLUGINS = [
   { id: "icloud-mail", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Read, search and draft; send after your approval.", name: "iCloud Mail", version: "v2.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     accounts: [{ id: "alex@icloud.com", label: "alex@icloud.com", default: true }, { id: "work@icloud.com", label: "work@icloud.com" }],
     previous_version: "v1.2.0" },
-  { id: "gmail", latest: "v1.0.0", publisher: "Rubi-Project", summary: "The same, for Gmail. Several accounts.", name: "Gmail", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
+  { id: "gmail", latest: "v1.0.0", publisher: "Rubi-Project", summary: "The same, for Gmail. Several accounts.", name: "Gmail", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true, panel: "view", setup: true,
     accounts: [{ id: "alex.k@gmail.com", label: "alex.k@gmail.com", default: true }] },
   { id: "steam", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Prices, sales and your wishlist; deal alerts.", name: "Steam", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     update_available: "v1.1.0", accounts: [{ id: "76561198000000000", label: "Alex", default: true }] },
@@ -164,6 +164,7 @@ export class DemoClient {
       case "updates.rubi":
         return { approval_id: "settings", ticket: "demo" };
       case "plugin.panel": {
+        if (args.id === "gmail") return demoMailPage(args.op, args.args);
         const notes = DEMO_NOTES;
         if (args.op === "save") {
           const a = args.args;
@@ -188,6 +189,32 @@ export class DemoClient {
     }
     throw new Error(`The demo doesn't do "${op}".`);
   }
+}
+
+// The Gmail plugin's own page: an email waiting out its undo time, snoozed mail, rules.
+const DEMO_MAIL = {
+  sendAt: now() + 25e3,
+  queued: true,
+  snoozed: [{ id: "s1", title: "Lisbon hotel confirmation", detail: "booking@hotels.example · back Mon 12 Oct 09:00" }],
+  rules: [{ id: "r1", title: "Invoices to Finance", detail: "Mail from billing.example: label Finance, tell the agent · used 4 times" }],
+};
+function demoMailPage(op, a) {
+  if (op === "cancel_send") DEMO_MAIL.queued = false;
+  if (op === "unsnooze") DEMO_MAIL.snoozed = DEMO_MAIL.snoozed.filter((s) => s.id !== a.id);
+  if (op === "remove_rule") DEMO_MAIL.rules = DEMO_MAIL.rules.filter((r) => r.id !== a.id);
+  if (op !== "view") return { status: "done" };
+  const left = Math.max(0, Math.round((DEMO_MAIL.sendAt - now()) / 1000));
+  const sends = DEMO_MAIL.queued && left > 0 ? [{ title: "To Anna <anna@example.com>: Tickets for Saturday", detail: `goes out in ${left}s`,
+    actions: [{ label: "Cancel", op: "cancel_send", args: { id: "q1" }, danger: true }] }] : [];
+  return {
+    title: "Gmail", refresh: sends.length ? 3 : 0,
+    sections: [
+      { title: "Waiting to send", note: "Emails you approved wait a moment (Undo send in the settings) or until the time your agent chose.", empty: "Nothing waiting.", items: sends },
+      { title: "Snoozed", empty: "No snoozed mail.", items: DEMO_MAIL.snoozed.map((s) => ({ ...s, actions: [{ label: "Bring back now", op: "unsnooze", args: { id: s.id } }] })) },
+      { title: "Rules for new mail", note: "Your agent proposes rules; you approve each.", empty: "No rules.",
+        items: DEMO_MAIL.rules.map((r) => ({ ...r, actions: [{ label: "Remove", op: "remove_rule", args: { id: r.id }, danger: true, confirm: `Remove the rule "${r.title}"?` }] })) },
+    ],
+  };
 }
 
 const DEMO_NOTES = [
