@@ -51,6 +51,11 @@
           "version": "v2.2.0",
           "sums_sha256": "017ed0099d4bf5d42b1166a2b14a8ef7016118398061db0ba7df3e8ec01bf934",
           "min_rubi": "v0.6.1"
+        },
+        {
+          "version": "v2.3.0",
+          "sums_sha256": "dc3c7aaf3d90bd98f154497d26ca582af63e266983c1e3d98e853988338ac9c1",
+          "min_rubi": "v0.10.0"
         }
       ]
     },
@@ -88,6 +93,11 @@
           "version": "v1.2.0",
           "sums_sha256": "5cdf09ad31d75532e1fd181e12cb1b22c786431ac4085540b42623fc950507a3",
           "min_rubi": "v0.6.1"
+        },
+        {
+          "version": "v1.3.0",
+          "sums_sha256": "a0a6dabdccd94992167e6873f159f662c3c2a2d7aabf2fb97b7a2e127c33124d",
+          "min_rubi": "v0.10.0"
         }
       ]
     },
