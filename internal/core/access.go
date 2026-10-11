@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -95,8 +96,12 @@ func (c *Core) checkAccess(m plugins.Manifest, tool string, args json.RawMessage
 		return nil, nil, err
 	}
 	if !c.validAccess(agent, code, m.ID, acct) {
+		// Spelled out with rubi_call too: a Bot whose tool list predates rubi_access can still ask.
+		ask := map[string]any{"tool": "rubi_access", "arguments": map[string]any{"agent": orStr(agent, "<your Bot name>"),
+			"plugin": m.ID, "account": label, "task": "<what you are doing, for the user>", "minutes": 60}}
 		return nil, map[string]any{"status": "access_needed",
-			"message": "Several Bots share this Rubi, so using " + m.Name + " (" + label + ") needs an access code. Call rubi_access with your Bot name (agent), plugin \"" + m.ID + "\", account, your task and the minutes you need (up to 120). The code arrives at your webhook and starts a run of yours that carries on with the task; pass rubi_agent and rubi_access to every " + m.Name + " tool there."}, nil
+			"message":                "Several Bots share this Rubi, so using " + m.Name + " (" + label + ") needs an access code. Call rubi_access with your Bot name (agent), plugin \"" + m.ID + "\", account, your task and the minutes you need (up to 120); if rubi_access isn't in your tool list, call rubi_call with the request below. The code arrives at your webhook and starts a run of yours that carries on with the task; pass rubi_agent and rubi_access to every " + m.Name + " tool there (through rubi_call's arguments if a tool's schema lacks them). The user can also give you this account in the Rubi panel (Settings, " + m.Name + ", Bots with access): the code then comes to you by itself.",
+			"request_with_rubi_call": ask}, nil
 	}
 	c.Audit.Record("plugin.tool", audit.Fields{"agent": agent, "tool": tool, "plugin": m.ID, "account": label})
 	return args, nil, nil
@@ -328,7 +333,7 @@ func (c *Core) revokeAccess(agent, plugin, account string) {
 }
 
 // issueAccess makes one code for all the granted accounts and sends it to the Bot's webhook.
-func (c *Core) issueAccess(hook vault.Agent, granted []resolved, task string, d time.Duration) error {
+func (c *Core) issueAccess(hook vault.Agent, granted []resolved, task string, d time.Duration, byUser ...bool) error {
 	if len(granted) == 0 {
 		return errors.New("nothing was allowed")
 	}
@@ -346,7 +351,7 @@ func (c *Core) issueAccess(hook vault.Agent, granted []resolved, task string, d 
 	if g.grants == nil {
 		g.grants, g.issued = map[string]accessGrant{}, map[string]time.Time{}
 	}
-	if last, ok := g.issued[key]; ok && time.Since(last) < accessEvery {
+	if last, ok := g.issued[key]; ok && time.Since(last) < accessEvery && len(byUser) == 0 { // the user's own assignment isn't throttled
 		g.mu.Unlock()
 		return errors.New("a code for this was sent to your webhook a moment ago; use that one")
 	}
@@ -428,7 +433,35 @@ func (c *Core) SetAccountAgents(ctx context.Context, plugin, account string, age
 			for _, n := range dropped {
 				c.revokeAccess(n, plugin, acctID)
 			}
+			c.sendAssignedCodes(plugin, acctID, clean)
 		})
+}
+
+// sendAssignedCodes gives the Bots the user just assigned to an account a code right away, at their
+// webhooks, so they can use it without asking (or without being able to: an out-of-date tool list).
+func (c *Core) sendAssignedCodes(plugin, account string, agents []string) {
+	m, _ := c.Store.Get(plugin)
+	var hooks []vault.Agent
+	var r resolved
+	_ = c.Vault.View(func(d *vault.Data) error {
+		a, err := accountOf(d, plugin, account)
+		if err != nil {
+			return err
+		}
+		r = resolved{plugin: m.ID, name: m.Name, account: a.ID, label: a.Label, assigned: true}
+		for _, n := range agents {
+			if x := findAgent(d, n); x != nil && x.URL != "" {
+				hooks = append(hooks, *x)
+			}
+		}
+		return nil
+	})
+	for _, h := range hooks {
+		task := "The user gave you " + r.title() + " in the Rubi panel; use it whenever they ask you to."
+		if err := c.issueAccess(h, []resolved{r}, task, 30*24*time.Hour, true); err != nil {
+			log.Printf("access code for %s not sent: %v", h.Name, err)
+		}
+	}
 }
 
 // PluginAccounts lists the ids of a plugin's connected accounts.
@@ -460,4 +493,11 @@ func humanDuration(d time.Duration) string {
 		return "1 minute"
 	}
 	return fmt.Sprintf("%d minutes", m)
+}
+
+func orStr(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return v
 }

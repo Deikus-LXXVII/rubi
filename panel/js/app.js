@@ -1362,7 +1362,7 @@ function accountBotsScreen(ctx, plugin, acct, agents, back) {
     header(ctx.hello),
     backBar("Settings", back),
     h("div", { class: "title-row" }, badge(plugin.name, 44), h("h1", {}, "Bots with access")),
-    h("p", {}, `Which of your Bots may use ${plugin.name} (${acct.label || acct.id}). They get a short-lived access code when they ask; any other Bot needs your approval each time.`),
+    h("p", {}, `Which of your Bots may use ${plugin.name} (${acct.label || acct.id}). When you save, each one gets an access code at its webhook right away, and a new one whenever it asks; any other Bot needs your approval each time.`),
     h("div", { class: "checks" }, rows),
     h("p", { class: "muted small" }, "With none checked, only the administrator."),
     err,

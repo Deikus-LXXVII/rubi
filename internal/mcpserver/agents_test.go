@@ -115,7 +115,8 @@ func TestSeveralAgents(t *testing.T) {
 	r.connectDemo()
 
 	// Two Bots share Rubi, so plugin accounts need access codes.
-	if out := r.ag.call("demo_ping", nil); out["status"] != "access_needed" {
+	if out := r.ag.call("demo_ping", nil); out["status"] != "access_needed" ||
+		!strings.Contains(toString(out["request_with_rubi_call"]), `"tool":"rubi_access"`) {
 		t.Fatalf("plugin call without access: %v", out)
 	}
 	accessOf := func(agent string, ch chan hookHit) string {
@@ -153,6 +154,14 @@ func TestSeveralAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.approveChange(settings, asg)
+	// Assigning sends the Bot a code by itself, so it can start without asking.
+	given := waitHit(t, mailCh, "rubi.access.granted")
+	if !strings.Contains(toString(given.data["task"]), "Rubi panel") {
+		t.Fatalf("code on assignment: %v", given.data)
+	}
+	if out := r.ag.call("demo_ping", map[string]any{"rubi_agent": "mail", "rubi_access": strings.Trim(toString(given.data["access_code"]), `"`)}); out["started"] != true {
+		t.Fatalf("the code from the assignment: %v", out)
+	}
 	if out := r.ag.call("rubi_access", map[string]any{"agent": "mail", "plugin": "demo", "task": "again"}); !strings.Contains(toString(out["tool_error"]), "a moment ago") {
 		t.Fatalf("assigned Bot: %v", out)
 	}
