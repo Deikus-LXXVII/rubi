@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-10-09T21:00:00Z",
+  "updated_at": "2026-10-29T18:34:44Z",
   "plugins": [
     {
       "id": "icloud-mail",
@@ -183,6 +183,23 @@
           "version": "v1.0.0",
           "sums_sha256": "c6c8ecb4c54df2be36d04cb449de00bba4993064fac02247acaaa0fe2d735716",
           "min_rubi": "v0.6.0"
+        }
+      ]
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "summary": "Approve or deny Claude Code's Bash commands from the Rubi panel; read-only commands with a passkey tap.",
+      "publisher": {
+        "name": "Rubi-Project",
+        "key": "MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="
+      },
+      "source": "https://github.com/Deikus-LXXVII/rubi-claude-code",
+      "versions": [
+        {
+          "version": "v0.1.0",
+          "sums_sha256": "313717d04cf3b757d61977eff9e83cdf87316e2e35cbad2658e3637a8efe15f0",
+          "min_rubi": "v0.11.0"
         }
       ]
     }
