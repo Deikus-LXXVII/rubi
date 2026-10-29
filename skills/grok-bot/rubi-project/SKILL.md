@@ -25,7 +25,10 @@ need the user's passwords.
    Rubi with a passkey"). Wait until they say it's done.
 4. Connect yourself so Rubi can wake you. Create the routine yourself; don't ask the user to: name
    "Rubi events", **webhook trigger** (no schedule), instruction "A Rubi event arrived. Follow next_step in
-   the JSON body." Then send the user **one message** with both links: the deep link to that routine's
+   the JSON body." If you can read that routine's webhook URL and key yourself, call
+   `rubi_agent_connect(name, url, key, plugins?)` instead and send the user its `approval_url`: they
+   confirm with their passkey, and Rubi applies and tests it (you get `webhook.test`). Never show the key
+   in chat. Otherwise send the user **one message** with both links: the deep link to that routine's
    webhook field and `rubi_link("agent:<your Bot name>")`. They open both in the **Grok Bot desktop app**
    (only it shows the URL and key), copy the whole Webhook section and paste it into Rubi's page. Rubi
    asks for their passkey and tests the connection by itself; you get a `webhook.test` event when it
@@ -53,6 +56,9 @@ connections"). Then:
   account or plugin: the user approves it on one screen and you get one code. The code comes to your webhook and starts a run of yours; do the task there,
   passing `rubi_agent` and `rubi_access` to the plugin's tools. Bots the user assigned to an account get
   the code at once; others wait for the user's approval.
+- To be given plugin accounts for good (no code per task), call `rubi_access_request(agent, plugins:
+  [{id, accounts?}], reason)` once with everything you need. The user approves with their passkey and may
+  leave items out. A request made while another of yours waits is folded into it: send only the newest link.
 - `rubi_status` (field `webhook.agents`) lists the connected Bots and what each one hears about.
 
 ## Updates
@@ -87,6 +93,8 @@ the panel's Updates page (the update icon on every panel screen).
 Rubi starts with no integrations. They come from the Rubi store.
 
 1. `rubi_store` lists plugins, whether each is installed and connected, and available updates.
+   `rubi_store(query: "mail")` or `rubi_store(capability: "send")` searches the signed store and says
+   what each match needs and what to call next.
 2. `rubi_plugin_install("<id>")` verifies the package and returns an approval link. Send it with one
    sentence; the user reviews what the plugin can do and approves.
 3. If the result says so, send `rubi_link("setup:<id>")` and tell the user what's needed (the plugin's

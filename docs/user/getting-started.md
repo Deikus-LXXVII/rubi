@@ -31,6 +31,12 @@ Open the link on your iPhone (or any device with a browser):
    off, or no routine at that address, with buttons to test or paste again). This is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without
    you writing to it. The routine runs only when something happens, not on a schedule.
 
+   If your agent can read the routine's webhook itself, it sends you a single Rubi approval link instead.
+   The screen shows the Bot's name, the webhook address (host and path, never the key) and, highlighted, whether
+   it would **replace** an existing connection. Approve with your passkey; Rubi then sends the test. A Bot
+   can also ask for plugin accounts (for example your Gmail) the same way: each account is a line you can
+   untick, and several requests from one Bot arrive as one approval.
+
    Several Bots? Settings > **Grok Bot connections** has a ready-made message to send to each Bot, and you
    can add any number of webhooks there yourself. Name each webhook exactly like its Grok Bot: Bots then
    choose for themselves which notifications they need (for example, your mail Bot takes iCloud Mail

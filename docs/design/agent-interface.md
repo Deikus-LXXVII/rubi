@@ -45,7 +45,9 @@ what to do.
 | `rubi_status()` | State, version, binary integrity result, installed plugins, and a pairing or unlock link when one is needed |
 | `rubi_link(purpose)` | Fresh panel link for `pair`, `unlock`, `settings` (which includes the store), `setup:<plugin>`, or `agent:<Bot name>` (connect that Bot's routine webhook; the result's `send_with` says to send it in one message with the deep link to the routine's webhook field). Links embed the current tunnel endpoint and expire. |
 | `rubi_lock()` | Lock immediately. Always allowed. |
-| `rubi_store()` | Plugins in the store (reviewed) and installed ones: versions, connection state, updates |
+| `rubi_store(query?, capability?)` | Plugins in the store (reviewed) and installed ones: versions, connection state, updates. With `query` (words matched case-insensitively against id, name, summary and declared capabilities) and/or `capability` (an action kind or title, a tool, an event type, a Rubi Home operation) it searches the signed, verified catalog only and returns per match: id, name, summary, `latest`, `min_rubi`, installed/connected, `needs` (actions with approval levels, tools, events, network; for plugins not installed yet: shown in the install approval) and `next_step`. Read-only; without arguments the output is unchanged |
+| `rubi_agent_connect(name, url, key, events?, plugins?, reason?)` | A Bot proposes its own routine webhook (and optionally plugin accounts). Returns a strong approval (`approval_id`, `approval_url`); nothing changes until the user approves with their passkey. Replacing an existing webhook is marked. On approval Rubi applies it and sends a test event. The key is never returned, logged or shown |
+| `rubi_access_request(agent, plugins: [{id, accounts?}], reason)` | A Bot asks to be assigned plugin accounts for good (instead of the user ticking them in settings). Strong approval; the user may leave items out. While one request of a Bot waits, further `rubi_agent_connect`/`rubi_access_request` calls of that Bot are folded into it (one approval, one link) |
 | `rubi_plugin_install(plugin)` | Install from the store by id, or sideload from a source URL. Verifies the package, then returns a strong approval |
 | `rubi_plugin_update(id \| ids \| all)` / `rubi_plugin_remove(id)` | Update one, several or all plugins with one approval (strong; any can be left out), or remove one |
 | `rubi_call(tool, arguments)` | Call a plugin tool by name, for agents that don't refresh their tool list |
@@ -60,6 +62,7 @@ what to do.
 
 Nothing here can change security settings, webhook targets, plugins, or secrets on its own: those changes
 need the user's strong approval in the panel (security model §8). The agent gets a link instead.
+`rubi_agent_connect` and `rubi_access_request` only *propose*; see security model §9a.
 
 ## 4. Gated actions
 

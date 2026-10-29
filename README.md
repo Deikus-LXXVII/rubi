@@ -10,7 +10,8 @@ with your consent. Rubi starts bare; integrations are plugins from the Rubi stor
 - **Real approvals.** Sensitive actions, like sending email, are approved by signing that exact action
   with your passkey. You choose the level per action; security settings always need your approval.
 - **Agent-native.** Install and use it from the agent chat. The agent registers one MCP server:
-  `rubi mcp`.
+  `rubi mcp`. A Bot can search the store and propose its own webhook and plugin access; nothing changes
+  until you approve it with your passkey.
 - **A store, not a monolith.** Plugins are separate signed packages with their own updates. Store plugins
   are reviewed; installing one shows its permissions and needs your approval. Anyone can build one, in any
   language ([plugin design](docs/design/plugins.md), Go SDK in `sdk/rubiplugin`).

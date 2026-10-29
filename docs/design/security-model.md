@@ -276,6 +276,33 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   the vault and can't read them while locked. Watchers wake the administrator when beats stop (5 min), when
   Rubi stays locked (10 min) and when it is back. A watcher posts only to public internet addresses.
 
+## 9a. Bot-proposed connections and access
+
+A Bot may propose its own webhook (`rubi_agent_connect`) and ask for plugin accounts
+(`rubi_access_request`). Both create one pending approval of kind `rubi.bot.request`; `rubi.` kinds are
+always strong, so nothing changes without the user's passkey (or password) in the panel. MCP has no path
+to `DecideStrong`, and `rubi_confirm` refuses strong approvals.
+
+- **The proposed key** is checked like a pasted one, then sealed in memory with XChaCha20-Poly1305 under a
+  random per-process key (associated data: agent name and URL) and the plaintext is dropped. It is never
+  written to disk, logs, the audit log, tool results, events or the approval preview. Pending approvals live
+  only in memory, so a restart (which relocks Rubi) discards it, as do deny, expiry, cancel, lock and being
+  superseded by a newer proposal. Only after approval is the key opened and stored in the vault like any
+  webhook key.
+- **The approval screen** shows the Bot, the webhook's scheme, host and path (query hidden, long paths
+  shortened), the events it would hear about, a warning when it isn't a Grok Bot routine address, and a
+  `replaces` field (highlighted) when it would change an existing Bot's webhook or key. Each requested
+  plugin account is its own item with what the plugin can do and where it connects.
+- **Replacement is guarded:** the approval records the webhook it replaces; if it changed meanwhile the
+  approval fails instead of overwriting the newer one.
+- **Batches:** one Bot has at most one pending request. A new proposal cancels the old approval (its link
+  stops working) and carries its items over, newer items winning; the Bot gets one new link. The user may
+  approve a subset (`items:` option); unchosen items, and their keys, are discarded.
+- **Limits:** 10 proposals per Bot name and 30 overall per hour, at most 20 plugin items, a 300-character
+  reason. Plugin access needs the Bot to exist or be connected in the same approval.
+- On approval the webhook is applied, the plugin accounts are assigned (access codes go to the Bot's own
+  webhook), and Rubi sends a test event and reports whether it was delivered.
+
 ## 10. Updates
 
 - **Discovery:** Rubi reads `https://rubi-panel.com/releases/latest.json` (published by the Pages workflow on
