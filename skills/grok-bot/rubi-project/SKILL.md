@@ -23,11 +23,13 @@ need the user's passwords.
    installer prints).
 3. Call `rubi_status`. It returns a link: send it to the user with one sentence ("Open this to set up
    Rubi with a passkey"). Wait until they say it's done.
-4. Connect yourself so Rubi can wake you: create a routine named "Rubi events" with a **webhook trigger**
-   (no schedule) whose instruction is "A Rubi event arrived. Follow next_step in the JSON body." Then send
-   `rubi_link("agent:<your Bot name>")` and ask the user to open it in the **Grok Bot desktop app**, next
-   to the routine: its webhook URL and key are only shown there, and they paste them into the page. You get
-   a test event when it works. Setup is finished when `rubi_status` shows `webhook.configured: true`;
+4. Connect yourself so Rubi can wake you. Create the routine yourself; don't ask the user to: name
+   "Rubi events", **webhook trigger** (no schedule), instruction "A Rubi event arrived. Follow next_step in
+   the JSON body." Then send the user **one message** with both links: the deep link to that routine's
+   webhook field and `rubi_link("agent:<your Bot name>")`. They open both in the **Grok Bot desktop app**
+   (only it shows the URL and key), copy the whole Webhook section and paste it into Rubi's page. Rubi
+   asks for their passkey and tests the connection by itself; you get a `webhook.test` event when it
+   works. Setup is finished when `rubi_status` shows `webhook.configured: true`;
    plugins can't be installed before that.
 
 ## Several Bots

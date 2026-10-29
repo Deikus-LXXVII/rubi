@@ -113,10 +113,12 @@ func (c *Core) WakeUp() string {
 		"(see rubi_status, field webhook.how)."
 }
 
-const agentHow = "Create a routine named \"Rubi events\" with a webhook trigger (no schedule) whose instruction " +
-	"is: \"A Rubi event arrived. Follow next_step in the JSON body.\" Then send the user " +
-	"rubi_link(\"agent:<your Bot name>\") and tell them to open it in the Grok Bot desktop app, next to the routine: " +
-	"its Webhook section shows the URL and key (only on desktop), which they paste into the page."
+const agentHow = "Create the routine yourself, don't ask the user to: name it \"Rubi events\", webhook trigger " +
+	"(no schedule), instruction \"A Rubi event arrived. Follow next_step in the JSON body.\" Then send the user ONE " +
+	"message with two links: the deep link to that routine's webhook field and rubi_link(\"agent:<your Bot name>\"). " +
+	"Tell them to open both in the Grok Bot desktop app (only it shows the URL and key), copy the whole Webhook " +
+	"section and paste it into Rubi's page. Rubi then asks for their passkey and tests the connection by itself; " +
+	"you get a \"webhook.test\" event when it works."
 
 // WebhookHint describes the registered agents, or how to register.
 func (c *Core) WebhookHint() map[string]any {

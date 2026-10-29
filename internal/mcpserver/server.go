@@ -24,11 +24,13 @@ import (
 
 const Instructions = `Rubi-Project: self-hosted integrations that act for the user only with their consent.
 
-SETUP. Rubi wakes you through a routine webhook. Create a routine named "Rubi events" with a webhook
-trigger (no schedule) whose instruction is "A Rubi event arrived. Follow next_step in the JSON body."
-Then send the user rubi_link("agent:<your Bot name>") and ask them to open it in the Grok Bot desktop app:
-the routine's webhook URL and key are visible only there. Setup isn't finished, and plugins can't be
-installed, until at least one agent is connected (rubi_status, field webhook).
+SETUP. Rubi wakes you through a routine webhook. Create the routine yourself (don't ask the user to): named
+"Rubi events", webhook trigger (no schedule), instruction "A Rubi event arrived. Follow next_step in the JSON
+body." Then send the user ONE message with both links: the deep link to that routine's webhook field and
+rubi_link("agent:<your Bot name>"). They open both in the Grok Bot desktop app (only it shows the URL and
+key), copy the whole Webhook section and paste it into Rubi's page; Rubi asks for their passkey and tests the
+connection by itself. Setup isn't finished, and plugins can't be installed, until at least one agent is
+connected (rubi_status, field webhook).
 
 SEVERAL BOTS. Bots on the same account share Rubi. Each Bot that wants to be woken registers itself the
 same way, under its own name. Pass your Bot's name as "agent" where tools take one, so Rubi wakes you and
@@ -346,13 +348,17 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_link",
-		Description: "A fresh Rubi panel link for the user: pair, unlock, settings (includes the store), setup:<plugin id>, or agent:<your Bot name> (connects your routine webhook so Rubi can wake you; the user opens it in the Grok Bot desktop app)."},
+		Description: "A fresh Rubi panel link for the user: pair, unlock, settings (includes the store), setup:<plugin id>, or agent:<your Bot name> (connects your routine webhook so Rubi can wake you: send it in one message with the deep link to your routine's webhook field; the user opens both in the Grok Bot desktop app)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in linkIn) (*mcp.CallToolResult, out, error) {
 			u, err := s.core.Link(in.Purpose)
 			if err != nil {
 				return nil, nil, err
 			}
-			return nil, out{"url": u, "expires_note": "links contain a one-time context; ask for a new one if it fails"}, nil
+			res := out{"url": u, "expires_note": "links contain a one-time context; ask for a new one if it fails"}
+			if strings.HasPrefix(in.Purpose, "agent:") {
+				res["send_with"] = "the deep link to your routine's webhook field, in the same message. The user pastes the whole Webhook section; Rubi asks for the passkey and tests it by itself."
+			}
+			return nil, res, nil
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_lock",

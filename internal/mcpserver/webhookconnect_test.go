@@ -2,6 +2,7 @@ package mcpserver_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,12 @@ import (
 func TestWebhookConnectFeedback(t *testing.T) {
 	r := newRig(t)
 	okSrv, okCh := hookServer(t)
+	if out := r.ag.call("rubi_link", map[string]any{"purpose": "agent:Mail"}); !strings.Contains(fmt.Sprint(out["send_with"]), "webhook field") {
+		t.Fatalf("rubi_link for an agent doesn't say what to send with it: %v", out)
+	}
+	if wh := r.ag.call("rubi_status", nil)["webhook"].(map[string]any); !strings.Contains(fmt.Sprint(wh["note"]), "ONE message") {
+		t.Fatalf("rubi_status doesn't tell the Bot to send both links at once: %v", wh)
+	}
 	link := r.panel("agent:Mail")
 	var res map[string]any
 
