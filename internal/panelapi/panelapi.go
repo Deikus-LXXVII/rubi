@@ -18,6 +18,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -298,10 +299,11 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		return s.approvalGet(purpose, env)
 	case "approval.decide":
 		return s.approvalDecide(ctx, purpose, env)
-	case "approval.challenge": // the challenge for a chosen subset of a batch approval
+	case "approval.challenge": // the challenge for a chosen subset of a batch approval, or with typed inputs
 		var a struct {
-			ApprovalID string `json:"approval_id"`
-			Option     string `json:"option"`
+			ApprovalID string            `json:"approval_id"`
+			Option     string            `json:"option"`
+			Inputs     map[string]string `json:"inputs"`
 		}
 		if err := json.Unmarshal(env.Args, &a); err != nil {
 			return nil, errors.New("bad arguments")
@@ -309,20 +311,24 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		if err := approvalTicket(purpose, a.ApprovalID); err != nil {
 			return nil, err
 		}
-		if err := s.core.Approvals.CheckOption(a.ApprovalID, a.Option); err != nil {
+		if err := saneInputs(a.Inputs); err != nil {
+			return nil, err
+		}
+		if _, err := s.core.Approvals.CheckInputs(a.ApprovalID, a.Option, a.Inputs); err != nil {
 			return nil, err
 		}
 		d, err := s.core.Approvals.Detail(a.ApprovalID)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"challenge": base64.RawURLEncoding.EncodeToString(s.challenge(d, a.Option))}, nil
+		return map[string]any{"challenge": base64.RawURLEncoding.EncodeToString(s.challengeWith(d, a.Option, a.Inputs))}, nil
 	case "integration.catalog", "integration.setup", "integration.disconnect",
 		"policy.get", "policy.set", "webhook.get", "webhook.set", "webhook.test",
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel":
+		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel",
+		"approval.list", "approval.open":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -456,6 +462,13 @@ func approvalTicket(purpose, id string) error {
 // challenge is what the user's passkey or password signs: the exact approval, everything it shows and
 // does (kind, integration, summary, preview, items, expiry) and the chosen option.
 func (s *Server) challenge(d approvals.Detail, option string) []byte {
+	return s.challengeWith(d, option, nil)
+}
+
+// challengeWith also binds what the user typed on the approval screen (approvals.Input), so a link holder
+// can't swap in other values: the proof covers a digest of every input (secrets as their own SHA-256).
+func (s *Server) challengeWith(d approvals.Detail, option string, inputs map[string]string) []byte {
+	parts := []string{"rubi-approve", "v2", s.core.ID.InstanceID, d.ID, option, d.Nonce}
 	shown, _ := json.Marshal(struct {
 		Kind        string           `json:"kind"`
 		Integration string           `json:"integration"`
@@ -466,9 +479,37 @@ func (s *Server) challenge(d approvals.Detail, option string) []byte {
 		Expires     int64            `json:"expires"`
 	}{d.Kind, d.Integration, d.Summary, d.Question, d.Preview, d.Items, d.ExpiresAt.Unix()})
 	pd := sha256.Sum256(shown)
-	h := sha256.Sum256([]byte(strings.Join([]string{"rubi-approve", "v2", s.core.ID.InstanceID, d.ID, option,
-		d.Nonce, hex.EncodeToString(pd[:])}, "|")))
+	parts = append(parts, hex.EncodeToString(pd[:]))
+	if len(d.Inputs) > 0 {
+		keys := make([]string, 0, len(d.Inputs))
+		for _, i := range d.Inputs {
+			keys = append(keys, i.Key)
+		}
+		sort.Strings(keys)
+		ih := sha256.New()
+		for _, k := range keys {
+			v := sha256.Sum256([]byte(inputs[k]))
+			fmt.Fprintf(ih, "%s=%x\n", k, v)
+		}
+		fields, _ := json.Marshal(d.Inputs)
+		fd := sha256.Sum256(fields)
+		parts = append(parts, "inputs", hex.EncodeToString(fd[:]), hex.EncodeToString(ih.Sum(nil)))
+	}
+	h := sha256.Sum256([]byte(strings.Join(parts, "|")))
 	return h[:]
+}
+
+// saneInputs bounds what a panel may type into an approval.
+func saneInputs(in map[string]string) error {
+	if len(in) > 8 {
+		return errors.New("too many inputs")
+	}
+	for k, v := range in {
+		if len(k) > 64 || len(v) > 4096 {
+			return errors.New("an input is too long")
+		}
+	}
+	return nil
 }
 
 func (s *Server) approvalGet(purpose string, env Envelope) (any, error) {
@@ -507,7 +548,9 @@ type decideArgs struct {
 	ApprovalID string `json:"approval_id"`
 	Option     string `json:"option"`
 	Approve    bool   `json:"approve"`
-	Proof      struct {
+	// Inputs: what the user typed on the approval screen (approvals.Input), covered by the proof.
+	Inputs map[string]string `json:"inputs"`
+	Proof  struct {
 		Type string `json:"type"` // "passkey" | "password"
 		webauthn.Assertion
 		MAC string `json:"mac,omitempty"` // base64url HMAC-SHA256(password approve key, challenge)
@@ -525,11 +568,18 @@ func (s *Server) approvalDecide(ctx context.Context, purpose string, env Envelop
 	if !a.Approve { // declining needs no proof
 		return s.core.Approvals.DecidePanel(ctx, a.ApprovalID, "", false, 0)
 	}
+	if err := saneInputs(a.Inputs); err != nil {
+		return nil, err
+	}
+	// Typed values are checked first: a mistyped key is not a failed proof.
+	if _, err := s.core.Approvals.CheckInputs(a.ApprovalID, a.Option, a.Inputs); err != nil {
+		return nil, err
+	}
 	d, err := s.core.Approvals.Detail(a.ApprovalID)
 	if err != nil {
 		return nil, err
 	}
-	ch := s.challenge(d, a.Option)
+	ch := s.challengeWith(d, a.Option, a.Inputs)
 	var perr error
 	var proof approvals.Proof
 	switch a.Proof.Type {
@@ -552,7 +602,7 @@ func (s *Server) approvalDecide(ctx context.Context, purpose string, env Envelop
 	}
 	s.core.Audit.Record("approval.proof_ok", map[string]any{"approval_id": a.ApprovalID, "method": a.Proof.Type,
 		"user_verified": proof == approvals.Verified})
-	return s.core.Approvals.DecidePanel(ctx, a.ApprovalID, a.Option, true, proof)
+	return s.core.Approvals.DecidePanelWith(ctx, a.ApprovalID, a.Option, true, proof, a.Inputs)
 }
 
 // verifyPasskey checks a passkey assertion for challenge. With tap set, an assertion without user
@@ -635,8 +685,18 @@ func (s *Server) rpID() string {
 // every change becomes a strong approval. The response carries a fresh ticket for that approval so the
 // panel can ask for the passkey (or the password) right away.
 
+// webhookTestWait bounds how long webhook.test waits for the routine to answer: past the webhook client's
+// 15 s timeout, within the relays' 30 s.
+const webhookTestWait = 20 * time.Second
+
 func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (any, error) {
 	if purpose == settingsView && (env.Op == "agent.subscribe" || env.Op == "webhook.test") {
+		return nil, errViewOnly
+	}
+	// What waits for the user can be private (whom a mail goes to, which command runs), and opening one
+	// lets the holder decline it without a proof, so only a settings link lists them: not the view-only
+	// settings a forwarded approval or setup link opens.
+	if (env.Op == "approval.list" || env.Op == "approval.open") && purpose != "settings" {
 		return nil, errViewOnly
 	}
 	if purpose != "settings" && purpose != settingsView && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
@@ -662,6 +722,9 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Values  map[string]any    `json:"values"`
 		Account string            `json:"account"`
 		Code    string            `json:"code"`
+		// ApprovalID is for approval.open.
+		ApprovalID string `json:"approval_id"`
+		Wait       bool   `json:"wait"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -747,6 +810,9 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		}
 		return map[string]any{"subscriptions": subs}, nil
 	case "webhook.test":
+		if args.Wait { // newer panels show at once whether the routine took it
+			return s.core.TestWebhookWait(args.Name, webhookTestWait), nil
+		}
 		ev := s.core.TestWebhook(args.Name)
 		return map[string]any{"event_id": ev.ID}, nil
 	case "plugin.config.get":
@@ -783,6 +849,22 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 			return nil, errors.New("bad arguments")
 		}
 		return s.core.PanelCall(ctx, pa.ID, pa.Op, pa.Args)
+	case "approval.list":
+		// The requests waiting for the user in the panel, for the list on the settings screen. Each opens
+		// with approval.open, then the usual approval.get / approval.decide.
+		list := []map[string]any{}
+		for _, a := range s.core.Approvals.Pending() {
+			list = append(list, map[string]any{"approval_id": a.ID, "integration": a.Integration, "kind": a.Kind,
+				"level": a.Level, "summary": a.Summary, "expires_at": a.ExpiresAt})
+		}
+		return map[string]any{"approvals": list}, nil
+	case "approval.open":
+		// A ticket for one waiting request, as its own link would carry.
+		snap, err := s.core.Approvals.Get(args.ApprovalID)
+		if err != nil || snap.State != approvals.Pending || !snap.Level.InPanel() {
+			return nil, errors.New("this request isn't waiting any more")
+		}
+		return map[string]any{"approval_id": snap.ID, "ticket": s.core.MintTicket("approve:" + snap.ID)}, nil
 	case "watch.set":
 		approvalID, err = s.core.SetWatch(ctx, core.WatchSettings{Gateway: args.Gateway, Home: args.Home})
 

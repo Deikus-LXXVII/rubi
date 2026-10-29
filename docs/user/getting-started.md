@@ -23,11 +23,19 @@ Open the link on your iPhone (or any device with a browser):
 2. Add a backup password (recommended) and save it in the Passwords app. If you lose both the passkey and
    the password, Rubi has to be reset; nobody can recover your key.
 
-3. **Connect your agent.** Your agent creates a routine called "Rubi events" and sends you a "Connect"
-   link. Open it in the Grok Bot app on your **computer** (the routine's webhook is only shown there): copy
-   the routine's *POST to* and *header* fields, paste both into the one box on the page, and confirm. This
-   is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without
-   you writing to it. The routine runs only when something happens, not on a schedule.
+3. **Connect your agent.** Your agent creates a routine called "Rubi events" and asks you in chat for its
+   webhook address: open the routine in the Grok Bot app on your **computer** (the webhook is only shown
+   there) and copy *POST to*. Then it shows a masked field for the routine's key (the *header*): paste it
+   there, never into the chat. The agent sends you Rubi's approval screen with the Bot's name, the events it
+   wants, any plugin accounts it asks for (each a line you can untick) and, highlighted, whether it would
+   **replace** an existing connection. Confirm with your passkey; Rubi then sends a test and tells you
+   whether the routine took it. This is how Rubi tells your agent that you approved something or that a
+   reply arrived, so it continues without you writing to it. The routine runs only when something
+   happens, not on a schedule.
+
+   If the agent can't take the key that way, the approval screen has a box instead: paste the routine's
+   Webhook section (*POST to* and *header*, any order) there and confirm with your passkey, which covers
+   exactly what you pasted. Waiting requests also appear in Settings under **Waiting for you**.
 
    Several Bots? Settings > **Grok Bot connections** has a ready-made message to send to each Bot, and you
    can add any number of webhooks there yourself. Name each webhook exactly like its Grok Bot: Bots then

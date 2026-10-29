@@ -43,9 +43,11 @@ what to do.
 | Tool | Purpose |
 |---|---|
 | `rubi_status()` | State, version, binary integrity result, installed plugins, and a pairing or unlock link when one is needed |
-| `rubi_link(purpose)` | Fresh panel link for `pair`, `unlock`, `settings` (which includes the store), or `setup:<plugin>`. Links embed the current tunnel endpoint and expire. |
+| `rubi_link(purpose)` | Fresh panel link for `pair`, `unlock`, `settings` (which includes the store), `setup:<plugin>`, or `agent:<Bot name>` (connect that Bot's routine webhook; the result's `send_with` says to send it in one message with the deep link to the routine's webhook field). Links embed the current tunnel endpoint and expire. |
 | `rubi_lock()` | Lock immediately. Always allowed. |
-| `rubi_store()` | Plugins in the store (reviewed) and installed ones: versions, connection state, updates |
+| `rubi_store(query?, capability?)` | Plugins in the store (reviewed) and installed ones: versions, connection state, updates. With `query` (words matched case-insensitively against id, name, summary and declared capabilities) and/or `capability` (an action kind or title, a tool, an event type, a Rubi Home operation) it searches the signed, verified catalog only and returns per match: id, name, summary, `latest`, `min_rubi`, installed/connected, `needs` (actions with approval levels, tools, events, network; for plugins not installed yet: shown in the install approval) and `next_step`. Read-only; without arguments the output is unchanged |
+| `rubi_agent_connect(name, url?, key?, events?, plugins?, reason?)` | A Bot proposes its own routine webhook (and optionally plugin accounts). Returns a strong approval (`approval_id`, `approval_url`); nothing changes until the user approves with their passkey. `url` must be a Grok Bot routine webhook (`https://api2.cursor.sh/automations/webhook/<id>`); anything else is refused (the user's own settings still accept other receivers, with a warning). Main path for Grok Bots: the user gives the URL in chat and the key in a masked secret field (env `RUBI_WEBHOOK_KEY_<NAME>`); the Bot writes it to a 600 file with `printenv` and passes `key` as `"$file:<path>"`, which the Grok Bot runtime replaces with the file's contents, then deletes the file. Fallback: without a key the result has `user_pastes_webhook: true` and the approval screen asks the user to paste the routine's Webhook section, prefilled with `url` when given; the passkey covers what was pasted. A key may arrive with surrounding whitespace or a trailing newline (read from a file), which is trimmed; a literal `$file:` reference is refused. Replacing an existing webhook is marked. On approval Rubi applies it and sends a test event. The key is never returned, logged or shown |
+| `rubi_access_request(agent, plugins: [{id, accounts?}], reason)` | A Bot asks to be assigned plugin accounts for good (instead of the user ticking them in settings). Strong approval; the user may leave items out. While one request of a Bot waits, further `rubi_agent_connect`/`rubi_access_request` calls of that Bot are folded into it (one approval, one link) |
 | `rubi_plugin_install(plugin)` | Install from the store by id, or sideload from a source URL. Verifies the package, then returns a strong approval |
 | `rubi_plugin_update(id \| ids \| all)` / `rubi_plugin_remove(id)` | Update one, several or all plugins with one approval (strong; any can be left out), or remove one |
 | `rubi_call(tool, arguments)` | Call a plugin tool by name, for agents that don't refresh their tool list |
@@ -60,6 +62,7 @@ what to do.
 
 Nothing here can change security settings, webhook targets, plugins, or secrets on its own: those changes
 need the user's strong approval in the panel (security model §8). The agent gets a link instead.
+`rubi_agent_connect` and `rubi_access_request` only *propose*; see security model §9a.
 
 ## 4. Gated actions
 
@@ -88,6 +91,13 @@ A plugin tool whose action kind has level `strong`, `tap` or `chat` doesn't act.
 - **`chat`:** the response carries `buttons` with plain-text labels (no emoji) that include a short code
   (`Send · K7Q2`). The agent renders them as buttons, waits, and calls `rubi_confirm` with the pressed
   label. Users can pair this with a Grok Bot "Ask first" rule on `rubi_confirm`.
+- **Approvals a plugin asks for on its own** (outside a tool call: a Claude Code permission request, a
+  watcher) have no agent to pass on the link. Unless the plugin's own event already reached a Bot that
+  follows it, Rubi emits a `rubi` `approval.requested` event (`approval_id`, `integration`, `kind`,
+  `level`, `summary` (untrusted), `expires_at`) about 3 seconds later. It goes to the administrator, or to the Bots following
+  `rubi`. Each webhook delivery carries a fresh `approval_url` and a `next_step` asking the Bot to send the
+  user the link. The stored event has no link, and a request decided in the meantime isn't delivered. The panel's
+  settings screen also lists every waiting request ("Waiting for you").
 - **Options travel with the approval.** For example, iCloud Mail's "send" offers *Send* and *Send and
   notify me on reply*; the option is chosen in the panel or by the button pressed, never by the agent.
 - Button and panel texts are English by default; the user can pick another language in panel settings.

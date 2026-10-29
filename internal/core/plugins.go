@@ -216,6 +216,10 @@ func (c *Core) CallTool(ctx context.Context, name string, args json.RawMessage) 
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
+	args, err := c.verifyCaller(m.ID, args)
+	if err != nil {
+		return nil, err
+	}
 	args, reply, err := c.checkAccess(m, name, args)
 	if err != nil {
 		return nil, err
@@ -223,6 +227,8 @@ func (c *Core) CallTool(ctx context.Context, name string, args json.RawMessage) 
 	if reply != nil {
 		return reply, nil
 	}
+	c.toolCall(m.ID, 1)
+	defer c.toolCall(m.ID, -1)
 	err = c.Runner.Call(ctx, m.ID, "tool", rubiplugin.ToolParams{Name: name, Arguments: args}, &raw)
 	if errors.Is(err, plugins.ErrNotRunning) {
 		return map[string]any{"status": "plugin_not_running",
@@ -232,6 +238,9 @@ func (c *Core) CallTool(ctx context.Context, name string, args json.RawMessage) 
 		return nil, err
 	}
 	out := asObject(raw)
+	if id, ok := out["approval_id"].(string); ok && approvals.Level(fmt.Sprint(out["level"])).InPanel() {
+		c.markAnnounced(id) // the agent gets the approval link in this result
+	}
 	// A plugin that reaches the outside world returns what others wrote. Rubi says so on every such
 	// result, whatever the plugin itself remembers to mark (a prompt injection arrives exactly there).
 	if len(m.Egress) > 0 || len(m.Home) > 0 {
@@ -460,9 +469,24 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			if !c.allow("emit:"+id, pluginEventsPerMinute) {
 				return nil, errors.New("too many events; slow down")
 			}
+			// An event addressed to a Bot goes to that Bot's webhook only. When no Bot of that name is
+			// connected with a webhook, it is dropped (and audited), never handed to the subscribers.
 			target := ""
-			if in.Agent != "" && c.HasAgent(in.Agent) {
-				target = in.Agent
+			if in.Agent != "" {
+				name, ok := c.webhookAgent(in.Agent)
+				if !ok {
+					c.Audit.Record("event.dropped", audit.Fields{"integration": id, "type": in.Type, "agent": oneLineName(in.Agent),
+						"reason": "no Bot of that name is connected with a webhook"})
+					return nil, fmt.Errorf("no Bot named %q is connected to Rubi with a webhook; the event was dropped (an addressed event never goes to anyone else)", oneLineName(in.Agent))
+				}
+				target = name
+			}
+			// A plugin that tells a Bot about its own approval (claude-code's approval_needed, with the link)
+			// spares Rubi announcing it again, as long as some Bot follows the plugin.
+			if apr, _ := in.Data["approval_id"].(string); apr != "" && len(c.recipients(target, id)) > 0 {
+				if snap, err := c.Approvals.Get(apr); err == nil && snap.Integration == id {
+					c.markAnnounced(apr)
+				}
 			}
 			ev := c.Events.EmitFor(target, false, id, in.Type, in.Data, et.Untrusted)
 			return map[string]any{"event_id": ev.ID}, nil
@@ -588,7 +612,68 @@ func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json
 		}
 		return res, nil
 	}
-	return c.Approvals.Submit(ctx, req)
+	out, err := c.Approvals.Submit(ctx, req)
+	if err == nil {
+		if apr, _ := out["approval_id"].(string); apr != "" && approvals.Level(fmt.Sprint(out["level"])).InPanel() {
+			go c.announcePluginApproval(id, apr)
+		}
+	}
+	return out, err
+}
+
+// announcePluginApproval makes sure the user hears of a plugin's approval. One asked for in a tool call
+// reaches the agent with the call's result; one a plugin asks for on its own (a Claude Code permission
+// request, a watcher) has no one to pass on its link. Unless some agent already got the link, Rubi tells
+// its administrator (or the Bots following Rubi's events) with an approval.requested event, and the
+// webhook carries a fresh approval link (see deliverTo).
+func (c *Core) announcePluginApproval(plugin, approvalID string) {
+	time.Sleep(seenGrace) // the tool call returns, or the plugin emits its own event, meanwhile
+	for i := 0; i < 480 && c.toolCallRunning(plugin); i++ {
+		time.Sleep(250 * time.Millisecond) // a tool call that is still running may yet return the link
+	}
+	if c.takeAnnounced(approvalID) || c.State() != Unlocked {
+		return
+	}
+	snap, err := c.Approvals.Get(approvalID)
+	if err != nil || snap.State != approvals.Pending {
+		return
+	}
+	c.Events.Emit("rubi", "approval.requested", map[string]any{"approval_id": snap.ID, "integration": snap.Integration,
+		"kind": snap.Kind, "level": snap.Level, "summary": snap.Summary, "expires_at": snap.ExpiresAt}, []string{"summary"})
+}
+
+func (c *Core) toolCall(plugin string, d int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.toolCalls == nil {
+		c.toolCalls = map[string]int{}
+	}
+	if c.toolCalls[plugin] += d; c.toolCalls[plugin] <= 0 {
+		delete(c.toolCalls, plugin)
+	}
+}
+
+func (c *Core) toolCallRunning(plugin string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.toolCalls[plugin] > 0
+}
+
+func (c *Core) markAnnounced(approvalID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.announced == nil || len(c.announced) > 1000 {
+		c.announced = map[string]bool{}
+	}
+	c.announced[approvalID] = true
+}
+
+func (c *Core) takeAnnounced(approvalID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	a := c.announced[approvalID]
+	delete(c.announced, approvalID)
+	return a
 }
 
 // autoConnect connects a plugin that needs nothing from the user (no fields, no secrets) right after it

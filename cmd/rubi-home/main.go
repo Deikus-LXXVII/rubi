@@ -7,7 +7,9 @@
 //	rubi-home folder NAME    the Shortcuts folder Rubi may use (default: Rubi)
 //	rubi-home unpair         forget every paired Rubi
 //	rubi-home hue-forget ID  forget a Hue Bridge's recorded certificate (after replacing or resetting it)
-//	rubi-home claude-hook    Claude Code's PermissionRequest hook: asks Rubi, prints allow or deny
+//	rubi-home claude-hook    Claude Code's hooks: PermissionRequest asks Rubi and prints allow or deny;
+//	                         SessionStart, UserPromptSubmit, Stop and SessionEnd report the session and
+//	                         deliver messages waiting for it
 package main
 
 import (

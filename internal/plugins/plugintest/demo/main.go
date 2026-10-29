@@ -73,6 +73,17 @@ func main() {
 			return map[string]any{"out": out}, nil
 		})
 	p.OnHook = func(ctx context.Context, h *rubiplugin.Host, ev rubiplugin.HookEvent) error {
+		if ev.Name == "ask" || ev.Name == "ask-tell" {
+			// An approval the plugin asks for on its own, outside any tool call (as claude-code does for
+			// a permission request); "ask-tell" also emits its own event with the link, as claude-code does.
+			out, err := h.Submit(ctx, rubiplugin.Request{Kind: "demo.send", Summary: "Send to " + ev.Body,
+				Preview: map[string]string{"to": ev.Body}, Payload: sendIn{To: ev.Body}})
+			if err != nil || ev.Name == "ask" {
+				return err
+			}
+			_, err = h.Emit("ping", map[string]any{"from": "hook", "approval_id": out["approval_id"], "approval_url": out["approval_url"]})
+			return err
+		}
 		_, err := h.Emit("hooked", map[string]any{"name": ev.Name, "account": ev.Account, "body": ev.Body})
 		return err
 	}
@@ -152,6 +163,13 @@ func main() {
 		}) (any, error) {
 			id, err := h.EmitTo(in.Agent, "ping", map[string]any{"from": "someone"})
 			return map[string]any{"event_id": id}, err
+		})
+	rubiplugin.AddTool(p, "demo_whoami", "Which Bot Rubi says is calling.",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			AgentCode string `json:"rubi_agent_code,omitempty"`
+			Verified  string `json:"rubi_verified_agent,omitempty"`
+		}) (any, error) {
+			return map[string]any{"verified": in.Verified, "saw_code": in.AgentCode != ""}, nil
 		})
 	rubiplugin.AddTool(p, "demo_batch", "Ask to send to several people at once (a batch approval).",
 		func(ctx context.Context, h *rubiplugin.Host, in struct {

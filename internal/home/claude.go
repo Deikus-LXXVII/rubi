@@ -83,13 +83,22 @@ const (
 type Claude struct {
 	// Wait is how long a request waits for Rubi (ClaudeDefaultWait when zero).
 	Wait time.Duration
+	// DesktopStore is the Claude desktop app's session store and Transcripts Claude Code's projects
+	// directory (~/.claude/projects); both are only read, and "" leaves one out (see sessions.go).
+	DesktopStore string
+	Transcripts  string
 
 	mu       sync.Mutex
 	pending  map[string]*claudeItem
 	order    []string // ids not yet handed to Rubi, oldest first
 	polls    int      // claude.next calls in progress
 	lastPoll time.Time
-	signal   chan struct{} // closed when a request is queued
+	signal   chan struct{} // closed when a request or an outgoing message is queued
+
+	reg    sessionRegistry
+	inbox  map[string][]ClaudeMessage // by session id
+	turns  map[string]*turnState
+	outbox []ClaudeOut
 }
 
 type claudeItem struct {
@@ -226,11 +235,8 @@ func (c *Claude) drop(id string) {
 }
 
 // Next hands Rubi the oldest request not yet handed out, waiting up to wait (at most 25 seconds) for
-// one. It returns nil when none came.
+// one. It returns nil when none came. While Rubi polls it, the helper counts Rubi as present.
 func (c *Claude) Next(ctx context.Context, wait time.Duration) (*ClaudeRequest, error) {
-	if wait <= 0 || wait > claudeMaxPoll {
-		wait = claudeMaxPoll
-	}
 	c.mu.Lock()
 	c.polls++
 	c.lastPoll = time.Now()
@@ -241,19 +247,41 @@ func (c *Claude) Next(ctx context.Context, wait time.Duration) (*ClaudeRequest, 
 		c.lastPoll = time.Now()
 		c.mu.Unlock()
 	}()
+	r, _, err := c.next(ctx, wait, true, false)
+	return r, err
+}
+
+// NextOut hands out what sessions say (replies and asks), one item per call, waiting like Next. It is
+// the claude-sessions capability's poll and doesn't count as Rubi being there for approvals.
+func (c *Claude) NextOut(ctx context.Context, wait time.Duration) (*ClaudeOut, error) {
+	_, o, err := c.next(ctx, wait, false, true)
+	return o, err
+}
+
+// next waits for a request (req) or an outgoing message (out).
+func (c *Claude) next(ctx context.Context, wait time.Duration, req, out bool) (*ClaudeRequest, *ClaudeOut, error) {
+	if wait <= 0 || wait > claudeMaxPoll {
+		wait = claudeMaxPoll
+	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	for {
 		c.mu.Lock()
-		for len(c.order) > 0 {
+		for req && len(c.order) > 0 {
 			id := c.order[0]
 			c.order = c.order[1:]
 			if it := c.pending[id]; it != nil {
 				it.delivered = true
 				r := it.req
 				c.mu.Unlock()
-				return &r, nil
+				return &r, nil, nil
 			}
+		}
+		if out && len(c.outbox) > 0 {
+			o := c.outbox[0]
+			c.outbox = c.outbox[1:]
+			c.mu.Unlock()
+			return nil, &o, nil
 		}
 		if c.signal == nil {
 			c.signal = make(chan struct{})
@@ -263,9 +291,9 @@ func (c *Claude) Next(ctx context.Context, wait time.Duration) (*ClaudeRequest, 
 		select {
 		case <-sig:
 		case <-t.C:
-			return nil, nil
+			return nil, nil, nil
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
 	}
 }
@@ -326,21 +354,54 @@ func cleanMessage(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// handle serves claude.next and claude.decide for a paired Rubi.
+// handle serves a paired Rubi: claude.next and claude.decide (the "claude" capability, approvals) and
+// claude-sessions.list, .send and .next (the "claude-sessions" capability: sessions and messages).
 func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (any, error) {
 	switch op {
-	case "claude.next":
+	case "claude.next", "claude-sessions.next":
 		var in struct {
 			WaitSeconds int `json:"wait_seconds"`
 		}
 		if len(args) > 0 && json.Unmarshal(args, &in) != nil {
 			return nil, errors.New("bad arguments")
 		}
-		r, err := c.Next(ctx, time.Duration(in.WaitSeconds)*time.Second)
+		wait := time.Duration(in.WaitSeconds) * time.Second
+		if op == "claude-sessions.next" {
+			o, err := c.NextOut(ctx, wait)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"out": o}, nil
+		}
+		r, err := c.Next(ctx, wait)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"request": r}, nil
+	case "claude-sessions.list":
+		var in struct {
+			Repo            string `json:"repo"`
+			IncludeArchived bool   `json:"include_archived"`
+		}
+		if len(args) > 0 && json.Unmarshal(args, &in) != nil {
+			return nil, errors.New("bad arguments")
+		}
+		return map[string]any{"sessions": c.Sessions(in.Repo, in.IncludeArchived),
+			"sources": map[string]bool{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}}, nil
+	case "claude-sessions.send":
+		var in struct {
+			SessionID string `json:"session_id"`
+			From      string `json:"from"`
+			Text      string `json:"text"`
+		}
+		if json.Unmarshal(args, &in) != nil {
+			return nil, errors.New("bad arguments")
+		}
+		m, waiting, err := c.Send(in.SessionID, in.From, in.Text)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"queued": true, "id": m.ID, "waiting": waiting}, nil
 	case "claude.decide":
 		var a ClaudeAnswer
 		if json.Unmarshal(args, &a) != nil {
@@ -413,6 +474,12 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	if ev := hookEvent(line); ev != "" && ev != "PermissionRequest" {
+		_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
+		b, _ := json.Marshal(c.Hook(line))
+		_, _ = conn.Write(append(b, '\n'))
+		return
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go func() { // the hook going away (Claude Code gave up) cancels the request
@@ -466,9 +533,26 @@ func HookOutput(d ClaudeDecision) []byte {
 // RunClaudeHook is `rubi-home claude-hook`: it reads Claude Code's PermissionRequest input from in, asks
 // the helper listening at sock, and writes the decision to out. It always writes a decision; when
 // anything fails, that is a denial. limit bounds the whole wait.
+//
+// For SessionStart, UserPromptSubmit, Stop and SessionEnd it reports to the helper and prints what the
+// helper answers (messages for the session); when anything fails it prints nothing, so Claude Code goes
+// on as if there were no hook.
 func RunClaudeHook(in io.Reader, out io.Writer, sock string, limit time.Duration) error {
-	d := askHelper(in, sock, limit)
-	_, err := out.Write(HookOutput(d))
+	raw, err := io.ReadAll(io.LimitReader(in, claudeMaxInput+1))
+	if err != nil || len(raw) > claudeMaxInput {
+		_, err := out.Write(HookOutput(claudeDeny("couldn't read the request; denied.")))
+		return err
+	}
+	if ev := hookEvent(raw); ev != "" && ev != "PermissionRequest" {
+		b := EventHookOutput(ev, askHelperEvent(raw, sock))
+		if len(b) == 0 {
+			return nil
+		}
+		_, err := out.Write(b)
+		return err
+	}
+	d := askHelper(bytes.NewReader(raw), sock, limit)
+	_, err = out.Write(HookOutput(d))
 	return err
 }
 
@@ -502,6 +586,65 @@ func askHelper(in io.Reader, sock string, limit time.Duration) ClaudeDecision {
 		return claudeDeny("Rubi Home gave an answer that couldn't be read, so the command was denied.")
 	}
 	return d
+}
+
+func askHelperEvent(raw []byte, sock string) HookReply {
+	var line bytes.Buffer
+	if json.Compact(&line, raw) != nil {
+		return HookReply{}
+	}
+	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	if err != nil {
+		return HookReply{}
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(claudeEventWait))
+	if _, err := conn.Write(append(line.Bytes(), '\n')); err != nil {
+		return HookReply{}
+	}
+	resp, err := readLine(conn, claudeMaxInput)
+	if err != nil {
+		return HookReply{}
+	}
+	var r HookReply
+	_ = json.Unmarshal(resp, &r)
+	return r
+}
+
+// EventHookOutput is what a hook other than PermissionRequest prints (nothing when there is nothing to
+// say).
+func EventHookOutput(event string, r HookReply) []byte {
+	var v any
+	switch {
+	case event == "Stop" && r.Block && r.Reason != "":
+		v = map[string]any{"decision": "block", "reason": r.Reason}
+	case (event == "UserPromptSubmit" || event == "SessionStart") && r.Context != "":
+		v = map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": event, "additionalContext": r.Context}}
+	default:
+		return nil
+	}
+	b, _ := json.Marshal(v)
+	return append(b, '\n')
+}
+
+func dirExists(p string) bool {
+	if p == "" {
+		return false
+	}
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+// DefaultClaudeDirs are the desktop app's session store and Claude Code's projects directory for the
+// current user.
+func DefaultClaudeDirs() (desktop, transcripts string) {
+	if cfg, err := os.UserConfigDir(); err == nil {
+		desktop = filepath.Join(cfg, "Claude", "claude-code-sessions")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		transcripts = filepath.Join(home, ".claude", "projects")
+	}
+	return desktop, transcripts
 }
 
 // ClaudeSocketPath is the socket's path in dir.

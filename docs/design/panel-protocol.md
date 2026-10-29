@@ -101,7 +101,15 @@ registered as an approver. Without PRF, a password is required for unlocking.
 | `status` | ticket | — | `state`, `purpose`, `vault_version`, `receipts[]`, `integrations` (when unlocked) |
 | `lock` | ticket | — | `state` |
 | `approval.get` | ticket for `approve:<id>` | `approval_id` | `approval` (summary, preview, question, options, state), `challenges` (per option), `approvers[]`, `password`, `rp_id` |
-| `approval.decide` | ticket for `approve:<id>` | `approval_id`, `option`, `approve`, `proof` | the approval's new state and result |
+| `approval.decide` | ticket for `approve:<id>` | `approval_id`, `option`, `approve`, `proof`, `inputs?` | the approval's new state and result |
+| `approval.challenge` | ticket for `approve:<id>` | `approval_id`, `option`, `inputs?` | `challenge` for a chosen subset of a batch, or for typed `inputs` |
+
+**Typed inputs.** `approval.get` may list `approval.inputs` (`key`, `label`, `secret`, `value` (a prefill),
+`help`, `item`: needed only when that batch item is chosen). The panel collects them, asks
+`approval.challenge` with `inputs` (a map key → value) for the challenge to sign, and sends the same map
+with `approval.decide`. The challenge then ends with `|inputs|<sha256 of the definitions>|<sha256 of the
+sorted "key=sha256(value)" lines>`, so the proof covers the values. Values are checked first (invalid ones
+are refused without counting as a failed proof) and never echoed back.
 
 ### Settings
 
@@ -116,7 +124,11 @@ that integration) and an unlocked Rubi. Reads return data; every change returns
 | `integration.setup` | `id`, `fields`, `secrets` | validates (e.g. logs in), then asks to store and start it |
 | `integration.disconnect` | `id` | asks to stop it and erase its secrets and state |
 | `policy.get` / `policy.set` | — / `levels: {kind: level}` | read / ask to change approval levels (locked kinds refused) |
-| `webhook.get` / `webhook.set` / `webhook.test` | — / `url`, `key` / — | read / ask to change the agent webhook / send a test event |
+| `webhook.get` / `webhook.set` | — / `url`, `key` | read / ask to change the default agent's webhook (older panels) |
+| `agents.get` / `agent.add` | — / `name`, `url`, `key`, `sources?` | list the Bots / ask to connect one (strong). `key` may be the bare key, `Bearer <key>` or the whole header; it must be one printable token. An address that isn't a Grok Bot routine (`https://api2.cursor.sh/automations/webhook/<id>`, key `crsr_…`) gets a `warning` in the approval |
+| `webhook.test` | `name`, `wait?` | send a test event. With `wait: true` it waits up to 20 s for the first delivery and returns `{event_id, delivered, pending?, problem?}`; `problem` says what to fix (wrong key, routine switched off, wrong address) and never contains the address or key |
+| `approval.list` | — | the requests waiting in the panel (`tap`/`strong`, pending, oldest first): `approval_id`, `integration`, `kind`, `level`, `summary`, `expires_at`. No preview, options or items. Needs a full `settings` ticket (not `settings:view`) |
+| `approval.open` | `approval_id` | `{"approval_id", "ticket"}`: a fresh ticket for `approve:<id>` while that request is pending; the panel then uses `approval.get` / `approval.decide`. Full `settings` ticket only, since that ticket can decline without proof |
 
 ### Approval proofs
 

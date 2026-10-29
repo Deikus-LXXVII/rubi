@@ -219,13 +219,27 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   webhook (`POST`, `Authorization: Bearer crsr_…`), with metadata only and fields from third parties
   marked as untrusted.
 - The webhook URL and key are stored in the vault; changing them needs a strong approval, so a manipulated
-  agent can't redirect events elsewhere.
+  agent can't redirect events elsewhere. The URL must be `https` (`http` only to this computer), without
+  user info, at most 2048 characters; the key may be pasted with or without `Authorization: Bearer` and
+  must be one printable ASCII token (no spaces or line breaks, so it can't inject headers). When the URL
+  isn't a Grok Bot routine (`https://api2.cursor.sh/automations/webhook/<id>`) or the key doesn't start
+  with `crsr_`, the approval screen warns that the user should approve only a receiver they set up. A Bot's
+  own Connect link (`agent:<name>`) refuses such addresses in the panel; settings still allow a custom
+  receiver.
+- The panel parses the pasted routine section locally (`panel/js/webhook.js`), shows only the key's last
+  four characters, and clears the box once sent. The passkey prompt opens by itself; the browser can still
+  require a tap, and approving stays a strong approval. `webhook.test` with `wait` reports whether the
+  routine accepted the test (`401/403` key refused, `400` routine off, `404` no routine); the answer never
+  contains the URL or the key.
 - Several Bots can share one Rubi (they share the computer and the MCP server). Each registered agent has
   its own webhook; an approval's outcome goes to the agent that asked for it, other events to every agent
   subscribed to their source. Rubi's own events nobody subscribed to go to the **administrator**, the Bot
   the user made responsible for Rubi (an approved setting); plugin events nobody subscribed to wake no one
-  and wait in the event list. The administrator reads the whole list; other Bots see only the events
-  addressed to them and those of their subscriptions.
+  and wait in the event list. An event addressed to one Bot (a plugin's `EmitTo`, an approval's outcome)
+  goes to that Bot's webhook only; if no Bot of that name is connected with a webhook, Rubi drops it and
+  records `event.dropped` in the audit log, and never hands it to the subscribers or the administrator
+  instead (v0.12.0). The administrator reads the whole list except events addressed to other Bots; other
+  Bots see only the events addressed to them and those of their subscriptions.
 - **Which Bot is calling.** Bots on one account share a computer and the MCP server and name themselves,
   so a name proves nothing. What only the real Bot has is its routine webhook: the platform delivers a POST
   there to that Bot alone. Every Rubi webhook carries the woken Bot's current code (`agent_code`, valid
@@ -233,6 +247,12 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   as another only alerts the real one. Reading and acknowledging events need the code. Three wrong codes
   block codes for that name for 30 minutes and warn the administrator. Codes are never kept in the event
   list (the administrator would see them there).
+- **Plugins learn the caller from Rubi, not from the caller** (v0.12.0). A plugin tool call may carry
+  `rubi_agent` with a proof only that Bot's webhook receives: `rubi_agent_code` (its agent code) or a
+  `rubi_access` code for that plugin. Rubi checks it, removes the code and passes the plugin
+  `rubi_verified_agent`: the registered name of the webhook the user confirmed with the passkey. A
+  `rubi_verified_agent` in the caller's own arguments is always removed, so a plugin can bind something
+  (for example a Claude Code session) to that name and address its events there.
 - Dropping a subscription is immediate; adding one gives a Bot that plugin's events, so the user approves
   it (a Bot can't simply subscribe itself to the mail plugin).
 - **Access to plugin accounts.** With two or more Bots, every plugin account (a mailbox, a Telegram
@@ -264,6 +284,53 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   carrying the administrator's webhook sealed to each watcher; Rubi keeps only the sealed copies outside
   the vault and can't read them while locked. Watchers wake the administrator when beats stop (5 min), when
   Rubi stays locked (10 min) and when it is back. A watcher posts only to public internet addresses.
+
+## 9a. Bot-proposed connections and access
+
+A Bot may propose its own webhook (`rubi_agent_connect`) and ask for plugin accounts
+(`rubi_access_request`). Both create one pending approval of kind `rubi.bot.request`; `rubi.` kinds are
+always strong, so nothing changes without the user's passkey (or password) in the panel. MCP has no path
+to `DecideStrong`, and `rubi_confirm` refuses strong approvals.
+
+- **The proposed key** is checked like a pasted one, then sealed in memory with XChaCha20-Poly1305 under a
+  random per-process key (associated data: agent name and URL) and the plaintext is dropped. It is never
+  written to disk, logs, the audit log, tool results, events or the approval preview. Pending approvals live
+  only in memory, so a restart (which relocks Rubi) discards it, as do deny, expiry, cancel, lock and being
+  superseded by a newer proposal. Only after approval is the key opened and stored in the vault like any
+  webhook key.
+- **Only routine webhooks from Bots.** A Bot may propose only a Grok Bot routine webhook (https, host
+  `api2.cursor.sh`, path `/automations/webhook/<id>`, no userinfo or port); the same applies to what the user
+  pastes on a Bot's approval screen. Other receivers can be set only through the user's own Connect page or
+  settings, which keep the warning.
+- **How a Grok Bot passes the key.** The user enters it in a masked secret field (env
+  `RUBI_WEBHOOK_KEY_<NAME>`); the Bot checks it is set without printing it, writes it with `printenv` to a
+  `umask 077` file, passes `"$file:<path>"` (substituted by the Grok Bot runtime when the call is sent) and
+  shreds the file. The key is thus briefly on the Bot's box disk; Rubi trims surrounding whitespace and
+  refuses a literal `$file:` string.
+- **Without a key** (fallback) the approval declares two inputs, the
+  webhook address (prefilled with the Bot's `url`, if any) and the key (secret). The user pastes them on
+  the approval screen; the panel accepts only a Grok Bot routine address there, and Rubi validates them
+  exactly like a pasted webhook. Inputs are bound to the proof: for an approval with inputs the challenge
+  also covers a digest of the input definitions and of each pasted value (`inputs|sha256(defs)|sha256(sorted
+  "key=sha256(value)" lines)`), and `approval.decide` recomputes it from the values it receives, so a value
+  changed after the passkey signed fails as a wrong proof. Invalid or missing inputs are refused before the
+  proof is checked and leave the approval pending. Pasted values are never stored in the approval, the
+  audit log, results or events; they reach the action only for its run. The pasted key is copied into a
+  byte slice that is wiped after use, but Go string copies of the request can't be wiped and live until
+  garbage collection. Inputs are allowed only on panel (tap/strong) approvals, at most 8 values of 4 KB.
+- **The approval screen** shows the Bot, the webhook's scheme, host and path (query hidden, long paths
+  shortened), the events it would hear about, a warning when it isn't a Grok Bot routine address, and a
+  `replaces` field (highlighted) when it would change an existing Bot's webhook or key. Each requested
+  plugin account is its own item with what the plugin can do and where it connects.
+- **Replacement is guarded:** the approval records the webhook it replaces; if it changed meanwhile the
+  approval fails instead of overwriting the newer one.
+- **Batches:** one Bot has at most one pending request. A new proposal cancels the old approval (its link
+  stops working) and carries its items over, newer items winning; the Bot gets one new link. The user may
+  approve a subset (`items:` option); unchosen items, and their keys, are discarded.
+- **Limits:** 10 proposals per Bot name and 30 overall per hour, at most 20 plugin items, a 300-character
+  reason. Plugin access needs the Bot to exist or be connected in the same approval.
+- On approval the webhook is applied, the plugin accounts are assigned (access codes go to the Bot's own
+  webhook), and Rubi sends a test event and reports whether it was delivered.
 
 ## 10. Updates
 

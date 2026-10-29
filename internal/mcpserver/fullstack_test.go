@@ -67,7 +67,8 @@ type rig struct {
 	ag agent
 
 	codeMu sync.Mutex
-	code   string // the latest agent_code that reached the rig's own webhook
+	code   string           // the latest agent_code that reached the rig's own webhook
+	bodies []map[string]any // every webhook body that reached it
 }
 
 // codeHook records the agent_code of each webhook it receives, as a Bot's routine would see it.
@@ -75,10 +76,11 @@ func (r *rig) codeHook(w http.ResponseWriter, req *http.Request) {
 	b, _ := io.ReadAll(req.Body)
 	var m map[string]any
 	_ = json.Unmarshal(b, &m)
+	r.codeMu.Lock()
+	defer r.codeMu.Unlock()
+	r.bodies = append(r.bodies, m)
 	if c, _ := m["agent_code"].(string); c != "" {
-		r.codeMu.Lock()
 		r.code = c
-		r.codeMu.Unlock()
 	}
 }
 
@@ -92,6 +94,19 @@ func (r *rig) agentCode(name string) string {
 	return get()
 }
 
+// webhooks returns the webhook bodies of one event type ("integration.type") the rig received so far.
+func (r *rig) webhooks(typ string) []map[string]any {
+	r.codeMu.Lock()
+	defer r.codeMu.Unlock()
+	var out []map[string]any
+	for _, b := range r.bodies {
+		if b["type"] == typ {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
 func newRig(t *testing.T) *rig {
 	t.Helper()
 	c, err := core.Open(paths.Layout{Home: t.TempDir()})
@@ -99,6 +114,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Lock)
+	c.BotWebhookOK = func(u string) bool { return strings.HasPrefix(u, "http://127.0.0.1:") } // the test's receiver
 	api := httptest.NewServer(panelapi.New(c).Handler())
 	t.Cleanup(api.Close)
 	c.SetEndpoint(api.URL)

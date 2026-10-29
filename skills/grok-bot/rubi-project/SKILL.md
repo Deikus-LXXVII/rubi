@@ -23,12 +23,32 @@ need the user's passwords.
    installer prints).
 3. Call `rubi_status`. It returns a link: send it to the user with one sentence ("Open this to set up
    Rubi with a passkey"). Wait until they say it's done.
-4. Connect yourself so Rubi can wake you: create a routine named "Rubi events" with a **webhook trigger**
-   (no schedule) whose instruction is "A Rubi event arrived. Follow next_step in the JSON body." Then send
-   `rubi_link("agent:<your Bot name>")` and ask the user to open it in the **Grok Bot desktop app**, next
-   to the routine: its webhook URL and key are only shown there, and they paste them into the page. You get
-   a test event when it works. Setup is finished when `rubi_status` shows `webhook.configured: true`;
-   plugins can't be installed before that.
+4. Connect yourself so Rubi can wake you. Create the routine yourself; don't ask the user to: name
+   "Rubi events", **webhook trigger** (no schedule), instruction "A Rubi event arrived. Follow next_step in
+   the JSON body." Then:
+   1. Ask the user in chat for the routine's webhook URL ("POST to" in its Webhook section). Send the deep
+      link to that field; only the **Grok Bot desktop app** shows it.
+   2. Ask for the key with a **masked secret field** stored as env `RUBI_WEBHOOK_KEY_<NAME>` (`<NAME>`: your
+      Bot name, upper case). Never ask for it in chat.
+   3. Check that it exists without printing it:
+      `[ -n "$RUBI_WEBHOOK_KEY_<NAME>" ] && echo set || echo missing`
+   4. In Shell, run `umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key` (no echo). Then
+      pass the tool argument key as the string "$file:/workspace/.rubi-hook-key"; Grok Bot replaces it with
+      the file contents when sending. Delete the file right after the call with `shred -u` or `rm`.
+      The call: `rubi_agent_connect(name, url, key: "$file:/workspace/.rubi-hook-key", events, plugins,
+      reason)`, with every event source and plugin you need, so it is one approval.
+   5. Send the user the returned `approval_url`.
+   6. The user confirms with their passkey. Rubi applies the webhook and tests it (you get `webhook.test`).
+   7. Check `rubi_status`: setup is finished when it shows `webhook.configured: true`. Plugins can't be
+      installed before that.
+
+   Only a Grok Bot routine address (`https://api2.cursor.sh/automations/webhook/<id>`) is accepted. Never
+   show the key in chat or in a command's output.
+
+   **Fallback** (the key is `missing`, or the result says `user_pastes_webhook: true`): call
+   `rubi_agent_connect` without `key` and send the user **one message** with the `approval_url` and the
+   deep link to the routine's webhook field. They paste the routine's Webhook section on Rubi's approval
+   screen and confirm with their passkey in the same step.
 
 ## Several Bots
 
@@ -51,6 +71,9 @@ connections"). Then:
   account or plugin: the user approves it on one screen and you get one code. The code comes to your webhook and starts a run of yours; do the task there,
   passing `rubi_agent` and `rubi_access` to the plugin's tools. Bots the user assigned to an account get
   the code at once; others wait for the user's approval.
+- To be given plugin accounts for good (no code per task), call `rubi_access_request(agent, plugins:
+  [{id, accounts?}], reason)` once with everything you need. The user approves with their passkey and may
+  leave items out. A request made while another of yours waits is folded into it: send only the newest link.
 - `rubi_status` (field `webhook.agents`) lists the connected Bots and what each one hears about.
 
 ## Updates
@@ -85,6 +108,8 @@ the panel's Updates page (the update icon on every panel screen).
 Rubi starts with no integrations. They come from the Rubi store.
 
 1. `rubi_store` lists plugins, whether each is installed and connected, and available updates.
+   `rubi_store(query: "mail")` or `rubi_store(capability: "send")` searches the signed store and says
+   what each match needs and what to call next.
 2. `rubi_plugin_install("<id>")` verifies the package and returns an approval link. Send it with one
    sentence; the user reviews what the plugin can do and approves.
 3. If the result says so, send `rubi_link("setup:<id>")` and tell the user what's needed (the plugin's

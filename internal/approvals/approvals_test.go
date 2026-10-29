@@ -238,3 +238,42 @@ func TestTapProofOnlySatisfiesTap(t *testing.T) {
 		t.Fatal("ParseLevel(tap)")
 	}
 }
+
+func TestPendingListsOnlyWaitingPanelApprovals(t *testing.T) {
+	c := &clock{time.Now()}
+	level := Strong
+	e := New(Config{TTL: 15 * time.Minute, MaxPerHour: 10}, Hooks{Level: func(string) Level { return level }})
+	e.now = c.now
+	var runs atomic.Int32
+	var chosen string
+	submit := func() string {
+		out, err := e.Submit(context.Background(), sendRequest(&runs, &chosen))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.add(time.Second) // a distinct creation time, for the order
+		return out["approval_id"].(string)
+	}
+	first, decided, cancelled := submit(), submit(), submit()
+	level = Chat
+	submit() // answered in the chat, not in the panel
+	level = Tap
+	tap := submit()
+	if _, err := e.DecidePanel(context.Background(), decided, "send", true, Verified); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Cancel(cancelled); err != nil {
+		t.Fatal(err)
+	}
+	got := e.Pending()
+	if len(got) != 2 || got[0].ID != first || got[1].ID != tap || got[1].Level != Tap || got[0].State != Pending {
+		t.Fatalf("pending: %+v", got)
+	}
+	c.add(15*time.Minute - 2*time.Second) // the first one expires, the tap one (4 s younger) not yet
+	if got = e.Pending(); len(got) != 1 || got[0].ID != tap {
+		t.Fatalf("after expiry: %+v", got)
+	}
+	if s, _ := e.Get(first); s.State != Expired {
+		t.Fatalf("first: %s", s.State)
+	}
+}

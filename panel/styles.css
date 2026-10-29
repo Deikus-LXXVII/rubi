@@ -646,6 +646,8 @@ button.small .icon { margin-right: 6px; vertical-align: -3px; }
 .settings-body { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 .settings-body h2 { font-size: 1.35rem; margin: 0; }
 .settings-body h3 { font-size: 1rem; display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+.waiting { margin: 0 0 20px; }
+.waiting h2 { margin: 0 0 8px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 .pgrid { display: grid; gap: 12px; }

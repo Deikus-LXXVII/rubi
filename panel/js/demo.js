@@ -48,6 +48,30 @@ const APPROVALS = {
     options: [{ key: "apply", label: "Approve" }],
     preview: { integration: "Unofficial Telegram", account: "@alex", connects_to: "Telegram's servers" },
   },
+  bot: {
+    kind: "rubi.settings", summary: "Let Rubi wake Mail Bot",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { agent: "Mail Bot", webhook: "https://api2.cursor.sh/\u2026a1b2c3d4", notifies_about: "Rubi itself, iCloud Mail" },
+  },
+  botpaste: {
+    kind: "rubi.bot.request", summary: "Mail Bot asks to connect to Rubi and for 1 plugin account",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { agent: "Mail Bot", proposed_by: "A Bot, through Rubi's tools (not you). Approve only if you asked a Bot to connect to Rubi.",
+      reason: "To tell you about replies and draft answers." },
+    items: [
+      { key: "webhook", label: "Connect Mail Bot (you paste its webhook)",
+        preview: { webhook: "Suggested by the Bot: https://api2.cursor.sh/automations/webhook/\u2026. Check it against the routine, or paste the routine's own.",
+          notifies_about: "Rubi itself, iCloud Mail" } },
+      { key: "access:icloud-mail|alex@icloud.com", label: "iCloud Mail: alex@icloud.com",
+        preview: { can: "Read, search and draft; send after your approval", connects_to: "imap.mail.me.com, smtp.mail.me.com" } },
+    ],
+    inputs: [
+      { key: "webhook_url", label: "POST to", value: "https://api2.cursor.sh/automations/webhook/6076a0ff-5b26-405e-82ef-d6173cd96066", item: "webhook",
+        help: "From Mail Bot's routine \"Rubi events\", Webhook section. Paste the whole section if you like." },
+      { key: "webhook_key", label: "Header (key)", secret: true, item: "webhook",
+        help: "The routine's key (crsr_\u2026). It stays in Rubi; nobody else sees it." },
+    ],
+  },
   settings: {
     kind: "rubi.settings", summary: "Add Rubi Home on Mac mini",
     options: [{ key: "apply", label: "Approve" }],
@@ -94,6 +118,13 @@ export class DemoClient {
       case "approval.get":
         return { approval: approval(args.approval_id), approvers: [{ credential_id: "demo" }], password: true, agent_notified: true,
           challenges: {} };
+      case "approval.list":
+        return { approvals: [{ approval_id: "send", integration: "icloud-mail", kind: APPROVALS.send.kind, level: "strong",
+          summary: APPROVALS.send.summary, expires_at: iso(now() + 14 * 60 * 1000) },
+        { approval_id: "botpaste", integration: "rubi", kind: APPROVALS.botpaste.kind, level: "strong",
+          summary: APPROVALS.botpaste.summary, expires_at: iso(now() + 12 * 60 * 1000) }] };
+      case "approval.open":
+        return { approval_id: args.approval_id, ticket: "demo" };
       case "approval.challenge":
         return { challenge: "" };
       case "approval.decide": {
@@ -163,6 +194,8 @@ export class DemoClient {
       case "updates.plugin":
       case "updates.rubi":
         return { approval_id: "settings", ticket: "demo" };
+      case "agent.add":
+        return { approval_id: "bot", ticket: "demo" };
       case "plugin.panel": {
         if (args.id === "gmail") return demoMailPage(args.op, args.args);
         const notes = DEMO_NOTES;
@@ -184,6 +217,7 @@ export class DemoClient {
       case "agent.subscribe":
         return { subscriptions: args.sources || [] };
       case "webhook.test":
+        return { delivered: true };
       case "lock":
         return {};
     }
@@ -231,6 +265,7 @@ export const DEMO_SCREENS = [
   ["install", "Install a plugin"],
   ["reveal", "Choose what to show"],
   ["door", "A sensitive shortcut"],
+  ["botpaste", "A Bot asks to connect"],
   ["settings", "Settings"],
   ["approvals", "Approval levels"],
   ["security", "Security"],
@@ -239,6 +274,7 @@ export const DEMO_SCREENS = [
   ["setup", "Connect with a code"],
   ["home", "Add a home computer"],
   ["bots", "Grok Bot connections"],
+  ["connect", "Connect a Bot"],
   ["updates", "Updates"],
   ["notes", "Notes"],
   ["sent", "Sent"],

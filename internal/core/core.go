@@ -60,6 +60,10 @@ type Core struct {
 	// OnHookRoute applies a new hook route to the transport. Both are set by the daemon.
 	HookBase    func() string
 	OnHookRoute func()
+	// BotWebhookOK widens which addresses a Bot may propose (rubi_agent_connect, and what the user pastes
+	// on that approval screen). nil, as in the daemon: Grok Bot routine webhooks only. Tests point it at
+	// their local receiver.
+	BotWebhookOK func(rawURL string) bool
 
 	mu             sync.Mutex
 	paired         bool
@@ -79,15 +83,21 @@ type Core struct {
 	tickets map[string]ticket
 	plans   map[string]pendingPlan // approval id -> what the agent will do once it is decided
 	seen    map[string]bool        // approvals whose outcome the agent already got from rubi_approval
-	upd     updateState
-	mkt     marketState
-	integ   integrity.Result
-	hookHit map[string][]time.Time // recent deliveries per hook, for rate limiting
+	// announced: plugin approvals whose link already went to an agent (a tool result, or the plugin's own
+	// event to a subscribed Bot), so Rubi doesn't send it again; toolCalls: plugin tool calls running.
+	announced map[string]bool
+	toolCalls map[string]int
+	upd       updateState
+	mkt       marketState
+	integ     integrity.Result
+	hookHit   map[string][]time.Time // recent deliveries per hook, for rate limiting
+	tested    map[string]string      // test event id -> outcome of its first delivery ("" = delivered)
 
 	agentAuth agentAuth    // codes that prove which Bot is calling (agentauth.go)
 	started   time.Time    // when this process started (Rubi is locked since then after a restart)
 	hookRoute string       // the hook route, kept while locked so hook requests still arrive (backlog.go)
 	access    accessGrants // access codes for plugin accounts (access.go)
+	botReqs   botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
 	devs      deviceClients
 }
 
@@ -154,6 +164,7 @@ func Open(layout paths.Layout) (*Core, error) {
 			//
 			// The agent always learns the outcome, unless it already saw it while waiting in rubi_approval.
 			// It goes to the Bot that left a plan, else to the Bots following Rubi's events (or the default).
+			c.botRequestFinished(s) // a Bot's own request: its sealed webhook key goes, whatever the outcome
 			p := c.takePlan(s.ID)
 			if !s.Level.InPanel() || c.State() != Unlocked {
 				return
@@ -379,6 +390,7 @@ func (c *Core) LockWith(reason string) {
 	}
 	c.stopPlugins()
 	c.Approvals.CancelAll()
+	c.discardBotRequests()
 	c.Events.Clear()
 	c.Vault.Lock()
 	c.Audit.SetVaultKey(nil)
