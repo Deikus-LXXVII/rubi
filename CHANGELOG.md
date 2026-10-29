@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.12.1 (draft, not tagged)
+## v0.12.1 (2026-10-29)
 
 - **Webhook key from a file Rubi reads (`key_file`).** v0.12.0's recipe passed the routine key to
   `rubi_agent_connect` as `"$file:/workspace/.rubi-hook-key"`; the Grok Bot runtime redacts known secrets
