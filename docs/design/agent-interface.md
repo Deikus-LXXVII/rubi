@@ -43,7 +43,7 @@ what to do.
 | Tool | Purpose |
 |---|---|
 | `rubi_status()` | State, version, binary integrity result, installed plugins, and a pairing or unlock link when one is needed |
-| `rubi_link(purpose)` | Fresh panel link for `pair`, `unlock`, `settings` (which includes the store), or `setup:<plugin>`. Links embed the current tunnel endpoint and expire. |
+| `rubi_link(purpose)` | Fresh panel link for `pair`, `unlock`, `settings` (which includes the store), `setup:<plugin>`, or `agent:<Bot name>` (connect that Bot's routine webhook; the result's `send_with` says to send it in one message with the deep link to the routine's webhook field). Links embed the current tunnel endpoint and expire. |
 | `rubi_lock()` | Lock immediately. Always allowed. |
 | `rubi_store()` | Plugins in the store (reviewed) and installed ones: versions, connection state, updates |
 | `rubi_plugin_install(plugin)` | Install from the store by id, or sideload from a source URL. Verifies the package, then returns a strong approval |

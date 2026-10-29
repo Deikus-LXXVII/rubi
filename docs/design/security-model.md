@@ -219,7 +219,18 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   webhook (`POST`, `Authorization: Bearer crsr_…`), with metadata only and fields from third parties
   marked as untrusted.
 - The webhook URL and key are stored in the vault; changing them needs a strong approval, so a manipulated
-  agent can't redirect events elsewhere.
+  agent can't redirect events elsewhere. The URL must be `https` (`http` only to this computer), without
+  user info, at most 2048 characters; the key may be pasted with or without `Authorization: Bearer` and
+  must be one printable ASCII token (no spaces or line breaks, so it can't inject headers). When the URL
+  isn't a Grok Bot routine (`https://api2.cursor.sh/automations/webhook/<id>`) or the key doesn't start
+  with `crsr_`, the approval screen warns that the user should approve only a receiver they set up. A Bot's
+  own Connect link (`agent:<name>`) refuses such addresses in the panel; settings still allow a custom
+  receiver.
+- The panel parses the pasted routine section locally (`panel/js/webhook.js`), shows only the key's last
+  four characters, and clears the box once sent. The passkey prompt opens by itself; the browser can still
+  require a tap, and approving stays a strong approval. `webhook.test` with `wait` reports whether the
+  routine accepted the test (`401/403` key refused, `400` routine off, `404` no routine); the answer never
+  contains the URL or the key.
 - Several Bots can share one Rubi (they share the computer and the MCP server). Each registered agent has
   its own webhook; an approval's outcome goes to the agent that asked for it, other events to every agent
   subscribed to their source. Rubi's own events nobody subscribed to go to the **administrator**, the Bot

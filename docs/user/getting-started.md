@@ -23,10 +23,12 @@ Open the link on your iPhone (or any device with a browser):
 2. Add a backup password (recommended) and save it in the Passwords app. If you lose both the passkey and
    the password, Rubi has to be reset; nobody can recover your key.
 
-3. **Connect your agent.** Your agent creates a routine called "Rubi events" and sends you a "Connect"
-   link. Open it in the Grok Bot app on your **computer** (the routine's webhook is only shown there): copy
-   the routine's *POST to* and *header* fields, paste both into the one box on the page, and confirm. This
-   is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without
+3. **Connect your agent.** Your agent creates a routine called "Rubi events" and sends you one message
+   with two links: the routine's webhook field and Rubi's "Connect" page. Open both in the Grok Bot app on
+   your **computer** (the routine's webhook is only shown there). Copy the whole Webhook section, or just
+   *POST to* and the *header*, in any order, and paste it into the box. Rubi asks for your passkey right
+   away, then sends a test and tells you whether the routine took it (if not: wrong key, routine switched
+   off, or no routine at that address, with buttons to test or paste again). This is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without
    you writing to it. The routine runs only when something happens, not on a schedule.
 
    Several Bots? Settings > **Grok Bot connections** has a ready-made message to send to each Bot, and you
