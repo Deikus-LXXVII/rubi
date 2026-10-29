@@ -114,7 +114,9 @@ func (c *Core) WakeUp() string {
 }
 
 const agentHow = "Create the routine yourself, don't ask the user to: name it \"Rubi events\", webhook trigger " +
-	"(no schedule), instruction \"A Rubi event arrived. Follow next_step in the JSON body.\" Then send the user ONE " +
+	"(no schedule), instruction \"A Rubi event arrived. Follow next_step in the JSON body.\" If you can read its " +
+	"webhook URL and key yourself, call rubi_agent_connect {name, url, key} and send the user the approval_url " +
+	"(they confirm with their passkey). Otherwise send the user ONE " +
 	"message with two links: the deep link to that routine's webhook field and rubi_link(\"agent:<your Bot name>\"). " +
 	"Tell them to open both in the Grok Bot desktop app (only it shows the URL and key), copy the whole Webhook " +
 	"section and paste it into Rubi's page. Rubi then asks for their passkey and tests the connection by itself; " +
