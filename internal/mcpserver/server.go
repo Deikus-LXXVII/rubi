@@ -31,9 +31,10 @@ body." Then, in this order:
    link to that field: the Grok Bot desktop app shows it).
 2. Ask for the key only through a masked secret field (Grok Bot: env RUBI_WEBHOOK_KEY_<NAME>), never in chat.
 3. Check it exists without printing it: [ -n "$RUBI_WEBHOOK_KEY_<NAME>" ] && echo set || echo missing
-4. umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key, then call rubi_agent_connect
-   with name, url, key "$file:/workspace/.rubi-hook-key" (your tool replaces it with the file's contents),
-   events and plugins (ONE approval), then shred -u /workspace/.rubi-hook-key.
+4. umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key (no echo), then call
+   rubi_agent_connect with name, url, key_file "/workspace/.rubi-hook-key", events and plugins (ONE
+   approval). Rubi reads the file itself and deletes it. Don't pass the key as "$file:..." substitution:
+   your tool may redact it.
 5. Send the user the approval_url; they confirm with their passkey and Rubi tests the connection.
 6. Check rubi_status (webhook.configured).
 Fallback without the key: call rubi_agent_connect without key and send ONE message with the approval_url and
@@ -346,7 +347,8 @@ type pluginWantIn struct {
 type agentConnectIn struct {
 	Name    string         `json:"name" jsonschema:"your Bot's name"`
 	URL     string         `json:"url,omitempty" jsonschema:"optional: your routine's webhook address (POST to), if you know it; prefilled for the user"`
-	Key     string         `json:"key,omitempty" jsonschema:"optional, usually omitted (a Grok Bot never sees it): the routine's webhook key; without it the user pastes address and key on the approval screen"`
+	KeyFile string         `json:"key_file,omitempty" jsonschema:"optional: absolute path of a file holding your routine's webhook key, under /workspace or /tmp, not a symlink, owned by you, mode 0600, at most 4 KB; write it with: umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key (no $file: substitution). Rubi reads it and deletes it, whether or not it works"`
+	Key     string         `json:"key,omitempty" jsonschema:"optional, prefer key_file: the routine's webhook key itself (crsr_…, or the whole Authorization: Bearer header). Without key and key_file the user pastes address and key on the approval screen"`
 	Events  []string       `json:"events,omitempty" jsonschema:"optional: sources to hear about (\"rubi\" and/or plugin ids)"`
 	Plugins []pluginWantIn `json:"plugins,omitempty" jsonschema:"optional: plugin accounts to ask for in the same approval"`
 	Reason  string         `json:"reason,omitempty" jsonschema:"one sentence for the user: why"`
@@ -424,12 +426,23 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_agent_connect",
-		Description: "Connect yourself to Rubi (or change your webhook): pass your Bot name, your routine's webhook url (a Grok Bot routine address; others are refused), the key as \"$file:<path>\" of a 600 file you wrote with printenv from your secret env var (never read or show it; delete the file right after), and optionally events to hear about and plugins whose accounts you need. Without a key the user pastes your \"Rubi events\" routine's Webhook section (POST to and header) on the approval screen instead and approves with their passkey in the same step. Nothing changes until the user approves; replacing an existing webhook is shown to them as such. Returns approval_id and approval_url: send the user that link together with the deep link to your routine's webhook field. Calling again (or rubi_access_request) while it waits folds everything into ONE approval."},
+		Description: "Connect yourself to Rubi (or change your webhook): pass your Bot name, your routine's webhook url (a Grok Bot routine address; others are refused), key_file: the path of a file you wrote with umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key (never read or show the key, and don't use $file: substitution: hosts redact it; Rubi reads the file and deletes it), and optionally events to hear about and plugins whose accounts you need. Without a key the user pastes your \"Rubi events\" routine's Webhook section (POST to and header) on the approval screen instead and approves with their passkey in the same step. Nothing changes until the user approves; replacing an existing webhook is shown to them as such. Returns approval_id and approval_url: send the user that link together with the deep link to your routine's webhook field. Calling again (or rubi_access_request) while it waits folds everything into ONE approval."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in agentConnectIn) (*mcp.CallToolResult, out, error) {
+			key := in.Key
+			if in.KeyFile != "" { // read (and delete) it first, so the file never outlives the call
+				if in.Key != "" {
+					_, _ = core.ReadKeyFile(in.KeyFile)
+					return nil, nil, errors.New("pass key_file or key, not both")
+				}
+				var err error
+				if key, err = core.ReadKeyFile(in.KeyFile); err != nil {
+					return nil, nil, err
+				}
+			}
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			w := &core.WebhookProposal{URL: strings.TrimSpace(in.URL), Key: in.Key, Events: in.Events}
+			w := &core.WebhookProposal{URL: strings.TrimSpace(in.URL), Key: key, Events: in.Events}
 			res, err := s.core.ProposeBot(ctx, core.BotRequest{Agent: in.Name, Webhook: w, Access: toWants(in.Plugins), Reason: in.Reason})
 			return nil, res, err
 		})

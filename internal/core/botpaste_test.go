@@ -91,7 +91,7 @@ func TestBotConnectPasteOnlyWhenChosen(t *testing.T) {
 func TestBotKeyFileReferenceRefused(t *testing.T) {
 	c, hook, _ := botCore(t)
 	_, err := c.ProposeBot(context.Background(), BotRequest{Agent: "Mail", Webhook: &WebhookProposal{URL: hook, Key: "$file:/workspace/.rubi-hook-key"}})
-	if err == nil || strings.Contains(err.Error(), "/workspace") {
+	if err == nil || strings.Contains(err.Error(), "$file:/workspace") || !strings.Contains(err.Error(), "key_file") {
 		t.Fatalf("a $file: reference was taken as a key: %v", err)
 	}
 	// A key read from a file ends with a newline: trimmed.

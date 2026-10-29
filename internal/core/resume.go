@@ -118,8 +118,9 @@ const agentHow = "Create the routine yourself, don't ask the user to: name it \"
 	"the routine's webhook address (POST to; send the deep link to its webhook field), and for the key only through a " +
 	"masked secret field (Grok Bot: env RUBI_WEBHOOK_KEY_<NAME>), never in chat. Check it without printing it: " +
 	"[ -n \"$RUBI_WEBHOOK_KEY_<NAME>\" ] && echo set || echo missing. Then umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > " +
-	"/workspace/.rubi-hook-key, call rubi_agent_connect {name, url, key: \"$file:/workspace/.rubi-hook-key\", events, " +
-	"plugins} and shred -u the file right after. Send the user the approval_url; they approve with their passkey and " +
+	"/workspace/.rubi-hook-key (no echo) and call rubi_agent_connect {name, url, key_file: \"/workspace/.rubi-hook-key\", " +
+	"events, plugins}; Rubi reads the file and deletes it. Don't pass the key through $file: substitution (your tool may " +
+	"redact it). Send the user the approval_url; they approve with their passkey and " +
 	"Rubi tests the connection (you get a \"webhook.test\" event). Fallback without the key: call rubi_agent_connect " +
 	"without key and send ONE message with its approval_url and the deep link to the routine's webhook field; the user " +
 	"pastes the Webhook section on the approval screen. (rubi_link(\"agent:<your Bot name>\") is the older way.)"

@@ -327,7 +327,8 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 		"rubi_approval with wait_seconds. If you asked for your webhook, a webhook.test event reaches you once it works; " +
 		"check rubi_status."
 	if hasWebhook && !items[0].paste {
-		res["instructions"] = res["instructions"].(string) + " If you passed the key from a file, delete it now (shred -u)."
+		res["instructions"] = res["instructions"].(string) + " Rubi already deleted your key_file; if you passed key directly, " +
+			"delete any copy you wrote (shred -u)."
 	}
 	if hasWebhook && items[0].paste {
 		res["user_pastes_webhook"] = true
@@ -386,13 +387,13 @@ func (c *Core) webhookItem(name string, w WebhookProposal) (*botItem, error) {
 	var key string
 	var err error
 	if strings.HasPrefix(w.Key, "$file:") { // the agent's file substitution didn't happen: never store the path as a key
-		return nil, errors.New("the key arrived as a $file: reference, not its contents; pass the file through your tool's $file: substitution, or omit key and let the user paste it")
+		return nil, errors.New("the key arrived as a $file: reference, not its contents. " + keyFileHint)
 	}
 	if w.Key != "" {
 		if w.URL == "" {
 			return nil, errors.New("a webhook key needs its url; or pass neither and the user pastes both on the approval screen")
 		}
-		if key, err = cleanWebhookKey(w.Key); err != nil {
+		if key, err = botWebhookKey(w.Key, w.URL); err != nil {
 			return nil, err
 		}
 	}

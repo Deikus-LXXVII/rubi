@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"unicode"
@@ -16,7 +17,12 @@ const (
 	routineKeyPrefix  = "crsr_"
 	maxWebhookURL     = 2048
 	maxWebhookKey     = 512
+	minBotWebhookKey  = 20 // a Grok routine key is crsr_ plus about 86 characters
 )
+
+// keyFileHint is how a Bot should hand over its key instead.
+const keyFileHint = "Write it with `umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key` and pass " +
+	"key_file \"/workspace/.rubi-hook-key\" instead of key (Rubi reads and deletes the file), or omit both and let the user paste it"
 
 // isRoutineWebhook reports whether rawURL is a Grok Bot routine's webhook address.
 func isRoutineWebhook(rawURL string) bool {
@@ -47,6 +53,34 @@ func cleanWebhookKey(key string) (string, error) {
 	for _, r := range key {
 		if r > unicode.MaxASCII || !unicode.IsPrint(r) || unicode.IsSpace(r) {
 			return "", errors.New("the webhook key contains spaces or invalid characters; copy only the routine's key or header")
+		}
+	}
+	return key, nil
+}
+
+// botWebhookKey checks a key a Bot proposes, after cleanWebhookKey. A Bot's key passed through its host,
+// which may have replaced it (a redaction placeholder) or cut it, so this is stricter than what the user
+// pastes: no placeholder, at least minBotWebhookKey characters, and for a Grok Bot routine address the
+// routine key format crsr_[A-Za-z0-9_-] (as the panel's paste parser, panel/js/webhook.js).
+func botWebhookKey(raw, url string) (string, error) {
+	t := strings.TrimSpace(raw)
+	if strings.Contains(strings.ToUpper(t), "REDACTED") || (t != "" && strings.Trim(t, "*•") == "") {
+		return "", errors.New("the webhook key arrived as a redaction placeholder, not the key: your tool replaced the secret before " +
+			"sending it. " + keyFileHint)
+	}
+	key, err := cleanWebhookKey(raw)
+	if err != nil {
+		return "", errors.New(err.Error() + ". " + keyFileHint)
+	}
+	if len(key) < minBotWebhookKey {
+		return "", fmt.Errorf("the webhook key is only %d characters; a routine key is much longer, so it was cut or replaced on the way. %s",
+			len(key), keyFileHint)
+	}
+	if isRoutineWebhook(url) {
+		rest, ok := strings.CutPrefix(key, routineKeyPrefix)
+		if !ok || strings.TrimLeft(rest, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != "" {
+			return "", errors.New("this isn't a Grok Bot routine key (" + routineKeyPrefix + "followed by letters, digits, _ or -); " +
+				"copy the routine's key or its Authorization header. " + keyFileHint)
 		}
 	}
 	return key, nil
