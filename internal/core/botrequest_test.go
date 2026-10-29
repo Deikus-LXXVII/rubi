@@ -160,7 +160,7 @@ func TestBotConnectAppliesOnlyWithApproval(t *testing.T) {
 	}
 
 	// DecideStrong is what the panel API calls after checking the passkey or password.
-	snap, err := c.Approvals.DecideStrong(context.Background(), id, "apply", true)
+	snap, err := c.Approvals.DecidePanel(context.Background(), id, "apply", true, approvals.Verified)
 	if err != nil || snap.State != approvals.Executed {
 		t.Fatalf("approve: %+v %v", snap, err)
 	}
@@ -187,7 +187,7 @@ func TestBotRequestDenyAndLockDiscardTheKey(t *testing.T) {
 	c.botReqs.mu.Lock()
 	item := c.botReqs.byID[id].items[0]
 	c.botReqs.mu.Unlock()
-	if snap, err := c.Approvals.DecideStrong(context.Background(), id, "", false); err != nil || snap.State != approvals.Denied {
+	if snap, err := c.Approvals.DecidePanel(context.Background(), id, "", false, approvals.Verified); err != nil || snap.State != approvals.Denied {
 		t.Fatalf("deny: %+v %v", snap, err)
 	}
 	waitGone(t, c, "Mail")
@@ -214,7 +214,7 @@ func TestBotRequestExpiryDiscards(t *testing.T) {
 	if c.pendingBotRequest("Mail") != "" {
 		t.Fatal("an expired request kept its key")
 	}
-	if _, err := c.Approvals.DecideStrong(context.Background(), id, "apply", true); err == nil {
+	if _, err := c.Approvals.DecidePanel(context.Background(), id, "apply", true, approvals.Verified); err == nil {
 		t.Fatal("an expired request was approved")
 	}
 	if agentOf(c, "Mail") != nil {
@@ -241,7 +241,7 @@ func TestBotRequestReplacementIsMarkedAndChecked(t *testing.T) {
 	// must not silently replace what the user didn't see.
 	const now = "https://api2.cursor.sh/automations/webhook/cccccccc-0000-0000-0000-000000000003"
 	_ = c.Vault.Update(func(d *vault.Data) error { findAgent(d, "Mail").URL = now; return nil })
-	snap, _ := c.Approvals.DecideStrong(context.Background(), id, "apply", true)
+	snap, _ := c.Approvals.DecidePanel(context.Background(), id, "apply", true, approvals.Verified)
 	if snap.State != approvals.Failed || agentOf(c, "Mail").URL != now {
 		t.Fatalf("a stale replacement applied: %+v", snap)
 	}
@@ -279,7 +279,7 @@ func TestBotRequestsMergeAndPartialApproval(t *testing.T) {
 	if err := c.Approvals.CheckOption(id, opt); err != nil {
 		t.Fatal(err)
 	}
-	snap, err := c.Approvals.DecideStrong(context.Background(), id, opt, true)
+	snap, err := c.Approvals.DecidePanel(context.Background(), id, opt, true, approvals.Verified)
 	if err != nil || snap.State != approvals.Executed {
 		t.Fatalf("approve: %+v %v", snap, err)
 	}
@@ -304,7 +304,7 @@ func TestBotRequestAccountsWithoutTheWebhookFail(t *testing.T) {
 	c, hook, _ := botCore(t)
 	out := propose(t, c, BotRequest{Agent: "Mail", Webhook: &WebhookProposal{URL: hook, Key: testHookKey},
 		Access: []PluginAccessWant{{Plugin: "demo-mail", Accounts: []string{"bob@example.com"}}}})
-	snap, _ := c.Approvals.DecideStrong(context.Background(), out["approval_id"].(string), "items:access:demo-mail|bob@example.com", true)
+	snap, _ := c.Approvals.DecidePanel(context.Background(), out["approval_id"].(string), "items:access:demo-mail|bob@example.com", true, approvals.Verified)
 	if snap.State != approvals.Failed || len(assigned(c, "bob@example.com")) != 0 || agentOf(c, "Mail") != nil {
 		t.Fatalf("accounts given to a Bot that isn't connected: %+v", snap)
 	}
