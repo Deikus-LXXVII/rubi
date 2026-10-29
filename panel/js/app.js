@@ -9,6 +9,7 @@ import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
 import { icon } from "./icons.js";
 import { celebrate, lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
+import { missingHint, parseWebhook } from "./webhook.js";
 
 const root = document.getElementById("app");
 
@@ -521,6 +522,8 @@ function demoScreen(ctx, which) {
       return homeDeviceScreen(ctx, back);
     case "bots":
       return grokBotScreen(ctx);
+    case "connect":
+      return agentScreen(ctx, "Mail Bot");
     case "updates":
       return updatesScreen(ctx);
     case "notes":
@@ -651,29 +654,22 @@ function pairScreen(ctx) {
   );
 }
 
-// parseWebhook pulls the routine's webhook URL and key out of whatever the user pasted: the "POST to" and
-// "key" fields, the "header" field, or all of them at once, in any order.
-function parseWebhook(text) {
-  const t = String(text || "");
-  const url = (t.match(/https?:\/\/[^\s"'<>]+/) || [])[0] || "";
-  let key = (t.match(/Bearer\s+([^\s"']+)/i) || [])[1] || "";
-  if (!key) {
-    key = t.replace(url, " ").split(/\s+/).map((w) => w.replace(/^(authorization|key|post|to):?$/i, ""))
-      .filter((w) => w.length >= 16 && !/^https?:/i.test(w))[0] || "";
-  }
-  return { url, key };
-}
-
-// agentForm asks for an agent's routine webhook in one paste box. fixedName locks the name (agent links).
+// agentForm asks for an agent's routine webhook in one paste box. fixedName locks the name (agent links):
+// then only a Grok Bot routine is accepted, and the form goes on by itself as soon as both values are in.
 function agentForm(ctx, { fixedName, onSaved, err }) {
+  const strict = !!fixedName;
   const name = h("input", { type: "text", placeholder: "The Grok Bot's name*", autocomplete: "off", value: fixedName || "", required: true });
   if (fixedName) name.readOnly = true;
-  const paste = h("textarea", { rows: "4", placeholder: "Paste here: the \u201cPOST to\u201d address and the \u201cheader\u201d (or \u201ckey\u201d)", autocapitalize: "none", spellcheck: "false", required: true });
-  const parsed = h("p", { class: "muted small" });
+  const paste = h("textarea", { rows: "4", placeholder: "Paste here: \u201cPOST to\u201d and \u201cheader\u201d, in any order (or the whole Webhook section)", autocapitalize: "none", spellcheck: "false", required: true });
+  const parsed = h("p", { class: "muted small", "aria-live": "polite" });
+  let sent = false;
   const show = () => {
-    const w = parseWebhook(paste.value);
-    parsed.textContent = !paste.value.trim() ? ""
-      : `${w.url ? "Address: " + w.url.replace(/^(https?:\/\/[^/]+).*$/, "$1/\u2026") : "Address: not found yet"} \u00b7 ${w.key ? "Key: \u2022\u2022\u2022\u2022" + w.key.slice(-4) : "Key: not found yet"}`;
+    const w = parseWebhook(paste.value, { strict });
+    const found = [w.url ? "Address \u2713 " + w.url.replace(/^(https?:\/\/[^/]+).*$/, "$1/\u2026") : "",
+      w.key ? "Key \u2713 \u2022\u2022\u2022\u2022" + w.key.slice(-4) : ""].filter(Boolean).join(" \u00b7 ");
+    parsed.textContent = !paste.value.trim() ? "" : [found, missingHint(w)].filter(Boolean).join(" \u2014 ");
+    // Both values from one routine: carry on without another click (the passkey still confirms it).
+    if (strict && w.routine && !sent) form.requestSubmit();
   };
   paste.addEventListener("input", show);
   // What this Bot will hear about, chosen before the connection is confirmed (part of the same approval).
@@ -697,16 +693,18 @@ function agentForm(ctx, { fixedName, onSaved, err }) {
   const form = h("form", {
     onsubmit: (e) => {
       e.preventDefault();
-      const w = parseWebhook(paste.value);
-      if (!w.url) return showError(err, new UserError("Paste the webhook address (\u201cPOST to\u201d) as well."));
-      if (!w.key) return showError(err, new UserError("Paste the webhook key or header as well."));
+      if (sent) return;
+      const w = parseWebhook(paste.value, { strict });
+      const hint = missingHint(w);
+      if (hint) return showError(err, new UserError(hint));
+      sent = true;
       busy(go, async () => {
         const args = { name: name.value.trim(), url: w.url, key: w.key };
         if (boxes.length) args.sources = boxes.filter((b) => b.checked).map((b) => b.value);
         const res = await ctx.client.call("agent.add", args);
         paste.value = "";
-        confirmChange(ctx, res, () => onSaved(name.value.trim()), "Finish");
-      }).catch((x) => showError(err, x));
+        confirmChange(ctx, res, () => onSaved(name.value.trim()), "Finish", { autoStart: true, autoContinue: true });
+      }).catch((x) => { sent = false; showError(err, x); });
     },
   }, fixedName ? null : h("label", { class: "field" }, h("span", {}, "Name"), name),
   h("label", { class: "field" }, h("span", {}, "Webhook"), paste), parsed, subsBox, go);
@@ -717,19 +715,38 @@ function agentHowTo(name) {
   return h("ol", { class: "steps-list" },
     h("li", {}, "Open the Grok Bot app on your computer (these values are only shown there)."),
     h("li", {}, `Open ${name ? name + "\u2019s" : "your Bot\u2019s"} routine \u201cRubi events\u201d. Its Webhook section shows \u201cPOST to\u201d, \u201ckey\u201d and \u201cheader\u201d.`),
-    h("li", {}, "Copy \u201cPOST to\u201d and \u201cheader\u201d and paste both into the box below."));
+    h("li", {}, "Copy \u201cPOST to\u201d and \u201cheader\u201d (in any order, or the whole section) into the box below. Rubi then asks for your passkey and tests the connection."));
 }
 
-async function agentConnected(ctx, name) {
+// agentConnected tests the new connection at once and says whether the routine took the test event.
+// again reopens the paste form (the routine refused, or the user pasted another routine's fields).
+async function agentConnected(ctx, name, again) {
+  screen(header(ctx.hello), face("idle", 96), h("h1", {}, `Testing ${name}\u2026`),
+    h("p", { "aria-live": "polite" }, "Rubi is sending a test event to the routine."));
+  let t = null;
   try {
-    await ctx.client.call("webhook.test", { name });
-  } catch (_) { /* the test event is a courtesy */ }
+    t = await ctx.client.call("webhook.test", { name, wait: true });
+  } catch (_) { /* reported below like a refused test */ }
+  if (t && (t.delivered || t.delivered === undefined)) { // undefined: an older Rubi that doesn't wait
+    return screen(
+      header(ctx.hello),
+      face("happy", 96),
+      h("h1", {}, `${name} is connected`),
+      h("p", {}, (t.delivered ? "The routine accepted Rubi's test event; your Bot will confirm in the chat. "
+        : "Rubi just sent it a test event; it will confirm in the chat. ") +
+        "From now on it continues on its own after you approve something, and hears about replies right away."),
+      h("p", { class: "muted" }, "You can close this page."),
+    );
+  }
   screen(
     header(ctx.hello),
-    face("happy", 96),
-    h("h1", {}, `${name} is connected`),
-    h("p", {}, "Rubi just sent it a test event; it will confirm in the chat. From now on it continues on its own after you approve something, and hears about replies right away."),
-    h("p", { class: "muted" }, "You can close this page."),
+    face("concern", 96),
+    h("h1", {}, t?.pending ? "No answer from the routine yet" : "The routine didn\u2019t take the test"),
+    h("p", { role: "alert" }, t?.problem || "Rubi couldn't send the test event."),
+    h("p", { class: "muted" }, `The connection is saved. Fix it in the routine and test again, or paste ${name}\u2019s fields again.`),
+    h("div", { class: "actionbar" },
+      h("button", { class: "primary", type: "button", onclick: () => agentConnected(ctx, name, again) }, "Test again"),
+      again ? h("button", { class: "secondary", type: "button", onclick: again }, "Paste again") : null),
   );
 }
 
@@ -742,7 +759,7 @@ function agentScreen(ctx, name) {
     h("h1", {}, `Connect ${name}`),
     h("p", {}, "So Rubi can tell this Bot when you approve something or a reply arrives. The routine runs only when something happens, never on a schedule."),
     agentHowTo(name),
-    agentForm(ctx, { fixedName: name, err, onSaved: (n) => agentConnected(ctx, n) }),
+    agentForm(ctx, { fixedName: name, err, onSaved: (n) => agentConnected(ctx, n, () => agentScreen(ctx, name)) }),
     err,
   );
 }
@@ -754,7 +771,7 @@ function connectAgentScreen(ctx) {
   const here = h("details", { class: "sideload" },
     h("summary", {}, "I have the routine open here"),
     agentHowTo(""),
-    agentForm(ctx, { err, onSaved: (n) => agentConnected(ctx, n) }));
+    agentForm(ctx, { err, onSaved: (n) => agentConnected(ctx, n, () => connectAgentScreen(ctx)) }));
   screen(
     header(ctx.hello),
     face("happy", 96),
@@ -1127,7 +1144,7 @@ async function approveScreen(ctx, id, opts = {}) {
       usePasskey() ? `${verb} with ${tap ? "a passkey tap" : "Passkey"}` : `${verb} with password`);
   };
   setPrimary();
-  primary.onclick = () => busy(primary, async () => {
+  const run = (auto) => busy(primary, async () => {
     const proof = ctx.demo ? { type: "demo" } : usePasskey()
       ? await signChallenge(b64u.dec(await challengeFor(chosen)), approverIds, { tap })
       : await passwordProof(chosen);
@@ -1137,9 +1154,15 @@ async function approveScreen(ctx, id, opts = {}) {
       primary.classList.add("is-done");
       primary.replaceChildren(icon("check", 22), "Done");
       await new Promise((r) => setTimeout(r, reducedMotion() ? 0 : 560));
+      if (opts.autoContinue && opts.onDone) return opts.onDone();
     }
     resultScreen(ctx, res, opts.onDone, { preview: a.preview, option: a.options.find((o) => o.key === optKey), notified, doneLabel: opts.doneLabel });
-  }).catch((e) => { showError(err, e); setPrimary(); });
+  }).catch((e) => {
+    // A passkey prompt Rubi opened by itself may be refused by the browser or closed: the button stays.
+    if (!(auto && e?.name === "NotAllowedError")) showError(err, e);
+    setPrimary();
+  });
+  primary.onclick = () => run(false);
 
   const decline = h("button", { class: "link decline", type: "button", onclick: (e) => busy(e.target, async () =>
     resultScreen(ctx, await ctx.client.call("approval.decide", { approval_id: id, approve: false }), opts.onDone, { preview: a.preview, notified, doneLabel: opts.doneLabel }))
@@ -1181,6 +1204,12 @@ async function approveScreen(ctx, id, opts = {}) {
           pwInput.focus();
         } }, "Use password"))))),
   );
+  // The user has just asked for this change on this page (e.g. pasted a webhook): ask for the passkey
+  // right away. What it approves is on screen behind the prompt, and nothing changes without it.
+  if (opts.autoStart && !ctx.demo) {
+    if (usePasskey()) run(true);
+    else if (!pwBox.hidden) pwInput.focus();
+  }
 }
 
 // resultScreen shows how an approval ended. extra (optional) carries the preview and chosen option.
@@ -1248,9 +1277,9 @@ async function whenUnlocked(ctx, next) {
 
 // confirmChange takes the {approval_id, ticket} a settings operation returns and asks for the passkey or the
 // password, using a client bound to that approval's ticket.
-function confirmChange(ctx, res, onDone, doneLabel) {
+function confirmChange(ctx, res, onDone, doneLabel, more = {}) {
   const approvalCtx = ctx.demo ? ctx : { ...ctx, client: tracked(new RubiClient({ ...ctx.link, t: res.ticket })) };
-  return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone, doneLabel });
+  return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone, doneLabel, ...more });
 }
 
 async function setupScreen(ctx, id, back) {
@@ -1754,8 +1783,9 @@ function homeDeviceScreen(ctx, back) {
 // The message the user sends to each Grok Bot that should hear from Rubi.
 const CONNECT_PROMPT = "Connect yourself to Rubi so it can wake you: create a routine named \"Rubi events\" " +
   "with a webhook trigger and no schedule, whose instruction is \"A Rubi event arrived. Follow next_step in the " +
-  "JSON body.\" Then send me rubi_link(\"agent:<your Bot name>\"). Once I've connected it, choose which Rubi " +
-  "notifications you need with rubi_notifications.";
+  "JSON body.\" Then send me, in one message, the link to that routine's webhook field and " +
+  "rubi_link(\"agent:<your Bot name>\"). Once I've connected it, choose which Rubi notifications you need " +
+  "with rubi_notifications.";
 
 
 // grokBotScreen manages the Bots Rubi can wake: one webhook per Bot, any number of them, each with the
@@ -1827,8 +1857,11 @@ async function grokBotScreen(ctx) {
         h("div", { class: "actions" },
           h("button", { class: "ghost small", onclick: async (e) => {
             const b = e.currentTarget;
-            await busy(b, () => ctx.client.call("webhook.test", { name: a.name }))
-              .then(() => { b.textContent = "Sent"; }).catch((x) => showError(err, x));
+            await busy(b, () => ctx.client.call("webhook.test", { name: a.name, wait: true }))
+              .then((t) => {
+                if (t?.delivered === false) return showError(err, new UserError(`${a.name}: ${t.problem}`));
+                b.textContent = t?.delivered ? "Arrived" : "Sent";
+              }).catch((x) => showError(err, x));
           } }, "Test"),
           menu(`More for ${a.name}`, [
             a.default ? null : h("button", { type: "button", onclick: change("agent.default", { name: a.name }) }, icon("check", 16), "Make administrator"),

@@ -48,6 +48,11 @@ const APPROVALS = {
     options: [{ key: "apply", label: "Approve" }],
     preview: { integration: "Unofficial Telegram", account: "@alex", connects_to: "Telegram's servers" },
   },
+  bot: {
+    kind: "rubi.settings", summary: "Let Rubi wake Mail Bot",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { agent: "Mail Bot", webhook: "https://api2.cursor.sh/\u2026a1b2c3d4", notifies_about: "Rubi itself, iCloud Mail" },
+  },
   settings: {
     kind: "rubi.settings", summary: "Add Rubi Home on Mac mini",
     options: [{ key: "apply", label: "Approve" }],
@@ -168,6 +173,8 @@ export class DemoClient {
       case "updates.plugin":
       case "updates.rubi":
         return { approval_id: "settings", ticket: "demo" };
+      case "agent.add":
+        return { approval_id: "bot", ticket: "demo" };
       case "plugin.panel": {
         if (args.id === "gmail") return demoMailPage(args.op, args.args);
         const notes = DEMO_NOTES;
@@ -189,6 +196,7 @@ export class DemoClient {
       case "agent.subscribe":
         return { subscriptions: args.sources || [] };
       case "webhook.test":
+        return { delivered: true };
       case "lock":
         return {};
     }
@@ -244,6 +252,7 @@ export const DEMO_SCREENS = [
   ["setup", "Connect with a code"],
   ["home", "Add a home computer"],
   ["bots", "Grok Bot connections"],
+  ["connect", "Connect a Bot"],
   ["updates", "Updates"],
   ["notes", "Notes"],
   ["sent", "Sent"],
