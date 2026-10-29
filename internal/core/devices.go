@@ -22,7 +22,7 @@ import (
 // (manifest "home": "hue", "shortcuts", "claude").
 
 var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Shortcuts",
-	"claude": "answering Claude Code's permission requests on that computer (it can allow or deny commands)"}
+	"claude": "answering Claude Code's permission requests on that computer (it can allow or deny commands), listing its Claude Code sessions and passing messages to and from them"}
 
 type deviceClients struct {
 	mu      sync.Mutex

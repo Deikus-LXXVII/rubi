@@ -103,6 +103,7 @@ func Open(dir string) (*Helper, error) {
 	}
 	h.Hue = &Hue{Pins: h.huePins, SetPin: h.setHuePin}
 	h.Claude = &Claude{}
+	h.Claude.DesktopStore, h.Claude.Transcripts = DefaultClaudeDirs()
 	if s := h.Config().ClaudeWaitSeconds; s >= 10 && s <= 590 {
 		h.Claude.Wait = time.Duration(s) * time.Second
 	}
@@ -283,7 +284,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 			return nil, errors.New("bad arguments")
 		}
 		return h.Hue.Do(ctx, in)
-	case "claude.next", "claude.decide":
+	case "claude.next", "claude.decide", "claude.sessions", "claude.send":
 		return h.Claude.handle(ctx, env.Op, env.Args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
