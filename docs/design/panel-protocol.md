@@ -117,6 +117,8 @@ that integration) and an unlocked Rubi. Reads return data; every change returns
 | `integration.disconnect` | `id` | asks to stop it and erase its secrets and state |
 | `policy.get` / `policy.set` | — / `levels: {kind: level}` | read / ask to change approval levels (locked kinds refused) |
 | `webhook.get` / `webhook.set` / `webhook.test` | — / `url`, `key` / — | read / ask to change the agent webhook / send a test event |
+| `approval.list` | — | the requests waiting in the panel (`tap`/`strong`, pending, oldest first): `approval_id`, `integration`, `kind`, `level`, `summary`, `expires_at`. No preview, options or items. Needs a full `settings` ticket (not `settings:view`) |
+| `approval.open` | `approval_id` | `{"approval_id", "ticket"}`: a fresh ticket for `approve:<id>` while that request is pending; the panel then uses `approval.get` / `approval.decide`. Full `settings` ticket only, since that ticket can decline without proof |
 
 ### Approval proofs
 

@@ -88,6 +88,13 @@ A plugin tool whose action kind has level `strong`, `tap` or `chat` doesn't act.
 - **`chat`:** the response carries `buttons` with plain-text labels (no emoji) that include a short code
   (`Send · K7Q2`). The agent renders them as buttons, waits, and calls `rubi_confirm` with the pressed
   label. Users can pair this with a Grok Bot "Ask first" rule on `rubi_confirm`.
+- **Approvals a plugin asks for on its own** (outside a tool call: a Claude Code permission request, a
+  watcher) have no agent to pass on the link. Unless the plugin's own event already reached a Bot that
+  follows it, Rubi emits a `rubi` `approval.requested` event (`approval_id`, `integration`, `kind`,
+  `level`, `summary` (untrusted), `expires_at`) about 3 seconds later. It goes to the administrator, or to the Bots following
+  `rubi`. Each webhook delivery carries a fresh `approval_url` and a `next_step` asking the Bot to send the
+  user the link. The stored event has no link, and a request decided in the meantime isn't delivered. The panel's
+  settings screen also lists every waiting request ("Waiting for you").
 - **Options travel with the approval.** For example, iCloud Mail's "send" offers *Send* and *Send and
   notify me on reply*; the option is chosen in the panel or by the button pressed, never by the agent.
 - Button and panel texts are English by default; the user can pick another language in panel settings.

@@ -1528,12 +1528,13 @@ async function settingsScreen(ctx, tab) {
   ctx.settingsTab = tab;
   currentView = () => settingsScreen(ctx);
   const err = errorBox();
-  let store, policy, hook, st, devices;
+  let store, policy, hook, st, devices, waitingList;
   try {
-    [store, policy, hook, st, devices] = await Promise.all([
+    [store, policy, hook, st, devices, waitingList] = await Promise.all([
       ctx.client.call("store.list"), ctx.client.call("policy.get"),
       ctx.client.call("agents.get").catch(() => ctx.client.call("webhook.get")), ctx.client.call("status"),
       ctx.client.call("devices.get").catch(() => null), // older Rubi: no Rubi Home
+      ctx.client.call("approval.list").catch(() => null), // older Rubi, or a view-only link
     ]);
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
@@ -1543,6 +1544,24 @@ async function settingsScreen(ctx, tab) {
     const target = e.target.closest("button") || e.target;
     await busy(target, async () => confirmChange(ctx, await ctx.client.call(op, args()), back)).catch((x) => showError(err, x));
   };
+
+  // ----- requests waiting for the user: one a plugin asked for on its own may have reached no one.
+  // The list has no previews; opening one fetches a ticket for that request alone.
+  const waiting = waitingList?.approvals || [];
+  const openApproval = (a) => async (e) => {
+    await busy(e.target.closest("button"), async () => {
+      const res = await ctx.client.call("approval.open", { approval_id: a.approval_id });
+      const approvalCtx = ctx.demo ? ctx : { ...ctx, client: tracked(new RubiClient({ ...ctx.link, t: res.ticket })) };
+      return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Waiting for you", onDone: back });
+    }).catch((x) => showError(err, x));
+  };
+  const waitingBlock = waiting.length ? h("section", { class: "waiting", "aria-label": "Requests waiting for you" },
+    h("h2", {}, "Waiting for you"),
+    h("ul", { class: "acct-list" }, waiting.map((a) => h("li", {},
+      badge(a.integration, 26),
+      h("span", { class: "acct-name" }, a.summary || a.kind,
+        h("small", { class: "muted" }, `${a.integration} · ${a.level === "strong" ? "Passkey" : "Tap"} · expires ${fmtTime(a.expires_at)}`)),
+      h("button", { class: "primary small", onclick: openApproval(a) }, "Review"))))) : null;
 
   // ----- plugins
   const installed = (store.plugins || []).filter((p) => p.installed);
@@ -1696,6 +1715,7 @@ async function settingsScreen(ctx, tab) {
     head,
     h("h1", {}, "Settings"),
     err,
+    waitingBlock,
     h("div", { class: "settings-layout" }, nav, body),
   );
   show(tab);

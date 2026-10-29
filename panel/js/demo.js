@@ -94,6 +94,11 @@ export class DemoClient {
       case "approval.get":
         return { approval: approval(args.approval_id), approvers: [{ credential_id: "demo" }], password: true, agent_notified: true,
           challenges: {} };
+      case "approval.list":
+        return { approvals: [{ approval_id: "send", integration: "icloud-mail", kind: APPROVALS.send.kind, level: "strong",
+          summary: APPROVALS.send.summary, expires_at: iso(now() + 14 * 60 * 1000) }] };
+      case "approval.open":
+        return { approval_id: args.approval_id, ticket: "demo" };
       case "approval.challenge":
         return { challenge: "" };
       case "approval.decide": {
