@@ -121,7 +121,8 @@ func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
 	return c.RequestChange(ctx, "Add Rubi Home on "+name, map[string]any{"computer (as it calls itself)": name,
 		"fingerprint": fingerprint + " (rubi-home status shows the same)",
 		"check":       "Approve only if you just ran rubi-home on your own computer and pasted its code",
-		"allows":      "control Philips Hue on your home network and run the shortcuts in the folder \"" + hello.Folder + "\""},
+		"allows": "control Philips Hue on your home network, run the shortcuts in the folder \"" + hello.Folder +
+			"\", and answer Claude Code's permission requests there (only plugins you approve for that can)"},
 		func(d *vault.Data) error {
 			if len(d.Devices) >= 10 {
 				return errors.New("at most 10 Rubi Home computers")
