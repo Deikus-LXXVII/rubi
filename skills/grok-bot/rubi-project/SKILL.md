@@ -25,23 +25,30 @@ need the user's passwords.
    Rubi with a passkey"). Wait until they say it's done.
 4. Connect yourself so Rubi can wake you. Create the routine yourself; don't ask the user to: name
    "Rubi events", **webhook trigger** (no schedule), instruction "A Rubi event arrived. Follow next_step in
-   the JSON body." Then call `rubi_agent_connect(name, url?, events?, plugins?, reason?)` with everything
-   you need at once (the event sources and the plugins whose accounts you need). You don't need the key:
-   without it the approval screen has a paste field. Pass `url` if you know the routine's address; it is
-   filled in for the user. Send the user **one message** with the returned `approval_url` and the deep
-   link to that routine's webhook field. They open the routine in the **Grok Bot desktop app** (only it
-   shows the URL and key), copy its Webhook section, paste it on Rubi's approval screen and confirm with
-   their passkey in the same step. Rubi then tests the connection itself; you get a `webhook.test` event
-   when it works. Setup is finished when `rubi_status` shows `webhook.configured: true`; plugins can't be
-   installed before that.
+   the JSON body." Then:
+   1. Ask the user in chat for the routine's webhook URL ("POST to" in its Webhook section). Send the deep
+      link to that field; only the **Grok Bot desktop app** shows it.
+   2. Ask for the key with a **masked secret field** stored as env `RUBI_WEBHOOK_KEY_<NAME>` (`<NAME>`: your
+      Bot name, upper case). Never ask for it in chat.
+   3. Check that it exists without printing it:
+      `[ -n "$RUBI_WEBHOOK_KEY_<NAME>" ] && echo set || echo missing`
+   4. In Shell, run `umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key` (no echo). Then
+      pass the tool argument key as the string "$file:/workspace/.rubi-hook-key"; Grok Bot replaces it with
+      the file contents when sending. Delete the file right after the call with `shred -u` or `rm`.
+      The call: `rubi_agent_connect(name, url, key: "$file:/workspace/.rubi-hook-key", events, plugins,
+      reason)`, with every event source and plugin you need, so it is one approval.
+   5. Send the user the returned `approval_url`.
+   6. The user confirms with their passkey. Rubi applies the webhook and tests it (you get `webhook.test`).
+   7. Check `rubi_status`: setup is finished when it shows `webhook.configured: true`. Plugins can't be
+      installed before that.
 
-   Passing the key yourself (only if it is in your environment as `RUBI_WEBHOOK_KEY_<NAME>`, never by
-   reading or printing it): In Shell, run `umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key` (no echo). Then pass the tool argument key as the string "$file:/workspace/.rubi-hook-key"; Grok Bot replaces it with the file contents when sending. Delete the file right after the call with `shred -u` or `rm`.
-   The user then only confirms. Never show the key in chat or in a command's output. If the result says
-   `user_pastes_webhook: true`, the key didn't arrive (empty file): send the message above as usual.
+   Only a Grok Bot routine address (`https://api2.cursor.sh/automations/webhook/<id>`) is accepted. Never
+   show the key in chat or in a command's output.
 
-   The older way still works: `rubi_link("agent:<your Bot name>")` instead of the approval link, with the
-   same deep link, in one message.
+   **Fallback** (the key is `missing`, or the result says `user_pastes_webhook: true`): call
+   `rubi_agent_connect` without `key` and send the user **one message** with the `approval_url` and the
+   deep link to the routine's webhook field. They paste the routine's Webhook section on Rubi's approval
+   screen and confirm with their passkey in the same step.
 
 ## Several Bots
 

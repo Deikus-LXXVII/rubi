@@ -114,12 +114,15 @@ func (c *Core) WakeUp() string {
 }
 
 const agentHow = "Create the routine yourself, don't ask the user to: name it \"Rubi events\", webhook trigger " +
-	"(no schedule), instruction \"A Rubi event arrived. Follow next_step in the JSON body.\" Then call " +
-	"rubi_agent_connect {name, events?, plugins?} (no key needed) and send the user ONE message with its approval_url " +
-	"and the deep link to that routine's webhook field. Tell them to open both in the Grok Bot desktop app (only it " +
-	"shows the URL and key), paste the routine's Webhook section (POST to and header) on Rubi's approval screen and " +
-	"approve with their passkey. Rubi then tests the connection by itself; you get a \"webhook.test\" event when it " +
-	"works. (rubi_link(\"agent:<your Bot name>\") is the older way: the same paste on Rubi's Connect page.)"
+	"(no schedule), instruction \"A Rubi event arrived. Follow next_step in the JSON body.\" Ask the user in chat for " +
+	"the routine's webhook address (POST to; send the deep link to its webhook field), and for the key only through a " +
+	"masked secret field (Grok Bot: env RUBI_WEBHOOK_KEY_<NAME>), never in chat. Check it without printing it: " +
+	"[ -n \"$RUBI_WEBHOOK_KEY_<NAME>\" ] && echo set || echo missing. Then umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > " +
+	"/workspace/.rubi-hook-key, call rubi_agent_connect {name, url, key: \"$file:/workspace/.rubi-hook-key\", events, " +
+	"plugins} and shred -u the file right after. Send the user the approval_url; they approve with their passkey and " +
+	"Rubi tests the connection (you get a \"webhook.test\" event). Fallback without the key: call rubi_agent_connect " +
+	"without key and send ONE message with its approval_url and the deep link to the routine's webhook field; the user " +
+	"pastes the Webhook section on the approval screen. (rubi_link(\"agent:<your Bot name>\") is the older way.)"
 
 // WebhookHint describes the registered agents, or how to register.
 func (c *Core) WebhookHint() map[string]any {

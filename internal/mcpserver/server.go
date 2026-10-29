@@ -26,12 +26,20 @@ const Instructions = `Rubi-Project: self-hosted integrations that act for the us
 
 SETUP. Rubi wakes you through a routine webhook. Create the routine yourself (don't ask the user to): named
 "Rubi events", webhook trigger (no schedule), instruction "A Rubi event arrived. Follow next_step in the JSON
-body." Then call rubi_agent_connect with your Bot name (plus the events and plugins you'll need, so it is
-ONE approval). You don't need the routine's key. Send the user ONE message with the approval_url and the
-deep link to that routine's webhook field. They open both in the Grok Bot desktop app (only it shows the URL
-and key), paste the routine's Webhook section (POST to and header) on the approval screen and approve with
-their passkey; Rubi then tests the connection by itself. Setup isn't finished, and plugins can't be
-installed, until at least one agent is connected (rubi_status, field webhook).
+body." Then, in this order:
+1. Ask the user in chat for the routine's webhook address ("POST to" in its Webhook section; send the deep
+   link to that field: the Grok Bot desktop app shows it).
+2. Ask for the key only through a masked secret field (Grok Bot: env RUBI_WEBHOOK_KEY_<NAME>), never in chat.
+3. Check it exists without printing it: [ -n "$RUBI_WEBHOOK_KEY_<NAME>" ] && echo set || echo missing
+4. umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key, then call rubi_agent_connect
+   with name, url, key "$file:/workspace/.rubi-hook-key" (your tool replaces it with the file's contents),
+   events and plugins (ONE approval), then shred -u /workspace/.rubi-hook-key.
+5. Send the user the approval_url; they confirm with their passkey and Rubi tests the connection.
+6. Check rubi_status (webhook.configured).
+Fallback without the key: call rubi_agent_connect without key and send ONE message with the approval_url and
+the deep link to the routine's webhook field; the user pastes the Webhook section on the approval screen.
+Only Grok Bot routine webhooks can be proposed. Setup isn't finished, and plugins can't be installed, until
+at least one agent is connected.
 
 SEVERAL BOTS. Bots on the same account share Rubi. Each Bot that wants to be woken registers itself the
 same way, under its own name. Pass your Bot's name as "agent" where tools take one, so Rubi wakes you and
@@ -416,7 +424,7 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_agent_connect",
-		Description: "Connect yourself to Rubi (or change your webhook): pass your Bot name, optionally events to hear about and plugins whose accounts you need. You don't need the webhook key: the user pastes your \"Rubi events\" routine's Webhook section (POST to and header) on the approval screen and approves with their passkey in the same step (pass url if you know it; a key only if you really have it, never show it). Nothing changes until the user approves; replacing an existing webhook is shown to them as such. Returns approval_id and approval_url: send the user that link together with the deep link to your routine's webhook field. Calling again (or rubi_access_request) while it waits folds everything into ONE approval."},
+		Description: "Connect yourself to Rubi (or change your webhook): pass your Bot name, your routine's webhook url (a Grok Bot routine address; others are refused), the key as \"$file:<path>\" of a 600 file you wrote with printenv from your secret env var (never read or show it; delete the file right after), and optionally events to hear about and plugins whose accounts you need. Without a key the user pastes your \"Rubi events\" routine's Webhook section (POST to and header) on the approval screen instead and approves with their passkey in the same step. Nothing changes until the user approves; replacing an existing webhook is shown to them as such. Returns approval_id and approval_url: send the user that link together with the deep link to your routine's webhook field. Calling again (or rubi_access_request) while it waits folds everything into ONE approval."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in agentConnectIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil

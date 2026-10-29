@@ -289,7 +289,16 @@ to `DecideStrong`, and `rubi_confirm` refuses strong approvals.
   only in memory, so a restart (which relocks Rubi) discards it, as do deny, expiry, cancel, lock and being
   superseded by a newer proposal. Only after approval is the key opened and stored in the vault like any
   webhook key.
-- **Without a key** (a Grok Bot can't read its routine's key) the approval declares two inputs, the
+- **Only routine webhooks from Bots.** A Bot may propose only a Grok Bot routine webhook (https, host
+  `api2.cursor.sh`, path `/automations/webhook/<id>`, no userinfo or port); the same applies to what the user
+  pastes on a Bot's approval screen. Other receivers can be set only through the user's own Connect page or
+  settings, which keep the warning.
+- **How a Grok Bot passes the key.** The user enters it in a masked secret field (env
+  `RUBI_WEBHOOK_KEY_<NAME>`); the Bot checks it is set without printing it, writes it with `printenv` to a
+  `umask 077` file, passes `"$file:<path>"` (substituted by the Grok Bot runtime when the call is sent) and
+  shreds the file. The key is thus briefly on the Bot's box disk; Rubi trims surrounding whitespace and
+  refuses a literal `$file:` string.
+- **Without a key** (fallback) the approval declares two inputs, the
   webhook address (prefilled with the Bot's `url`, if any) and the key (secret). The user pastes them on
   the approval screen; the panel accepts only a Grok Bot routine address there, and Rubi validates them
   exactly like a pasted webhook. Inputs are bound to the proof: for an approval with inputs the challenge

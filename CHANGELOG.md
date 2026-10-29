@@ -32,8 +32,12 @@
 - **Store search.** `rubi_store` takes optional `query` and `capability`; it searches the signed catalog
   and returns per match the latest version, `min_rubi`, installed/connected, what the plugin needs and the
   next step. Without arguments the output is unchanged.
-- **No key needed to connect.** A stock Grok Bot can't read its routine's key, so `url` and `key` are
-  optional. Without a key the approval screen asks the user to paste the routine's Webhook section
+- **Connecting a Grok Bot: key through a secret field.** The main path: the user gives the routine URL in
+  chat and the key in a masked secret field (env `RUBI_WEBHOOK_KEY_<NAME>`); the Bot passes it to
+  `rubi_agent_connect` as `"$file:<path>"` from a 600 file it shreds right after, and the user confirms
+  with the passkey. A Bot may propose only Grok Bot routine webhooks; others are refused (the user's own
+  settings still accept them, with a warning).
+- **Fallback: paste on the approval screen.** `url` and `key` are optional. Without a key the approval screen asks the user to paste the routine's Webhook section
   (prefilled with the Bot's `url`) and confirm with the passkey in the same step. Approvals can now carry
   typed inputs (`approval.get` lists them; `approval.challenge` and `approval.decide` take `inputs`). The
   passkey or password proof covers a digest of the pasted values, so they can't be swapped after signing;
