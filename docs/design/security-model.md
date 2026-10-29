@@ -289,6 +289,17 @@ to `DecideStrong`, and `rubi_confirm` refuses strong approvals.
   only in memory, so a restart (which relocks Rubi) discards it, as do deny, expiry, cancel, lock and being
   superseded by a newer proposal. Only after approval is the key opened and stored in the vault like any
   webhook key.
+- **Without a key** (a Grok Bot can't read its routine's key) the approval declares two inputs, the
+  webhook address (prefilled with the Bot's `url`, if any) and the key (secret). The user pastes them on
+  the approval screen; the panel accepts only a Grok Bot routine address there, and Rubi validates them
+  exactly like a pasted webhook. Inputs are bound to the proof: for an approval with inputs the challenge
+  also covers a digest of the input definitions and of each pasted value (`inputs|sha256(defs)|sha256(sorted
+  "key=sha256(value)" lines)`), and `approval.decide` recomputes it from the values it receives, so a value
+  changed after the passkey signed fails as a wrong proof. Invalid or missing inputs are refused before the
+  proof is checked and leave the approval pending. Pasted values are never stored in the approval, the
+  audit log, results or events; they reach the action only for its run. The pasted key is copied into a
+  byte slice that is wiped after use, but Go string copies of the request can't be wiped and live until
+  garbage collection. Inputs are allowed only on panel (tap/strong) approvals, at most 8 values of 4 KB.
 - **The approval screen** shows the Bot, the webhook's scheme, host and path (query hidden, long paths
   shortened), the events it would hear about, a warning when it isn't a Grok Bot routine address, and a
   `replaces` field (highlighted) when it would change an existing Bot's webhook or key. Each requested

@@ -24,18 +24,17 @@ Open the link on your iPhone (or any device with a browser):
    the password, Rubi has to be reset; nobody can recover your key.
 
 3. **Connect your agent.** Your agent creates a routine called "Rubi events" and sends you one message
-   with two links: the routine's webhook field and Rubi's "Connect" page. Open both in the Grok Bot app on
+   with two links: Rubi's approval screen and the routine's webhook field. Open both in the Grok Bot app on
    your **computer** (the routine's webhook is only shown there). Copy the whole Webhook section, or just
-   *POST to* and the *header*, in any order, and paste it into the box. Rubi asks for your passkey right
-   away, then sends a test and tells you whether the routine took it (if not: wrong key, routine switched
-   off, or no routine at that address, with buttons to test or paste again). This is how Rubi tells your agent that you approved something or that a reply arrived, so it continues without
-   you writing to it. The routine runs only when something happens, not on a schedule.
+   *POST to* and the *header*, in any order, and paste it into the box on the approval screen. The screen
+   also shows the Bot's name, the events it wants, any plugin accounts it asks for (each a line you can
+   untick) and, highlighted, whether it would **replace** an existing connection. Confirm with your passkey:
+   it covers exactly what you pasted. Rubi then sends a test and tells you whether the routine took it.
+   This is how Rubi tells your agent that you approved something or that a reply arrived, so it continues
+   without you writing to it. The routine runs only when something happens, not on a schedule.
 
-   If your agent can read the routine's webhook itself, it sends you a single Rubi approval link instead.
-   The screen shows the Bot's name, the webhook address (host and path, never the key) and, highlighted, whether
-   it would **replace** an existing connection. Approve with your passkey; Rubi then sends the test. A Bot
-   can also ask for plugin accounts (for example your Gmail) the same way: each account is a line you can
-   untick, and several requests from one Bot arrive as one approval.
+   Some agents send Rubi's "Connect" page instead of an approval screen; it works the same way (paste,
+   then passkey). Waiting requests also appear in Settings under **Waiting for you**.
 
    Several Bots? Settings > **Grok Bot connections** has a ready-made message to send to each Bot, and you
    can add any number of webhooks there yourself. Name each webhook exactly like its Grok Bot: Bots then

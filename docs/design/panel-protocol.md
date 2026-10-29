@@ -101,7 +101,15 @@ registered as an approver. Without PRF, a password is required for unlocking.
 | `status` | ticket | — | `state`, `purpose`, `vault_version`, `receipts[]`, `integrations` (when unlocked) |
 | `lock` | ticket | — | `state` |
 | `approval.get` | ticket for `approve:<id>` | `approval_id` | `approval` (summary, preview, question, options, state), `challenges` (per option), `approvers[]`, `password`, `rp_id` |
-| `approval.decide` | ticket for `approve:<id>` | `approval_id`, `option`, `approve`, `proof` | the approval's new state and result |
+| `approval.decide` | ticket for `approve:<id>` | `approval_id`, `option`, `approve`, `proof`, `inputs?` | the approval's new state and result |
+| `approval.challenge` | ticket for `approve:<id>` | `approval_id`, `option`, `inputs?` | `challenge` for a chosen subset of a batch, or for typed `inputs` |
+
+**Typed inputs.** `approval.get` may list `approval.inputs` (`key`, `label`, `secret`, `value` (a prefill),
+`help`, `item`: needed only when that batch item is chosen). The panel collects them, asks
+`approval.challenge` with `inputs` (a map key → value) for the challenge to sign, and sends the same map
+with `approval.decide`. The challenge then ends with `|inputs|<sha256 of the definitions>|<sha256 of the
+sorted "key=sha256(value)" lines>`, so the proof covers the values. Values are checked first (invalid ones
+are refused without counting as a failed proof) and never echoed back.
 
 ### Settings
 
