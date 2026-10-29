@@ -93,6 +93,7 @@ type Core struct {
 	started   time.Time    // when this process started (Rubi is locked since then after a restart)
 	hookRoute string       // the hook route, kept while locked so hook requests still arrive (backlog.go)
 	access    accessGrants // access codes for plugin accounts (access.go)
+	botReqs   botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
 	devs      deviceClients
 }
 
@@ -159,6 +160,7 @@ func Open(layout paths.Layout) (*Core, error) {
 			//
 			// The agent always learns the outcome, unless it already saw it while waiting in rubi_approval.
 			// It goes to the Bot that left a plan, else to the Bots following Rubi's events (or the default).
+			c.botRequestFinished(s) // a Bot's own request: its sealed webhook key goes, whatever the outcome
 			p := c.takePlan(s.ID)
 			if !s.Level.InPanel() || c.State() != Unlocked {
 				return
@@ -384,6 +386,7 @@ func (c *Core) LockWith(reason string) {
 	}
 	c.stopPlugins()
 	c.Approvals.CancelAll()
+	c.discardBotRequests()
 	c.Events.Clear()
 	c.Vault.Lock()
 	c.Audit.SetVaultKey(nil)

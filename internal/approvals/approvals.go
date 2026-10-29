@@ -264,6 +264,13 @@ func New(cfg Config, hooks Hooks) *Engine {
 	return &Engine{cfg: cfg, hooks: hooks, now: time.Now, items: map[string]*approval{}}
 }
 
+// SetClock replaces the engine's clock (tests: expiry without waiting).
+func (e *Engine) SetClock(now func() time.Time) {
+	e.mu.Lock()
+	e.now = now
+	e.mu.Unlock()
+}
+
 const codeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // no 0/O/1/I
 
 func randomID(prefix string, n int) string {
