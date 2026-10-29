@@ -60,6 +60,10 @@ type Core struct {
 	// OnHookRoute applies a new hook route to the transport. Both are set by the daemon.
 	HookBase    func() string
 	OnHookRoute func()
+	// BotWebhookOK widens which addresses a Bot may propose (rubi_agent_connect, and what the user pastes
+	// on that approval screen). nil, as in the daemon: Grok Bot routine webhooks only. Tests point it at
+	// their local receiver.
+	BotWebhookOK func(rawURL string) bool
 
 	mu             sync.Mutex
 	paired         bool

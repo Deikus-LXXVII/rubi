@@ -33,6 +33,7 @@ func botCore(t *testing.T) (*Core, string, chan hookCall) {
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Lock)
+	c.BotWebhookOK = localReceiver
 	if err := c.Vault.Create(vault.NewKey(), vault.NewData("")); err != nil {
 		t.Fatal(err)
 	}

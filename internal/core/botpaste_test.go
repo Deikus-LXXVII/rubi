@@ -103,3 +103,40 @@ func TestBotKeyFileReferenceRefused(t *testing.T) {
 		t.Fatal("the trailing newline was kept")
 	}
 }
+
+// localReceiver lets the tests' httptest receiver stand in for a routine.
+func localReceiver(u string) bool { return strings.HasPrefix(u, "http://127.0.0.1:") }
+
+// TestBotMayProposeOnlyRoutineWebhooks: what a Bot proposes (or the user pastes on its approval screen)
+// must be a Grok Bot routine webhook; other receivers only through the user's own settings.
+func TestBotMayProposeOnlyRoutineWebhooks(t *testing.T) {
+	c, local, _ := botCore(t)
+	c.BotWebhookOK = nil // as in the daemon
+	routine := "https://api2.cursor.sh/automations/webhook/6076a0ff-5b26-405e-82ef-d6173cd96066"
+	for _, bad := range []string{local, "https://evil.example/automations/webhook/x",
+		"https://api2.cursor.sh/other/path", "https://api2.cursor.sh@evil.example/automations/webhook/x",
+		"http://api2.cursor.sh/automations/webhook/x"} {
+		for _, key := range []string{testHookKey, ""} {
+			if _, err := c.ProposeBot(context.Background(), BotRequest{Agent: "Mail", Webhook: &WebhookProposal{URL: bad, Key: key}}); err == nil {
+				t.Fatalf("a Bot proposed a non-routine webhook (key given: %v)", key != "")
+			}
+		}
+	}
+	if agentOf(c, "Mail") != nil || c.pendingBotRequest("Mail") != "" {
+		t.Fatal("a refused proposal left something behind")
+	}
+	out := propose(t, c, BotRequest{Agent: "Mail", Webhook: &WebhookProposal{URL: routine, Key: testHookKey}})
+	det, _ := c.Approvals.Detail(out["approval_id"].(string))
+	if p := det.Preview.(map[string]any); p["warning"] != nil {
+		t.Fatalf("a routine webhook got a warning: %v", p["warning"])
+	}
+	// Pasted on the approval screen: the same rule.
+	out = propose(t, c, BotRequest{Agent: "Mail", Webhook: &WebhookProposal{}})
+	id := out["approval_id"].(string)
+	if _, err := c.Approvals.CheckInputs(id, "apply", map[string]string{inputWebhookURL: local, inputWebhookKey: testHookKey}); err == nil {
+		t.Fatal("a non-routine address was accepted as the pasted webhook")
+	}
+	if _, err := c.Approvals.CheckInputs(id, "apply", map[string]string{inputWebhookURL: routine, inputWebhookKey: testHookKey}); err != nil {
+		t.Fatalf("the routine's own address was refused: %v", err)
+	}
+}

@@ -114,6 +114,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	t.Cleanup(c.Lock)
+	c.BotWebhookOK = func(u string) bool { return strings.HasPrefix(u, "http://127.0.0.1:") } // the test's receiver
 	api := httptest.NewServer(panelapi.New(c).Handler())
 	t.Cleanup(api.Close)
 	c.SetEndpoint(api.URL)

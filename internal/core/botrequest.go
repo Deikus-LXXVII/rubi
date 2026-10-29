@@ -326,6 +326,9 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 		"in the Rubi panel with their passkey (you cannot approve it) and may leave parts out. Then call " +
 		"rubi_approval with wait_seconds. If you asked for your webhook, a webhook.test event reaches you once it works; " +
 		"check rubi_status."
+	if hasWebhook && !items[0].paste {
+		res["instructions"] = res["instructions"].(string) + " If you passed the key from a file, delete it now (shred -u)."
+	}
 	if hasWebhook && items[0].paste {
 		res["user_pastes_webhook"] = true
 		res["instructions"] = "Send the user ONE message with approval_url and the deep link to your routine \"Rubi events\"'s " +
@@ -356,11 +359,27 @@ func mergeItems(newer, older []*botItem) []*botItem {
 	return rest
 }
 
+// botWebhookURL refuses what a Bot may not propose: anything but a Grok Bot routine webhook. (The user's
+// own Connect page and settings still accept other receivers, with a warning.)
+func (c *Core) botWebhookURL(raw string) error {
+	if err := validWebhookURL(raw); err != nil {
+		return err
+	}
+	if c.BotWebhookOK != nil && c.BotWebhookOK(raw) {
+		return nil
+	}
+	if !isRoutineWebhook(raw) {
+		return errors.New("only a Grok Bot routine webhook (https://" + routineHost + routinePathPrefix +
+			"<id>) can be proposed by a Bot; ask the user for the routine's \"POST to\" address, or connect another receiver in Rubi's settings")
+	}
+	return nil
+}
+
 // webhookItem checks a proposed webhook and seals its key.
 func (c *Core) webhookItem(name string, w WebhookProposal) (*botItem, error) {
 	w.URL, w.Key = strings.TrimSpace(w.URL), strings.TrimSpace(w.Key)
 	if w.URL != "" {
-		if err := validWebhookURL(w.URL); err != nil {
+		if err := c.botWebhookURL(w.URL); err != nil {
 			return nil, err
 		}
 	}
@@ -398,8 +417,8 @@ func (c *Core) webhookItem(name string, w WebhookProposal) (*botItem, error) {
 	case !it.paste:
 		shown = webhookHostPath(w.URL)
 		p["webhook"] = shown
-		if !isRoutineWebhook(w.URL) || !strings.HasPrefix(key, routineKeyPrefix) {
-			p["warning"] = "This is not a Grok Bot routine webhook (" + routineHost + ", key " + routineKeyPrefix +
+		if !strings.HasPrefix(key, routineKeyPrefix) {
+			p["warning"] = "This key doesn't look like a Grok Bot routine key (" + routineKeyPrefix +
 				"…). Approve only if you set up this receiver yourself."
 		}
 	default:
@@ -408,9 +427,6 @@ func (c *Core) webhookItem(name string, w WebhookProposal) (*botItem, error) {
 		if w.URL != "" {
 			shown = webhookHostPath(w.URL)
 			p["webhook"] = "Suggested by the Bot: " + shown + ". Check it against the routine, or paste the routine's own."
-			if !isRoutineWebhook(w.URL) {
-				p["warning"] = "The suggested address is not a Grok Bot routine (" + routineHost + "). Paste the one from your routine."
-			}
 		}
 	}
 	if it.replaces {
@@ -537,7 +553,7 @@ func (c *Core) botApproval(bundle *botBundle, already []string) approvals.Reques
 			if !webhookChosen(option) {
 				return nil
 			}
-			_, _, err := pastedWebhook(in)
+			_, _, err := c.pastedWebhook(in)
 			return err
 		}
 	}
@@ -582,12 +598,12 @@ func webhookChosen(option string) bool {
 }
 
 // pastedWebhook checks what the user pasted on the approval screen, like any pasted webhook.
-func pastedWebhook(in map[string]string) (rawURL, key string, err error) {
+func (c *Core) pastedWebhook(in map[string]string) (rawURL, key string, err error) {
 	rawURL = strings.TrimSpace(in[inputWebhookURL])
 	if rawURL == "" {
 		return "", "", errors.New("paste the routine's \"POST to\" address")
 	}
-	if err := validWebhookURL(rawURL); err != nil {
+	if err := c.botWebhookURL(rawURL); err != nil {
 		return "", "", err
 	}
 	if strings.TrimSpace(in[inputWebhookKey]) == "" {
@@ -623,7 +639,7 @@ func (c *Core) applyBotRequest(ctx context.Context, bundle *botBundle, option st
 		}
 		hook, hookURL = it, it.url
 		if it.paste { // typed by the user on the approval screen, covered by their proof
-			u, k, err := pastedWebhook(approvals.InputsFrom(ctx))
+			u, k, err := c.pastedWebhook(approvals.InputsFrom(ctx))
 			if err != nil {
 				c.discardBotRequest(bundle.approvalID)
 				return nil, err
