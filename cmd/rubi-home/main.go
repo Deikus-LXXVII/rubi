@@ -7,6 +7,7 @@
 //	rubi-home folder NAME    the Shortcuts folder Rubi may use (default: Rubi)
 //	rubi-home unpair         forget every paired Rubi
 //	rubi-home hue-forget ID  forget a Hue Bridge's recorded certificate (after replacing or resetting it)
+//	rubi-home claude-hook    Claude Code's PermissionRequest hook: asks Rubi, prints allow or deny
 package main
 
 import (
@@ -19,6 +20,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
@@ -30,6 +32,14 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		usage()
+	}
+	if os.Args[1] == "claude-hook" {
+		// Only talks to the running helper; never opens or changes its files. Always prints a decision
+		// and exits 0, so Claude Code reads the answer (a denial whenever anything goes wrong).
+		if err := home.RunClaudeHook(os.Stdin, os.Stdout, home.ClaudeSocketPath(home.DefaultDir()), claudeHookLimit); err != nil {
+			os.Exit(1) // couldn't even print: Claude Code's onFailure "block" denies
+		}
+		return
 	}
 	h, err := home.Open(home.DefaultDir())
 	if err != nil {
@@ -90,9 +100,13 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | version")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook | version")
 	os.Exit(2)
 }
+
+// claudeHookLimit bounds a claude-hook's wait. The helper answers sooner (claude_wait_seconds, 280 by
+// default); Claude Code's hook timeout (300 in the example settings) must be longer still.
+const claudeHookLimit = 295 * time.Second
 
 func run(h *home.Helper) {
 	key, err := h.RelayKey()
@@ -104,6 +118,12 @@ func run(h *home.Helper) {
 	// Watching the Rubi uses this helper's own key: Rubi seals its registration to it.
 	h.Watch = watch.New(h.ID.Box)
 	go h.Watch.Run(ctx)
+	// Claude Code's hook reaches the helper on a local socket (it can only ask; Rubi answers).
+	go func() {
+		if err := h.Claude.Serve(ctx, home.ClaudeSocketPath(h.Dir)); err != nil {
+			log.Printf("Claude Code requests: %v", err)
+		}
+	}()
 	rpc := &homeproto.Server{Key: h.ID.Box, Handle: h.Handle}
 	relays := h.Relays()
 	last := -1

@@ -40,20 +40,25 @@ func TestCheck(t *testing.T) {
 	if err := Check(&ok); err != nil {
 		t.Fatal(err)
 	}
+	home := manifest(t, `{"home":["hue","shortcuts","claude"]}`)
+	if err := Check(&home); err != nil {
+		t.Fatalf("Rubi Home capabilities: %v", err)
+	}
 	for name, patch := range map[string]string{
-		"reserved id":          `{"id":"rubi-core"}`,
-		"bad id":               `{"id":"Demo!"}`,
-		"foreign action":       `{"actions":[{"kind":"other.send","title":"Send","default_level":"none"}]}`,
-		"core action":          `{"actions":[{"kind":"rubi.settings","title":"x","default_level":"none"}]}`,
-		"foreign tool":         `{"tools":[{"name":"rubi_lock","description":"d","input_schema":{"type":"object"}}]}`,
-		"bad level":            `{"actions":[{"kind":"demo.x","title":"x","default_level":"maybe"}]}`,
-		"entry escapes":        `{"entry":"../../bin/sh"}`,
-		"absolute entry":       `{"entry":"/bin/sh"}`,
-		"unknown api":          `{"api":2}`,
-		"bad key":              `{"publisher":{"name":"x","key":"aGVsbG8="}}`,
-		"bad version":          `{"version":"latest"}`,
-		"tool without schema":  `{"tools":[{"name":"demo_x","description":"d","input_schema":{"type":"string"}}]}`,
-		"duplicate secret key": `{"secrets":[{"key":"a","label":"A"},{"key":"a","label":"B"}]}`,
+		"unknown home capability": `{"home":["claude-desktop"]}`,
+		"reserved id":             `{"id":"rubi-core"}`,
+		"bad id":                  `{"id":"Demo!"}`,
+		"foreign action":          `{"actions":[{"kind":"other.send","title":"Send","default_level":"none"}]}`,
+		"core action":             `{"actions":[{"kind":"rubi.settings","title":"x","default_level":"none"}]}`,
+		"foreign tool":            `{"tools":[{"name":"rubi_lock","description":"d","input_schema":{"type":"object"}}]}`,
+		"bad level":               `{"actions":[{"kind":"demo.x","title":"x","default_level":"maybe"}]}`,
+		"entry escapes":           `{"entry":"../../bin/sh"}`,
+		"absolute entry":          `{"entry":"/bin/sh"}`,
+		"unknown api":             `{"api":2}`,
+		"bad key":                 `{"publisher":{"name":"x","key":"aGVsbG8="}}`,
+		"bad version":             `{"version":"latest"}`,
+		"tool without schema":     `{"tools":[{"name":"demo_x","description":"d","input_schema":{"type":"string"}}]}`,
+		"duplicate secret key":    `{"secrets":[{"key":"a","label":"A"},{"key":"a","label":"B"}]}`,
 	} {
 		m := manifest(t, patch)
 		if err := Check(&m); err == nil {

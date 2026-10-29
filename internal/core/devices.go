@@ -19,9 +19,10 @@ import (
 
 // Rubi Home devices: helpers on a computer at the user's home (see internal/home). The user pairs one by
 // pasting the code it prints into the panel. Plugins reach it only for what their manifest declares
-// (manifest "home": "hue", "shortcuts").
+// (manifest "home": "hue", "shortcuts", "claude").
 
-var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Shortcuts"}
+var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Shortcuts",
+	"claude": "answering Claude Code's permission requests on that computer (it can allow or deny commands)"}
 
 type deviceClients struct {
 	mu      sync.Mutex
