@@ -98,6 +98,28 @@ func (c *Core) HasAgent(name string) bool {
 	return found
 }
 
+// webhookAgent returns the registered name of the Bot called name, if it is connected with a webhook
+// (registered with the user's passkey).
+func (c *Core) webhookAgent(name string) (string, bool) {
+	var out string
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if a := findAgent(d, name); a != nil && a.URL != "" {
+			out = a.Name
+		}
+		return nil
+	})
+	return out, out != ""
+}
+
+// oneLineName shortens a name a plugin or Bot passed, for messages and the audit log.
+func oneLineName(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > 64 {
+		s = string(r[:64]) + "…"
+	}
+	return s
+}
+
 // AddAgent requests approval to register an agent's webhook (or replace the webhook of an agent with the
 // same name). The first agent becomes the default.
 // subs, when not nil, sets what the Bot hears about (sources: "rubi" or plugin ids), as part of the same
@@ -320,10 +342,11 @@ func (c *Core) recipients(target, source string) []vault.Agent {
 	var out []vault.Agent
 	_ = c.Vault.View(func(d *vault.Data) error {
 		if target != "" {
-			if a := findAgent(d, target); a != nil {
+			// Addressed: that Bot's webhook or no one.
+			if a := findAgent(d, target); a != nil && a.URL != "" {
 				out = append(out, *a)
-				return nil
 			}
+			return nil
 		} else {
 			for _, a := range d.Agents {
 				for _, s := range a.Subscriptions {
@@ -347,8 +370,9 @@ func (c *Core) recipients(target, source string) []vault.Agent {
 	return out
 }
 
-// EventsFor is the event list as one agent may see it. The administrator sees every event; another Bot
-// sees the events addressed to it and those of the sources it subscribed to. Before any Bot is connected
+// EventsFor is the event list as one agent may see it. The administrator sees every event not addressed
+// to another Bot; another Bot sees the events addressed to it and those of the sources it subscribed to.
+// An event addressed to a Bot is that Bot's alone. Before any Bot is connected
 // (setup) the list is whole.
 // Reading needs the Bot's current code (see agentauth.go).
 func (c *Core) EventsFor(agent, code string, includeAcked bool) ([]events.Event, error) {
@@ -382,8 +406,17 @@ func (c *Core) eventsVisible(agent string, includeAcked bool) ([]events.Event, e
 		}
 		return nil
 	})
-	if none || admin {
+	if none {
 		return all, nil
+	}
+	if admin {
+		out := []events.Event{}
+		for _, e := range all {
+			if e.Target == "" || strings.EqualFold(e.Target, agent) {
+				out = append(out, e)
+			}
+		}
+		return out, nil
 	}
 	if !known {
 		return nil, fmt.Errorf("pass agent: your Bot's name as connected to Rubi (agents: %s)", c.agentNames())

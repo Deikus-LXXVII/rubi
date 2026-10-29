@@ -235,8 +235,11 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   its own webhook; an approval's outcome goes to the agent that asked for it, other events to every agent
   subscribed to their source. Rubi's own events nobody subscribed to go to the **administrator**, the Bot
   the user made responsible for Rubi (an approved setting); plugin events nobody subscribed to wake no one
-  and wait in the event list. The administrator reads the whole list; other Bots see only the events
-  addressed to them and those of their subscriptions.
+  and wait in the event list. An event addressed to one Bot (a plugin's `EmitTo`, an approval's outcome)
+  goes to that Bot's webhook only; if no Bot of that name is connected with a webhook, Rubi drops it and
+  records `event.dropped` in the audit log, and never hands it to the subscribers or the administrator
+  instead (v0.12.0). The administrator reads the whole list except events addressed to other Bots; other
+  Bots see only the events addressed to them and those of their subscriptions.
 - **Which Bot is calling.** Bots on one account share a computer and the MCP server and name themselves,
   so a name proves nothing. What only the real Bot has is its routine webhook: the platform delivers a POST
   there to that Bot alone. Every Rubi webhook carries the woken Bot's current code (`agent_code`, valid
@@ -244,6 +247,12 @@ from the panel; no MCP tool can change policy. Locking Rubi is always allowed fr
   as another only alerts the real one. Reading and acknowledging events need the code. Three wrong codes
   block codes for that name for 30 minutes and warn the administrator. Codes are never kept in the event
   list (the administrator would see them there).
+- **Plugins learn the caller from Rubi, not from the caller** (v0.12.0). A plugin tool call may carry
+  `rubi_agent` with a proof only that Bot's webhook receives: `rubi_agent_code` (its agent code) or a
+  `rubi_access` code for that plugin. Rubi checks it, removes the code and passes the plugin
+  `rubi_verified_agent`: the registered name of the webhook the user confirmed with the passkey. A
+  `rubi_verified_agent` in the caller's own arguments is always removed, so a plugin can bind something
+  (for example a Claude Code session) to that name and address its events there.
 - Dropping a subscription is immediate; adding one gives a Bot that plugin's events, so the user approves
   it (a Bot can't simply subscribe itself to the mail plugin).
 - **Access to plugin accounts.** With two or more Bots, every plugin account (a mailbox, a Telegram

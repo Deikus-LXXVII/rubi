@@ -362,8 +362,11 @@ func (h *Host) Emit(typ string, data map[string]any) (string, error) {
 	return h.EmitTo("", typ, data)
 }
 
-// EmitTo sends an event to one Bot by its name (for example the Bot that set up a watch), or, if no Bot of
-// that name is connected, like Emit.
+// EmitTo sends an event to one Bot by its name (for example the Bot that set up a watch); with an empty
+// agent, it is Emit. Since Rubi v0.12.0 an addressed event goes to that Bot's webhook only: when no Bot of
+// that name is connected with a webhook, Rubi drops it, records that in the audit log and returns an
+// error (it never goes to the subscribers instead; older Rubi versions sent it like Emit). Name the Bot
+// as Rubi verified it (the rubi_verified_agent tool argument) rather than a name a caller typed.
 func (h *Host) EmitTo(agent, typ string, data map[string]any) (string, error) {
 	var out struct {
 		EventID string `json:"event_id"`

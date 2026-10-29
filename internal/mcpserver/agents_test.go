@@ -306,6 +306,52 @@ func TestPluginConfigAndTargets(t *testing.T) {
 	call("demo_notify", map[string]any{"agent": "Mail"})
 	waitHit(t, mailCh, "demo.ping")
 	noHit(t, mainCh, "demo.ping")
+
+	// An event addressed to a Bot that isn't connected is dropped and audited, never handed to anyone else.
+	if out := call("demo_notify", map[string]any{"agent": "Ghost"}); !strings.Contains(toString(out["tool_error"]), "dropped") {
+		t.Fatalf("event to an unknown Bot: %v", out)
+	}
+	noHit(t, mainCh, "demo.ping")
+	noHit(t, mailCh, "demo.ping")
+	if b, _ := os.ReadFile(r.c.Layout.Audit()); !strings.Contains(string(b), `"event.dropped"`) {
+		t.Fatal("the dropped event isn't in the audit log")
+	}
+	// The event addressed to Mail is Mail's alone: the administrator doesn't see it in its list either.
+	if e := r.ag.call("rubi_verify", map[string]any{"agent": "Main"}); e["status"] != "sent" {
+		t.Fatalf("verify: %v", e)
+	}
+	mainCode := waitHit(t, mainCh, "rubi.agent.code").code
+	for _, e := range r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": mainCode})["events"].([]any) {
+		if ev := e.(map[string]any); ev["type"] == "ping" && ev["for_agent"] == "Mail" {
+			t.Fatalf("the administrator saw another Bot's event: %v", ev)
+		}
+	}
+	r.ag.call("rubi_verify", map[string]any{"agent": "Mail"})
+	mailCode := waitHit(t, mailCh, "rubi.agent.code").code
+	seen := false
+	for _, e := range r.ag.call("rubi_events", map[string]any{"agent": "Mail", "code": mailCode})["events"].([]any) {
+		seen = seen || e.(map[string]any)["for_agent"] == "Mail"
+	}
+	if !seen {
+		t.Fatal("Mail doesn't see the event addressed to it")
+	}
+
+	// Who is calling: Rubi passes the plugin the registered name only with a proof, and drops a forged one.
+	if out := call("demo_whoami", map[string]any{"rubi_verified_agent": "Mail"}); out["verified"] != "Main" {
+		t.Fatalf("access code as proof, forged name dropped: %v", out)
+	}
+	if out := r.ag.call("demo_whoami", map[string]any{"rubi_verified_agent": "Mail"}); out["verified"] != nil && out["verified"] != "" {
+		t.Fatalf("a forged verified name reached the plugin: %v", out)
+	}
+	if out := call("demo_whoami", map[string]any{"rubi_agent_code": "wrong"}); out["tool_error"] == nil {
+		t.Fatalf("a wrong agent code: %v", out)
+	}
+	if out := call("demo_whoami", map[string]any{"rubi_agent_code": mainCode}); out["verified"] != "Main" || out["saw_code"] != false {
+		t.Fatalf("agent code as proof (code not passed on): %v", out)
+	}
+	if out := r.ag.call("demo_whoami", map[string]any{"rubi_agent": "Ghost", "rubi_agent_code": mainCode}); !strings.Contains(toString(out["tool_error"]), "no Bot named") {
+		t.Fatalf("an unknown Bot name: %v", out)
+	}
 }
 
 // TestQuietUpdates: with notifications off for a plugin, its update doesn't wake the agent but shows in

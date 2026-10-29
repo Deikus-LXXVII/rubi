@@ -68,21 +68,21 @@ The helper does only what it was built for, whatever Rubi asks:
   (it can only ask) or replace the helper binary, so the hook's command should be a root-owned path, and
   managed settings (which a user can't edit) should keep Claude Code from editing its own settings.
 
-- **Claude Code sessions** (`claude.sessions`, `claude.send`; v0.12): the same `claude-hook`, installed for
+- **Claude Code sessions** (Rubi Home capability `claude-sessions`, separate from `claude`: `claude-sessions.list`, `.send`, `.next`; v0.12): the same `claude-hook`, installed for
   SessionStart, UserPromptSubmit, Stop and SessionEnd, reports each session (id, directory, transcript,
-  permission mode, whether it is in a turn) and never blocks or fails Claude Code. `claude.sessions` merges
+  permission mode, whether it is in a turn) and never blocks or fails Claude Code. `claude-sessions.list` merges
   that with the Claude desktop app's session store (`<user config dir>/Claude/claude-code-sessions/*/*/
   local_*.json`: title, origin directory, the session it was spawned from) and the transcripts in
   `~/.claude/projects`, all read only. A session's project is its origin remote, read from `.git/config`
   (worktrees resolve through `commondir`), so a sub-session in `.claude/worktrees/<name>` belongs to its
-  project; it is a "sub" when spawned from another session or in such a worktree. `claude.send` queues a
+  project; it is a "sub" when spawned from another session or in such a worktree. `claude-sessions.send` queues a
   message (at most 4000 characters, 20 waiting) for a session the registry knows. UserPromptSubmit adds
   waiting messages to the prompt's context; Stop, when messages wait, blocks the stop with them as the
   reason (at most 5 times in a row), so a session in a turn picks them up without the user. The last
   answer of a turn that carried messages, read from the hook or from the transcript (only under
   `~/.claude/projects`, at most 16 KB), goes back to their senders, and ```` ```rubi-ask kind=research|audit|lookup ```` ````
   blocks in an answer (at most 3, 2000 characters each) become questions; Rubi takes both with
-  `claude.next`. The helper never resumes or starts a session. Which Bot may talk to which session is
+  `claude-sessions.next`. The helper never resumes or starts a session. Which Bot may talk to which session is
   decided in Rubi (the claude-code plugin's bindings).
 
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;

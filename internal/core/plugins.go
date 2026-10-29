@@ -216,6 +216,10 @@ func (c *Core) CallTool(ctx context.Context, name string, args json.RawMessage) 
 	if len(args) == 0 {
 		args = json.RawMessage("{}")
 	}
+	args, err := c.verifyCaller(m.ID, args)
+	if err != nil {
+		return nil, err
+	}
 	args, reply, err := c.checkAccess(m, name, args)
 	if err != nil {
 		return nil, err
@@ -465,9 +469,17 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 			if !c.allow("emit:"+id, pluginEventsPerMinute) {
 				return nil, errors.New("too many events; slow down")
 			}
+			// An event addressed to a Bot goes to that Bot's webhook only. When no Bot of that name is
+			// connected with a webhook, it is dropped (and audited), never handed to the subscribers.
 			target := ""
-			if in.Agent != "" && c.HasAgent(in.Agent) {
-				target = in.Agent
+			if in.Agent != "" {
+				name, ok := c.webhookAgent(in.Agent)
+				if !ok {
+					c.Audit.Record("event.dropped", audit.Fields{"integration": id, "type": in.Type, "agent": oneLineName(in.Agent),
+						"reason": "no Bot of that name is connected with a webhook"})
+					return nil, fmt.Errorf("no Bot named %q is connected to Rubi with a webhook; the event was dropped (an addressed event never goes to anyone else)", oneLineName(in.Agent))
+				}
+				target = name
 			}
 			// A plugin that tells a Bot about its own approval (claude-code's approval_needed, with the link)
 			// spares Rubi announcing it again, as long as some Bot follows the plugin.

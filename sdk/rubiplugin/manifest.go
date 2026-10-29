@@ -64,8 +64,10 @@ type Manifest struct {
 	// Rubi passes to it. Shown to the user before install.
 	Hooks bool `json:"hooks,omitempty"`
 	// Home lists what the plugin does through the user's Rubi Home helper: "hue", "shortcuts", "claude"
-	// (Claude Code's permission requests on that computer: claude.next, claude.decide). It may
-	// only call those operations. Shown to the user before install.
+	// (Claude Code's permission requests on that computer: claude.next, claude.decide) and
+	// "claude-sessions" (v0.12.0: its Claude Code sessions and messages to and from them:
+	// claude-sessions.list, .send, .next; it can't approve anything). It may only call those operations.
+	// Shown to the user before install.
 	Home []string `json:"home,omitempty"`
 }
 

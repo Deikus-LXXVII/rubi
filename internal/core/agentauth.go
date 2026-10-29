@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -176,4 +177,55 @@ func (c *Core) agentSuspicious(name, why string) {
 	})
 	c.Events.EmitFor(admin, false, "rubi", "agent.suspicious", map[string]any{"agent": name, "why": why,
 		"next_step": "Tell the user: something tried to read Rubi's events as the Bot \"" + name + "\" with wrong codes (" + why + "). If it wasn't them, they should check which Bots and routines run on their account."}, nil)
+}
+
+// Tool arguments for telling a plugin which Bot is calling. A Bot names itself with rubi_agent and
+// proves it with a code that only its own webhook receives: rubi_agent_code (the agent_code of its latest
+// Rubi webhook, or one from rubi_verify) or an access code for this plugin (rubi_access). Rubi then
+// passes the plugin rubi_verified_agent, the Bot's registered name (the webhook the user confirmed with
+// the passkey). A rubi_verified_agent the caller sends itself is always removed, so a plugin can trust it;
+// without a proof the plugin gets none.
+const (
+	argAgentCode     = "rubi_agent_code"
+	argVerifiedAgent = "rubi_verified_agent"
+)
+
+// verifyCaller applies the rules above to a tool call's arguments for plugin.
+func (c *Core) verifyCaller(plugin string, args json.RawMessage) (json.RawMessage, error) {
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(args, &obj) != nil || obj == nil {
+		return args, nil // not an object: nothing to check (the plugin rejects it)
+	}
+	_, spoof := obj[argVerifiedAgent]
+	rawCode, hasCode := obj[argAgentCode]
+	if !spoof && !hasCode {
+		if _, named := obj[AccessAgentArg]; !named {
+			return args, nil
+		}
+	}
+	delete(obj, argVerifiedAgent)
+	delete(obj, argAgentCode)
+	var name, code, access string
+	_ = json.Unmarshal(obj[AccessAgentArg], &name)
+	_ = json.Unmarshal(rawCode, &code)
+	_ = json.Unmarshal(obj[AccessCodeArg], &access)
+	if name != "" && (hasCode || access != "") {
+		registered, ok := c.webhookAgent(name)
+		switch {
+		case !ok && hasCode:
+			return nil, fmt.Errorf("rubi_agent: no Bot named %q is connected to Rubi with a webhook (agents: %s)", oneLineName(name), c.agentNames())
+		case !ok:
+		case hasCode:
+			if err := c.checkAgentCode(registered, code); err != nil {
+				if errors.Is(err, ErrAgentCode) {
+					return nil, errors.New("rubi_agent_code: pass the agent_code of your latest Rubi webhook (or call rubi_verify with your Bot name to get one)")
+				}
+				return nil, err
+			}
+			obj[argVerifiedAgent], _ = json.Marshal(registered)
+		case strings.EqualFold(c.accessAgent(access, plugin), registered):
+			obj[argVerifiedAgent], _ = json.Marshal(registered)
+		}
+	}
+	return json.Marshal(obj)
 }

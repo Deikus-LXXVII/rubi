@@ -1,7 +1,7 @@
 package home
 
 // The inbox: a Grok Bot ("sister") sends a message to one Claude Code session through Rubi
-// (claude.send); the session's own hooks deliver it. UserPromptSubmit adds waiting messages to the
+// (claude-sessions.send); the session's own hooks deliver it. UserPromptSubmit adds waiting messages to the
 // prompt's context; Stop, when messages wait, blocks the stop with them as the reason, so Claude goes on
 // (at most claudeMaxChain times in a row). Claude's last answer after a turn that carried messages goes
 // back to their senders, and ```rubi-ask``` blocks in any answer become questions for the sister; both

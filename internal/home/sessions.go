@@ -1,6 +1,6 @@
 package home
 
-// The registry of Claude Code sessions on this computer (claude.sessions). It reads, never writes:
+// The registry of Claude Code sessions on this computer (claude-sessions.list). It reads, never writes:
 //   - the Claude desktop app's session store (<user config dir>/Claude/claude-code-sessions/<account>/<org>/
 //     local_<uuid>.json): title, working directory, the session it was spawned from;
 //   - Claude Code's transcripts (~/.claude/projects/<slug>/<session id>.jsonl), for sessions started
@@ -36,7 +36,7 @@ const (
 	maxSessionsListed  = 200
 )
 
-// ClaudeSession is one Claude Code session as claude.sessions reports it. Title comes from the user or
+// ClaudeSession is one Claude Code session as claude-sessions.list reports it. Title comes from the user or
 // Claude and is untrusted text.
 type ClaudeSession struct {
 	SessionID      string    `json:"session_id"`               // Claude Code's id (what hooks carry)

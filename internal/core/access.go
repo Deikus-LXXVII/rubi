@@ -107,6 +107,26 @@ func (c *Core) checkAccess(m plugins.Manifest, tool string, args json.RawMessage
 	return args, nil, nil
 }
 
+// accessAgent returns the Bot an unexpired access code for plugin was sent to, or "".
+func (c *Core) accessAgent(code, plugin string) string {
+	if code == "" {
+		return ""
+	}
+	g := &c.access
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for k, gr := range g.grants {
+		if time.Now().Before(gr.expires) && subtle.ConstantTimeCompare([]byte(k), []byte(code)) == 1 {
+			for r := range gr.resources {
+				if strings.HasPrefix(r, plugin+"|") {
+					return gr.agent
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func (c *Core) validAccess(agent, code, plugin, account string) bool {
 	if agent == "" || code == "" {
 		return false

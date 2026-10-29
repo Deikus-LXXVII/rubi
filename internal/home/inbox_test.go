@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func hook(event, session string, extra map[string]any) []byte {
@@ -37,7 +38,7 @@ func outs(c *Claude) []ClaudeOut {
 		if n == 0 {
 			return got
 		}
-		_, o, _ := c.next(ctx, 0, true)
+		_, o, _ := c.next(ctx, 0, false, true)
 		got = append(got, *o)
 	}
 }
@@ -172,5 +173,36 @@ func TestEventHooksOverTheSocket(t *testing.T) {
 	out.Reset()
 	if err := RunClaudeHook(strings.NewReader(string(hook("Stop", "s1", nil))), &out, filepath.Join(t.TempDir(), "none"), 0); err != nil || out.Len() != 0 {
 		t.Fatalf("no helper: %q (%v)", out.String(), err)
+	}
+}
+
+// Approvals and sessions are separate capabilities: claude.next hands out only permission requests,
+// claude-sessions.next only what sessions say, and polling it doesn't count as Rubi being there to approve.
+func TestSessionsPollIsSeparate(t *testing.T) {
+	c := liveClaude(t, "s1")
+	c.mu.Lock()
+	c.outbox = append(c.outbox, ClaudeOut{ID: "o1", Kind: "reply", SessionID: "s1"})
+	c.mu.Unlock()
+	ctx := context.Background()
+	got, err := c.handle(ctx, "claude.next", json.RawMessage(`{"wait_seconds":1}`))
+	if err != nil || strings.Contains(toJSON(got), "o1") {
+		t.Fatalf("claude.next handed out a session message: %v %v", toJSON(got), err)
+	}
+	got, err = c.handle(ctx, "claude-sessions.next", json.RawMessage(`{"wait_seconds":1}`))
+	if err != nil || !strings.Contains(toJSON(got), `"o1"`) {
+		t.Fatalf("claude-sessions.next: %v %v", toJSON(got), err)
+	}
+	c2 := liveClaude(t, "s1")
+	if _, err := c2.handle(ctx, "claude-sessions.next", json.RawMessage(`{"wait_seconds":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	c2.mu.Lock()
+	present := c2.connectedLocked(time.Now())
+	c2.mu.Unlock()
+	if present {
+		t.Fatal("polling for session messages made Rubi count as present for approvals")
+	}
+	if _, err := c.handle(ctx, "claude.sessions", nil); err == nil {
+		t.Fatal("the old op name still works")
 	}
 }

@@ -21,7 +21,7 @@ type Event struct {
 	Acked           bool      `json:"acked"`
 	// Quiet events wait in the list for the agent's next turn instead of waking it (a wake costs quota).
 	Quiet bool `json:"-"`
-	// Target is the agent this event is for ("" = the default agent).
+	// Target is the only agent this event is for ("" = the subscribers, or the default agent).
 	Target string `json:"for_agent,omitempty"`
 }
 

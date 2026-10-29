@@ -235,17 +235,8 @@ func (c *Claude) drop(id string) {
 }
 
 // Next hands Rubi the oldest request not yet handed out, waiting up to wait (at most 25 seconds) for
-// one. It returns nil when none came.
+// one. It returns nil when none came. While Rubi polls it, the helper counts Rubi as present.
 func (c *Claude) Next(ctx context.Context, wait time.Duration) (*ClaudeRequest, error) {
-	r, _, err := c.next(ctx, wait, false)
-	return r, err
-}
-
-// next is Next that, with out, also hands out what sessions say (replies and asks), one item per call.
-func (c *Claude) next(ctx context.Context, wait time.Duration, out bool) (*ClaudeRequest, *ClaudeOut, error) {
-	if wait <= 0 || wait > claudeMaxPoll {
-		wait = claudeMaxPoll
-	}
 	c.mu.Lock()
 	c.polls++
 	c.lastPoll = time.Now()
@@ -256,11 +247,27 @@ func (c *Claude) next(ctx context.Context, wait time.Duration, out bool) (*Claud
 		c.lastPoll = time.Now()
 		c.mu.Unlock()
 	}()
+	r, _, err := c.next(ctx, wait, true, false)
+	return r, err
+}
+
+// NextOut hands out what sessions say (replies and asks), one item per call, waiting like Next. It is
+// the claude-sessions capability's poll and doesn't count as Rubi being there for approvals.
+func (c *Claude) NextOut(ctx context.Context, wait time.Duration) (*ClaudeOut, error) {
+	_, o, err := c.next(ctx, wait, false, true)
+	return o, err
+}
+
+// next waits for a request (req) or an outgoing message (out).
+func (c *Claude) next(ctx context.Context, wait time.Duration, req, out bool) (*ClaudeRequest, *ClaudeOut, error) {
+	if wait <= 0 || wait > claudeMaxPoll {
+		wait = claudeMaxPoll
+	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	for {
 		c.mu.Lock()
-		for len(c.order) > 0 {
+		for req && len(c.order) > 0 {
 			id := c.order[0]
 			c.order = c.order[1:]
 			if it := c.pending[id]; it != nil {
@@ -347,25 +354,31 @@ func cleanMessage(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// handle serves claude.next and claude.decide for a paired Rubi.
+// handle serves a paired Rubi: claude.next and claude.decide (the "claude" capability, approvals) and
+// claude-sessions.list, .send and .next (the "claude-sessions" capability: sessions and messages).
 func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (any, error) {
 	switch op {
-	case "claude.next":
+	case "claude.next", "claude-sessions.next":
 		var in struct {
 			WaitSeconds int `json:"wait_seconds"`
 		}
 		if len(args) > 0 && json.Unmarshal(args, &in) != nil {
 			return nil, errors.New("bad arguments")
 		}
-		r, o, err := c.next(ctx, time.Duration(in.WaitSeconds)*time.Second, true)
+		wait := time.Duration(in.WaitSeconds) * time.Second
+		if op == "claude-sessions.next" {
+			o, err := c.NextOut(ctx, wait)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"out": o}, nil
+		}
+		r, err := c.Next(ctx, wait)
 		if err != nil {
 			return nil, err
 		}
-		if o != nil {
-			return map[string]any{"request": nil, "out": o}, nil
-		}
 		return map[string]any{"request": r}, nil
-	case "claude.sessions":
+	case "claude-sessions.list":
 		var in struct {
 			Repo            string `json:"repo"`
 			IncludeArchived bool   `json:"include_archived"`
@@ -375,7 +388,7 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		}
 		return map[string]any{"sessions": c.Sessions(in.Repo, in.IncludeArchived),
 			"sources": map[string]bool{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}}, nil
-	case "claude.send":
+	case "claude-sessions.send":
 		var in struct {
 			SessionID string `json:"session_id"`
 			From      string `json:"from"`

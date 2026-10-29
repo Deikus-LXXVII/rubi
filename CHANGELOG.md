@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## v0.12.0 (draft, not tagged)
+
+- **Strict delivery of addressed events (breaking for plugins that relied on the fallback).** An event a
+  plugin addresses to one Bot (`EmitTo`) goes to that Bot's webhook only. If no Bot of that name is
+  connected with a webhook, Rubi drops the event, records `event.dropped` (plugin, type, name) in the audit
+  log and returns an error to the plugin; it never falls back to the subscribers or the administrator. In
+  the event list an addressed event is its Bot's alone (the administrator no longer sees other Bots'
+  addressed events).
+- **Verified caller for plugins.** A plugin tool call may name the Bot (`rubi_agent`) with a proof only its
+  webhook receives: `rubi_agent_code` (the `agent_code` of its latest webhook, or from `rubi_verify`) or
+  its `rubi_access` code for that plugin. Rubi checks it, strips the code and passes the plugin
+  `rubi_verified_agent`, the Bot's registered name. A caller-supplied `rubi_verified_agent` is always
+  stripped. A wrong `rubi_agent_code` or an unknown name fails the call.
+- **Claude Code sessions in Rubi Home.** The `claude-hook` also reports SessionStart, UserPromptSubmit,
+  Stop and SessionEnd; Rubi Home keeps a read-only registry of sessions (Claude desktop app store,
+  transcripts in `~/.claude/projects`, project from the origin remote, main vs sub-session) and a per-
+  session inbox: queued messages reach a session through UserPromptSubmit context or by blocking Stop
+  (at most 5 times in a row); the turn's answer and ```` ```rubi-ask ```` blocks go back to the sender.
+  The helper never starts or resumes a session. This works in bypassPermissions sessions too (those hooks
+  still run there; only permission requests don't).
+- **New Rubi Home capability `claude-sessions`**, separate from `claude` and shown on the install screen:
+  `claude-sessions.list`, `claude-sessions.send` and `claude-sessions.next` (replies and asks). `claude`
+  keeps only permission requests (`claude.next`, `claude.decide`); `claude.next` no longer carries session
+  messages, and polling `claude-sessions.next` doesn't count as Rubi being there to approve.
 
 - **Pending approvals in the panel.** Settings now shows a "Waiting for you" list of every request still
   waiting for a tap or passkey, and each one opens the usual approval screen. New panel ops are

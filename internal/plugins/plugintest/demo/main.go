@@ -164,6 +164,13 @@ func main() {
 			id, err := h.EmitTo(in.Agent, "ping", map[string]any{"from": "someone"})
 			return map[string]any{"event_id": id}, err
 		})
+	rubiplugin.AddTool(p, "demo_whoami", "Which Bot Rubi says is calling.",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			AgentCode string `json:"rubi_agent_code,omitempty"`
+			Verified  string `json:"rubi_verified_agent,omitempty"`
+		}) (any, error) {
+			return map[string]any{"verified": in.Verified, "saw_code": in.AgentCode != ""}, nil
+		})
 	rubiplugin.AddTool(p, "demo_batch", "Ask to send to several people at once (a batch approval).",
 		func(ctx context.Context, h *rubiplugin.Host, in struct {
 			To []string `json:"to"`
