@@ -907,12 +907,13 @@ async function statusScreen(ctx, message) {
 
 const FIELD_LABELS = {
   from: "From", to: "To", cc: "Cc", bcc: "Bcc", subject: "Subject", in_reply_to: "In reply to", body: "Message",
-  plugin: "Plugin", about: "About", warning: "Warning", review: "Review", publisher: "Publisher",
+  replaces: "Replaces", plugin: "Plugin", about: "About", warning: "Warning", review: "Review", publisher: "Publisher",
   website: "Publisher website", source: "Source",
   integration: "Integration", account: "Account", agent: "Bot", notifies_about: "Notifies about", current: "Current version", new_version: "New version",
   new_permissions: "New permissions", back_to: "Back to", will_ask_for: "Will ask you for", can: "Can", connects_to: "Connects to",
   can_notify_about: "Can notify your agent about", effect: "Effect", webhook: "Webhook",
   release_notes: "Release notes", verification: "Verification",
+  bot: "Bot", proposed_by: "Proposed by", reason: "Reason", already_allowed: "Already allowed",
 };
 
 // An icon for each well-known preview field.
@@ -923,10 +924,11 @@ const FIELD_ICONS = {
   integration: "plug", agent: "bot", webhook: "link", effect: "sparkle", reason: "eye", current: "clock",
   new_version: "download", back_to: "undo", shortcut: "sparkle", folder: "folder", emails: "mail", input: "sparkle",
   allows: "shield", fingerprint: "key", web_addresses: "link", release_notes: "sparkle", verification: "shield",
+  replaces: "warn", bot: "bot", proposed_by: "bot", already_allowed: "check",
 };
 
 // Preview fields that need the user's attention.
-const ATTENTION = new Set(["warning", "new_permissions"]);
+const ATTENTION = new Set(["warning", "new_permissions", "replaces"]);
 
 // splitAddresses turns `Anna <a@x>, b@y` into [{name, email}] for display.
 function splitAddresses(list) {
@@ -1021,6 +1023,7 @@ function titleFor(a) {
   if (a.kind.endsWith(".send")) return "Send this email?";
   if (a.kind.endsWith(".draft")) return "Save this draft?";
   if (a.kind === "rubi.update") return "Update Rubi?";
+  if (a.kind === "rubi.bot.request" && a.preview?.replaces) return `${a.summary}? This replaces a webhook.`;
   const name = a.preview?.plugin;
   if (a.kind === "rubi.plugin.install" && name) return `Install ${name}?`;
   if (a.kind === "rubi.plugin.update" && name) return `Update ${name}?`;
@@ -1218,7 +1221,7 @@ function resultScreen(ctx, a, onDone, extra = {}) {
     : a.kind === "rubi.update" ? "Updating…" : a.kind === "rubi.plugin.install" ? "Installed"
     : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed"
     : a.kind === "rubi.plugin.rollback" ? "Rolled back" : a.kind?.endsWith(".private") ? "Shown to your agent"
-    : a.kind?.endsWith(".folder") || a.kind?.endsWith(".chat_access") || a.kind === "rubi.access" ? "Allowed" : a.kind?.endsWith(".draft") ? "Draft saved" : "Done";
+    : a.kind?.endsWith(".folder") || a.kind?.endsWith(".chat_access") || a.kind === "rubi.access" || a.kind === "rubi.bot.request" ? "Allowed" : a.kind?.endsWith(".draft") ? "Draft saved" : "Done";
   const titles = {
     executed: executedTitle,
     denied: "Declined",
