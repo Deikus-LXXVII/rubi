@@ -223,6 +223,7 @@ Both sides send requests. A message may be up to 4 MiB.
 | `secret.get` | `{key, account?}` | `{value}`. Only keys declared in the manifest |
 | `state.get` / `state.set` | `{}` / `{state}` | `{state}` / `{}`. Private state, encrypted in the vault |
 | `approval.submit` | `{kind, summary, question?, preview, options, payload}` | When the kind needs no approval, the host calls `execute` right away and returns its result. Otherwise it returns `{status: "awaiting_approval", approval_id, …}` for the agent |
+| `approval.wait` | `{approval_id, wait_seconds?}` | `{approval_id, state, chosen_option?, error?}`. Only the plugin's own approvals; waits up to 25 s for a decision (0: just look). States: `pending`, `executing`, `executed`, `failed`, `denied`, `cancelled`, `expired`. Once the plugin has seen the outcome, the agent isn't woken for it |
 | `level.get` | `{kind}` | `{level}` |
 | `event.emit` | `{type, data, agent?}` | `{event_id}`. The type must be declared; `untrusted_fields` come from the manifest. With `agent` (a connected Bot's name), only that Bot is woken; otherwise the Bots subscribed to the plugin |
 | `config.get` | `{account?}` | `{config}`: the user-only settings (`per_account` ones for that account), with defaults for anything not set |

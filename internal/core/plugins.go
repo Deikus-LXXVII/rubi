@@ -399,6 +399,8 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 				return nil, errors.New("too many approval requests; slow down")
 			}
 			return c.pluginSubmit(ctx, m, params)
+		case "approval.wait":
+			return c.pluginWait(ctx, id, params)
 		case "home.devices":
 			if len(m.Home) == 0 {
 				return nil, errors.New("the manifest doesn't use Rubi Home")
@@ -486,6 +488,33 @@ const (
 	pluginEventsPerMinute    = 30
 	pluginApprovalsPerMinute = 10
 )
+
+// pluginWait tells a plugin how one of its own approvals stands, waiting up to 25 seconds for it to be
+// decided, so it can act on a denial too (it learns of an approval only through execute otherwise).
+// A plugin that saw the outcome took care of it: the agent isn't woken for it.
+func (c *Core) pluginWait(ctx context.Context, plugin string, params json.RawMessage) (any, error) {
+	var in struct {
+		ApprovalID  string `json:"approval_id"`
+		WaitSeconds int    `json:"wait_seconds"`
+	}
+	if err := json.Unmarshal(params, &in); err != nil {
+		return nil, err
+	}
+	snap, err := c.Approvals.Get(in.ApprovalID)
+	if err != nil || snap.Integration != plugin {
+		return nil, errors.New("unknown approval")
+	}
+	if wait := time.Duration(min(max(in.WaitSeconds, 0), 25)) * time.Second; wait > 0 {
+		if snap, err = c.Approvals.Wait(ctx, in.ApprovalID, wait); err != nil {
+			return nil, err
+		}
+	}
+	if snap.State != approvals.Pending && snap.State != approvals.Executing {
+		c.MarkSeen(snap.ID)
+	}
+	return map[string]any{"approval_id": snap.ID, "state": snap.State, "chosen_option": snap.Chosen,
+		"error": snap.Error}, nil
+}
 
 func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json.RawMessage) (any, error) {
 	var in struct {
