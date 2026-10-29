@@ -9,7 +9,7 @@ import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
 import { icon } from "./icons.js";
 import { celebrate, lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
-import { missingHint, parseWebhook } from "./webhook.js";
+import { isRoutineURL, missingHint, parseWebhook } from "./webhook.js";
 
 const root = document.getElementById("app");
 
@@ -1104,6 +1104,7 @@ async function approveScreen(ctx, id, opts = {}) {
       const keys = itemBoxes.filter((x) => x.b.checked).map((x) => x.key);
       chosen = (a.options.length > 1 ? optKey + "|" : "") + "items:" + keys.join(",");
       primary.disabled = keys.length === 0;
+      syncPaste?.();
       count.textContent = `${keys.length} of ${itemBoxes.length} selected`;
     };
     const count = h("p", { class: "muted small" });
@@ -1117,12 +1118,68 @@ async function approveScreen(ctx, id, opts = {}) {
     queueMicrotask(sync);
   }
 
-  async function challengeFor(option) {
-    if (!(a.items || []).length) return info.challenges[option];
-    return (await ctx.client.call("approval.challenge", { approval_id: id, option })).challenge;
+  // Values the user types here (a Bot's webhook it can't know): one paste box for the routine's Webhook
+  // section. They go to Rubi only with the approval, and the passkey signs them too.
+  let syncPaste = null;
+  let pasteUI = null;
+  let clearTyped = () => {};
+  let typed = () => null; // the inputs for the current choice, or null when none are needed
+  const inputs = a.inputs || [];
+  if (inputs.length) {
+    const urlIn = inputs.find((x) => !x.secret);
+    const keyIn = inputs.find((x) => x.secret);
+    const item = urlIn?.item || "";
+    const paste = h("textarea", { rows: "4", autocapitalize: "none", autocomplete: "off", spellcheck: "false",
+      placeholder: "Paste here: \u201cPOST to\u201d and \u201cheader\u201d, in any order (or the whole Webhook section)" });
+    const parsed = h("p", { class: "muted small", "aria-live": "polite" });
+    const current = () => {
+      const w = parseWebhook(paste.value, { strict: true });
+      if (!w.url && urlIn?.value && !w.error) w.url = urlIn.value; // the Bot's suggestion, unless the user pasted one
+      if (w.url && !w.error) {
+        let u = null;
+        try { u = new URL(w.url); } catch { /* reported below */ }
+        if (!u || !isRoutineURL(u)) w.error = "That address isn't a Grok Bot routine. Paste \u201cPOST to\u201d from the routine itself.";
+      }
+      return w;
+    };
+    const needed = () => !item || !chosen.includes("items:") || chosen.split("items:")[1].split(",").includes(item);
+    const show = () => {
+      const w = current();
+      const found = [w.url ? "Address \u2713 " + w.url.replace(/^(https?:\/\/[^/]+\/automations\/webhook\/).*$/, "$1\u2026") : "",
+        w.key ? "Key \u2713 \u2022\u2022\u2022\u2022" + w.key.slice(-4) : ""].filter(Boolean).join(" \u00b7 ");
+      parsed.textContent = [found, missingHint(w)].filter(Boolean).join(" \u2014 ");
+      const noItems = (a.items || []).length > 0 && chosen.endsWith("items:");
+      primary.disabled = noItems || (needed() && !!missingHint(w));
+    };
+    paste.addEventListener("input", show);
+    pasteUI = h("div", { class: "field" },
+      h("span", {}, "Your Bot's webhook"),
+      h("small", {}, urlIn?.help || ""),
+      paste, parsed,
+      h("small", {}, keyIn?.help || ""));
+    syncPaste = () => {
+      pasteUI.hidden = !needed();
+      show();
+    };
+    typed = () => {
+      if (!needed()) return null;
+      const w = current();
+      const hint = missingHint(w);
+      if (hint) throw new UserError(hint);
+      return { [urlIn.key]: w.url, [keyIn.key]: w.key };
+    };
+    clearTyped = () => { paste.value = ""; show(); };
+    queueMicrotask(syncPaste);
   }
 
-  async function passwordProof(option) {
+  async function challengeFor(option, values) {
+    if (!(a.items || []).length && !values) return info.challenges[option];
+    const args = { approval_id: id, option };
+    if (values) args.inputs = values;
+    return (await ctx.client.call("approval.challenge", args)).challenge;
+  }
+
+  async function passwordProof(option, values) {
     const pw = pwInput.value;
     if (!pw) throw new UserError("Enter your password first.");
     const keys = await unlockKeys(ctx);
@@ -1133,7 +1190,7 @@ async function approveScreen(ctx, id, opts = {}) {
       } catch {
         continue;
       }
-      const mac = await hmacSha256(await approveKey(kek), b64u.dec(await challengeFor(option)));
+      const mac = await hmacSha256(await approveKey(kek), b64u.dec(await challengeFor(option, values)));
       return { type: "password", mac: b64u.enc(mac) };
     }
     throw new UserError("Wrong password.");
@@ -1148,10 +1205,14 @@ async function approveScreen(ctx, id, opts = {}) {
   };
   setPrimary();
   const run = (auto) => busy(primary, async () => {
+    const values = typed();
     const proof = ctx.demo ? { type: "demo" } : usePasskey()
-      ? await signChallenge(b64u.dec(await challengeFor(chosen)), approverIds, { tap })
-      : await passwordProof(chosen);
-    const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
+      ? await signChallenge(b64u.dec(await challengeFor(chosen, values)), approverIds, { tap })
+      : await passwordProof(chosen, values);
+    const decideArgs = { approval_id: id, option: chosen, approve: true, proof };
+    if (values) decideArgs.inputs = values;
+    const res = await ctx.client.call("approval.decide", decideArgs);
+    clearTyped();
     if (res.state === "executed") { // the button becomes a check before Rubi celebrates
       primary.classList.remove("is-busy");
       primary.classList.add("is-done");
@@ -1190,7 +1251,8 @@ async function approveScreen(ctx, id, opts = {}) {
         h("p", { class: "eyebrow" }, opts.eyebrow || "Approval needed"),
         h("h1", {}, titleFor(a)),
         isMail(a.preview) ? mailCard(a.preview) : fieldList(a.preview),
-        itemsUI),
+        itemsUI,
+        pasteUI),
       h("aside", { class: "req-side" },
         choiceUI,
         info.password ? pwBox : null,
