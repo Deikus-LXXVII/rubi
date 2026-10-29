@@ -1,6 +1,13 @@
 # Changelog
 
-## v0.12.0 (draft, not tagged)
+## v0.12.0 (2026-10-29)
+
+> **Behaviour change / Изменение поведения.**
+> EN: events that rubi-mailkit or rubi-telegram address to a named Bot with no registered webhook (or to
+> an unknown Bot) are now dropped and audited as `event.dropped`, instead of going to all subscribers.
+> RU: события, которые rubi-mailkit или rubi-telegram адресуют названному Боту без зарегистрированного
+> вебхука (или неизвестному Боту), теперь отбрасываются и записываются в аудит как `event.dropped`, а не
+> уходят всем подписчикам.
 
 - **Strict delivery of addressed events (breaking for plugins that relied on the fallback).** An event a
   plugin addresses to one Bot (`EmitTo`) goes to that Bot's webhook only. If no Bot of that name is
