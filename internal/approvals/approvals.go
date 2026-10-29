@@ -81,6 +81,70 @@ type Request struct {
 	// "items:<key>,<key>…" with the chosen keys (all of them for an option key or level none).
 	Items   []Item
 	Execute Executor
+	// Inputs are values the user types on the approval screen (e.g. a webhook address and key the agent
+	// can't know). They are checked by CheckInputs before the user's proof is asked for, bound into what the
+	// proof signs, and handed to Execute through the context (InputsFrom). The engine never stores, logs
+	// or returns them.
+	Inputs      []Input
+	CheckInputs func(option string, in map[string]string) error
+}
+
+// Input is a field the user fills in on the approval screen.
+type Input struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Secret bool   `json:"secret,omitempty"` // shown as a password field; never prefilled
+	Value  string `json:"value,omitempty"`  // a prefill the user can change (never for secrets)
+	Help   string `json:"help,omitempty"`
+	// Item: the batch item this input belongs to; it is needed only when that item is chosen ("" = always).
+	Item string `json:"item,omitempty"`
+}
+
+type inputsKey struct{}
+
+// InputsFrom returns the values the user typed on the approval screen (nil when there were none).
+func InputsFrom(ctx context.Context) map[string]string {
+	m, _ := ctx.Value(inputsKey{}).(map[string]string)
+	return m
+}
+
+// checkInputs validates in against a request and a normalized option.
+func (r *Request) checkInputs(option string, in map[string]string) error {
+	if len(r.Inputs) == 0 {
+		if len(in) > 0 {
+			return errors.New("this request takes no input")
+		}
+		return nil
+	}
+	known := map[string]bool{}
+	for _, i := range r.Inputs {
+		known[i.Key] = true
+	}
+	for k := range in {
+		if !known[k] {
+			return fmt.Errorf("unknown input %q", k)
+		}
+	}
+	if r.CheckInputs == nil {
+		return nil
+	}
+	return r.CheckInputs(option, in)
+}
+
+// NeededInputs lists the inputs a normalized option needs: those of chosen items, and those of no item.
+func (r *Request) NeededInputs(option string) []Input {
+	_, keys := SplitOption(option)
+	chosen := map[string]bool{}
+	for _, k := range keys {
+		chosen[k] = true
+	}
+	var out []Input
+	for _, i := range r.Inputs {
+		if i.Item == "" || keys == nil || chosen[i.Item] {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // Item is one entry of a batch approval.
@@ -199,6 +263,7 @@ type Detail struct {
 	Preview  any      `json:"preview"`
 	Options  []Option `json:"options"`
 	Items    []Item   `json:"items,omitempty"`
+	Inputs   []Input  `json:"inputs,omitempty"`
 	Nonce    string   `json:"-"`
 }
 
@@ -299,6 +364,9 @@ func (e *Engine) Submit(ctx context.Context, req Request) (map[string]any, error
 	level := Strong
 	if e.hooks.Level != nil {
 		level = e.hooks.Level(req.Kind)
+	}
+	if len(req.Inputs) > 0 && !level.InPanel() {
+		return nil, errors.New("this request needs values typed in the Rubi panel, so it can't be confirmed in chat or skipped")
 	}
 	if level == None {
 		opt, err := req.normalize(req.Options[0].Key)
@@ -452,6 +520,27 @@ var ErrNeedsVerification = errors.New("this request needs Face ID, Touch ID, you
 // have verified the user's proof for this approval id and option, and says which kind it was: a strong
 // approval takes only a Verified proof.
 func (e *Engine) DecidePanel(ctx context.Context, id, option string, approve bool, proof Proof) (Snapshot, error) {
+	return e.DecidePanelWith(ctx, id, option, approve, proof, nil)
+}
+
+// CheckInputs validates the option and the typed inputs of a pending approval, before the user's proof is
+// asked for, and returns the normalized option.
+func (e *Engine) CheckInputs(id, option string, in map[string]string) (string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	a, err := e.getLocked(id)
+	if err != nil {
+		return "", err
+	}
+	if option, err = a.req.normalize(option); err != nil {
+		return "", err
+	}
+	return option, a.req.checkInputs(option, in)
+}
+
+// DecidePanelWith is DecidePanel with the values the user typed on the approval screen (Request.Inputs).
+// The caller's proof must cover them (the panel API binds them into the signed challenge).
+func (e *Engine) DecidePanelWith(ctx context.Context, id, option string, approve bool, proof Proof, in map[string]string) (Snapshot, error) {
 	e.mu.Lock()
 	a, err := e.getLocked(id)
 	if err != nil {
@@ -478,11 +567,18 @@ func (e *Engine) DecidePanel(ctx context.Context, id, option string, approve boo
 		e.mu.Unlock()
 		return Snapshot{}, err
 	}
+	if err := a.req.checkInputs(option, in); err != nil {
+		e.mu.Unlock()
+		return Snapshot{}, err
+	}
 	if err := e.claimLocked(a, option); err != nil {
 		e.mu.Unlock()
 		return Snapshot{}, err
 	}
 	e.mu.Unlock()
+	if len(in) > 0 {
+		ctx = context.WithValue(ctx, inputsKey{}, in)
+	}
 	return e.run(ctx, a), nil
 }
 
@@ -559,7 +655,7 @@ func (e *Engine) Detail(id string) (Detail, error) {
 		return Detail{}, err
 	}
 	return Detail{Snapshot: e.snapshotLocked(a), Question: a.req.Question, Preview: a.req.Preview,
-		Options: a.req.Options, Items: a.req.Items, Nonce: a.nonce}, nil
+		Options: a.req.Options, Items: a.req.Items, Inputs: a.req.Inputs, Nonce: a.nonce}, nil
 }
 
 // Pending lists the approvals still waiting for the user in the panel (tap or strong level, not expired),

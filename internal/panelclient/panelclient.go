@@ -340,6 +340,13 @@ type ApprovalInfo struct {
 			Key   string `json:"key"`
 			Label string `json:"label"`
 		} `json:"items"`
+		Inputs []struct {
+			Key    string `json:"key"`
+			Label  string `json:"label"`
+			Secret bool   `json:"secret"`
+			Value  string `json:"value"`
+			Item   string `json:"item"`
+		} `json:"inputs"`
 	} `json:"approval"`
 	Challenges map[string]string `json:"challenges"`
 	Password   bool              `json:"password"`
@@ -359,16 +366,27 @@ func (c *Client) ApprovalInfo(id string) (*ApprovalInfo, error) {
 
 // ApproveWithPassword proves knowledge of the password for one approval and option.
 func (c *Client) ApproveWithPassword(id, option, password string) (map[string]any, error) {
+	return c.ApproveSigningInputs(id, option, password, nil, nil)
+}
+
+// ApproveWithPasswordInputs approves with values typed on the approval screen (approvals.Input).
+func (c *Client) ApproveWithPasswordInputs(id, option, password string, inputs map[string]string) (map[string]any, error) {
+	return c.ApproveSigningInputs(id, option, password, inputs, inputs)
+}
+
+// ApproveSigningInputs signs the challenge for the inputs signed and sends the inputs sent. The two differ
+// only in tests: the proof must not cover anything but what was signed.
+func (c *Client) ApproveSigningInputs(id, option, password string, signed, sent map[string]string) (map[string]any, error) {
 	info, err := c.ApprovalInfo(id)
 	if err != nil {
 		return nil, err
 	}
 	chB64 := info.Challenges[option]
-	if chB64 == "" && strings.Contains(option, "items:") { // a chosen subset of a batch (maybe with an option)
+	if (chB64 == "" && strings.Contains(option, "items:")) || signed != nil { // a chosen subset of a batch, or typed inputs
 		var r struct {
 			Challenge string `json:"challenge"`
 		}
-		if err := c.Call("approval.challenge", map[string]string{"approval_id": id, "option": option}, &r); err != nil {
+		if err := c.Call("approval.challenge", map[string]any{"approval_id": id, "option": option, "inputs": signed}, &r); err != nil {
 			return nil, err
 		}
 		chB64 = r.Challenge
@@ -394,7 +412,7 @@ func (c *Client) ApproveWithPassword(id, option, password string) (map[string]an
 		}
 		m := hmac.New(sha256.New, ApproveKey(kek))
 		m.Write(ch)
-		return c.decide(id, option, map[string]any{"type": "password", "mac": b64.EncodeToString(m.Sum(nil))})
+		return c.decideWith(id, option, sent, map[string]any{"type": "password", "mac": b64.EncodeToString(m.Sum(nil))})
 	}
 	return nil, errors.New("wrong password")
 }
@@ -421,9 +439,16 @@ func (c *Client) Deny(id string) (map[string]any, error) {
 }
 
 func (c *Client) decide(id, option string, proof map[string]any) (map[string]any, error) {
+	return c.decideWith(id, option, nil, proof)
+}
+
+func (c *Client) decideWith(id, option string, inputs map[string]string, proof map[string]any) (map[string]any, error) {
 	var out map[string]any
-	err := c.Call("approval.decide", map[string]any{"approval_id": id, "option": option, "approve": true,
-		"proof": proof}, &out)
+	args := map[string]any{"approval_id": id, "option": option, "approve": true, "proof": proof}
+	if inputs != nil {
+		args["inputs"] = inputs
+	}
+	err := c.Call("approval.decide", args, &out)
 	return out, err
 }
 
