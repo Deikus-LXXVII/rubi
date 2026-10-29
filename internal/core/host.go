@@ -386,13 +386,21 @@ func (c *Core) deliverTo(hook vault.Agent, ev events.Event) {
 		if ue := (*url.Error)(nil); errors.As(err, &ue) {
 			err = ue.Err // the error without the address (it can carry the routine's secret path)
 		}
+		status := 0
 		if err == nil {
 			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			status = resp.StatusCode
+			if status >= 200 && status < 300 {
 				c.Audit.Record("webhook.delivered", audit.Fields{"event_id": ev.ID, "agent": hook.Name, "attempt": attempt + 1})
+				if attempt == 0 {
+					c.noteTest(ev, "")
+				}
 				return
 			}
-			err = fmt.Errorf("HTTP %d", resp.StatusCode)
+			err = fmt.Errorf("HTTP %d", status)
+		}
+		if attempt == 0 {
+			c.noteTest(ev, deliveryProblem(status, err))
 		}
 		c.Audit.Record("webhook.failed", audit.Fields{"event_id": ev.ID, "agent": hook.Name, "attempt": attempt + 1, "error": err.Error()})
 	}
@@ -402,6 +410,65 @@ func (c *Core) deliverTo(hook vault.Agent, ev events.Event) {
 func (c *Core) TestWebhook(agent string) events.Event {
 	return c.Events.EmitFor(agent, false, "rubi", "webhook.test", map[string]any{"agent": agent,
 		"message": "Test event from Rubi: the webhook works. Tell the user it arrived."}, nil)
+}
+
+// WebhookTest is how the first delivery of a test event went.
+type WebhookTest struct {
+	EventID   string `json:"event_id"`
+	Delivered bool   `json:"delivered"`
+	Pending   bool   `json:"pending,omitempty"` // no answer within the wait; Rubi keeps retrying
+	Problem   string `json:"problem,omitempty"` // what went wrong and what the user can do, never the address or key
+}
+
+// TestWebhookWait sends a test event and waits up to wait for the first delivery attempt, so the panel can
+// say right away whether the routine accepted it.
+func (c *Core) TestWebhookWait(agent string, wait time.Duration) WebhookTest {
+	ev := c.TestWebhook(agent)
+	deadline := time.Now().Add(wait)
+	for {
+		c.mu.Lock()
+		problem, done := c.tested[ev.ID]
+		delete(c.tested, ev.ID)
+		c.mu.Unlock()
+		if done {
+			return WebhookTest{EventID: ev.ID, Delivered: problem == "", Problem: problem}
+		}
+		if !time.Now().Before(deadline) {
+			return WebhookTest{EventID: ev.ID, Pending: true,
+				Problem: "The routine hasn't answered yet. Rubi keeps trying for a few minutes; check that the routine is switched on."}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// noteTest keeps the outcome of a test event's first delivery for TestWebhookWait.
+func (c *Core) noteTest(ev events.Event, problem string) {
+	if ev.Integration != "rubi" || ev.Type != "webhook.test" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tested == nil || len(c.tested) > 100 {
+		c.tested = map[string]string{}
+	}
+	c.tested[ev.ID] = problem
+}
+
+// deliveryProblem says in the user's words why a routine refused an event. The answers are those of the
+// Grok Bot routine webhook: 401 for a wrong key, 400 for a routine that is switched off.
+func deliveryProblem(status int, err error) string {
+	switch {
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return "The routine refused the key. Copy the header (or key) again from the same routine and paste it with its address."
+	case status == http.StatusBadRequest:
+		return "The routine is switched off. Turn it on (Active) in the Grok Bot app, then test again."
+	case status == http.StatusNotFound:
+		return "There is no routine at this address. Copy its \u201cPOST to\u201d address again."
+	case status != 0:
+		return fmt.Sprintf("The routine answered HTTP %d. Try again in a minute.", status)
+	default:
+		return "Rubi couldn't reach the routine's address (" + err.Error() + "). Check this computer's internet connection."
+	}
 }
 
 // passExtra copies the inputs of later setup steps, within limits.

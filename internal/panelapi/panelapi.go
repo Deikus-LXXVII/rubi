@@ -636,6 +636,10 @@ func (s *Server) rpID() string {
 // every change becomes a strong approval. The response carries a fresh ticket for that approval so the
 // panel can ask for the passkey (or the password) right away.
 
+// webhookTestWait bounds how long webhook.test waits for the routine to answer: past the webhook client's
+// 15 s timeout, within the relays' 30 s.
+const webhookTestWait = 20 * time.Second
+
 func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (any, error) {
 	if purpose == settingsView && (env.Op == "agent.subscribe" || env.Op == "webhook.test") {
 		return nil, errViewOnly
@@ -671,6 +675,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Code    string            `json:"code"`
 		// ApprovalID is for approval.open.
 		ApprovalID string `json:"approval_id"`
+		Wait       bool   `json:"wait"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -756,6 +761,9 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		}
 		return map[string]any{"subscriptions": subs}, nil
 	case "webhook.test":
+		if args.Wait { // newer panels show at once whether the routine took it
+			return s.core.TestWebhookWait(args.Name, webhookTestWait), nil
+		}
 		ev := s.core.TestWebhook(args.Name)
 		return map[string]any{"event_id": ev.ID}, nil
 	case "plugin.config.get":

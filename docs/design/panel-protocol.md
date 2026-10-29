@@ -116,7 +116,9 @@ that integration) and an unlocked Rubi. Reads return data; every change returns
 | `integration.setup` | `id`, `fields`, `secrets` | validates (e.g. logs in), then asks to store and start it |
 | `integration.disconnect` | `id` | asks to stop it and erase its secrets and state |
 | `policy.get` / `policy.set` | — / `levels: {kind: level}` | read / ask to change approval levels (locked kinds refused) |
-| `webhook.get` / `webhook.set` / `webhook.test` | — / `url`, `key` / — | read / ask to change the agent webhook / send a test event |
+| `webhook.get` / `webhook.set` | — / `url`, `key` | read / ask to change the default agent's webhook (older panels) |
+| `agents.get` / `agent.add` | — / `name`, `url`, `key`, `sources?` | list the Bots / ask to connect one (strong). `key` may be the bare key, `Bearer <key>` or the whole header; it must be one printable token. An address that isn't a Grok Bot routine (`https://api2.cursor.sh/automations/webhook/<id>`, key `crsr_…`) gets a `warning` in the approval |
+| `webhook.test` | `name`, `wait?` | send a test event. With `wait: true` it waits up to 20 s for the first delivery and returns `{event_id, delivered, pending?, problem?}`; `problem` says what to fix (wrong key, routine switched off, wrong address) and never contains the address or key |
 | `approval.list` | — | the requests waiting in the panel (`tap`/`strong`, pending, oldest first): `approval_id`, `integration`, `kind`, `level`, `summary`, `expires_at`. No preview, options or items. Needs a full `settings` ticket (not `settings:view`) |
 | `approval.open` | `approval_id` | `{"approval_id", "ticket"}`: a fresh ticket for `approve:<id>` while that request is pending; the panel then uses `approval.get` / `approval.decide`. Full `settings` ticket only, since that ticket can decline without proof |
 
