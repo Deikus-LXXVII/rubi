@@ -255,9 +255,10 @@ and answers every well-formed POST the same way, so an address doesn't reveal wh
 so the body is untrusted and the plugin can replace (`rotate`) an address. At most 20 requests per minute
 per hook, 4 KB each.
 
-**Rubi Home.** A plugin with `"home": ["hue"]` or `["shortcuts"]` can call the user's Rubi Home helper
-(`home.call`), but only operations of those capabilities (`hue.*`, `shortcuts.*`). See
-[rubi-home.md](rubi-home.md).
+**Rubi Home.** A plugin with `"home": ["hue"]`, `["shortcuts"]` or `["claude"]` can call the user's Rubi Home
+helper (`home.call`), but only operations of those capabilities (`hue.*`, `shortcuts.*`, `claude.*`). The
+install screen names them; `claude` says the plugin can allow or deny Claude Code's commands on that computer.
+See [rubi-home.md](rubi-home.md).
 
 **A page in the panel.** A plugin can name a page of its own (`"panel": "notes"`); the panel shows it with
 the plugin and calls the plugin's `OnPanel` with the user's own requests (only from a settings link, since

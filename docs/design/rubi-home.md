@@ -51,6 +51,22 @@ The helper does only what it was built for, whatever Rubi asks:
   by default; `rubi-home folder NAME`), by identifier, with a 90-second limit and 64 KB of output. This is
   how Apple Home is reached: HomeKit is only available to App Store or Mac Catalyst apps signed with a paid
   developer account, so the user builds shortcuts with Apple Home actions instead.
+- **Claude Code** (`claude.next`, `claude.decide`): a PermissionRequest hook in Claude Code's managed
+  settings runs `rubi-home claude-hook`, which hands the request (tool, command, directory, session) to the
+  running helper over a local socket (`claude.sock`, mode 0600, in its directory) and waits. The socket can
+  only ask, never answer, and holds at most 16 open requests. Rubi takes requests with `claude.next` (a long
+  poll of at most 25 seconds) and answers with `claude.decide`, which must name the request's id, session
+  and the SHA-256 of its tool input, and counts once. Every other ending is a denial with a reason: no
+  answer within `ClaudeWaitSeconds` (280 by default, below the hook's 300-second timeout), Rubi not polling
+  (locked, offline, not paired; it counts as connected for 15 seconds after its last poll), the helper not
+  running, or a malformed answer. `claude-hook` reads no configuration and writes nothing; it always prints
+  a decision for Claude Code. The `claude-code` plugin turns each request into a Rubi approval (passkey or
+  password) and answers only from its execute step, so only an approved action can allow a command. Its
+  approvals count toward the same limit as every other approved action (30 per hour).
+
+  The boundary is the computer's user account: a process running as the same user can talk to the socket
+  (it can only ask) or replace the helper binary, so the hook's command should be a root-owned path, and
+  managed settings (which a user can't edit) should keep Claude Code from editing its own settings.
 
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.
