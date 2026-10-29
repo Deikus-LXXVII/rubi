@@ -33,9 +33,9 @@ need the user's passwords.
    3. Check that it exists without printing it:
       `[ -n "$RUBI_WEBHOOK_KEY_<NAME>" ] && echo set || echo missing`
    4. In Shell, run `umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key` (no echo). Then
-      pass the tool argument key as the string "$file:/workspace/.rubi-hook-key"; Grok Bot replaces it with
-      the file contents when sending. Delete the file right after the call with `shred -u` or `rm`.
-      The call: `rubi_agent_connect(name, url, key: "$file:/workspace/.rubi-hook-key", events, plugins,
+      pass the path as `key_file`; Rubi reads the file itself and deletes it. Don't pass `key` as a
+      `"$file:..."` substitution: Grok Bot redacts the secret there and Rubi refuses what arrives.
+      The call: `rubi_agent_connect(name, url, key_file: "/workspace/.rubi-hook-key", events, plugins,
       reason)`, with every event source and plugin you need, so it is one approval.
    5. Send the user the returned `approval_url`.
    6. The user confirms with their passkey. Rubi applies the webhook and tests it (you get `webhook.test`).

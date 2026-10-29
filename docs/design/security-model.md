@@ -303,10 +303,20 @@ to `DecideStrong`, and `rubi_confirm` refuses strong approvals.
   pastes on a Bot's approval screen. Other receivers can be set only through the user's own Connect page or
   settings, which keep the warning.
 - **How a Grok Bot passes the key.** The user enters it in a masked secret field (env
-  `RUBI_WEBHOOK_KEY_<NAME>`); the Bot checks it is set without printing it, writes it with `printenv` to a
-  `umask 077` file, passes `"$file:<path>"` (substituted by the Grok Bot runtime when the call is sent) and
-  shreds the file. The key is thus briefly on the Bot's box disk; Rubi trims surrounding whitespace and
-  refuses a literal `$file:` string.
+  `RUBI_WEBHOOK_KEY_<NAME>`); the Bot checks it is set without printing it, writes it with
+  `umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key` and passes `key_file` (the
+  path), never the key itself: the Grok Bot runtime redacts known secrets inside `"$file:<path>"`
+  substitutions (v0.12.0 stored `[REDACTED]` that way). The daemon reads the file (it serves the MCP tools;
+  `rubi mcp` only relays stdio to the daemon's 0600 socket, so both run as the same user on the same
+  machine) and deletes it, success or failure. The path must be absolute and clean, under `/workspace`,
+  `/tmp` or `$TMPDIR` after resolving links in its directory, and name a regular file (opened with
+  `O_NOFOLLOW`, so not a symlink) owned by the daemon's user, mode 0600 or stricter, at most 4 KB; a path
+  outside those directories or a file of another user is refused and left alone. The key is thus briefly
+  on the Bot's box disk. Whichever way it arrives, a key a Bot proposes is checked before an approval
+  exists: surrounding whitespace and an `Authorization: Bearer` or `Bearer` prefix are stripped; a
+  redaction placeholder (`[REDACTED]`, only `*` or `•`), fewer than 20 characters, whitespace inside, or a literal
+  `$file:` string is refused; and for a Grok Bot routine address the key must look like a routine key
+  (`crsr_` and letters, digits, `_`, `-`, as the panel's paste parser).
 - **Without a key** (fallback) the approval declares two inputs, the
   webhook address (prefilled with the Bot's `url`, if any) and the key (secret). The user pastes them on
   the approval screen; the panel accepts only a Grok Bot routine address there, and Rubi validates them

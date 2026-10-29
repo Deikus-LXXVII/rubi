@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.12.1 (draft, not tagged)
+
+- **Webhook key from a file Rubi reads (`key_file`).** v0.12.0's recipe passed the routine key to
+  `rubi_agent_connect` as `"$file:/workspace/.rubi-hook-key"`; the Grok Bot runtime redacts known secrets
+  inside that substitution, so Rubi stored `[REDACTED]` and the routine refused the key on `webhook.test`.
+  `rubi_agent_connect` now takes `key_file: <path>`: the daemon, which serves the MCP tools (`rubi mcp`
+  only relays stdio to its socket), reads the file and deletes it, success or failure. The path must be
+  absolute and clean, under `/workspace`, `/tmp` or `$TMPDIR` (links in its directory resolved), a regular
+  file that is not a symlink, owned by Rubi's user, mode 0600 or stricter, at most 4 KB; whitespace is
+  trimmed. `key` and `key_file` together are refused.
+- **A Bot's key is checked before the approval.** A redaction placeholder (`[REDACTED]`, only `*` or `•`), fewer
+  than 20 characters, whitespace inside or a literal `$file:` is refused with a hint to use `key_file`; for
+  a Grok Bot routine address the key must be `crsr_` plus letters, digits, `_` or `-`. A whole
+  `Authorization: Bearer <key>` header or `Bearer <key>` is still accepted and normalized. Keys the user
+  pastes or sets in settings are unchanged.
+- **Recipe.** `rubi_status` (`webhook.how`, `webhook.note`), the MCP instructions, the
+  `rubi_agent_connect` description and the Grok Bot skill now say `umask 077; printenv
+  RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key` and `key_file`, with no `$file:` substitution.
+
 ## v0.12.0 (2026-10-29)
 
 > **Behaviour change / Изменение поведения.**
