@@ -504,7 +504,7 @@ function demoScreen(ctx, which) {
       ctx.hello = { ...DEMO_HELLO, state: "locked" };
       return unlockFlow(ctx, "Unlock Rubi", "Rubi restarted and locked itself. Unlock it to let your agent continue.",
         () => { ctx.hello = { ...DEMO_HELLO }; statusScreen(ctx, "Unlocked. You can go back to your agent."); });
-    case "send": case "install": case "reveal": case "door":
+    case "send": case "install": case "reveal": case "door": case "botpaste":
       return approveScreen(ctx, which, { onDone: back, doneLabel: "Back to the demo" });
     case "settings":
       return settingsScreen(ctx, "plugins");
