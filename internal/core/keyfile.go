@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 )
@@ -25,7 +26,13 @@ var keyFileDirs = []string{"/workspace", "/tmp"}
 
 var keyFileTempDir = os.TempDir
 
-func keyFileRoots() []string { return append(append([]string{}, keyFileDirs...), keyFileTempDir()) }
+func keyFileRoots() []string {
+	roots := append([]string{}, keyFileDirs...)
+	if t := filepath.Clean(keyFileTempDir()); !slices.Contains(roots, t) {
+		roots = append(roots, t)
+	}
+	return roots
+}
 
 // ReadKeyFile reads a webhook key from path and deletes the file, whether or not the key is usable.
 // The path must be absolute and clean, inside keyFileDirs (after resolving links in its directory),
