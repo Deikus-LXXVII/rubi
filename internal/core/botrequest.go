@@ -41,9 +41,14 @@ const (
 	maxBotReason          = 300
 	botWebhookTestWait    = 12 * time.Second // within the relays' 30 s, as the approval waits for it
 	webhookItem           = "webhook"
+	// The inputs of the approval screen when the Bot couldn't pass its webhook key (a Grok Bot never sees it).
+	inputWebhookURL = "webhook_url"
+	inputWebhookKey = "webhook_key"
 )
 
-// WebhookProposal is the routine webhook a Bot asks Rubi to wake it through.
+// WebhookProposal is the routine webhook a Bot asks Rubi to wake it through. Without a key (a Grok Bot
+// can't read its routine's key) the user pastes the address and key on the approval screen; a URL the Bot
+// passes is only a prefill there.
 type WebhookProposal struct {
 	URL    string
 	Key    string
@@ -72,6 +77,7 @@ type botItem struct {
 
 	url      string
 	sealed   []byte // the webhook key, sealed with botRequests.aead
+	paste    bool   // no key from the Bot: the user pastes address and key on the approval screen
 	subs     []string
 	subsSet  bool
 	current  string // the Bot's webhook when the request was made ("" = none), checked again on approval
@@ -320,6 +326,14 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 		"in the Rubi panel with their passkey (you cannot approve it) and may leave parts out. Then call " +
 		"rubi_approval with wait_seconds. If you asked for your webhook, a webhook.test event reaches you once it works; " +
 		"check rubi_status."
+	if hasWebhook && items[0].paste {
+		res["user_pastes_webhook"] = true
+		res["instructions"] = "Send the user ONE message with approval_url and the deep link to your routine \"Rubi events\"'s " +
+			"webhook field (from <automation_status>). They open both in the Grok Bot desktop app, paste the routine's " +
+			"Webhook section (POST to and header) into the Rubi approval screen and approve with their passkey; they may " +
+			"leave parts out. You cannot approve it and never see the key. Then call rubi_approval with wait_seconds; a " +
+			"webhook.test event reaches you once it works; check rubi_status."
+	}
 	return res, nil
 }
 
@@ -344,14 +358,26 @@ func mergeItems(newer, older []*botItem) []*botItem {
 
 // webhookItem checks a proposed webhook and seals its key.
 func (c *Core) webhookItem(name string, w WebhookProposal) (*botItem, error) {
-	if err := validWebhookURL(w.URL); err != nil {
-		return nil, err
+	w.URL, w.Key = strings.TrimSpace(w.URL), strings.TrimSpace(w.Key)
+	if w.URL != "" {
+		if err := validWebhookURL(w.URL); err != nil {
+			return nil, err
+		}
 	}
-	key, err := cleanWebhookKey(w.Key)
-	if err != nil {
-		return nil, err
+	var key string
+	var err error
+	if strings.HasPrefix(w.Key, "$file:") { // the agent's file substitution didn't happen: never store the path as a key
+		return nil, errors.New("the key arrived as a $file: reference, not its contents; pass the file through your tool's $file: substitution, or omit key and let the user paste it")
 	}
-	it := &botItem{key: webhookItem, url: w.URL}
+	if w.Key != "" {
+		if w.URL == "" {
+			return nil, errors.New("a webhook key needs its url; or pass neither and the user pastes both on the approval screen")
+		}
+		if key, err = cleanWebhookKey(w.Key); err != nil {
+			return nil, err
+		}
+	}
+	it := &botItem{key: webhookItem, url: w.URL, paste: w.Key == ""}
 	if w.Events != nil {
 		if it.subs, err = c.cleanSources(w.Events); err != nil {
 			return nil, err
@@ -365,27 +391,57 @@ func (c *Core) webhookItem(name string, w WebhookProposal) (*botItem, error) {
 		return nil
 	})
 	it.replaces = it.current != ""
-	p := map[string]any{"agent": name, "webhook": webhookHostPath(w.URL),
+	p := map[string]any{"agent": name,
 		"proposed_by": "A Bot, through Rubi's tools (not you). Approve only if you asked a Bot to connect to Rubi."}
-	if !isRoutineWebhook(w.URL) || !strings.HasPrefix(key, routineKeyPrefix) {
-		p["warning"] = "This is not a Grok Bot routine webhook (" + routineHost + ", key " + routineKeyPrefix +
-			"…). Approve only if you set up this receiver yourself."
+	shown := ""
+	switch {
+	case !it.paste:
+		shown = webhookHostPath(w.URL)
+		p["webhook"] = shown
+		if !isRoutineWebhook(w.URL) || !strings.HasPrefix(key, routineKeyPrefix) {
+			p["warning"] = "This is not a Grok Bot routine webhook (" + routineHost + ", key " + routineKeyPrefix +
+				"…). Approve only if you set up this receiver yourself."
+		}
+	default:
+		p["webhook"] = "You paste it below, from " + name + "'s routine \"Rubi events\" (Webhook section: POST to and header). " +
+			"The Bot never sees the key."
+		if w.URL != "" {
+			shown = webhookHostPath(w.URL)
+			p["webhook"] = "Suggested by the Bot: " + shown + ". Check it against the routine, or paste the routine's own."
+			if !isRoutineWebhook(w.URL) {
+				p["warning"] = "The suggested address is not a Grok Bot routine (" + routineHost + "). Paste the one from your routine."
+			}
+		}
 	}
 	if it.replaces {
 		what := "the webhook " + webhookHostPath(it.current)
-		if it.current == w.URL {
+		if it.current == w.URL && !it.paste {
 			what = "the key of the webhook " + webhookHostPath(it.current) + " (same address, new key)"
 		}
-		p["replaces"] = "REPLACES " + what + ". From now on " + name + "'s events, including approval results and access codes, go to the address above."
-		it.label = "Replace " + name + "'s webhook with " + webhookHostPath(w.URL)
+		to := "the address above"
+		if it.paste {
+			to = "the address you paste"
+		}
+		p["replaces"] = "REPLACES " + what + ". From now on " + name + "'s events, including approval results and access codes, go to " + to + "."
+		it.label = "Replace " + name + "'s webhook"
+		if shown != "" && !it.paste {
+			it.label += " with " + shown
+		}
 	} else {
-		it.label = "Connect " + name + " (webhook " + webhookHostPath(w.URL) + ")"
+		it.label = "Connect " + name
+		if !it.paste {
+			it.label += " (webhook " + shown + ")"
+		} else {
+			it.label += " (you paste its webhook)"
+		}
 	}
 	if it.subsSet {
 		p["notifies_about"] = c.describeSources(it.subs)
 	}
 	it.preview = p
-	it.sealed = c.botReqs.seal(key, sealAD(name, w.URL))
+	if !it.paste {
+		it.sealed = c.botReqs.seal(key, sealAD(name, w.URL))
+	}
 	return it, nil
 }
 
@@ -465,7 +521,26 @@ func (c *Core) botApproval(bundle *botBundle, already []string) approvals.Reques
 	}
 	req := approvals.Request{Integration: "rubi", Kind: botRequestKind,
 		Options: []approvals.Option{{Key: "apply", Label: "Approve"}},
-		Execute: func(ctx context.Context, option string) (any, error) { return c.applyBotRequest(bundle, option) }}
+		Execute: func(ctx context.Context, option string) (any, error) { return c.applyBotRequest(ctx, bundle, option) }}
+	if hook := bundle.items[0]; hook.key == webhookItem && hook.paste {
+		item := ""
+		if len(bundle.items) > 1 {
+			item = webhookItem
+		}
+		req.Inputs = []approvals.Input{
+			{Key: inputWebhookURL, Label: "POST to", Value: hook.url, Item: item,
+				Help: "From " + name + "'s routine \"Rubi events\", Webhook section. Paste the whole section if you like."},
+			{Key: inputWebhookKey, Label: "Header (key)", Secret: true, Item: item,
+				Help: "The routine's key (crsr_…). It stays in Rubi; nobody else sees it."},
+		}
+		req.CheckInputs = func(option string, in map[string]string) error {
+			if !webhookChosen(option) {
+				return nil
+			}
+			_, _, err := pastedWebhook(in)
+			return err
+		}
+	}
 	if len(bundle.items) == 1 {
 		it := bundle.items[0]
 		for k, v := range it.preview {
@@ -492,8 +567,40 @@ func (c *Core) botApproval(bundle *botBundle, already []string) approvals.Reques
 	return req
 }
 
-// applyBotRequest runs on the user's approval (DecideStrong, after their proof was checked).
-func (c *Core) applyBotRequest(bundle *botBundle, option string) (any, error) {
+// webhookChosen: the option includes the webhook item (or isn't a batch).
+func webhookChosen(option string) bool {
+	_, keys := approvals.SplitOption(option)
+	if keys == nil {
+		return true
+	}
+	for _, k := range keys {
+		if k == webhookItem {
+			return true
+		}
+	}
+	return false
+}
+
+// pastedWebhook checks what the user pasted on the approval screen, like any pasted webhook.
+func pastedWebhook(in map[string]string) (rawURL, key string, err error) {
+	rawURL = strings.TrimSpace(in[inputWebhookURL])
+	if rawURL == "" {
+		return "", "", errors.New("paste the routine's \"POST to\" address")
+	}
+	if err := validWebhookURL(rawURL); err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(in[inputWebhookKey]) == "" {
+		return "", "", errors.New("paste the routine's header (its key)")
+	}
+	if key, err = cleanWebhookKey(in[inputWebhookKey]); err != nil {
+		return "", "", err
+	}
+	return rawURL, key, nil
+}
+
+// applyBotRequest runs on the user's approval (DecidePanel, after their proof was checked).
+func (c *Core) applyBotRequest(ctx context.Context, bundle *botBundle, option string) (any, error) {
 	_, keys := approvals.SplitOption(option)
 	chosen := map[string]bool{}
 	for _, k := range keys {
@@ -508,14 +615,25 @@ func (c *Core) applyBotRequest(bundle *botBundle, option string) (any, error) {
 	name := bundle.agent
 	var hook *botItem
 	var plain []byte
+	hookURL := ""
 	defer func() { wipe(plain) }()
 	for _, it := range pick {
-		if it.key == webhookItem {
-			hook = it
-			var err error
-			if plain, err = c.botReqs.open(it.sealed, sealAD(name, it.url)); err != nil {
+		if it.key != webhookItem {
+			continue
+		}
+		hook, hookURL = it, it.url
+		if it.paste { // typed by the user on the approval screen, covered by their proof
+			u, k, err := pastedWebhook(approvals.InputsFrom(ctx))
+			if err != nil {
+				c.discardBotRequest(bundle.approvalID)
 				return nil, err
 			}
+			hookURL, plain = u, []byte(k)
+			continue
+		}
+		var err error
+		if plain, err = c.botReqs.open(it.sealed, sealAD(name, it.url)); err != nil {
+			return nil, err
 		}
 	}
 	var granted []resolved
@@ -533,7 +651,7 @@ func (c *Core) applyBotRequest(bundle *botBundle, option string) (any, error) {
 				a = &vault.Agent{Name: name, Default: len(d.Agents) == 0}
 				d.Agents = append(d.Agents, a)
 			}
-			a.URL, a.Key = hook.url, string(plain)
+			a.URL, a.Key = hookURL, string(plain)
 			if hook.subsSet {
 				a.Subscriptions = hook.subs
 			}

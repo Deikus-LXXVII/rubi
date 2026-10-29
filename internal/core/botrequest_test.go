@@ -159,7 +159,7 @@ func TestBotConnectAppliesOnlyWithApproval(t *testing.T) {
 		t.Fatal("the webhook was set before approval")
 	}
 
-	// DecideStrong is what the panel API calls after checking the passkey or password.
+	// DecidePanel is what the panel API calls after checking the passkey or password.
 	snap, err := c.Approvals.DecidePanel(context.Background(), id, "apply", true, approvals.Verified)
 	if err != nil || snap.State != approvals.Executed {
 		t.Fatalf("approve: %+v %v", snap, err)

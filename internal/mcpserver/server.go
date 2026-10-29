@@ -26,14 +26,12 @@ const Instructions = `Rubi-Project: self-hosted integrations that act for the us
 
 SETUP. Rubi wakes you through a routine webhook. Create the routine yourself (don't ask the user to): named
 "Rubi events", webhook trigger (no schedule), instruction "A Rubi event arrived. Follow next_step in the JSON
-body." If you can read that routine's webhook URL and key yourself, call rubi_agent_connect with your Bot
-name, the URL and the key (plus any plugins you'll need), send the user the approval_url and say they
-confirm with their passkey; Rubi then tests the connection by itself. Never show the key in chat.
-Otherwise send the user ONE message with both links: the deep link to that routine's webhook field and
-rubi_link("agent:<your Bot name>"). They open both in the Grok Bot desktop app (only it shows the URL and
-key), copy the whole Webhook section and paste it into Rubi's page; Rubi asks for their passkey and tests the
-connection by itself. Setup isn't finished, and plugins can't be installed, until at least one agent is
-connected (rubi_status, field webhook).
+body." Then call rubi_agent_connect with your Bot name (plus the events and plugins you'll need, so it is
+ONE approval). You don't need the routine's key. Send the user ONE message with the approval_url and the
+deep link to that routine's webhook field. They open both in the Grok Bot desktop app (only it shows the URL
+and key), paste the routine's Webhook section (POST to and header) on the approval screen and approve with
+their passkey; Rubi then tests the connection by itself. Setup isn't finished, and plugins can't be
+installed, until at least one agent is connected (rubi_status, field webhook).
 
 SEVERAL BOTS. Bots on the same account share Rubi. Each Bot that wants to be woken registers itself the
 same way, under its own name. Pass your Bot's name as "agent" where tools take one, so Rubi wakes you and
@@ -339,8 +337,8 @@ type pluginWantIn struct {
 
 type agentConnectIn struct {
 	Name    string         `json:"name" jsonschema:"your Bot's name"`
-	URL     string         `json:"url" jsonschema:"your routine's webhook address (POST to)"`
-	Key     string         `json:"key" jsonschema:"your routine's webhook key, or the whole Authorization header; never shown to anyone"`
+	URL     string         `json:"url,omitempty" jsonschema:"optional: your routine's webhook address (POST to), if you know it; prefilled for the user"`
+	Key     string         `json:"key,omitempty" jsonschema:"optional, usually omitted (a Grok Bot never sees it): the routine's webhook key; without it the user pastes address and key on the approval screen"`
 	Events  []string       `json:"events,omitempty" jsonschema:"optional: sources to hear about (\"rubi\" and/or plugin ids)"`
 	Plugins []pluginWantIn `json:"plugins,omitempty" jsonschema:"optional: plugin accounts to ask for in the same approval"`
 	Reason  string         `json:"reason,omitempty" jsonschema:"one sentence for the user: why"`
@@ -418,7 +416,7 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_agent_connect",
-		Description: "Connect yourself to Rubi (or change your webhook): pass your Bot name and your \"Rubi events\" routine's webhook URL and key, optionally events to hear about and plugins whose accounts you need. Nothing changes until the user approves in the Rubi panel with their passkey; replacing an existing webhook is shown to them as such. Returns approval_id and approval_url: send the user that link. Calling again (or rubi_access_request) while it waits folds everything into ONE approval. Never show the key to anyone."},
+		Description: "Connect yourself to Rubi (or change your webhook): pass your Bot name, optionally events to hear about and plugins whose accounts you need. You don't need the webhook key: the user pastes your \"Rubi events\" routine's Webhook section (POST to and header) on the approval screen and approves with their passkey in the same step (pass url if you know it; a key only if you really have it, never show it). Nothing changes until the user approves; replacing an existing webhook is shown to them as such. Returns approval_id and approval_url: send the user that link together with the deep link to your routine's webhook field. Calling again (or rubi_access_request) while it waits folds everything into ONE approval."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in agentConnectIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
