@@ -231,9 +231,15 @@ func (c *Core) SetWebhook(ctx context.Context, rawURL, key string) (string, erro
 }
 
 func validWebhookURL(raw string) error {
+	if len(raw) > maxWebhookURL {
+		return errors.New("webhook URL is too long")
+	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || u.Opaque != "" {
 		return errors.New("webhook URL is not valid")
+	}
+	if u.User != nil { // https://api2.cursor.sh@elsewhere/ looks like the routine's host but isn't
+		return errors.New("webhook URL must not contain a user name or password")
 	}
 	if u.Scheme == "https" {
 		return nil

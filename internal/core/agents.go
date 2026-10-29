@@ -115,19 +115,16 @@ func (c *Core) AddAgent(ctx context.Context, name, rawURL, key string, subs []st
 	if err := validWebhookURL(rawURL); err != nil {
 		return "", err
 	}
-	key = strings.TrimSpace(key)
-	if k, ok := strings.CutPrefix(strings.ToLower(key), "authorization:"); ok {
-		key = strings.TrimSpace(key[len(key)-len(k):])
-	}
-	if strings.HasPrefix(strings.ToLower(key), "bearer ") {
-		key = strings.TrimSpace(key[len("bearer "):])
-	}
-	if key == "" {
-		return "", errors.New("the webhook key is missing")
+	if key, err = cleanWebhookKey(key); err != nil {
+		return "", err
 	}
 	// The end of the address identifies the routine, so the user can tell their own from a look-alike
 	// on the same host; replacing an existing Bot's webhook says so.
 	preview := map[string]any{"agent": name, "webhook": webhookLabel(rawURL)}
+	if !isRoutineWebhook(rawURL) || !strings.HasPrefix(key, routineKeyPrefix) {
+		preview["warning"] = "This is not a Grok Bot routine webhook (" + routineHost + ", key " + routineKeyPrefix +
+			"…). Approve only if you set up this receiver yourself."
+	}
 	var current string
 	_ = c.Vault.View(func(d *vault.Data) error {
 		if a := findAgent(d, name); a != nil && a.URL != "" && a.URL != rawURL {
