@@ -205,7 +205,7 @@ func (c *Core) SetPolicy(ctx context.Context, levels map[string]string) (string,
 	if len(clean) == 0 {
 		return "", errors.New("nothing to change")
 	}
-	labels := map[string]string{"none": "No approval", "chat": "Buttons in chat", "strong": "Passkey / password"}
+	labels := map[string]string{"none": "No approval", "chat": "Buttons in chat", "tap": "Passkey tap", "strong": "Passkey / password"}
 	preview := map[string]any{}
 	for k, v := range clean {
 		name := k

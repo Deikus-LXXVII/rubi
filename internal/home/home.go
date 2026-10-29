@@ -1,6 +1,7 @@
 // Package home is Rubi Home, the helper that runs on a computer at the user's home and does, on Rubi's
-// request, what only a device on the home network can: talk to the Philips Hue Bridge, and run the user's
-// Shortcuts (which can control Apple Home). See internal/homeproto for how Rubi reaches it.
+// request, what only a device on the home network can: talk to the Philips Hue Bridge, run the user's
+// Shortcuts (which can control Apple Home), and pass Claude Code's permission requests on this computer to
+// Rubi for approval. See internal/homeproto for how Rubi reaches it.
 //
 // It only does what it was built for: Hue requests are limited to the bridge's resource API, and only
 // shortcuts in one folder (Rubi, by default) are visible and runnable. Everything else is refused.
@@ -40,6 +41,9 @@ type Config struct {
 	ShortcutsFolder string `json:"shortcuts_folder"`
 	// HuePins maps a bridge id to the SHA-256 of its certificate, recorded when it was paired.
 	HuePins map[string]string `json:"hue_pins,omitempty"`
+	// ClaudeWaitSeconds is how long a Claude Code request waits for Rubi (default 280; keep it below the
+	// hook's timeout in Claude Code's settings).
+	ClaudeWaitSeconds int `json:"claude_wait_seconds,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -65,6 +69,8 @@ type Helper struct {
 	Hue       *Hue
 	// Watch, when set, watches the paired Rubi and wakes its administrator when it goes down or stays locked.
 	Watch *watch.Watcher
+	// Claude holds Claude Code's permission requests for Rubi (see claude.go).
+	Claude *Claude
 
 	mu  sync.Mutex
 	cfg Config
@@ -96,6 +102,10 @@ func Open(dir string) (*Helper, error) {
 		return nil, err
 	}
 	h.Hue = &Hue{Pins: h.huePins, SetPin: h.setHuePin}
+	h.Claude = &Claude{}
+	if s := h.Config().ClaudeWaitSeconds; s >= 10 && s <= 590 {
+		h.Claude.Wait = time.Duration(s) * time.Second
+	}
 	return h, nil
 }
 
@@ -273,6 +283,8 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 			return nil, errors.New("bad arguments")
 		}
 		return h.Hue.Do(ctx, in)
+	case "claude.next", "claude.decide":
+		return h.Claude.handle(ctx, env.Op, env.Args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
 }
@@ -280,7 +292,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
-		"can": []string{"hue", "shortcuts"}}
+		"can": []string{"hue", "shortcuts", "claude"}}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {

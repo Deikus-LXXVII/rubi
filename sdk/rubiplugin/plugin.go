@@ -337,6 +337,25 @@ func (h *Host) Submit(ctx context.Context, r Request) (map[string]any, error) {
 	return out, err
 }
 
+// ApprovalState is how one of the plugin's approvals stands. State is "pending", "executing",
+// "executed", "failed", "denied", "cancelled" (also when Rubi locks) or "expired".
+type ApprovalState struct {
+	ID     string `json:"approval_id"`
+	State  string `json:"state"`
+	Option string `json:"chosen_option,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// WaitApproval waits up to wait (at most 25 seconds; 0 just looks) for an approval this plugin submitted
+// to be decided, and returns how it stands. It lets a plugin act on a denial or expiry, which it otherwise
+// never hears of (an approval reaches it only through OnExecute). Rubi v0.10.2 and older answer method
+// not found (-32601).
+func (h *Host) WaitApproval(ctx context.Context, id string, wait time.Duration) (ApprovalState, error) {
+	var out ApprovalState
+	err := h.conn.Call(ctx, "approval.wait", map[string]any{"approval_id": id, "wait_seconds": int(wait / time.Second)}, &out)
+	return out, err
+}
+
 // Emit tells the agent about something (for example a reply arrived). typ must be declared in the manifest.
 // The event goes to the Bots that subscribed to this plugin's events.
 func (h *Host) Emit(typ string, data map[string]any) (string, error) {

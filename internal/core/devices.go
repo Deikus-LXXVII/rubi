@@ -19,9 +19,10 @@ import (
 
 // Rubi Home devices: helpers on a computer at the user's home (see internal/home). The user pairs one by
 // pasting the code it prints into the panel. Plugins reach it only for what their manifest declares
-// (manifest "home": "hue", "shortcuts").
+// (manifest "home": "hue", "shortcuts", "claude").
 
-var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Shortcuts"}
+var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Shortcuts",
+	"claude": "answering Claude Code's permission requests on that computer (it can allow or deny commands)"}
 
 type deviceClients struct {
 	mu      sync.Mutex
@@ -120,7 +121,8 @@ func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
 	return c.RequestChange(ctx, "Add Rubi Home on "+name, map[string]any{"computer (as it calls itself)": name,
 		"fingerprint": fingerprint + " (rubi-home status shows the same)",
 		"check":       "Approve only if you just ran rubi-home on your own computer and pasted its code",
-		"allows":      "control Philips Hue on your home network and run the shortcuts in the folder \"" + hello.Folder + "\""},
+		"allows": "control Philips Hue on your home network, run the shortcuts in the folder \"" + hello.Folder +
+			"\", and answer Claude Code's permission requests there (only plugins you approve for that can)"},
 		func(d *vault.Data) error {
 			if len(d.Devices) >= 10 {
 				return errors.New("at most 10 Rubi Home computers")

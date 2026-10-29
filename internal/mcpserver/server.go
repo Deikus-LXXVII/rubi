@@ -49,7 +49,7 @@ tools, or Rubi's own tools (rubi_access after a Rubi update), don't show up in y
 through rubi_call; it reaches every tool Rubi has.
 
 APPROVALS. Some tools return status "awaiting_approval" instead of acting.
-- level "strong": send the user the approval_url with one sentence about what is waiting. They review and
+- level "strong" or "tap": send the user the approval_url with one sentence about what is waiting. They review and
   approve in the Rubi panel. You cannot approve, and you must never claim it was approved. Then call
   rubi_continue_after with your plan for after the decision, and rubi_approval with wait_seconds. If the
   user hasn't decided when your turn ends, Rubi wakes you with the decision through the webhook
@@ -236,7 +236,11 @@ func toolDef(t core.PluginTool) string {
 // withHint adds, to a result that waits for the user's approval in the panel, how the agent will learn the
 // outcome.
 func (s *Server) withHint(out map[string]any) map[string]any {
-	if out != nil && out["status"] == "awaiting_approval" && out["level"] == "strong" {
+	if out == nil || out["status"] != "awaiting_approval" {
+		return out
+	}
+	// The level is an approvals.Level from core tools, a string from plugin results.
+	if lv, ok := approvals.ParseLevel(fmt.Sprint(out["level"])); ok && lv.InPanel() {
 		out["after_sending_the_link"] = s.core.AfterApproval()
 	}
 	return out

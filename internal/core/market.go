@@ -875,7 +875,7 @@ func newRecord(cand *plugins.Candidate) *vault.Plugin {
 }
 
 var levelNames = map[rubiplugin.Level]string{rubiplugin.None: "no approval", rubiplugin.Chat: "buttons in chat",
-	rubiplugin.Strong: "Passkey / password"}
+	rubiplugin.Tap: "Passkey tap", rubiplugin.Strong: "Passkey / password"}
 
 // permissions describes what a plugin gets, for the install and update approval screens.
 func permissions(m plugins.Manifest, reviewed bool, source string) map[string]any {
@@ -988,7 +988,7 @@ func newPermissions(old, m plugins.Manifest) string {
 }
 
 func levelRank(l rubiplugin.Level) int {
-	return map[rubiplugin.Level]int{rubiplugin.None: 0, rubiplugin.Chat: 1, rubiplugin.Strong: 2}[l]
+	return map[rubiplugin.Level]int{rubiplugin.None: 0, rubiplugin.Chat: 1, rubiplugin.Tap: 2, rubiplugin.Strong: 3}[l]
 }
 
 // CheckPluginUpdates looks for new plugin versions and tells the agent once per version.

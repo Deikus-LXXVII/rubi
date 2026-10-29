@@ -67,6 +67,9 @@ Rules the core enforces:
 - Tools are declared in the manifest, so Rubi lists them to the agent even while it is locked and the plugin
   isn't running.
 - `publisher.key` is a base64 Ed25519 public key (SubjectPublicKeyInfo DER, the body of a PEM file).
+- `default_level` is `none`, `chat`, `tap` (Rubi v0.11.0+; the user touches their passkey in the panel,
+  no Face ID or PIN needed) or `strong`. Use `tap` only for low-risk actions; a manifest with `tap` fails
+  validation on older Rubi versions, so set `min_rubi` to v0.11.0 or later.
 - An action may be `locked`: its default level can't be lowered by the user (for example revealing an
   email hidden by a privacy filter is always strong).
 - `config` declares **user-only settings**: `bool`, `text`, `choice` (one of `options`) or `list` (free
@@ -223,6 +226,7 @@ Both sides send requests. A message may be up to 4 MiB.
 | `secret.get` | `{key, account?}` | `{value}`. Only keys declared in the manifest |
 | `state.get` / `state.set` | `{}` / `{state}` | `{state}` / `{}`. Private state, encrypted in the vault |
 | `approval.submit` | `{kind, summary, question?, preview, options, payload}` | When the kind needs no approval, the host calls `execute` right away and returns its result. Otherwise it returns `{status: "awaiting_approval", approval_id, …}` for the agent |
+| `approval.wait` | `{approval_id, wait_seconds?}` | `{approval_id, state, chosen_option?, error?}`. Only the plugin's own approvals; waits up to 25 s for a decision (0: just look). States: `pending`, `executing`, `executed`, `failed`, `denied`, `cancelled`, `expired`. Once the plugin has seen the outcome, the agent isn't woken for it |
 | `level.get` | `{kind}` | `{level}` |
 | `event.emit` | `{type, data, agent?}` | `{event_id}`. The type must be declared; `untrusted_fields` come from the manifest. With `agent` (a connected Bot's name), only that Bot is woken; otherwise the Bots subscribed to the plugin |
 | `config.get` | `{account?}` | `{config}`: the user-only settings (`per_account` ones for that account), with defaults for anything not set |
@@ -254,9 +258,10 @@ and answers every well-formed POST the same way, so an address doesn't reveal wh
 so the body is untrusted and the plugin can replace (`rotate`) an address. At most 20 requests per minute
 per hook, 4 KB each.
 
-**Rubi Home.** A plugin with `"home": ["hue"]` or `["shortcuts"]` can call the user's Rubi Home helper
-(`home.call`), but only operations of those capabilities (`hue.*`, `shortcuts.*`). See
-[rubi-home.md](rubi-home.md).
+**Rubi Home.** A plugin with `"home": ["hue"]`, `["shortcuts"]` or `["claude"]` can call the user's Rubi Home
+helper (`home.call`), but only operations of those capabilities (`hue.*`, `shortcuts.*`, `claude.*`). The
+install screen names them; `claude` says the plugin can allow or deny Claude Code's commands on that computer.
+See [rubi-home.md](rubi-home.md).
 
 **A page in the panel.** A plugin can name a page of its own (`"panel": "notes"`); the panel shows it with
 the plugin and calls the plugin's `OnPanel` with the user's own requests (only from a settings link, since

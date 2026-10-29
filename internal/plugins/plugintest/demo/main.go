@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
@@ -116,6 +117,17 @@ func main() {
 		func(ctx context.Context, h *rubiplugin.Host, in sendIn) (any, error) {
 			return h.Submit(ctx, rubiplugin.Request{Kind: "demo.send", Summary: "Send to " + in.To,
 				Preview: map[string]string{"to": in.To}, Payload: in})
+		})
+	rubiplugin.AddTool(p, "demo_wait", "How one of the demo's approvals stands (approval.wait).",
+		func(ctx context.Context, h *rubiplugin.Host, in struct {
+			ApprovalID  string `json:"approval_id"`
+			WaitSeconds int    `json:"wait_seconds,omitempty"`
+		}) (any, error) {
+			st, err := h.WaitApproval(ctx, in.ApprovalID, time.Duration(in.WaitSeconds)*time.Second)
+			if err != nil {
+				return map[string]any{"error": err.Error()}, nil
+			}
+			return st, nil
 		})
 	rubiplugin.AddTool(p, "demo_ping", "Emit a ping event.",
 		func(ctx context.Context, h *rubiplugin.Host, _ struct{}) (any, error) {

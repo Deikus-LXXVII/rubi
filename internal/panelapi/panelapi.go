@@ -523,7 +523,7 @@ func (s *Server) approvalDecide(ctx context.Context, purpose string, env Envelop
 		return nil, err
 	}
 	if !a.Approve { // declining needs no proof
-		return s.core.Approvals.DecideStrong(ctx, a.ApprovalID, "", false)
+		return s.core.Approvals.DecidePanel(ctx, a.ApprovalID, "", false, 0)
 	}
 	d, err := s.core.Approvals.Detail(a.ApprovalID)
 	if err != nil {
@@ -531,27 +531,33 @@ func (s *Server) approvalDecide(ctx context.Context, purpose string, env Envelop
 	}
 	ch := s.challenge(d, a.Option)
 	var perr error
+	var proof approvals.Proof
 	switch a.Proof.Type {
 	case "passkey":
-		perr = s.verifyPasskey(a.Proof.Assertion, ch)
+		// Only a tap-level approval takes an assertion without user verification; the engine checks the
+		// level again.
+		proof, perr = s.verifyPasskey(a.Proof.Assertion, ch, d.Level == approvals.Tap)
 	case "password":
-		perr = s.verifyPassword(a.Proof.MAC, ch)
+		proof, perr = approvals.Verified, s.verifyPassword(a.Proof.MAC, ch)
 	default:
 		return nil, errors.New("approval needs a passkey or password proof")
 	}
 	if perr != nil {
 		if s.proofFailed(a.ApprovalID) {
-			_, _ = s.core.Approvals.DecideStrong(ctx, a.ApprovalID, "", false)
+			_, _ = s.core.Approvals.DecidePanel(ctx, a.ApprovalID, "", false, 0)
 			s.core.Audit.Record("approval.proof_limit", map[string]any{"approval_id": a.ApprovalID})
 			return nil, errors.New("too many failed attempts; this request was declined. Ask your agent to try again")
 		}
 		return nil, perr
 	}
-	s.core.Audit.Record("approval.proof_ok", map[string]any{"approval_id": a.ApprovalID, "method": a.Proof.Type})
-	return s.core.Approvals.DecideStrong(ctx, a.ApprovalID, a.Option, true)
+	s.core.Audit.Record("approval.proof_ok", map[string]any{"approval_id": a.ApprovalID, "method": a.Proof.Type,
+		"user_verified": proof == approvals.Verified})
+	return s.core.Approvals.DecidePanel(ctx, a.ApprovalID, a.Option, true, proof)
 }
 
-func (s *Server) verifyPasskey(as webauthn.Assertion, challenge []byte) error {
+// verifyPasskey checks a passkey assertion for challenge. With tap set, an assertion without user
+// verification passes too (as PresenceOnly); otherwise user verification is required.
+func (s *Server) verifyPasskey(as webauthn.Assertion, challenge []byte, tap bool) (approvals.Proof, error) {
 	var found *vault.Approver
 	_ = s.core.Vault.View(func(v *vault.Data) error {
 		for i := range v.Approvers {
@@ -563,12 +569,20 @@ func (s *Server) verifyPasskey(as webauthn.Assertion, challenge []byte) error {
 		return nil
 	})
 	if found == nil {
-		return errors.New("this passkey is not registered with Rubi")
+		return 0, errors.New("this passkey is not registered with Rubi")
 	}
-	count, err := webauthn.Verify(as, webauthn.Expect{Challenge: challenge, Origin: s.core.PanelOrigin,
-		RPID: s.rpID(), PublicKey: found.PublicKey, Alg: found.Alg, SignCount: found.SignCount})
+	exp := webauthn.Expect{Challenge: challenge, Origin: s.core.PanelOrigin,
+		RPID: s.rpID(), PublicKey: found.PublicKey, Alg: found.Alg, SignCount: found.SignCount}
+	var count uint32
+	var err error
+	uv := true
+	if tap {
+		count, uv, err = webauthn.VerifyTap(as, exp)
+	} else {
+		count, err = webauthn.Verify(as, exp)
+	}
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if count != 0 {
 		_ = s.core.Vault.Update(func(v *vault.Data) error {
@@ -580,7 +594,10 @@ func (s *Server) verifyPasskey(as webauthn.Assertion, challenge []byte) error {
 			return nil
 		})
 	}
-	return nil
+	if !uv {
+		return approvals.PresenceOnly, nil
+	}
+	return approvals.Verified, nil
 }
 
 func (s *Server) verifyPassword(macB64 string, challenge []byte) error {
@@ -867,7 +884,7 @@ func (s *Server) policy() any {
 				"default": a.DefaultLevel, "level": s.core.PolicyLevel(a.Kind), "locked": a.Locked})
 		}
 	}
-	return map[string]any{"actions": actions, "levels": []approvals.Level{approvals.None, approvals.Chat, approvals.Strong}}
+	return map[string]any{"actions": actions, "levels": []approvals.Level{approvals.None, approvals.Chat, approvals.Tap, approvals.Strong}}
 }
 
 // strongKDF checks a password wrap's settings (the panel's own bounds, crypto.js kdfOK). keys.json is

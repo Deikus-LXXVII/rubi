@@ -6,8 +6,12 @@
 //   - none:   the action runs immediately.
 //   - chat:   the agent shows plain-text buttons; the action runs when the agent reports the exact label
 //     the user pressed (ConfirmChat). This is a protocol, not proof: it relies on the agent's honesty.
-//   - strong: the user approves in the panel with a passkey or password. The panel API verifies the proof
-//     and calls DecideStrong. The agent cannot complete these.
+//   - tap:    the user approves in the panel with a tap on their passkey; Face ID, Touch ID or the device
+//     PIN aren't required (user presence without user verification). For low-risk actions only.
+//   - strong: the user approves in the panel with a passkey (with user verification) or password.
+//
+// For both panel levels the panel API verifies the proof and calls DecidePanel. The agent cannot complete
+// these. A proof without user verification can only complete a tap approval.
 //
 // Execute always runs on the action exactly as submitted, at most once.
 package approvals
@@ -28,12 +32,16 @@ type Level string
 const (
 	None   Level = "none"
 	Chat   Level = "chat"
+	Tap    Level = "tap"
 	Strong Level = "strong"
 )
 
+// InPanel reports whether the user decides at this level in the Rubi panel.
+func (l Level) InPanel() bool { return l == Tap || l == Strong }
+
 func ParseLevel(s string) (Level, bool) {
 	switch Level(s) {
-	case None, Chat, Strong:
+	case None, Chat, Tap, Strong:
 		return Level(s), true
 	}
 	return "", false
@@ -334,7 +342,7 @@ func (e *Engine) Submit(ctx context.Context, req Request) (map[string]any, error
 		out["instructions"] = "Show the preview and question to the user with these exact button labels " +
 			"(plain text, no emoji) and wait. Only after the user presses an option button, call rubi_confirm " +
 			"with that label verbatim. Edit: ask what to change and prepare again. Cancel: call rubi_cancel."
-	case Strong:
+	case Tap, Strong:
 		if e.hooks.Link != nil {
 			if url, err := e.hooks.Link(a.id); err == nil {
 				out["approval_url"] = url
@@ -419,18 +427,36 @@ func (e *Engine) ConfirmChat(ctx context.Context, id, userResponse string) (Snap
 	return e.run(ctx, a), nil
 }
 
-// DecideStrong records the user's panel decision. The caller must already have verified the user's
-// passkey or password proof for this approval id and option.
-func (e *Engine) DecideStrong(ctx context.Context, id, option string, approve bool) (Snapshot, error) {
+// Proof is what the caller verified before approving in the panel.
+type Proof int
+
+const (
+	// Verified: a passkey assertion with user verification (Face ID, Touch ID, device PIN) or the password.
+	Verified Proof = iota + 1
+	// PresenceOnly: a passkey assertion with user presence but without user verification (a tap).
+	PresenceOnly
+)
+
+// ErrNeedsVerification: a tap can't approve this request.
+var ErrNeedsVerification = errors.New("this request needs Face ID, Touch ID, your device PIN or your password, not just a tap")
+
+// DecidePanel records the user's panel decision (tap or strong level). To approve, the caller must already
+// have verified the user's proof for this approval id and option, and says which kind it was: a strong
+// approval takes only a Verified proof.
+func (e *Engine) DecidePanel(ctx context.Context, id, option string, approve bool, proof Proof) (Snapshot, error) {
 	e.mu.Lock()
 	a, err := e.getLocked(id)
 	if err != nil {
 		e.mu.Unlock()
 		return Snapshot{}, err
 	}
-	if a.level != Strong {
+	if !a.level.InPanel() {
 		e.mu.Unlock()
 		return Snapshot{}, ErrWrongPath
+	}
+	if approve && !(proof == Verified || (proof == PresenceOnly && a.level == Tap)) {
+		e.mu.Unlock()
+		return Snapshot{}, ErrNeedsVerification
 	}
 	if !approve {
 		e.finishLocked(a, Denied)
@@ -516,7 +542,7 @@ func (e *Engine) Get(id string) (Snapshot, error) {
 	return e.snapshotLocked(a), nil
 }
 
-// Detail returns what the panel renders for a strong approval.
+// Detail returns what the panel renders for a tap or strong approval.
 func (e *Engine) Detail(id string) (Detail, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

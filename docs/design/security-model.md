@@ -146,17 +146,36 @@ Properties:
 ### 7.3 Approving an action
 
 1. The agent calls a gated tool (e.g. `icloud_mail_prepare_send`). Rubi stores the exact action and returns
-   `{"status": "awaiting_approval", "approval_url": …}` (level "strong") or chat buttons (level "chat").
+   `{"status": "awaiting_approval", "approval_url": …}` (level "strong" or "tap") or chat buttons (level
+   "chat").
 2. **Strong level:** the panel shows a preview rendered **from Rubi's stored action**, not from anything
    the agent says. The WebAuthn challenge is
    `SHA-256(canonical_json({instance, action_id, integration, kind, params_digest, nonce, expires}))`.
    The user confirms with Face ID; the panel returns the assertion.
 3. Rubi verifies the signature with `AK`, the RP ID hash, the user-presence and user-verification flags,
    the sign counter, and the challenge, then executes exactly the stored action, once.
-4. **Password approvals** use an HMAC over the same challenge with a password-derived approval key. This
+4. **Tap level** (v0.11.0) is the same panel flow for low-risk actions, with one difference: the panel asks
+   for the assertion with `userVerification: "discouraged"`, and Rubi accepts it when the user-presence
+   (UP) flag is set even if the user-verification (UV) flag is not. Everything else is checked exactly as
+   for strong (challenge, origin, RP ID hash, counter, signature, registered credential). An assertion
+   without UV can satisfy **only** a tap-level approval: the panel API verifies a passkey with UV
+   required unless the stored approval's level is `tap`, and the approval engine refuses to complete a
+   strong approval with anything but a verified proof (a passkey assertion with UV, or the password).
+   UP is always required. What it protects against is the same as strong, minus a thief holding an
+   unlocked device or an unattended security key: they can approve tap-level actions with a touch.
+   - **PRF and unlock.** Approvals never use PRF; the KEK comes from PRF only when unlocking and
+     registering, and those always ask for UV. PRF outputs can differ with and without UV (CTAP2
+     `hmac-secret` keeps two secrets per credential), so a UV-less evaluation could never unwrap the
+     DEK anyway. A tap therefore works only while Rubi is unlocked; if it is locked, the panel first runs
+     the normal unlock (Face ID / Touch ID / PIN or password), then the approval is a tap.
+   - **What the user actually feels.** `discouraged` is a hint. Security keys (YubiKey etc.) honour it: a
+     touch, no PIN. Many platform passkeys (iCloud Keychain on iPhone and Mac, Google Password Manager,
+     Windows Hello) verify the user anyway and return UV=1, so on those devices a tap approval still shows
+     Face ID / Touch ID; Rubi accepts it, the level just doesn't make it faster there.
+5. **Password approvals** use an HMAC over the same challenge with a password-derived approval key. This
    is weaker: the verifier must live in the unlocked vault, so a root attacker could forge approvals. The
    panel says so when the user picks a password.
-5. Optional "trust for N minutes" per action kind: after one strong approval, later actions of the same
+6. Optional "trust for N minutes" per action kind: after one strong approval, later actions of the same
    kind skip re-approval until the window ends.
 
 ### 7.4 Key rotation
@@ -174,12 +193,22 @@ against a deliberately malicious agent, which is out of scope (§3).
 | Unlock after restart | strong | **No** |
 | Change approval levels, plugins, service passwords, webhook target | strong | **No** |
 | Install, update or remove a plugin | strong | **No** |
-| Send email | strong | Yes (`chat` or `none`) |
+| Send email | strong | Yes (`tap`, `chat` or `none`) |
+| Claude Code: run a command the plugin classifies as safe (`claude-code.run_safe`) | tap | Yes |
+| Claude Code: run any other command (`claude-code.run`) | strong | **No** (locked) |
 | Create draft | none | Yes |
 | Read / search | none | Yes |
 
 Levels: `none` (runs immediately), `chat` (agent shows buttons; optionally enforced by a Grok Bot
-"Ask first" rule), `strong` (panel approval with passkey or password).
+"Ask first" rule), `tap` (panel approval with a touch of the passkey, no user verification needed; §7.3),
+`strong` (panel approval with a passkey with user verification, or the password).
+
+Core kinds (`rubi.*`: security settings, approval levels, webhook targets, plugins, secrets, updates),
+unknown kinds and `locked` plugin actions are always at their fixed level and can't be set to `tap` or
+anything else; the vault policy is ignored for them even if it names one. A plugin opts an action into
+`tap` with `default_level: "tap"`; a user may also choose `tap` for an unlocked action (it sits between
+`chat` and `strong`). Plugin updates that lower an action's default level, including strong → tap, are
+listed as a lowered level on the update approval screen.
 
 The policy lives inside the vault. Changing it is itself a strong-approved action, and it can only be done
 from the panel; no MCP tool can change policy. Locking Rubi is always allowed from chat.

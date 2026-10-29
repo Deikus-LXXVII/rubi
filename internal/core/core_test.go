@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -154,6 +155,45 @@ func TestPolicyLevel(t *testing.T) {
 	}
 	if got := c.PolicyLevel("icloud-mail.read"); got != approvals.None {
 		t.Fatalf("invalid policy value should fall back to the default: %s", got)
+	}
+}
+
+// The tap level (a passkey tap without Face ID) can be chosen for ordinary plugin actions, never for a
+// locked action or a core (rubi.*) kind, even if the vault says so.
+func TestTapLevelCantLowerLockedOrCoreKinds(t *testing.T) {
+	c, _ := Open(paths.Layout{Home: t.TempDir()})
+	installManifest(t, c, `{"schema":1,"id":"claude-code","name":"Claude Code","version":"v0.1.0","api":1,
+		"entry":"claude-code","publisher":{"name":"x","key":"MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="},
+		"actions":[{"kind":"claude-code.run","title":"Run","default_level":"strong","locked":true},
+		           {"kind":"claude-code.run_safe","title":"Run safe","default_level":"tap"},
+		           {"kind":"claude-code.other","title":"Other","default_level":"strong"}]}`)
+	if got := c.PolicyLevel("claude-code.run_safe"); got != approvals.Tap {
+		t.Fatalf("tap default: %s", got)
+	}
+	_ = c.Vault.Create(vault.NewKey(), vault.NewData(""))
+	_ = c.Vault.Update(func(d *vault.Data) error {
+		d.Policy["claude-code.run"] = "tap"
+		d.Policy["rubi.plugin.install"] = "tap"
+		d.Policy["rubi.secrets.set"] = "tap"
+		d.Policy["claude-code.other"] = "tap"
+		return nil
+	})
+	for _, k := range []string{"claude-code.run", "rubi.plugin.install", "rubi.secrets.set", "unknown.kind"} {
+		if got := c.PolicyLevel(k); got != approvals.Strong {
+			t.Errorf("%s lowered to %s", k, got)
+		}
+	}
+	if got := c.PolicyLevel("claude-code.other"); got != approvals.Tap {
+		t.Errorf("user policy tap ignored: %s", got)
+	}
+	ctx := context.Background()
+	for _, k := range []string{"claude-code.run", "rubi.plugin.install", "rubi.settings", "unknown.kind"} {
+		if _, err := c.SetPolicy(ctx, map[string]string{k: "tap"}); err == nil || !strings.Contains(err.Error(), "can't be changed") {
+			t.Errorf("SetPolicy %s=tap: %v", k, err)
+		}
+	}
+	if _, err := c.SetPolicy(ctx, map[string]string{"claude-code.other": "tap"}); err != nil && strings.Contains(err.Error(), "can't be changed") {
+		t.Errorf("SetPolicy on an ordinary action: %v", err)
 	}
 }
 

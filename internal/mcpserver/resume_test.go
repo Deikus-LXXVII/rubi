@@ -118,3 +118,61 @@ func TestNoWakeWhenNotNeeded(t *testing.T) {
 		t.Fatalf("wakes: %v (want only %v)", woke, quiet["approval_id"])
 	}
 }
+
+// TestPluginWaitsForItsApproval: a plugin learns how its own approvals end (approval.wait), denials
+// included, but not anyone else's; an outcome it saw doesn't wake the agent.
+func TestPluginWaitsForItsApproval(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	r.waitFor("plugin", func() bool { return r.ag.call("demo_ping", nil)["started"] == true })
+	hits := make(chan string, 20)
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		b, _ := io.ReadAll(req.Body)
+		var m map[string]any
+		_ = json.Unmarshal(b, &m)
+		if d, ok := m["data"].(map[string]any); ok {
+			hits <- toString(d["approval_id"])
+		}
+	}))
+	defer hook.Close()
+	r.setWebhook(hook.URL)
+
+	denied := r.ag.call("demo_send", map[string]any{"to": "a"})
+	id := denied["approval_id"]
+	if st := r.ag.call("demo_wait", map[string]any{"approval_id": id}); st["state"] != "pending" {
+		t.Fatalf("before deciding: %v", st)
+	}
+	if _, err := r.panelLink(denied["approval_url"].(string)).Deny(id.(string)); err != nil {
+		t.Fatal(err)
+	}
+	if st := r.ag.call("demo_wait", map[string]any{"approval_id": id, "wait_seconds": 5}); st["state"] != "denied" {
+		t.Fatalf("after denying: %v", st)
+	}
+
+	approved := r.ag.call("demo_send", map[string]any{"to": "b"})
+	if res, err := r.panelLink(approved["approval_url"].(string)).ApproveWithPassword(approved["approval_id"].(string), "send", pw); err != nil || res["state"] != "executed" {
+		t.Fatalf("approve: %v %v", res, err)
+	}
+	if st := r.ag.call("demo_wait", map[string]any{"approval_id": approved["approval_id"], "wait_seconds": 5}); st["state"] != "executed" || st["chosen_option"] != "send" {
+		t.Fatalf("after approving: %v", st)
+	}
+
+	// Rubi's own approval (a settings change) isn't the plugin's to see.
+	var res map[string]any
+	if err := r.panel("settings").Call("webhook.set", map[string]any{"url": hook.URL, "key": "crsr_other"}, &res); err != nil {
+		t.Fatal(err)
+	}
+	if st := r.ag.call("demo_wait", map[string]any{"approval_id": res["approval_id"]}); !strings.Contains(toString(st["error"]), "unknown approval") {
+		t.Fatalf("another integration's approval: %v", st)
+	}
+
+	time.Sleep(5 * time.Second) // past the grace before a wake
+	for len(hits) > 0 {
+		if h := <-hits; h == toString(approved["approval_id"]) {
+			t.Fatal("the agent was woken for an outcome the plugin already handled")
+		}
+	}
+}
