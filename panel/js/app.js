@@ -1120,14 +1120,16 @@ async function approveScreen(ctx, id, opts = {}) {
   }
 
   const verb = a.options[0].label;
+  const tap = a.level === "tap"; // a low-risk action: a touch of the passkey is enough, no Face ID needed
   const primary = h("button", { class: "primary big", type: "button" });
   const setPrimary = () => {
-    primary.replaceChildren(icon(usePasskey() ? "passkey" : "key", 20), usePasskey() ? `${verb} with Passkey` : `${verb} with password`);
+    primary.replaceChildren(icon(usePasskey() ? "passkey" : "key", 20),
+      usePasskey() ? `${verb} with ${tap ? "a passkey tap" : "Passkey"}` : `${verb} with password`);
   };
   setPrimary();
   primary.onclick = () => busy(primary, async () => {
     const proof = ctx.demo ? { type: "demo" } : usePasskey()
-      ? await signChallenge(b64u.dec(await challengeFor(chosen)), approverIds)
+      ? await signChallenge(b64u.dec(await challengeFor(chosen)), approverIds, { tap })
       : await passwordProof(chosen);
     const res = await ctx.client.call("approval.decide", { approval_id: id, option: chosen, approve: true, proof });
     if (res.state === "executed") { // the button becomes a check before Rubi celebrates
@@ -1586,7 +1588,7 @@ async function settingsScreen(ctx, tab) {
     if (!groups.has(a.integration)) groups.set(a.integration, []);
     groups.get(a.integration).push(a);
   }
-  const levelOpts = (policy.levels || []).map((l) => [l, { none: "Free", chat: "Chat", strong: "Passkey" }[l] || l]);
+  const levelOpts = (policy.levels || []).map((l) => [l, { none: "Free", chat: "Chat", tap: "Tap", strong: "Passkey" }[l] || l]);
   const policyBlocks = [...groups].map(([name, acts]) => h("section", { class: "policy-group" },
     h("h3", {}, badge(name, 26), name),
     acts.map((a) => h("div", { class: "policy-row" },

@@ -330,6 +330,7 @@ type ApprovalInfo struct {
 	Approval struct {
 		ID       string           `json:"approval_id"`
 		Kind     string           `json:"kind"`
+		Level    string           `json:"level"` // "tap" or "strong"
 		Summary  string           `json:"summary"`
 		State    string           `json:"state"`
 		Question string           `json:"question"`

@@ -40,7 +40,7 @@ internal/paths/           filesystem layout ($RUBI_HOME, default ~/.rubi)
 internal/vault/           sealed vault (XChaCha20-Poly1305), wrapped-key store
 internal/identity/        instance identity keys (X25519 + Ed25519)
 internal/core/            state machine, pairing codes, wiring
-internal/approvals/       approval engine (levels none / chat / strong)
+internal/approvals/       approval engine (levels none / chat / tap / strong)
 internal/events/          event store
 internal/audit/           audit log
 internal/mcpserver/       MCP tools exposed to the agent

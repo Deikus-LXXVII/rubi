@@ -28,6 +28,7 @@ type Level string
 const (
 	None   Level = "none"   // runs without asking
 	Chat   Level = "chat"   // the user presses a button in the agent chat
+	Tap    Level = "tap"    // the user taps their passkey in the Rubi panel; no Face ID needed (Rubi v0.11.0+)
 	Strong Level = "strong" // the user approves in the Rubi panel with Face ID or a password
 )
 

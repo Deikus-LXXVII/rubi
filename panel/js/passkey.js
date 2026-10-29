@@ -79,14 +79,17 @@ export async function evalPrf(entries) {
   return { credentialId: b64u.enc(cred.rawId), prfOutput: new Uint8Array(out) };
 }
 
-// signChallenge produces the assertion Rubi verifies for an approval.
-export async function signChallenge(challenge, credentialIds) {
+// signChallenge produces the assertion Rubi verifies for an approval. With tap set (a tap-level approval)
+// the browser is asked not to require Face ID, Touch ID or the device PIN, so a security key just needs a
+// touch; many platform passkeys (iCloud Keychain, Google Password Manager) verify the user anyway, which
+// Rubi accepts too. No PRF here: approvals never derive keys, so a tap without verification is enough.
+export async function signChallenge(challenge, credentialIds, { tap = false } = {}) {
   const cred = await navigator.credentials.get({
     publicKey: {
       rpId: rpId(),
       challenge,
       allowCredentials: credentialIds.map((id) => ({ type: "public-key", id: b64u.dec(id) })),
-      userVerification: "required",
+      userVerification: tap ? "discouraged" : "required",
       timeout: 120000,
     },
   });

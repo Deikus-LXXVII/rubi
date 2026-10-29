@@ -63,7 +63,7 @@ need the user's strong approval in the panel (security model §8). The agent get
 
 ## 4. Gated actions
 
-A plugin tool whose action kind has level `strong` or `chat` doesn't act. It returns:
+A plugin tool whose action kind has level `strong`, `tap` or `chat` doesn't act. It returns:
 
 ```json
 {
@@ -83,6 +83,8 @@ A plugin tool whose action kind has level `strong` or `chat` doesn't act. It ret
   so the agent continues the task in a fresh run without the user writing to it. Results that await
   approval carry `after_sending_the_link`, which tells the agent which of the two cases applies (webhook
   set up or not); `rubi_status` reports `webhook.configured` and how to set it up.
+- **`tap`:** handled by the agent exactly like `strong` (link, plan, wait). Only the panel differs: the
+  user approves with a touch of their passkey instead of Face ID.
 - **`chat`:** the response carries `buttons` with plain-text labels (no emoji) that include a short code
   (`Send · K7Q2`). The agent renders them as buttons, waits, and calls `rubi_confirm` with the pressed
   label. Users can pair this with a Grok Bot "Ask first" rule on `rubi_confirm`.

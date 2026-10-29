@@ -133,7 +133,7 @@ func TestStrongDecisionsAndWait(t *testing.T) {
 	id := out["approval_id"].(string)
 	go func() {
 		time.Sleep(20 * time.Millisecond)
-		_, _ = e.DecideStrong(ctx, id, "send", true)
+		_, _ = e.DecidePanel(ctx, id, "send", true, Verified)
 	}()
 	snap, err := e.Wait(ctx, id, 2*time.Second)
 	if err != nil || snap.State != Executed || chosen != "send" {
@@ -141,11 +141,11 @@ func TestStrongDecisionsAndWait(t *testing.T) {
 	}
 
 	out2, _ := e.Submit(ctx, sendRequest(&runs, &chosen))
-	snap, _ = e.DecideStrong(ctx, out2["approval_id"].(string), "", false)
+	snap, _ = e.DecidePanel(ctx, out2["approval_id"].(string), "", false, Verified)
 	if snap.State != Denied || runs.Load() != 1 {
 		t.Fatalf("deny: %+v runs=%d", snap, runs.Load())
 	}
-	if _, err := e.DecideStrong(ctx, out2["approval_id"].(string), "send", true); err == nil {
+	if _, err := e.DecidePanel(ctx, out2["approval_id"].(string), "send", true, Verified); err == nil {
 		t.Fatal("approved after deny")
 	}
 }
@@ -159,23 +159,23 @@ func TestExpiryAndHourlyLimit(t *testing.T) {
 
 	out, _ := e.Submit(ctx, sendRequest(&runs, &chosen))
 	c.add(16 * time.Minute)
-	if _, err := e.DecideStrong(ctx, out["approval_id"].(string), "send", true); err == nil {
+	if _, err := e.DecidePanel(ctx, out["approval_id"].(string), "send", true, Verified); err == nil {
 		t.Fatal("expired approval executed")
 	}
 
 	for i := 0; i < 2; i++ {
 		o, _ := e.Submit(ctx, sendRequest(&runs, &chosen))
-		if _, err := e.DecideStrong(ctx, o["approval_id"].(string), "send", true); err != nil {
+		if _, err := e.DecidePanel(ctx, o["approval_id"].(string), "send", true, Verified); err != nil {
 			t.Fatal(err)
 		}
 	}
 	o, _ := e.Submit(ctx, sendRequest(&runs, &chosen))
-	if _, err := e.DecideStrong(ctx, o["approval_id"].(string), "send", true); err == nil {
+	if _, err := e.DecidePanel(ctx, o["approval_id"].(string), "send", true, Verified); err == nil {
 		t.Fatal("hourly limit not enforced")
 	}
 	c.add(61 * time.Minute)
 	o, _ = e.Submit(ctx, sendRequest(&runs, &chosen))
-	if _, err := e.DecideStrong(ctx, o["approval_id"].(string), "send", true); err != nil {
+	if _, err := e.DecidePanel(ctx, o["approval_id"].(string), "send", true, Verified); err != nil {
 		t.Fatalf("limit did not reset: %v", err)
 	}
 }
@@ -185,8 +185,56 @@ func TestFailedExecutionIsTerminal(t *testing.T) {
 	e := engine(Strong, c)
 	out, _ := e.Submit(context.Background(), Request{Kind: "k", Options: []Option{{Key: "go", Label: "Go"}},
 		Execute: func(context.Context, string) (any, error) { return nil, errors.New("smtp down") }})
-	snap, _ := e.DecideStrong(context.Background(), out["approval_id"].(string), "go", true)
+	snap, _ := e.DecidePanel(context.Background(), out["approval_id"].(string), "go", true, Verified)
 	if snap.State != Failed || snap.Error != "smtp down" {
 		t.Fatalf("%+v", snap)
+	}
+}
+
+// A tap (presence without user verification) completes only a tap-level approval. A strong approval stays
+// pending until a verified proof arrives, and neither panel path completes a chat approval.
+func TestTapProofOnlySatisfiesTap(t *testing.T) {
+	ctx := context.Background()
+	var runs atomic.Int32
+	var chosen string
+
+	strong := engine(Strong, &clock{time.Now()})
+	out, _ := strong.Submit(ctx, sendRequest(&runs, &chosen))
+	id := out["approval_id"].(string)
+	for _, p := range []Proof{PresenceOnly, 0, Proof(99)} {
+		if _, err := strong.DecidePanel(ctx, id, "send", true, p); !errors.Is(err, ErrNeedsVerification) {
+			t.Fatalf("strong approval with proof %d: %v", p, err)
+		}
+	}
+	if snap, _ := strong.Get(id); snap.State != Pending || runs.Load() != 0 {
+		t.Fatalf("strong approval after taps: %+v runs=%d", snap, runs.Load())
+	}
+	if snap, err := strong.DecidePanel(ctx, id, "send", true, Verified); err != nil || snap.State != Executed {
+		t.Fatalf("verified proof: %+v %v", snap, err)
+	}
+
+	tap := engine(Tap, &clock{time.Now()})
+	out, _ = tap.Submit(ctx, sendRequest(&runs, &chosen))
+	if out["level"] != Tap || out["approval_url"] == nil {
+		t.Fatalf("tap submit: %v", out)
+	}
+	if _, err := tap.DecidePanel(ctx, out["approval_id"].(string), "send", true, 0); !errors.Is(err, ErrNeedsVerification) {
+		t.Fatalf("tap approval without a proof: %v", err)
+	}
+	if snap, err := tap.DecidePanel(ctx, out["approval_id"].(string), "send", true, PresenceOnly); err != nil || snap.State != Executed {
+		t.Fatalf("tap approval with a tap: %+v %v", snap, err)
+	}
+	out, _ = tap.Submit(ctx, sendRequest(&runs, &chosen))
+	if snap, err := tap.DecidePanel(ctx, out["approval_id"].(string), "send", true, Verified); err != nil || snap.State != Executed {
+		t.Fatalf("tap approval with a verified proof: %+v %v", snap, err)
+	}
+
+	chat := engine(Chat, &clock{time.Now()})
+	out, _ = chat.Submit(ctx, sendRequest(&runs, &chosen))
+	if _, err := chat.DecidePanel(ctx, out["approval_id"].(string), "send", true, Verified); !errors.Is(err, ErrWrongPath) {
+		t.Fatalf("chat approval decided in the panel: %v", err)
+	}
+	if lv, ok := ParseLevel("tap"); !ok || lv != Tap {
+		t.Fatal("ParseLevel(tap)")
 	}
 }

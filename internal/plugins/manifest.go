@@ -95,7 +95,7 @@ func Check(m *Manifest) error {
 			return fmt.Errorf("action kind %q must start with %q", a.Kind, m.ID+".")
 		}
 		switch a.DefaultLevel {
-		case rubiplugin.None, rubiplugin.Chat, rubiplugin.Strong:
+		case rubiplugin.None, rubiplugin.Chat, rubiplugin.Tap, rubiplugin.Strong:
 		default:
 			return fmt.Errorf("action %s: invalid default level %q", a.Kind, a.DefaultLevel)
 		}

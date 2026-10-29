@@ -67,6 +67,9 @@ Rules the core enforces:
 - Tools are declared in the manifest, so Rubi lists them to the agent even while it is locked and the plugin
   isn't running.
 - `publisher.key` is a base64 Ed25519 public key (SubjectPublicKeyInfo DER, the body of a PEM file).
+- `default_level` is `none`, `chat`, `tap` (Rubi v0.11.0+; the user touches their passkey in the panel,
+  no Face ID or PIN needed) or `strong`. Use `tap` only for low-risk actions; a manifest with `tap` fails
+  validation on older Rubi versions, so set `min_rubi` to v0.11.0 or later.
 - An action may be `locked`: its default level can't be lowered by the user (for example revealing an
   email hidden by a privacy filter is always strong).
 - `config` declares **user-only settings**: `bool`, `text`, `choice` (one of `options`) or `list` (free

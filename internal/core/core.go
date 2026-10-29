@@ -155,7 +155,7 @@ func Open(layout paths.Layout) (*Core, error) {
 			// The agent always learns the outcome, unless it already saw it while waiting in rubi_approval.
 			// It goes to the Bot that left a plan, else to the Bots following Rubi's events (or the default).
 			p := c.takePlan(s.ID)
-			if s.Level != approvals.Strong || c.State() != Unlocked {
+			if !s.Level.InPanel() || c.State() != Unlocked {
 				return
 			}
 			if s.Kind == "rubi.update" && s.State == approvals.Executed {

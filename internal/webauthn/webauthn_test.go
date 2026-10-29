@@ -75,3 +75,52 @@ func TestVerify(t *testing.T) {
 		t.Errorf("stale counter accepted: %v", err)
 	}
 }
+
+// A tap (user presence without verification) passes only VerifyTap, which says so; without presence
+// nothing passes.
+func TestVerifyTap(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	f := &fakeAuthenticator{key: key}
+	challenge := []byte("approve claude-code.run_safe apr_1 allow")
+	exp := Expect{Challenge: challenge, Origin: "https://rubi-panel.com", RPID: "rubi-panel.com", PublicKey: f.spki(), Alg: AlgES256}
+	tap := func(flags byte) Assertion {
+		return f.assert(t, "rubi-panel.com", "https://rubi-panel.com", challenge, flags)
+	}
+
+	if _, err := Verify(tap(0x01), exp); err == nil || !strings.Contains(err.Error(), "verification") {
+		t.Fatalf("Verify accepted an assertion without user verification: %v", err)
+	}
+	n, uv, err := VerifyTap(tap(0x01), exp)
+	if err != nil || uv || n == 0 {
+		t.Fatalf("VerifyTap on a tap: n=%d uv=%v err=%v", n, uv, err)
+	}
+	exp.SignCount = n
+	n, uv, err = VerifyTap(tap(0x05), exp)
+	if err != nil || !uv {
+		t.Fatalf("VerifyTap with verification: uv=%v err=%v", uv, err)
+	}
+	exp.SignCount = n
+	for _, flags := range []byte{0x00, 0x04} {
+		if _, _, err := VerifyTap(tap(flags), exp); err == nil || !strings.Contains(err.Error(), "presence") {
+			t.Errorf("flags %#x: an assertion without user presence passed: %v", flags, err)
+		}
+	}
+	// Everything else is checked as strictly as for Verify.
+	if _, _, err := VerifyTap(f.assert(t, "rubi-panel.com", "https://rubi-panel.com", []byte("other"), 0x01), exp); err == nil {
+		t.Error("VerifyTap accepted another challenge")
+	}
+	if _, _, err := VerifyTap(f.assert(t, "evil.example", "https://rubi-panel.com", challenge, 0x01), exp); err == nil {
+		t.Error("VerifyTap accepted another relying party")
+	}
+	if _, _, err := VerifyTap(f.assert(t, "rubi-panel.com", "https://evil.example", challenge, 0x01), exp); err == nil {
+		t.Error("VerifyTap accepted another origin")
+	}
+	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if _, _, err := VerifyTap((&fakeAuthenticator{key: other, count: 50}).assert(t, "rubi-panel.com", "https://rubi-panel.com", challenge, 0x01), exp); err == nil {
+		t.Error("VerifyTap accepted another key")
+	}
+	exp.SignCount = 1000
+	if _, _, err := VerifyTap(tap(0x01), exp); err == nil || !strings.Contains(err.Error(), "counter") {
+		t.Errorf("VerifyTap accepted a stale counter: %v", err)
+	}
+}
