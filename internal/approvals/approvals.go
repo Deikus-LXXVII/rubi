@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -552,6 +553,28 @@ func (e *Engine) Detail(id string) (Detail, error) {
 	}
 	return Detail{Snapshot: e.snapshotLocked(a), Question: a.req.Question, Preview: a.req.Preview,
 		Options: a.req.Options, Items: a.req.Items, Nonce: a.nonce}, nil
+}
+
+// Pending lists the approvals still waiting for the user in the panel (tap or strong level, not expired),
+// oldest first. Chat-level ones are left out: they are answered in the agent chat, not in the panel.
+func (e *Engine) Pending() []Snapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var list []*approval
+	for _, a := range e.items {
+		if a.state == Pending && e.now().After(a.expires) {
+			e.finishLocked(a, Expired)
+		}
+		if a.state == Pending && a.level.InPanel() {
+			list = append(list, a)
+		}
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].created.Before(list[j].created) })
+	out := make([]Snapshot, 0, len(list))
+	for _, a := range list {
+		out = append(out, e.snapshotLocked(a))
+	}
+	return out
 }
 
 // Wait blocks until the approval reaches a terminal state, the timeout elapses, or ctx ends.

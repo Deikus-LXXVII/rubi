@@ -322,7 +322,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel":
+		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel",
+		"approval.list", "approval.open":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -639,6 +640,12 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	if purpose == settingsView && (env.Op == "agent.subscribe" || env.Op == "webhook.test") {
 		return nil, errViewOnly
 	}
+	// What waits for the user can be private (whom a mail goes to, which command runs), and opening one
+	// lets the holder decline it without a proof, so only a settings link lists them: not the view-only
+	// settings a forwarded approval or setup link opens.
+	if (env.Op == "approval.list" || env.Op == "approval.open") && purpose != "settings" {
+		return nil, errViewOnly
+	}
 	if purpose != "settings" && purpose != settingsView && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
 		return nil, errors.New("this link can't change settings; ask your agent for a settings link")
 	}
@@ -662,6 +669,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Values  map[string]any    `json:"values"`
 		Account string            `json:"account"`
 		Code    string            `json:"code"`
+		// ApprovalID is for approval.open.
+		ApprovalID string `json:"approval_id"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -783,6 +792,22 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 			return nil, errors.New("bad arguments")
 		}
 		return s.core.PanelCall(ctx, pa.ID, pa.Op, pa.Args)
+	case "approval.list":
+		// The requests waiting for the user in the panel, for the list on the settings screen. Each opens
+		// with approval.open, then the usual approval.get / approval.decide.
+		list := []map[string]any{}
+		for _, a := range s.core.Approvals.Pending() {
+			list = append(list, map[string]any{"approval_id": a.ID, "integration": a.Integration, "kind": a.Kind,
+				"level": a.Level, "summary": a.Summary, "expires_at": a.ExpiresAt})
+		}
+		return map[string]any{"approvals": list}, nil
+	case "approval.open":
+		// A ticket for one waiting request, as its own link would carry.
+		snap, err := s.core.Approvals.Get(args.ApprovalID)
+		if err != nil || snap.State != approvals.Pending || !snap.Level.InPanel() {
+			return nil, errors.New("this request isn't waiting any more")
+		}
+		return map[string]any{"approval_id": snap.ID, "ticket": s.core.MintTicket("approve:" + snap.ID)}, nil
 	case "watch.set":
 		approvalID, err = s.core.SetWatch(ctx, core.WatchSettings{Gateway: args.Gateway, Home: args.Home})
 

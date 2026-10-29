@@ -79,10 +79,14 @@ type Core struct {
 	tickets map[string]ticket
 	plans   map[string]pendingPlan // approval id -> what the agent will do once it is decided
 	seen    map[string]bool        // approvals whose outcome the agent already got from rubi_approval
-	upd     updateState
-	mkt     marketState
-	integ   integrity.Result
-	hookHit map[string][]time.Time // recent deliveries per hook, for rate limiting
+	// announced: plugin approvals whose link already went to an agent (a tool result, or the plugin's own
+	// event to a subscribed Bot), so Rubi doesn't send it again; toolCalls: plugin tool calls running.
+	announced map[string]bool
+	toolCalls map[string]int
+	upd       updateState
+	mkt       marketState
+	integ     integrity.Result
+	hookHit   map[string][]time.Time // recent deliveries per hook, for rate limiting
 
 	agentAuth agentAuth    // codes that prove which Bot is calling (agentauth.go)
 	started   time.Time    // when this process started (Rubi is locked since then after a restart)

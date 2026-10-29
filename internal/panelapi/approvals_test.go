@@ -18,6 +18,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/core"
+	"github.com/Deikus-LXXVII/rubi/internal/panelclient"
 	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/webauthn"
@@ -206,5 +207,117 @@ func TestTapApprovals(t *testing.T) {
 	id = submitKind(t, c, "dev.safe", approvals.Tap, &runs, &chosen)
 	if out, err := client(t, c, "approve:"+id).ApproveWithPassword(id, "send", "correct horse"); err != nil || out["state"] != "executed" {
 		t.Fatalf("password on tap: %v %v", out, err)
+	}
+}
+
+// TestPendingApprovalList: a settings link lists what waits for the user in the panel and opens each one;
+// links made for anything narrower can't, and decided or chat-level requests aren't listed.
+func TestPendingApprovalList(t *testing.T) {
+	c, _ := setup(t)
+	installManifest(t, c, `{"schema":1,"id":"dev","name":"Dev","version":"v1.0.0","api":1,"entry":"dev",
+		"publisher":{"name":"x","key":"MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="},
+		"actions":[{"kind":"dev.safe","title":"Safe","default_level":"tap"},
+		           {"kind":"dev.send","title":"Send","default_level":"strong"},
+		           {"kind":"dev.chat","title":"Chat","default_level":"chat"}]}`)
+	if _, err := client(t, c, "pair").PairWithPassword("correct horse"); err != nil {
+		t.Fatal(err)
+	}
+	var runs atomic.Int32
+	var chosen string
+	strong := submitKind(t, c, "dev.send", approvals.Strong, &runs, &chosen)
+	tap := submitKind(t, c, "dev.safe", approvals.Tap, &runs, &chosen)
+	decided := submitKind(t, c, "dev.send", approvals.Strong, &runs, &chosen)
+	if _, err := client(t, c, "approve:"+decided).Deny(decided); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Approvals.Submit(context.Background(), approvals.Request{Integration: "dev", Kind: "dev.chat",
+		Summary: "chat", Options: []approvals.Option{{Key: "ok", Label: "OK"}},
+		Execute: func(context.Context, string) (any, error) { return nil, nil }}); err != nil {
+		t.Fatal(err)
+	}
+
+	type item struct {
+		ID      string `json:"approval_id"`
+		Kind    string `json:"kind"`
+		Level   string `json:"level"`
+		Summary string `json:"summary"`
+		Expires string `json:"expires_at"`
+	}
+	var list struct {
+		Approvals []item `json:"approvals"`
+	}
+	sc := client(t, c, "settings")
+	if err := sc.Call("approval.list", nil, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Approvals) != 2 || list.Approvals[0].ID != strong || list.Approvals[1].ID != tap ||
+		list.Approvals[1].Level != "tap" || list.Approvals[0].Summary == "" || list.Approvals[0].Expires == "" {
+		t.Fatalf("list: %+v", list)
+	}
+	// No preview, options or codes in the list: those come with approval.get, for one request.
+	var raw map[string][]map[string]any
+	_ = sc.Call("approval.list", nil, &raw)
+	for _, k := range []string{"preview", "options", "code", "items"} {
+		if _, ok := raw["approvals"][0][k]; ok {
+			t.Fatalf("list carries %q: %v", k, raw)
+		}
+	}
+
+	// Opening one gives a ticket for that request only, used like its own link.
+	var open struct{ ApprovalID, Ticket string }
+	if err := sc.Call("approval.open", map[string]string{"approval_id": strong}, &open); err != nil || open.Ticket == "" {
+		t.Fatalf("open: %+v %v", open, err)
+	}
+	ac := *sc
+	ac.Link.Ticket = open.Ticket
+	if info, err := ac.ApprovalInfo(strong); err != nil || info.Approval.ID != strong {
+		t.Fatalf("approval.get with the opened ticket: %+v %v", info, err)
+	}
+	if _, err := ac.ApprovalInfo(tap); err == nil {
+		t.Fatal("a ticket opened for one request read another")
+	}
+	if out, err := ac.ApproveWithPassword(strong, "send", "correct horse"); err != nil || out["state"] != "executed" {
+		t.Fatalf("approve: %v %v", out, err)
+	}
+	for _, id := range []string{strong, decided, "apr_nope"} {
+		if err := sc.Call("approval.open", map[string]string{"approval_id": id}, &open); err == nil {
+			t.Fatalf("opened %s, which isn't waiting", id)
+		}
+	}
+	if err := sc.Call("approval.list", nil, &list); err != nil || len(list.Approvals) != 1 || list.Approvals[0].ID != tap {
+		t.Fatalf("after approving: %+v %v", list, err)
+	}
+
+	// Only a settings link: not an approval link, nor the view-only settings it opens, nor setup or
+	// agent links. Without a valid ticket nothing at all.
+	view := client(t, c, "approve:"+tap)
+	var vs struct {
+		Ticket   string `json:"ticket"`
+		ViewOnly bool   `json:"view_only"`
+	}
+	if err := view.Call("session.settings", nil, &vs); err != nil || !vs.ViewOnly {
+		t.Fatalf("session.settings: %+v %v", vs, err)
+	}
+	viewOnly := *view
+	viewOnly.Link.Ticket = vs.Ticket
+	for name, pc := range map[string]*panelclient.Client{"approval link": view, "view-only settings": &viewOnly,
+		"setup link": client(t, c, "setup:dev"), "agent link": client(t, c, "agent:Ann"), "unlock link": client(t, c, "unlock")} {
+		if err := pc.Call("approval.list", nil, &list); err == nil {
+			t.Fatalf("%s listed approvals", name)
+		}
+		if err := pc.Call("approval.open", map[string]string{"approval_id": tap}, &open); err == nil {
+			t.Fatalf("%s opened an approval", name)
+		}
+	}
+	expired := *sc
+	expired.Link.Ticket = "not-a-ticket"
+	if err := expired.Call("approval.list", nil, &list); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("no ticket: %v", err)
+	}
+
+	// Locked: nothing is listed (locking cancels what waited anyway).
+	c.Lock()
+	if err := sc.Call("approval.list", nil, &list); err == nil {
+		t.Fatal("listed while locked")
 	}
 }
