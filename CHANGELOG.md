@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Rubi Home: `claude-start.create` starts a Claude Code session when none exists.** A new Home capability,
+  `claude-start` (shown on the install screen as starting a new session with a first message, where
+  sessions that skip permission prompts let Claude run any command; `claude-sessions` no longer says
+  anything about it, and a plugin without `claude-start` can't call it). Opens the Claude desktop app's
+  `claude://code/new?folder=...&q=...` link with `/usr/bin/open` (a `Launcher` seam; the headless `claude -p`
+  route is left out: it needs a signed-in CLI and leaves no live session) and waits up to 45 s for the new
+  session's SessionStart hook (`source: startup`, a new id, the same directory; when its transcript shows a
+  first message it must carry the request's random reference code), answering its id or a note when none
+  came (or several did). The directory must be the real path (a path through a symlink is refused) of an
+  existing project the registry has seen, or inside `claude_start_dirs` (new key in `config.json`, default
+  empty), and never `~/.claude`, `~/.ssh`, `~/Library`, `~/.local`, `~/.npm`, `~/.oh-my-zsh`, `~/.zsh*`, the
+  home directory itself, `/var`, `/opt`, `/Applications`, `/Volumes` itself or a system tree. The prompt (at
+  most 2000 characters, 40 lines, untrusted) is rejected, never cleaned, when it holds invisible characters
+  (format, private use, tag, control, C1) or more than two blank lines in a row, so the approved text is the
+  launched text; it reaches the session framed as a message from the sister. 3 launches an hour per computer,
+  one at a time. The new session runs with the desktop app's permission settings: with bypassPermissions
+  Claude runs commands without asking and Rubi approvals don't apply. Not yet checked by hand against the
+  real app (see `docs/plans/claude-task.md`).
 - **Rubi Home: sister tools inside Claude Code, installed with zero setup.** `rubi-home claude-mcp` is a
   stdio MCP server (reads no config) with `rubi_sisters`, `rubi_ask`, `rubi_reply` and `rubi_inbox_status`;
   asks and replies reach the Bot through the existing outbox, so a bound Bot sees `claude_ask` and

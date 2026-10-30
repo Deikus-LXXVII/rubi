@@ -269,5 +269,37 @@ The helper does only what it was built for, whatever Rubi asks:
   that path must be new enough to have `claude-mcp`; with an older one the MCP server fails to start (Claude
   Code shows the server as failed) until `install-hook` is run again.
 
+  **Starting a session** (`claude-start.create {cwd, prompt, from?}`, its own capability `claude-start`: a
+  plugin must declare it, and `claude-sessions` doesn't cover it; it can't approve anything). When the Bot's
+  project has no session open, the helper opens the Claude desktop app's link
+  `claude://code/new?folder=<dir>&q=<prompt>` with `/usr/bin/open` (a `Launcher`; the encoding is `url.Values`
+  with `%20` for spaces) and waits up to 45 seconds for the new session's SessionStart hook (`source` must be
+  `startup`, same directory, an id not known before the launch; the framed prompt carries a random reference
+  code, and when the transcript (inside `~/.claude/projects`, first 64 KB) already shows the first user
+  message it must contain the code, else the session is another one; an unreadable transcript is accepted
+  after 3 seconds). It answers `{launched, session_id, cwd, permission_mode}`, or `session_id:""` with a note
+  when none showed up (or several did: never a guess). The relay gives a request to Rubi Home 60 seconds in
+  all, hence 45. Limits: the directory must be absolute, clean, existing and its own real path (a symlink in
+  it is refused, so the approval names the directory the session runs in), and either the working directory
+  or project root of a session the registry already knows, or inside a directory in `claude_start_dirs` of
+  `config.json` (absolute paths, default none, read fresh on each call); never `/`, the home directory
+  itself, `~/.claude`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.config`, `~/.docker`, `~/.local`,
+  `~/.npm`, `~/.oh-my-zsh`, `~/.zsh*`, `~/Library`, the helper's own directory, `/var`, `/private/var`,
+  `/Applications`, `/opt`, a system tree, or `/Volumes` itself (not what is inside), however it is spelled
+  (the check compares files with `os.SameFile` too). The prompt is at most 2000 characters and 40 lines, and
+  it is rejected, not cleaned, if it has Unicode format characters (zero-width, bidirectional), private use,
+  tag characters, control characters other than the newline, C1 controls, or more than two blank lines in a
+  row (the plugin runs the same check before the approval, so the approved text is the launched text). It
+  reaches the session framed as a message from the sister (untrusted text from a Bot, last, after a line
+  saying so). 3 launches per hour per computer, one at a time; the work runs in a goroutine of its own and the
+  hooks never wait for it. The session runs with the desktop app's permission settings: if those are
+  bypassPermissions (the app's default for the user's sessions here), Claude runs any command in it without
+  asking and no Rubi approval applies to it; the plugin's approval says so. The headless route (`claude -p`)
+  is not used: it needs the CLI signed in (a scratch run failed with `api_error`), and it ends after the
+  prompt unless run with stream-json input, which would make the helper supervise a long-lived child. It fits
+  the same `Launcher` interface if it is ever wanted. Manual check on the Mac: see
+  `docs/plans/claude-task.md`. The end-to-end build (`-tags rubie2e`) swaps the launcher for one that appends
+  the URL to `$RUBI_E2E_LAUNCH_FILE`; it is not in release builds.
+
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.
