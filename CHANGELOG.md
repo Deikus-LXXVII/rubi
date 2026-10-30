@@ -166,6 +166,10 @@
   gives `not_stored`.
 - Events saved by an older version with the old global flag count as acked by every Bot, so nothing old
   reappears. An event is pruned after an hour once every Bot that could see it at the time of the last ack has acked it, otherwise after a day (a Bot added later doesn't see an event that was already settled). After a downgrade, events acked by only some Bots show as unacked again for them (harmless).
+- **Skill `rubi-claude-pair` for working in pairs with Claude Code.** How Grok Bot and a Claude Code session
+  linked through the claude-code plugin split a project (modes balance / full GrokBot / full Claude, briefs,
+  reports, which permissions carry over); the Grok Bot part is in `skills/grok-bot/rubi-claude-pair`, the Claude
+  part ships in the embedded `rubi-sisters` plugin.
 
 ## v0.12.2 (2026-10-30)
 
