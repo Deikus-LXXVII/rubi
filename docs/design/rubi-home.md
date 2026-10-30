@@ -106,5 +106,36 @@ The helper does only what it was built for, whatever Rubi asks:
   `claude-sessions.next`. The helper never resumes or starts a session. Which Bot may talk to which session is
   decided in Rubi (the claude-code plugin's bindings).
 
+  An idle session (stopped, waiting for the user) fires no hooks, so since this change it can be woken by
+  a waiter: `rubi-home claude-hook --wait [--wait-limit SECONDS]`, a second Stop hook with
+  `asyncRewake: true` and a long timeout (3600 s in the example; the waiter gives up 30 s earlier, exit 0).
+  It sends the Stop input to the socket as event `RubiWait` (an older helper answers `{}` and the waiter
+  exits 0) and stays connected, reading no config and never printing to stdout. It has its own 64 slots
+  (full: `{}`), one waiter per session (a newer one closes the older). When a message is queued for the
+  session, or waits when the waiter connects, the helper takes the messages out of the inbox and sends
+  `{"wake":"<framed messages>","ids":[...]}`; the waiter writes the text to stderr, answers `ok` and exits
+  2, which wakes the session with the text as a system reminder. The waiter answers `ok` before it writes
+  the text, so a waiter that can't answer writes nothing. Two small windows remain: a waiter stalled for
+  more than 3 seconds (or a helper stopping) can still write the text after the messages went back to the
+  inbox, so they arrive twice; and one that dies between `ok` and the write has them counted as delivered
+  without Claude seeing them.
+  Without `ok` within 3 seconds the messages go back to the front of the inbox in order and that waiter
+  has exited: the session is not re-armed and waits for its next prompt or Stop. With `ok` they count as
+  delivered and their senders get the turn's answer at the next Stop, as for the other deliveries.
+  Waiters only wake sessions that are idle; if a waiter is attached while the session is busy (it arrived
+  before the Stop hook marked it idle, or the Stop continued), the messages stay queued for the turn's
+  hooks, and a Stop that ends the turn wakes the waiter if messages wait. UserPromptSubmit, SessionEnd, a
+  blocking Stop, the waiter's limit and the helper stopping all end the waiter (exit 0). Inbox, outbox and
+  the replies a turn owes (message and reply text included, so the file is as private as the helper's
+  other files) are kept in `<helper dir>/claude-queue.json` (0600, atomic, written by a
+  background saver within a second of a change and when the helper stops; a message waiting more than 24
+  hours expires, an outbox entry that old is dropped; an unreadable file is moved to `.bad`), so a restart
+  loses nothing; the saver takes its snapshot under the lock and writes outside it, so a slow disk never
+  holds up a hook. Senders learn what became of a message from `kind: "status"` entries in
+  `claude-sessions.next` (`id` is the message's, `to` its sender, `state` one of `queued`, `delivered`,
+  `answered`, `expired`); when the outbox is full the oldest status goes first, and a status
+  never pushes out a reply or an ask. `claude-sessions.send` also answers `session_state` (idle, busy,
+  ended, unknown) and `waiter` (whether an idle session will be woken now).
+
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.

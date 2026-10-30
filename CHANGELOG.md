@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Rubi Home: idle Claude Code sessions are woken, and senders see what became of a message.** A second
+  Stop hook, `rubi-home claude-hook --wait` (`asyncRewake: true`), stays connected while a session is
+  idle; a message for the session wakes it (exit 2, the messages on stderr) and the helper counts it
+  delivered only when the waiter acknowledges, otherwise the messages go back to the inbox. One waiter per
+  session, 64 slots of their own, an older helper just answers `{}`. Inbox, outbox and owed replies are
+  kept in `claude-queue.json` across restarts (24 hours), written off the hooks' path. The outbox
+  carries `status` entries (`queued`, `delivered`, `answered`, `expired`) and
+  `claude-sessions.send` answers `session_state` and `waiter`.
 - **Rubi Home: a hung disk never blocks Claude Code hooks or approvals.** Hooks only touch the
   hook-reported sessions under their own lock; the session stores are scanned in the background, the
   desktop store and the transcripts each in its own goroutine with a deadline, and a list answers from
