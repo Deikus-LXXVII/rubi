@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -93,6 +94,8 @@ type Claude struct {
 	// directory (~/.claude/projects); both are only read, and "" leaves one out (see sessions.go).
 	DesktopStore string
 	Transcripts  string
+	// Procs answers the kernel questions behind tool identity (the operating system's when nil; a seam for tests).
+	Procs procTree
 	// QueueFile is where inbox, outbox and owed replies are kept between runs (see queue.go); "" keeps
 	// them in memory only.
 	QueueFile string
@@ -112,6 +115,13 @@ type Claude struct {
 	flights     map[string]*flight         // claude-sessions.list calls still running, by key (see within)
 	inbox       map[string][]ClaudeMessage // by session id
 	turns       map[string]*turnState
+	bound       map[string][]boundSister  // Bots bound to each session, as the plugin said (see sistertools.go)
+	delivered   map[string][]deliveredMsg // messages that reached each session, for rubi_reply
+	toolHits    map[string][]time.Time    // recent asks and replies of tool calls, by kind and session
+	toolGlobal  []time.Time               // recent outbox pushes of all tool calls
+	peers       peerMap                   // hook process ancestors -> sessions (see peer.go)
+	peerOnce    atomic.Bool               // an ignored hook claim is logged once
+	diagOnce    atomic.Bool               // a tool line naming another session than the attested one is logged once
 	outbox      []ClaudeOut
 	inflight    map[string][]ClaudeMessage // messages taken out for a wake that isn't acknowledged yet
 	saveKick    chan struct{}              // tells the saver the queue changed (see queue.go)
@@ -440,16 +450,31 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		if json.Unmarshal(args, &in) != nil {
 			return nil, errors.New("bad arguments")
 		}
+		// State and waiter as the message found them: Send may wake the session at once, which ends the
+		// waiter and marks the session busy before this answer is built.
+		state, waiter := c.reg.stateOf(in.SessionID), c.hasWaiter(in.SessionID)
+		if state == "" {
+			state = "unknown"
+		}
 		m, waiting, err := c.Send(in.SessionID, in.From, in.Text)
 		if err != nil {
 			return nil, err
 		}
-		state := c.reg.stateOf(in.SessionID)
-		if state == "" {
-			state = "unknown"
-		}
 		return map[string]any{"queued": true, "id": m.ID, "waiting": waiting, "session_state": state,
-			"waiter": c.hasWaiter(in.SessionID)}, nil
+			"waiter": waiter}, nil
+	case "claude-sessions.bound":
+		var in struct {
+			SessionID string `json:"session_id"`
+			Sister    string `json:"sister"`
+			Bound     bool   `json:"bound"`
+		}
+		if json.Unmarshal(args, &in) != nil {
+			return nil, errors.New("bad arguments")
+		}
+		if err := c.setBound(in.SessionID, in.Sister, in.Bound); err != nil {
+			return nil, err
+		}
+		return map[string]any{"ok": true}, nil
 	case "claude.decide":
 		var a ClaudeAnswer
 		if json.Unmarshal(args, &a) != nil {
@@ -559,7 +584,8 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 	// deadline). Then a PermissionRequest takes a slot of perms (a denial when none is free), and an event
 	// takes one of events (an empty reply when none is free, never a denial: events can't block anything).
 	s := &claudeSlots{reading: make(chan struct{}, claudeMaxReading), perms: make(chan struct{}, claudeMaxConns),
-		events: make(chan struct{}, claudeMaxEvents), waits: make(chan struct{}, claudeMaxWaiters)}
+		events: make(chan struct{}, claudeMaxEvents), waits: make(chan struct{}, claudeMaxWaiters),
+		tools: make(chan struct{}, claudeMaxToolCalls)}
 	if c.QueueFile != "" {
 		// The saver outlives the connections: it is stopped after they are done, so its final save has
 		// their last commits and restores. Serve returning for any reason stops it.
@@ -580,12 +606,13 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 	}
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	stopped := ctx                            // Serve was asked to stop (the listener is closed by an AfterFunc, which can run before the derived ctx below is cancelled)
 	ctx, stopConns := context.WithCancel(ctx) // also ends the waiters when Accept fails on its own
 	defer stopConns()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil {
+			if stopped.Err() != nil {
 				return nil
 			}
 			return err
@@ -600,17 +627,18 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 			conn.Close()
 			continue
 		}
+		peer := c.peerOf(conn) // the kernel's view, taken before the line is read
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.serveConn(ctx, conn, s)
+			c.serveConn(ctx, conn, s, peer)
 		}()
 	}
 }
 
-type claudeSlots struct{ reading, perms, events, waits chan struct{} }
+type claudeSlots struct{ reading, perms, events, waits, tools chan struct{} }
 
-func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots) {
+func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, peer peerID) {
 	defer conn.Close()
 	_ = conn.SetReadDeadline(time.Now().Add(claudeFirstLineWait))
 	line, err := readLine(conn, claudeMaxInput+claudeStampRoom)
@@ -620,6 +648,16 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots) {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	switch hookEvent(line) { // the kernel says which processes host this session's hooks (see peer.go)
+	case "SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", claudeWaitEvent:
+		if sid := lineSession(line); sid != "" {
+			c.attestHook(peer, sid)
+		}
+	case "SessionEnd":
+		if sid := lineSession(line); sid != "" {
+			c.releaseHook(peer, sid)
+		}
+	}
 	if refuse := c.noteHook(line); refuse != "" { // a hook binary of a protocol this helper doesn't speak
 		_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
 		if ev := hookEvent(line); ev != "PermissionRequest" && ev != "" {
@@ -627,6 +665,10 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots) {
 		} else {
 			_ = writeDecision(conn, claudeDeny(refuse))
 		}
+		return
+	}
+	if hookEvent(line) == claudeToolEvent { // a sister tool of Claude (claude-mcp): its own slots, never an event or an approval
+		c.serveTool(conn, line, s.tools, peer)
 		return
 	}
 	if hookEvent(line) == claudeWaitEvent { // an idle session's waiter: its own slots, never an event or an approval

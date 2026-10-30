@@ -15,8 +15,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
 	"time"
 )
+
+// messageIDRE is the shape of the helper's message ids (cm_ and 12 characters of rand.Text).
+var messageIDRE = regexp.MustCompile(`^cm_[A-Za-z0-9]{1,40}$`)
 
 // claudeMaxQueueFile is the largest queue file that is read (a bigger one is moved aside).
 const claudeMaxQueueFile = 8 << 20
@@ -42,6 +48,10 @@ type queueFile struct {
 	Inbox   map[string][]ClaudeMessage `json:"inbox,omitempty"`
 	Outbox  []ClaudeOut                `json:"outbox,omitempty"`
 	Owed    map[string]queueOwed       `json:"owed,omitempty"`
+	// Bound and Delivered were added after version 1 shipped: optional keys, so the version stays 1 (an older
+	// helper ignores them).
+	Bound     map[string][]boundSister  `json:"bound,omitempty"`
+	Delivered map[string][]deliveredMsg `json:"delivered,omitempty"`
 }
 
 // dirtyLocked tells the saver that the queue changed. Callers hold c.mu.
@@ -79,6 +89,11 @@ func (c *Claude) sweepLocked(now time.Time) {
 			c.inbox[id] = keep
 		}
 	}
+	for id := range c.delivered {
+		if before := len(c.delivered[id]); len(c.pruneDeliveredLocked(id, now)) != before {
+			c.dirtyLocked()
+		}
+	}
 	keep := c.outbox[:0:0]
 	for _, o := range c.outbox {
 		if now.Sub(o.At) <= claudeQueueTTL {
@@ -101,6 +116,18 @@ func (c *Claude) snapshotLocked() queueFile {
 		q.Inbox[id] = append(q.Inbox[id], m...)
 	}
 	q.Outbox = append([]ClaudeOut(nil), c.outbox...)
+	if len(c.bound) > 0 {
+		q.Bound = map[string][]boundSister{}
+		for id, b := range c.bound {
+			q.Bound[id] = append([]boundSister(nil), b...)
+		}
+	}
+	if len(c.delivered) > 0 {
+		q.Delivered = map[string][]deliveredMsg{}
+		for id, d := range c.delivered {
+			q.Delivered[id] = append([]deliveredMsg(nil), d...)
+		}
+	}
 	for id, t := range c.turns {
 		if len(t.from) > 0 {
 			q.Owed[id] = queueOwed{From: append([]string(nil), t.from...), IDs: append([]string(nil), t.ids...),
@@ -267,6 +294,75 @@ func (c *Claude) loadQueue() {
 		}
 		t := c.turnLocked(id)
 		t.from, t.ids, t.idFrom = ow.From, ow.IDs, ow.IDFrom
+	}
+	// Bound sisters: a bounded number per session and in all, and a Bot has one binding (the newest wins).
+	type bnd struct {
+		id string
+		b  boundSister
+	}
+	newest := map[string]bnd{}
+	for id, bs := range q.Bound {
+		if id == "" || len(id) > 200 {
+			continue
+		}
+		for _, b := range bs {
+			b.Sister = oneLineText(b.Sister, claudeMaxFrom)
+			if b.Sister == "" {
+				continue
+			}
+			k := strings.ToLower(b.Sister)
+			if cur, ok := newest[k]; !ok || b.Since.After(cur.b.Since) {
+				newest[k] = bnd{id, b}
+			}
+		}
+	}
+	order := make([]bnd, 0, len(newest))
+	for _, x := range newest {
+		order = append(order, x)
+	}
+	sort.Slice(order, func(i, j int) bool { // newest first, so a full list drops the oldest
+		if !order[i].b.Since.Equal(order[j].b.Since) {
+			return order[i].b.Since.After(order[j].b.Since)
+		}
+		return order[i].b.Sister < order[j].b.Sister
+	})
+	for _, x := range order {
+		if len(c.bound) >= claudeMaxBound && len(c.bound[x.id]) == 0 {
+			continue
+		}
+		if len(c.bound[x.id]) >= claudeMaxBoundPerSession {
+			continue
+		}
+		if x.b.Since.After(time.Now()) {
+			x.b.Since = time.Now().UTC()
+		}
+		if c.bound == nil {
+			c.bound = map[string][]boundSister{}
+		}
+		c.bound[x.id] = append(c.bound[x.id], x.b)
+	}
+	// Delivered messages: ids as the helper makes them, short one-line senders, no times in the future.
+	nowU := time.Now().UTC()
+	for id, ds := range q.Delivered {
+		if id == "" || len(id) > 200 || (len(c.delivered) >= claudeMaxBound && len(c.delivered[id]) == 0) {
+			continue
+		}
+		if len(ds) > claudeMaxDelivered {
+			ds = ds[len(ds)-claudeMaxDelivered:]
+		}
+		for _, d := range ds {
+			if !messageIDRE.MatchString(d.ID) {
+				continue
+			}
+			d.From = oneLineText(d.From, claudeMaxFrom)
+			if d.At.After(nowU) {
+				d.At = nowU
+			}
+			if c.delivered == nil {
+				c.delivered = map[string][]deliveredMsg{}
+			}
+			c.delivered[id] = append(c.delivered[id], d)
+		}
 	}
 	c.sweepLocked(time.Now().UTC())
 }

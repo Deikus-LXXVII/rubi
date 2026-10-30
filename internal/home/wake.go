@@ -275,6 +275,7 @@ func (c *Claude) commitWake(id string, msgs []ClaudeMessage) {
 	c.endInflightLocked(id, msgs)
 	c.turnLocked(id).note(msgs)
 	c.statusLocked(id, "delivered", msgs...)
+	c.noteDeliveredLocked(id, msgs...)
 	c.dirtyLocked()
 	c.mu.Unlock()
 	c.reg.touch(id, "", "", "", "busy", time.Now().UTC()) // the woken session is in a turn now

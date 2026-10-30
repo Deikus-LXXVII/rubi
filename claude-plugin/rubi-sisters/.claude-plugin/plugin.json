@@ -1,0 +1,9 @@
+{
+  "name": "rubi-sisters",
+  "description": "Tools and a skill to work with the sister: the Grok Bot the user bound to this Claude Code session through Rubi. The tools add no permissions.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Rubi-Project"
+  },
+  "license": "MIT"
+}

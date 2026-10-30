@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rubi": {
+      "command": "/usr/local/bin/rubi-home",
+      "args": ["claude-mcp"]
+    }
+  }
+}

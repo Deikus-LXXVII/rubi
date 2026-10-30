@@ -7,15 +7,18 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	claudeplugin "github.com/Deikus-LXXVII/rubi/claude-plugin"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -27,6 +30,16 @@ type InstallPlan struct {
 	Group    string // wheel on macOS
 	Script   string // the shell script root runs (see installScript)
 	Method   string // "osascript" or "sudo"
+	// Plugin is the Claude Code marketplace to install in the same run (nil without --with-claude-plugin).
+	Plugin *PluginPlan
+}
+
+// FullScript is everything root runs: the binary's script, then the plugin's in a subshell (its own trap).
+func (p InstallPlan) FullScript() string {
+	if p.Plugin == nil {
+		return p.Script
+	}
+	return p.Script + "\n(\n" + p.Plugin.Script + ")\n"
 }
 
 // InstallRunner runs the plan's privileged script.
@@ -43,8 +56,13 @@ type InstallOptions struct {
 	// result, and puts the same checks and the chown into the script. Tests that install to a temporary
 	// path without root turn it off.
 	RequireRoot bool
+	// WithPlugin also installs the embedded Claude Code marketplace to PluginDst (DefaultClaudePluginDir when
+	// empty) in the same privileged run.
+	WithPlugin bool
+	PluginDst  string
 	// VersionTimeout bounds `dst version` (HookBinaryTimeout when zero).
 	VersionTimeout time.Duration
+	tools          *installTools // a test seam: the tools the script uses
 }
 
 // privilegedPath is the only PATH the privileged commands get (and every tool in the script is absolute).
@@ -55,17 +73,20 @@ type installTools struct {
 	Stat, Cat, Sha, Cut, Dirname, Mktemp, Rm, Chown, Chmod, Mv string
 	StatFmt                                                    string // stat's format option and string
 	Group                                                      string
+	Mkdir, B64D                                                string // mkdir, and base64 with its decode option
 }
 
 func defaultTools() installTools {
 	if runtime.GOOS == "darwin" {
 		return installTools{Stat: "/usr/bin/stat -L -f '%u:%Lp'", Cat: "/bin/cat", Sha: "/usr/bin/shasum -a 256",
 			Cut: "/usr/bin/cut", Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm",
-			Chown: "/usr/sbin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "wheel"}
+			Chown: "/usr/sbin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "wheel",
+			Mkdir: "/bin/mkdir", B64D: "/usr/bin/base64 -D"}
 	}
 	return installTools{Stat: "/usr/bin/stat -L -c '%u:%a'", Cat: "/bin/cat", Sha: "/usr/bin/sha256sum",
 		Cut: "/usr/bin/cut", Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm",
-		Chown: "/bin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "root"}
+		Chown: "/bin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "root",
+		Mkdir: "/bin/mkdir", B64D: "/usr/bin/base64 -d"}
 }
 
 // installScript is what root runs. The source is read once, as root, into a temporary file in the target's
@@ -166,7 +187,7 @@ func privilegedEnv() []string { return []string{privilegedPath} }
 func runOsascript(ctx context.Context, p InstallPlan) error {
 	// The script travels as an argument of the run handler, so AppleScript never has to quote it.
 	cmd := exec.CommandContext(ctx, "/usr/bin/osascript",
-		"-e", "on run argv", "-e", "do shell script (item 1 of argv) with administrator privileges", "-e", "end run", p.Script)
+		"-e", "on run argv", "-e", "do shell script (item 1 of argv) with administrator privileges", "-e", "end run", p.FullScript())
 	cmd.Env = privilegedEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -176,7 +197,7 @@ func runOsascript(ctx context.Context, p InstallPlan) error {
 }
 
 func runSudo(ctx context.Context, p InstallPlan) error {
-	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "/bin/sh", "-c", p.Script)
+	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "/bin/sh", "-c", p.FullScript())
 	cmd.Env = privilegedEnv()
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
@@ -184,9 +205,24 @@ func runSudo(ctx context.Context, p InstallPlan) error {
 
 // InstallHook plans, runs and verifies the installation, telling w what it does.
 func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
-	p, err := PlanInstallHook(o.Src, o.Dst, o.RequireRoot)
+	tools := defaultTools()
+	if o.tools != nil {
+		tools = *o.tools
+	}
+	p, err := planInstall(o.Src, o.Dst, o.RequireRoot, tools)
 	if err != nil {
 		return err
+	}
+	if o.WithPlugin {
+		dst := o.PluginDst
+		if dst == "" {
+			dst = DefaultClaudePluginDir
+		}
+		pp, err := planClaudePlugin(claudeplugin.Files, dst, o.RequireRoot, tools)
+		if err != nil {
+			return err
+		}
+		p.Plugin = &pp
 	}
 	method := "osascript"
 	run := o.Run
@@ -206,10 +242,16 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 	fmt.Fprintln(w, "from a release, compare it with that release's SHA256SUMS. Root copies the file once, checks it has exactly")
 	fmt.Fprintln(w, "this hash, and only then moves it into place.")
 	fmt.Fprintf(w, "Script run as root (/bin/sh):\n%s", indent(p.Script))
+	if p.Plugin != nil {
+		p.Plugin.describe(w)
+	}
 	if method == "sudo" {
 		fmt.Fprintln(w, "Run via: /usr/bin/sudo (asks for your password in this terminal)")
 	} else {
 		fmt.Fprintln(w, "Run via: /usr/bin/osascript, \"do shell script ... with administrator privileges\" (macOS asks for an administrator password)")
+	}
+	if p.Plugin == nil {
+		fmt.Fprintln(w, "Not installed: the Claude Code sister tools (a plugin for rubi_ask and the like). Add --with-claude-plugin to install them in the same step.")
 	}
 	if o.DryRun {
 		fmt.Fprintln(w, "Dry run: nothing was run and nothing was changed.")
@@ -245,9 +287,47 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 		}
 	}
 	fmt.Fprintf(w, "Installed %s (version %s, sha256 %s).\nVerified: the file's sha256 and `version` match the source.\n", p.Dst, v, got)
+	if p.Plugin != nil {
+		if err := verifyPlugin(*p.Plugin, o.RequireRoot); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "Installed the Claude Code plugin in %s (%d files, sha256 checked).\nNext: managed settings must register it (examples/managed-settings.json in the rubi-claude-code plugin: extraKnownMarketplaces and enabledPlugins), then restart Claude Code.\n", p.Plugin.Dst, len(p.Plugin.Files))
+	}
 	return nil
 }
 
 func indent(s string) string {
 	return "    " + strings.ReplaceAll(strings.TrimRight(s, "\n"), "\n", "\n    ") + "\n"
+}
+
+// verifyPlugin checks the installed tree: every file there with the expected sha256, and as root, owned by
+// root and not writable by group or others.
+func verifyPlugin(p PluginPlan, asRoot bool) error {
+	for _, f := range p.Files {
+		full := filepath.Join(p.Dst, filepath.FromSlash(f.Path))
+		got, err := fileSHA256(full)
+		if err != nil {
+			return fmt.Errorf("verification failed: %s: %v", full, err)
+		}
+		if got != f.SHA256 {
+			return fmt.Errorf("verification failed: %s has sha256 %s, expected %s", full, got, f.SHA256)
+		}
+	}
+	if !asRoot {
+		return nil
+	}
+	return filepath.WalkDir(p.Dst, func(fp string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+			return fmt.Errorf("verification failed: %s must be owned by root and not writable by group or others", fp)
+		}
+		return nil
+	})
 }

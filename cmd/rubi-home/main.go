@@ -10,9 +10,12 @@
 //	rubi-home claude-hook    Claude Code's hooks: PermissionRequest asks Rubi and prints allow or deny;
 //	                         SessionStart, UserPromptSubmit, Stop and SessionEnd report the session and
 //	                         deliver messages waiting for it
-//	rubi-home install-hook [--dry-run] [--to PATH] [--sudo]
+//	rubi-home install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]]
 //	                         copy this binary to the root-owned hook path (default /usr/local/bin/rubi-home)
-//	                         with administrator rights, then verify it
+//	                         with administrator rights, then verify it; --with-claude-plugin also installs the
+//	                         embedded Claude Code plugin (the sister tools) to a root-owned directory
+//	rubi-home claude-mcp     the stdio MCP server of the Claude Code plugin: rubi_sisters, rubi_ask, rubi_reply
+//	                         and rubi_inbox_status, for the sister bound to the calling session (reads no config)
 //	rubi-home version        print the version (reads nothing)
 //	rubi-home claude-hook --wait [--wait-limit SECONDS]
 //	                         a second, asyncRewake Stop hook: stays while the session is idle and wakes it
@@ -60,6 +63,15 @@ func main() {
 		return
 	}
 	switch os.Args[1] {
+	case "claude-mcp": // Claude Code's MCP server: talks to the helper on its socket, reads no configuration
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err := home.RunClaudeMCP(ctx, home.ClaudeSocketPath(home.DefaultDir()))
+		stop()
+		if err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "rubi-home claude-mcp: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	case "version": // reads and creates nothing: the installer and status run it on any copy
 		fmt.Println(version.Version)
 		return
@@ -124,7 +136,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
 	os.Exit(2)
 }
 
@@ -205,6 +217,14 @@ func runInstallHook(args []string) int {
 			o.DryRun = true
 		case "--sudo":
 			o.Sudo = true
+		case "--with-claude-plugin":
+			o.WithPlugin = true
+		case "--plugin-to":
+			if i+1 >= len(args) {
+				usage()
+			}
+			i++
+			o.PluginDst = args[i]
 		case "--to":
 			if i+1 >= len(args) {
 				usage()

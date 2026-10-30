@@ -94,6 +94,17 @@ type eventInput struct {
 	LastAssistantMessage string `json:"last_assistant_message"`
 }
 
+// lineSession is the session id a hook line names ("" when missing or too long).
+func lineSession(raw []byte) string {
+	var in struct {
+		S string `json:"session_id"`
+	}
+	if json.Unmarshal(raw, &in) != nil || len(in.S) > 200 {
+		return ""
+	}
+	return in.S
+}
+
 func hookEvent(raw []byte) string {
 	var in struct {
 		E string `json:"hook_event_name"`
@@ -148,6 +159,7 @@ func (c *Claude) hook(raw []byte, tk *eventTicket) HookReply {
 		}
 		t.note(msgs)
 		c.statusLocked(id, "delivered", msgs...)
+		c.noteDeliveredLocked(id, msgs...)
 		return HookReply{Context: formatMessages(msgs, "Along with the user's prompt, Rubi delivers")}
 	case "Stop":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "idle", now)
@@ -187,6 +199,7 @@ func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) 
 		for i, mid := range t.ids {
 			c.pushOutLocked(ClaudeOut{Kind: "status", ID: mid, State: "answered", SessionID: id, To: t.sender(i), At: now})
 		}
+		c.markAnsweredLocked(id, t.ids)
 	}
 	if ok { // without the answer the reply is still owed: a later Stop sends it
 		if len(t.from) > 0 {
@@ -207,6 +220,7 @@ func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) 
 	t.chain++
 	t.note(msgs)
 	c.statusLocked(id, "delivered", msgs...)
+	c.noteDeliveredLocked(id, msgs...)
 	return HookReply{Block: true, Reason: formatMessages(msgs, "Before you stop, Rubi delivers")}
 }
 
@@ -278,7 +292,7 @@ func (c *Claude) statusLocked(sessionID, state string, msgs ...ClaudeMessage) {
 // pushOutLocked queues something for Rubi. When the outbox is full the oldest status entry goes first, then
 // the oldest other entry; a status never pushes out a reply or an ask (it is dropped itself). A reply or
 // ask that is pushed out is only logged.
-func (c *Claude) pushOutLocked(o ClaudeOut) {
+func (c *Claude) pushOutLocked(o ClaudeOut) string {
 	if o.Kind != "status" {
 		o.ID = "co_" + rand.Text()
 	}
@@ -295,7 +309,7 @@ func (c *Claude) pushOutLocked(o ClaudeOut) {
 		}
 		if i < 0 {
 			if o.Kind == "status" {
-				return
+				return o.ID
 			}
 			i = 0
 		}
@@ -310,6 +324,7 @@ func (c *Claude) pushOutLocked(o ClaudeOut) {
 		close(c.signal)
 		c.signal = nil
 	}
+	return o.ID
 }
 
 func formatMessages(msgs []ClaudeMessage, lead string) string {

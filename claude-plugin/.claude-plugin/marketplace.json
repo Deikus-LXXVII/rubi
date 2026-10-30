@@ -1,0 +1,14 @@
+{
+  "name": "rubi",
+  "description": "Rubi-Project plugins for Claude Code, installed by rubi-home install-hook --with-claude-plugin",
+  "owner": {
+    "name": "Rubi-Project"
+  },
+  "plugins": [
+    {
+      "name": "rubi-sisters",
+      "source": "./rubi-sisters",
+      "description": "Tools and a skill to work with the sister: the Grok Bot bound to this session through Rubi"
+    }
+  ]
+}

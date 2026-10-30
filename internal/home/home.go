@@ -286,7 +286,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 			return nil, errors.New("bad arguments")
 		}
 		return h.Hue.Do(ctx, in)
-	case "claude.next", "claude.decide", "claude-sessions.list", "claude-sessions.send", "claude-sessions.next":
+	case "claude.next", "claude.decide", "claude-sessions.list", "claude-sessions.send", "claude-sessions.next", "claude-sessions.bound":
 		return h.Claude.handle(ctx, env.Op, env.Args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
