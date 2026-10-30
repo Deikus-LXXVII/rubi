@@ -109,7 +109,11 @@ func cleanField(s string) string {
 // noteHook reads the version fields of a socket line, records the hook and returns a refusal text when the
 // hook speaks a protocol the helper doesn't ("" otherwise). Lines without a hook_event_name aren't hooks'
 // and are left to the caller.
-func (c *Claude) noteHook(line []byte) string {
+func (c *Claude) noteHook(line []byte) string { return c.noteHookRec(line, true) }
+
+// noteHookRec is noteHook; with record false only the protocol is checked (a RubiSend line comes from
+// rubi-home claude-send, not from the Claude Code hook binary, so it says nothing about that binary).
+func (c *Claude) noteHookRec(line []byte, record bool) string {
 	var in struct {
 		Event    json.RawMessage `json:"hook_event_name"`
 		Version  json.RawMessage `json:"rubi_hook_version"`
@@ -118,7 +122,9 @@ func (c *Claude) noteHook(line []byte) string {
 	}
 	if err := json.Unmarshal(line, &in); err != nil {
 		if bytes.Contains(line, []byte(`"hook_event_name"`)) { // a hook's line that can't be read: fail closed
-			c.hooks.set(&hookSeen{Protocol: -1, Refused: true, At: time.Now().UTC()})
+			if record {
+				c.hooks.set(&hookSeen{Protocol: -1, Refused: true, At: time.Now().UTC()})
+			}
 			return fmt.Sprintf("the Claude Code hook binary sent a line Rubi Home can't read: run `%s`; denied.", InstallHookCommand)
 		}
 		return ""
@@ -167,6 +173,9 @@ func (c *Claude) noteHook(line []byte) string {
 			seen.Stale = true
 			logMsg = "the Claude Code hook binary (" + where + ") is " + seen.Version + ", older than Rubi Home " + home + "; run `" + InstallHookCommand + "`"
 		}
+	}
+	if !record {
+		return refuse
 	}
 	key := seen.Version + "|" + seen.Path + "|" + strconv.Itoa(seen.Protocol) + "|" + strconv.FormatBool(seen.Legacy)
 	h := &c.hooks

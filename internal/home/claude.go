@@ -141,6 +141,9 @@ type Claude struct {
 	starting  bool       // a claude-sessions.create is running
 	startHits []time.Time
 
+	localReplies map[string]localReply // replies to local senders by message id (see localsend.go); guarded by mu
+	localSig     chan struct{}         // closed when one is added
+
 	wmu     sync.Mutex // guards waiters only; never held while doing I/O or taking mu
 	waiters map[string]*claudeWaiter
 }
@@ -632,7 +635,8 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 	// takes one of events (an empty reply when none is free, never a denial: events can't block anything).
 	s := &claudeSlots{reading: make(chan struct{}, claudeMaxReading), perms: make(chan struct{}, claudeMaxConns),
 		events: make(chan struct{}, claudeMaxEvents), waits: make(chan struct{}, claudeMaxWaiters),
-		tools: make(chan struct{}, claudeMaxToolCalls)}
+		tools: make(chan struct{}, claudeMaxToolCalls), sends: make(chan struct{}, claudeMaxSends),
+		replies: make(chan struct{}, claudeMaxReplyPolls)}
 	if c.QueueFile != "" {
 		// The saver outlives the connections: it is stopped after they are done, so its final save has
 		// their last commits and restores. Serve returning for any reason stops it.
@@ -683,7 +687,7 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 	}
 }
 
-type claudeSlots struct{ reading, perms, events, waits, tools chan struct{} }
+type claudeSlots struct{ reading, perms, events, waits, tools, sends, replies chan struct{} }
 
 func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, peer peerID) {
 	defer conn.Close()
@@ -706,7 +710,7 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, p
 			c.releaseHook(peer, sid)
 		}
 	}
-	if refuse := c.noteHook(line); refuse != "" { // a hook binary of a protocol this helper doesn't speak
+	if refuse := c.noteHookRec(line, hookEvent(line) != claudeSendEvent); refuse != "" { // a hook binary of a protocol this helper doesn't speak
 		_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
 		if ev := hookEvent(line); ev != "PermissionRequest" && ev != "" {
 			_ = writeJSONLine(conn, struct{}{}) // events and the waiter: as for an unknown event
@@ -719,6 +723,11 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, p
 	if hookEvent(line) == claudeToolEvent { // a sister tool of Claude (claude-mcp): its own slots, never an event or an approval
 		sid, outcome := c.serveTool(conn, line, s.tools, peer)
 		logHook("RubiTool:"+toolName(line), sid, outcome, start)
+		return
+	}
+	if hookEvent(line) == claudeSendEvent { // a local process's message (rubi-home claude-send): its own slots, never an event or an approval
+		sid, outcome := c.serveSend(ctx, conn, line, s.sends, s.replies)
+		logHook(claudeSendEvent, sid, outcome, start)
 		return
 	}
 	if hookEvent(line) == claudeWaitEvent { // an idle session's waiter: its own slots, never an event or an approval
