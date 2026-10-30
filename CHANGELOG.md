@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.13.0 (2026-10-31)
 
 - **claude-code plugin: names for Claude Code sessions (`claude_code_rename`).** Claude Code has no documented
   way for another process to rename a session (`/rename`, `--name` and the picker work from inside it; the
