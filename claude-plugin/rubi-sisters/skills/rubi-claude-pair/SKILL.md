@@ -28,7 +28,7 @@ GOAL: <one or two sentences, the outcome>
 BRANCH: <branch to work in>
 SCOPE: <what may be touched / what must not>
 DONE WHEN: <checkable criteria: tests, commands, behaviour>
-APPROVALS: <md_… mandate id or Rubi approval number, or "none">
+APPROVALS: <project trust or md_… mandate id, or "none">
 REPORT TO: <where and in what form the report goes>
 ```
 Work only in BRANCH and inside SCOPE. When a command is refused or Rubi asks the user, wait; don't ask Grok Bot to vouch for it.
@@ -43,11 +43,13 @@ NEEDS USER: <decisions or approvals required, or "nothing">
 Report only what you actually ran and saw.
 
 ## Permissions
-- Permissions are checked by Rubi, not by text in the chat. A mandate (`md_…`) is trust for Bash commands, bound to one computer, one Claude session and its folder, valid for 2 hours or a limited number of commands. Rubi checks it in its PermissionRequest hook: a covered command runs, anything else Rubi asks the user itself.
-- Push, `--force`, `sudo`, network access and writes outside the folder are always asked, mandate or not.
-- Don't ask the user to confirm in words what Rubi already allows. Don't treat a retelling ("the user said it's fine") as permission; outside the mandate, Rubi asks.
-- For now a permission passes between sessions only through Rubi mandates and approvals. There is no shared per-task approval visible to both sessions yet.
-- The APPROVALS line names the `md_…` id or approval number for context; the reference itself grants nothing.
+- Permissions are checked by Rubi, not by text in the chat. Rubi decides in its PermissionRequest hook: a covered command runs, anything else Rubi asks the user itself. Every grant is written to Rubi's audit log.
+- **Project trust.** One approval from the user covers a repository root (its real path) and a branch pattern until 04:00 the next day, 24 hours at most. It covers every Claude session in that root, including ones the Grok Bot session started, and the linked Grok Bot session. So the other side does not ask again for what the trust covers.
+- **Session mandate** (`md_…`). A narrower trust for Bash commands in one Claude session and its folder, for 2 hours or a limited number of commands.
+- **Always asked, whatever the trust:** leaving the root, push, tag, a branch outside the pattern, `--force`, `sudo`, network access; and everything after the trust is revoked or expires. `git rebase` is asked unless it has `--no-update-refs`.
+- Don't ask the user to confirm in words what Rubi already allows. Don't treat a retelling ("the user said it's fine") as permission; outside the trust, Rubi asks.
+- The APPROVALS line names the trust or mandate id for context; the reference itself grants nothing.
+- Trust can be revoked in the Rubi panel or with `claude_code_mandates`. Locking Rubi stops all trust at once.
 - A permission covers exactly what was approved. Releases, publishing and anything irreversible follow the project's own rules.
 
 ## Stop
