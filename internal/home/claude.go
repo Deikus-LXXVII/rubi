@@ -104,6 +104,7 @@ type Claude struct {
 	lastPoll time.Time
 	signal   chan struct{} // closed when a request or an outgoing message is queued
 
+	hooks       hookState // the last hook binary seen (see hookver.go)
 	reg         sessionRegistry
 	answerOnce  sync.Once
 	answerSlots chan struct{} // slots for transcript reads (see lastAnswer)
@@ -425,7 +426,11 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		if l.meta.stale { // an older scan (a refresh runs), or the hook-reported sessions only
 			sources["stale"] = true
 		}
-		return map[string]any{"sessions": filterSessions(l.all, in.Repo), "sources": sources}, nil
+		res := map[string]any{"sessions": filterSessions(l.all, in.Repo), "sources": sources}
+		if hk := c.hookInfo(); hk != nil {
+			res["hook"] = hk
+		}
+		return res, nil
 	case "claude-sessions.send":
 		var in struct {
 			SessionID string `json:"session_id"`
@@ -608,13 +613,22 @@ type claudeSlots struct{ reading, perms, events, waits chan struct{} }
 func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots) {
 	defer conn.Close()
 	_ = conn.SetReadDeadline(time.Now().Add(claudeFirstLineWait))
-	line, err := readLine(conn, claudeMaxInput)
+	line, err := readLine(conn, claudeMaxInput+claudeStampRoom)
 	<-s.reading
 	if err != nil {
 		_ = writeDecision(conn, claudeDeny("couldn't read the request; denied."))
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	if refuse := c.noteHook(line); refuse != "" { // a hook binary of a protocol this helper doesn't speak
+		_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
+		if ev := hookEvent(line); ev != "PermissionRequest" && ev != "" {
+			_ = writeJSONLine(conn, struct{}{}) // events and the waiter: as for an unknown event
+		} else {
+			_ = writeDecision(conn, claudeDeny(refuse))
+		}
+		return
+	}
 	if hookEvent(line) == claudeWaitEvent { // an idle session's waiter: its own slots, never an event or an approval
 		c.serveWaiter(ctx, conn, line, s.waits)
 		return
@@ -766,7 +780,7 @@ func askHelper(in io.Reader, sock string, limit time.Duration) ClaudeDecision {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(limit))
-	if _, err := conn.Write(append(line.Bytes(), '\n')); err != nil {
+	if _, err := conn.Write(append(stampHookLine(line.Bytes()), '\n')); err != nil {
 		return claudeDeny(ClaudeUnreachable)
 	}
 	resp, err := readLine(conn, 64<<10)
@@ -794,7 +808,7 @@ func askHelperEvent(raw []byte, sock string) HookReply {
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(claudeEventWait))
-	if _, err := conn.Write(append(line.Bytes(), '\n')); err != nil {
+	if _, err := conn.Write(append(stampHookLine(line.Bytes()), '\n')); err != nil {
 		return HookReply{}
 	}
 	resp, err := readLine(conn, claudeMaxInput)

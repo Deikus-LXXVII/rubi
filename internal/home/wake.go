@@ -324,7 +324,8 @@ func RunClaudeWait(in io.Reader, stderr io.Writer, sock string, limit time.Durat
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(limit))
-	if _, err := conn.Write(line.Bytes()); err != nil {
+	stamped := append(stampHookLine(bytes.TrimSpace(line.Bytes())), '\n')
+	if _, err := conn.Write(stamped); err != nil {
 		return 0
 	}
 	resp, err := readLine(conn, claudeMaxInput)

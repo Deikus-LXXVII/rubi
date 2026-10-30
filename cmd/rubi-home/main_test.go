@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -24,5 +26,26 @@ func TestWaitLimit(t *testing.T) {
 	}
 	if home.ClaudeWaitLimit != 3570*time.Second {
 		t.Fatal("the default limit is the example timeout (3600 s) less 30 s")
+	}
+}
+
+func TestInstallHookDryRunAndUnsafePath(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "rubi-home")
+	// A user-owned directory is refused even for a dry run (the hook binary must live where only root writes).
+	if code := runInstallHook([]string{"--dry-run", "--to", dst}); code == 0 && os.Getuid() != 0 {
+		t.Fatal("a user-owned directory was accepted")
+	}
+	if code := runInstallHook([]string{"--dry-run", "--to", dst + "'x"}); code == 0 {
+		t.Fatal("an unsafe path was accepted")
+	}
+}
+
+func TestHookPath(t *testing.T) {
+	t.Setenv("RUBI_HOOK_BINARY", "/tmp/env-hook")
+	if got := hookPath(nil); got != "/tmp/env-hook" {
+		t.Fatal(got)
+	}
+	if got := hookPath([]string{"--hook", "/tmp/flag-hook"}); got != "/tmp/flag-hook" {
+		t.Fatal(got)
 	}
 }

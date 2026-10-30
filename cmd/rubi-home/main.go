@@ -10,6 +10,10 @@
 //	rubi-home claude-hook    Claude Code's hooks: PermissionRequest asks Rubi and prints allow or deny;
 //	                         SessionStart, UserPromptSubmit, Stop and SessionEnd report the session and
 //	                         deliver messages waiting for it
+//	rubi-home install-hook [--dry-run] [--to PATH] [--sudo]
+//	                         copy this binary to the root-owned hook path (default /usr/local/bin/rubi-home)
+//	                         with administrator rights, then verify it
+//	rubi-home version        print the version (reads nothing)
 //	rubi-home claude-hook --wait [--wait-limit SECONDS]
 //	                         a second, asyncRewake Stop hook: stays while the session is idle and wakes it
 //	                         (exit 2, message on stderr) when a message arrives; gives up after the limit
@@ -24,6 +28,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,6 +59,13 @@ func main() {
 		}
 		return
 	}
+	switch os.Args[1] {
+	case "version": // reads and creates nothing: the installer and status run it on any copy
+		fmt.Println(version.Version)
+		return
+	case "install-hook": // needs no configuration either
+		os.Exit(runInstallHook(os.Args[2:]))
+	}
 	h, err := home.Open(home.DefaultDir())
 	if err != nil {
 		log.Fatal(err)
@@ -81,6 +93,7 @@ func main() {
 		}
 		fmt.Printf("Shortcuts folder: %s\n", cfg.ShortcutsFolder)
 		fmt.Printf("Hue Bridges paired: %d\n", len(cfg.HuePins))
+		home.InspectHookBinary(hookPath(os.Args[2:]), home.HookBinaryTimeout).WritePlain(os.Stdout, version.Version)
 	case "folder":
 		if len(os.Args) != 3 || strings.TrimSpace(os.Args[2]) == "" {
 			usage()
@@ -105,15 +118,13 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println("Forgot that bridge. Set Hue up again in the Rubi panel.")
-	case "version":
-		fmt.Println(version.Version)
 	default:
 		usage()
 	}
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | version")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
 	os.Exit(2)
 }
 
@@ -170,6 +181,58 @@ func run(h *home.Helper) {
 			}
 			last = n
 		}}
+	go home.WarnIfHookOlder(home.HookBinaryPath(), version.Version, log.Printf) // best effort, off the hook paths
 	log.Printf("Rubi Home %s running; Shortcuts folder %q", version.Version, h.Config().ShortcutsFolder)
 	srv.Run(ctx)
+}
+
+// hookPath is status's --hook PATH, else $RUBI_HOOK_BINARY, else the default.
+func hookPath(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--hook" {
+			return args[i+1]
+		}
+	}
+	return home.HookBinaryPath()
+}
+
+// runInstallHook is `rubi-home install-hook`; it returns the exit code.
+func runInstallHook(args []string) int {
+	o := home.InstallOptions{Dst: home.DefaultHookBinary, RequireRoot: true}
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--dry-run":
+			o.DryRun = true
+		case "--sudo":
+			o.Sudo = true
+		case "--to":
+			if i+1 >= len(args) {
+				usage()
+			}
+			i++
+			o.Dst = args[i]
+		default:
+			usage()
+		}
+	}
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = filepath.EvalSymlinks(exe)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home: can't find this binary: %v\n", err)
+		return 1
+	}
+	o.Src = exe
+	if o.Sudo && !o.DryRun {
+		if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
+			fmt.Fprintln(os.Stderr, "rubi-home: --sudo needs a terminal on stdin (sudo asks for a password); run it in a terminal, or leave out --sudo")
+			return 1
+		}
+	}
+	if err := home.InstallHook(context.Background(), os.Stdout, o); err != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
+		return 1
+	}
+	return 0
 }

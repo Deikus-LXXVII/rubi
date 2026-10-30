@@ -128,6 +128,34 @@ UNIT
 fi
 
 say "installed Rubi Home $version"
+
+# Claude Code's hooks run a root-owned copy of rubi-home that this installer can't (and shouldn't) replace
+# without you: it only changes when you re-copy it, so it can silently fall behind. Warn, never fail.
+hook=/usr/local/bin/rubi-home
+if [ -x "$hook" ]; then
+  new_v=$("$bin" version 2>/dev/null | head -n 1) || new_v=""
+  # The old copy is run in the background and killed after 3 seconds, so a hung one can't hold the installer.
+  old_v=""
+  "$hook" version >"$tmp/hook-version" 2>/dev/null </dev/null &
+  hook_pid=$!
+  waited=0
+  while kill -0 "$hook_pid" 2>/dev/null && [ "$waited" -lt 3 ]; do sleep 1; waited=$((waited + 1)); done
+  if kill -0 "$hook_pid" 2>/dev/null; then
+    kill -9 "$hook_pid" 2>/dev/null || true
+    say "warning: $hook did not answer 'version' within 3 seconds"
+  else
+    old_v=$(head -n 1 "$tmp/hook-version" 2>/dev/null) || old_v=""
+  fi
+  wait "$hook_pid" 2>/dev/null || true
+  if [ "$old_v" != "$new_v" ]; then
+    say "warning: the Claude Code hook binary $hook is ${old_v:-of an unknown version}, Rubi Home is now ${new_v:-$version}."
+    say "update it (asks for your administrator password): ~/.rubi-home/bin/rubi-home install-hook"
+  fi
+elif [ -e "$hook" ]; then
+  say "warning: $hook exists but isn't an executable file; check it, then run: ~/.rubi-home/bin/rubi-home install-hook"
+else
+  say "Claude Code hook (optional): not set up. To let Bots ask for approvals and message your Claude Code sessions, follow the rubi-claude-code plugin's README, which ends with: ~/.rubi-home/bin/rubi-home install-hook"
+fi
 echo
 "$bin" pair
 echo
