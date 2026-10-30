@@ -610,7 +610,7 @@ func (c *Core) pastedWebhook(in map[string]string) (rawURL, key string, err erro
 	if strings.TrimSpace(in[inputWebhookKey]) == "" {
 		return "", "", errors.New("paste the routine's header (its key)")
 	}
-	if key, err = cleanWebhookKey(in[inputWebhookKey]); err != nil {
+	if key, err = cleanRoutineKey(in[inputWebhookKey], rawURL); err != nil {
 		return "", "", err
 	}
 	return rawURL, key, nil

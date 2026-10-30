@@ -137,7 +137,7 @@ func (c *Core) AddAgent(ctx context.Context, name, rawURL, key string, subs []st
 	if err := validWebhookURL(rawURL); err != nil {
 		return "", err
 	}
-	if key, err = cleanWebhookKey(key); err != nil {
+	if key, err = cleanRoutineKey(key, rawURL); err != nil {
 		return "", err
 	}
 	// The end of the address identifies the routine, so the user can tell their own from a look-alike

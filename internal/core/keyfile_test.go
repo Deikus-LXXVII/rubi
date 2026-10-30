@@ -176,3 +176,40 @@ func TestProposeRefusesRedactedKey(t *testing.T) {
 		t.Fatalf("%d approvals created for refused keys", n)
 	}
 }
+
+// TestCleanRoutineKey: a pasted key for a Grok Bot routine address gets the same checks as a Bot's key,
+// and the error never repeats it; other receivers keep the plain cleaning.
+func TestCleanRoutineKey(t *testing.T) {
+	const routine = "https://api2.cursor.sh/automations/webhook/6076a0ff-5b26-405e-82ef-d6173cd96066"
+	const other = "http://127.0.0.1:9/hook"
+	real := "crsr_" + strings.Repeat("aB3_-", 17) + "x"
+	tests := []struct {
+		name, in, url, want, errHas string
+	}{
+		{"header", "Authorization: Bearer " + real, routine, real, ""},
+		{"other receiver keeps short keys", "s3cret", other, "s3cret", ""},
+		{"redacted", "[REDACTED]", routine, "", "redaction placeholder"},
+		{"masked", "****************************", routine, "", "redaction placeholder"},
+		{"short", "crsr_abc123", routine, "", "only 11 characters"},
+		{"wrong prefix", "s3cret-token-0123456789", routine, "", "isn't a Grok Bot routine key"},
+		{"odd characters", "crsr_abcdefghijklmnop.qrstuvwxyz", routine, "", "isn't a Grok Bot routine key"},
+		{"missing", "Bearer", routine, "", "missing"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cleanRoutineKey(tt.in, tt.url)
+			if tt.errHas == "" {
+				if err != nil || got != tt.want {
+					t.Fatalf("got %q, %v; want %q", got, err, tt.want)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.errHas) {
+				t.Fatalf("got %q, %v; want an error with %q", got, err, tt.errHas)
+			}
+			if k := strings.TrimSpace(tt.in); len(k) > 8 && strings.Contains(err.Error(), k) {
+				t.Fatalf("the error repeats the key: %v", err)
+			}
+		})
+	}
+}
