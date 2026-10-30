@@ -941,3 +941,35 @@ func TestRubiCallReachesOwnTools(t *testing.T) {
 		t.Fatalf("no suggestion: %v", out)
 	}
 }
+
+// TestAccessTaskLength: the task is counted in characters, not bytes, and the errors say what is wrong.
+func TestAccessTaskLength(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	mainSrv, _ := hookServer(t)
+	mailSrv, _ := hookServer(t)
+	r.setWebhook(mainSrv.URL)
+	settings := r.panel("settings")
+	var res map[string]any
+	if err := settings.Call("agent.add", map[string]any{"name": "Mail", "url": mailSrv.URL, "key": "k"}, &res); err != nil {
+		t.Fatal(err)
+	}
+	r.approveChange(settings, res)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+
+	ask := func(task string) map[string]any {
+		return r.ag.call("rubi_access", map[string]any{"agent": "Mail", "plugins": []string{"demo"}, "task": task})
+	}
+	if out := ask("   "); !strings.Contains(toString(out["tool_error"]), "task is empty: say in one sentence what you'll do") {
+		t.Fatalf("empty: %v", out)
+	}
+	if out := ask(strings.Repeat("я", 501)); !strings.Contains(toString(out["tool_error"]), "task is 501 characters, at most 500") {
+		t.Fatalf("501 runes: %v", out)
+	}
+	// 400 Cyrillic runes are 800 bytes: fine.
+	if out := ask(strings.Repeat("я", 400)); out["status"] != "awaiting_approval" {
+		t.Fatalf("400 Cyrillic runes: %v", out)
+	}
+}

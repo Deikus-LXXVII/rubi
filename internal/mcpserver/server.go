@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
@@ -344,6 +345,40 @@ type pluginWantIn struct {
 	Accounts []string `json:"accounts,omitempty" jsonschema:"connected accounts (labels or ids); omit for all of the plugin's accounts"`
 }
 
+// UnmarshalJSON lets a plugin be a bare id string ("gmail") as well as {id, accounts}: Bots often send the short form.
+func (p *pluginWantIn) UnmarshalJSON(b []byte) error {
+	var id string
+	if err := json.Unmarshal(b, &id); err == nil {
+		*p = pluginWantIn{ID: id}
+		return nil
+	}
+	type plain pluginWantIn // no methods, so no recursion
+	var v plain
+	if err := json.Unmarshal(b, &v); err != nil {
+		return errors.New("each plugin is an id string or an object {id, accounts}")
+	}
+	*p = pluginWantIn(v)
+	return nil
+}
+
+// pluginsAcceptStrings returns the input schema of In with the items of its "plugins" property widened to
+// anyOf [string, object], matching pluginWantIn.UnmarshalJSON.
+func pluginsAcceptStrings[In any]() *jsonschema.Schema {
+	sc, err := jsonschema.For[In](nil)
+	if err != nil {
+		panic(err)
+	}
+	prop := sc.Properties["plugins"]
+	if prop == nil || prop.Items == nil {
+		panic("no plugins property")
+	}
+	prop.Items = &jsonschema.Schema{AnyOf: []*jsonschema.Schema{
+		{Type: "string", Description: "installed plugin id, e.g. gmail (all its accounts)"},
+		prop.Items,
+	}}
+	return sc
+}
+
 type agentConnectIn struct {
 	Name    string         `json:"name" jsonschema:"your Bot's name"`
 	URL     string         `json:"url,omitempty" jsonschema:"optional: your routine's webhook address (POST to), if you know it; prefilled for the user"`
@@ -425,7 +460,7 @@ func (s *Server) registerCoreTools() {
 			return nil, res, err
 		})
 
-	addCore(s, &mcp.Tool{Name: "rubi_agent_connect",
+	addCore(s, &mcp.Tool{Name: "rubi_agent_connect", InputSchema: pluginsAcceptStrings[agentConnectIn](),
 		Description: "Connect yourself to Rubi (or change your webhook): pass your Bot name, your routine's webhook url (a Grok Bot routine address; others are refused), key_file: the path of a file you wrote with umask 077; printenv RUBI_WEBHOOK_KEY_<NAME> > /workspace/.rubi-hook-key (never read or show the key, and don't use $file: substitution: hosts redact it; Rubi reads the file and deletes it), and optionally events to hear about and plugins whose accounts you need. Without a key the user pastes your \"Rubi events\" routine's Webhook section (POST to and header) on the approval screen instead and approves with their passkey in the same step. Nothing changes until the user approves; replacing an existing webhook is shown to them as such. Returns approval_id and approval_url: send the user that link together with the deep link to your routine's webhook field. Calling again (or rubi_access_request) while it waits folds everything into ONE approval."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in agentConnectIn) (*mcp.CallToolResult, out, error) {
 			key := in.Key
@@ -447,7 +482,7 @@ func (s *Server) registerCoreTools() {
 			return nil, res, err
 		})
 
-	addCore(s, &mcp.Tool{Name: "rubi_access_request",
+	addCore(s, &mcp.Tool{Name: "rubi_access_request", InputSchema: pluginsAcceptStrings[accessRequestIn](),
 		Description: "Ask the user to give you (your Bot) plugin accounts for good, e.g. plugins [{id: \"gmail\"}] for all its mailboxes or [{id: \"gmail\", accounts: [\"me@gmail.com\"]}]. List everything you need in ONE call. The user approves in the Rubi panel with their passkey and may untick some; with a pending rubi_agent_connect it becomes one approval. Afterwards Rubi sends access codes to your webhook. For a one-off task use rubi_access instead."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in accessRequestIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {

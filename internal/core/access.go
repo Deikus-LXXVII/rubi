@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
@@ -168,8 +169,11 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 		return map[string]any{"status": "not_needed", "message": "Only one Bot uses this Rubi: plugins work without access codes."}, nil
 	}
 	task = strings.TrimSpace(task)
-	if task == "" || len(task) > 500 {
-		return nil, errors.New("describe your task (up to 500 characters); it is shown to the user and kept in the log")
+	if task == "" {
+		return nil, errors.New("task is empty: say in one sentence what you'll do")
+	}
+	if n := utf8.RuneCountInString(task); n > 500 {
+		return nil, fmt.Errorf("task is %d characters, at most 500", n)
 	}
 	d := time.Duration(minutes) * time.Minute
 	if minutes <= 0 {

@@ -1,6 +1,7 @@
 package mcpserver_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/plugins/plugintest"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const botKey = "crsr_fullstack_never_shown_42"
@@ -115,4 +117,28 @@ func demoAgents(r *rig) []string {
 		return nil
 	})
 	return out
+}
+
+// TestPluginsAsStringsOverMCP: plugins may be bare id strings, objects or a mix; other types are refused
+// by the tool's schema.
+func TestPluginsAsStringsOverMCP(t *testing.T) {
+	reg := plugintest.New(t)
+	reg.Review("v1.0.0", reg.Publish("v1.0.0", nil, nil), "")
+	r := newRig(t)
+	r.approve(r.ag.call("rubi_plugin_install", map[string]any{"plugin": "demo"}), "install")
+	r.connectDemo()
+	srv, _ := hookServer(t)
+	for _, plugins := range [][]any{{"demo"}, {map[string]any{"id": "demo"}}, {"demo", map[string]any{"id": "demo"}}} {
+		out := r.ag.call("rubi_agent_connect", map[string]any{"name": "Mail" + fmt.Sprint(len(plugins)), "url": srv.URL, "key": botKey, "plugins": plugins})
+		if out["status"] != "awaiting_approval" {
+			t.Fatalf("%v: %v", plugins, out)
+		}
+	}
+	for _, bad := range [][]any{{5}, {true}, {[]any{"demo"}}, {map[string]any{"id": 3}}} {
+		res, err := r.ag.ss.CallTool(context.Background(), &mcp.CallToolParams{Name: "rubi_agent_connect",
+			Arguments: map[string]any{"name": "Bad", "url": srv.URL, "key": botKey, "plugins": bad}})
+		if err == nil && !res.IsError {
+			t.Fatalf("%v accepted", bad)
+		}
+	}
 }

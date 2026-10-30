@@ -58,29 +58,76 @@ func cleanWebhookKey(key string) (string, error) {
 	return key, nil
 }
 
-// botWebhookKey checks a key a Bot proposes, after cleanWebhookKey. A Bot's key passed through its host,
-// which may have replaced it (a redaction placeholder) or cut it, so this is stricter than what the user
-// pastes: no placeholder, at least minBotWebhookKey characters, and for a Grok Bot routine address the
-// routine key format crsr_[A-Za-z0-9_-] (as the panel's paste parser, panel/js/webhook.js).
-func botWebhookKey(raw, url string) (string, error) {
+// keyPlaceholder refuses a key a tool replaced with a redaction placeholder or a mask (raw, as received).
+func keyPlaceholder(raw string) error {
 	t := strings.TrimSpace(raw)
 	if strings.Contains(strings.ToUpper(t), "REDACTED") || (t != "" && strings.Trim(t, "*•") == "") {
-		return "", errors.New("the webhook key arrived as a redaction placeholder, not the key: your tool replaced the secret before " +
-			"sending it. " + keyFileHint)
+		return errors.New("the webhook key arrived as a redaction placeholder, not the key: your tool replaced the secret before sending it.")
+	}
+	return nil
+}
+
+// keyTooShort refuses a key that was cut on the way. It never repeats the key.
+func keyTooShort(key string) error {
+	if len(key) < minBotWebhookKey {
+		return fmt.Errorf("the webhook key is only %d characters; a routine key is much longer, so it was cut or replaced on the way.", len(key))
+	}
+	return nil
+}
+
+// keyRoutineFormat requires the routine key format crsr_[A-Za-z0-9_-] (as the panel's paste parser,
+// panel/js/webhook.js). It never repeats the key.
+func keyRoutineFormat(key string) error {
+	rest, ok := strings.CutPrefix(key, routineKeyPrefix)
+	if !ok || strings.TrimLeft(rest, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != "" {
+		return errors.New("this isn't a Grok Bot routine key (" + routineKeyPrefix + "followed by letters, digits, _ or -); " +
+			"copy the routine's key or its Authorization header.")
+	}
+	return nil
+}
+
+// cleanRoutineKey cleans a key pasted for webhook url and, for a Grok Bot routine address, holds it to
+// the routine key rules (no placeholder, long enough, crsr_ format), the same ones botWebhookKey applies.
+func cleanRoutineKey(raw, url string) (string, error) {
+	routine := isRoutineWebhook(url)
+	if routine {
+		if err := keyPlaceholder(raw); err != nil {
+			return "", err
+		}
+	}
+	key, err := cleanWebhookKey(raw)
+	if err != nil {
+		return "", err
+	}
+	if routine {
+		if err := keyTooShort(key); err != nil {
+			return "", err
+		}
+		if err := keyRoutineFormat(key); err != nil {
+			return "", err
+		}
+	}
+	return key, nil
+}
+
+// botWebhookKey checks a key a Bot proposes. A Bot's key passed through its host, which may have replaced
+// it (a redaction placeholder) or cut it, so this is stricter than what the user pastes: no placeholder,
+// at least minBotWebhookKey characters for any address, and for a Grok Bot routine address the routine key
+// format. Errors say how a Bot hands the key over instead.
+func botWebhookKey(raw, url string) (string, error) {
+	if err := keyPlaceholder(raw); err != nil {
+		return "", errors.New(err.Error() + " " + keyFileHint)
 	}
 	key, err := cleanWebhookKey(raw)
 	if err != nil {
 		return "", errors.New(err.Error() + ". " + keyFileHint)
 	}
-	if len(key) < minBotWebhookKey {
-		return "", fmt.Errorf("the webhook key is only %d characters; a routine key is much longer, so it was cut or replaced on the way. %s",
-			len(key), keyFileHint)
+	if err := keyTooShort(key); err != nil {
+		return "", errors.New(err.Error() + " " + keyFileHint)
 	}
 	if isRoutineWebhook(url) {
-		rest, ok := strings.CutPrefix(key, routineKeyPrefix)
-		if !ok || strings.TrimLeft(rest, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != "" {
-			return "", errors.New("this isn't a Grok Bot routine key (" + routineKeyPrefix + "followed by letters, digits, _ or -); " +
-				"copy the routine's key or its Authorization header. " + keyFileHint)
+		if err := keyRoutineFormat(key); err != nil {
+			return "", errors.New(err.Error() + " " + keyFileHint)
 		}
 	}
 	return key, nil

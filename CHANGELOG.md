@@ -133,6 +133,14 @@
   new call of the same op gets "Rubi Home is still busy with earlier calls" at once (at most 8 per op),
   so one stuck call blocks that op only. Stop reads the transcript with a 2-second limit and keeps the
   reply it owes for a later Stop; a late event handler leaves the inbox alone.
+- **A pasted routine key is checked like a Bot's.** For a Grok Bot routine address, the key pasted on the
+  approval screen or given to `agent.add` must be `crsr_` plus letters, digits, `_` or `-`, at least 20
+  characters, and not a redaction placeholder; one helper serves both paths. Errors say what is wrong and
+  never repeat the key.
+- **`plugins` takes plain ids.** `rubi_agent_connect` and `rubi_access_request` accept
+  `plugins: ["gmail"]`, `[{id: "gmail"}]` or a mix; the tool schema declares `anyOf [string, object]`.
+- **`rubi_access` task length counts characters, not bytes** (500), so a Cyrillic or CJK task fits. Errors:
+  "task is empty: say in one sentence what you'll do" and "task is N characters, at most 500".
 
 ## v0.12.2 (2026-10-30)
 
