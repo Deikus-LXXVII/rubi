@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -124,12 +125,15 @@ func writeJSONLine(conn net.Conn, v any) error {
 
 // serveWaiter keeps a waiter's connection until it is woken, closed or gone. It takes a waiter slot; with
 // none free, or for input it can't use, the reply is `{}` (the waiter exits 0).
-func (c *Claude) serveWaiter(ctx context.Context, conn net.Conn, line []byte, slots chan struct{}) {
+//
+// The hook log line (see hooklog.go) says when it attached, each wake, and how it ended.
+func (c *Claude) serveWaiter(ctx context.Context, conn net.Conn, line []byte, slots chan struct{}, start time.Time) {
 	select {
 	case slots <- struct{}{}:
 		defer func() { <-slots }()
 	default:
 		_ = writeJSONLine(conn, struct{}{})
+		logHook(claudeWaitEvent, lineSession(line), "slots full", start)
 		return
 	}
 	defer func() {
@@ -140,15 +144,18 @@ func (c *Claude) serveWaiter(ctx context.Context, conn net.Conn, line []byte, sl
 	var in eventInput
 	if json.Unmarshal(line, &in) != nil || in.SessionID == "" || len(in.SessionID) > 200 {
 		_ = writeJSONLine(conn, struct{}{})
+		logHook(claudeWaitEvent, lineSession(line), "nothing", start)
 		return
 	}
 	id := in.SessionID
 	if c.reg.stateOf(id) == "ended" {
 		_ = writeJSONLine(conn, map[string]bool{"close": true})
+		logHook(claudeWaitEvent, id, "close (session ended)", start)
 		return
 	}
 	w := c.addWaiter(id)
 	defer c.removeWaiter(id, w)
+	logHook(claudeWaitEvent, id, "attach", start)
 
 	// What the waiter says (its "ok") and its going away.
 	lines := make(chan []byte, 4)
@@ -171,15 +178,19 @@ func (c *Claude) serveWaiter(ctx context.Context, conn net.Conn, line []byte, sl
 		select {
 		case <-w.kick:
 			if c.wake(ctx, conn, id, lines, gone) {
+				logHook(claudeWaitEvent, id, "close (wake done)", start)
 				return
 			}
 		case <-w.shut:
 			_ = writeJSONLine(conn, map[string]bool{"close": true})
+			logHook(claudeWaitEvent, id, "close", start)
 			return
 		case <-ctx.Done():
 			_ = writeJSONLine(conn, map[string]bool{"close": true})
+			logHook(claudeWaitEvent, id, "close (shutdown)", start)
 			return
 		case <-gone:
+			logHook(claudeWaitEvent, id, "gone", start)
 			return
 		}
 	}
@@ -188,6 +199,7 @@ func (c *Claude) serveWaiter(ctx context.Context, conn net.Conn, line []byte, sl
 // wake sends the session's waiting messages to the waiter. It reports whether the connection is done
 // with (a wake was tried, or the session ended).
 func (c *Claude) wake(ctx context.Context, conn net.Conn, id string, lines <-chan []byte, gone <-chan struct{}) bool {
+	t0 := time.Now()
 	switch c.reg.stateOf(id) {
 	case "ended":
 		_ = writeJSONLine(conn, map[string]bool{"close": true})
@@ -206,6 +218,7 @@ func (c *Claude) wake(ctx context.Context, conn net.Conn, id string, lines <-cha
 	}
 	if err := writeJSONLine(conn, map[string]any{"wake": formatMessages(msgs, claudeWakeLead), "ids": ids}); err != nil {
 		c.restoreWake(id, msgs)
+		logHook(claudeWaitEvent, id, fmt.Sprintf("wake failed %d", len(msgs)), t0)
 		return true
 	}
 	acked := func(l []byte) bool { return string(l) == "ok" }
@@ -226,8 +239,10 @@ func (c *Claude) wake(ctx context.Context, conn net.Conn, id string, lines <-cha
 	}
 	if ok {
 		c.commitWake(id, msgs)
+		logHook(claudeWaitEvent, id, fmt.Sprintf("woke %d", len(msgs)), t0)
 	} else {
 		c.restoreWake(id, msgs)
+		logHook(claudeWaitEvent, id, fmt.Sprintf("wake not acked %d", len(msgs)), t0)
 	}
 	return true
 }

@@ -259,18 +259,20 @@ func (c *Claude) toolGlobalLocked(now time.Time) bool {
 
 // serveTool answers one RubiTool line. It takes a tool slot (none free: an error answer) and gives the
 // handler claudeToolDeadline; the handler does memory work only.
-func (c *Claude) serveTool(conn net.Conn, line []byte, slots chan struct{}, peer peerID) {
+//
+// It returns the session and what happened, for the hook log line (see hooklog.go).
+func (c *Claude) serveTool(conn net.Conn, line []byte, slots chan struct{}, peer peerID) (string, string) {
 	select {
 	case slots <- struct{}{}:
 	default:
 		_ = writeJSONLine(conn, map[string]string{"error": "Rubi Home is handling too many tool calls at once; try again in a moment"})
-		return
+		return lineSession(line), "slots full"
 	}
 	sid, err := c.sessionOfPeer(peer) // the kernel's answer, before anything else
 	if err != nil {
 		<-slots
 		_ = writeJSONLine(conn, toolErr(err))
-		return
+		return "", "refused (no session)"
 	}
 	done := make(chan map[string]any, 1)
 	go func() {
@@ -288,10 +290,27 @@ func (c *Claude) serveTool(conn net.Conn, line []byte, slots chan struct{}, peer
 	select {
 	case r := <-done:
 		_ = writeJSONLine(conn, r)
+		if r["error"] != nil {
+			return sid, "error"
+		}
+		return sid, "ok"
 	case <-t.C:
 		log.Printf("claude: a tool call took too long")
 		_ = writeJSONLine(conn, map[string]string{"error": "Rubi Home took too long; the call may or may not have gone through (rubi_inbox_status shows queued_outgoing)"})
+		return sid, "timeout"
 	}
+}
+
+// toolName is the name of the tool a RubiTool line calls, for the hook log line: one of ours or "?".
+func toolName(line []byte) string {
+	var req toolRequest
+	if json.Unmarshal(line, &req) == nil {
+		switch req.Tool {
+		case "rubi_sisters", "rubi_ask", "rubi_reply", "rubi_inbox_status":
+			return req.Tool
+		}
+	}
+	return "?"
 }
 
 func toolErr(err error) map[string]any { return map[string]any{"error": err.Error()} }

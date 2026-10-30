@@ -300,7 +300,7 @@ func TestLateHookLeavesMessages(t *testing.T) {
 			slots := make(chan struct{}, 1)
 			line := []byte(`{"hook_event_name":"` + ev + `","session_id":"s-1","last_assistant_message":"ok"}`)
 			c.mu.Lock()
-			reply := c.event(line, slots) // the handler waits for c.mu; the deadline passes
+			reply, _ := c.event(line, slots) // the handler waits for c.mu; the deadline passes
 			c.mu.Unlock()
 			if reply.Context != "" || reply.Block {
 				t.Fatalf("reply %+v", reply)

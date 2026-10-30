@@ -117,7 +117,26 @@ func hookEvent(raw []byte) string {
 // eventTicket tells a Hook whether its answer is still wanted. The socket gives up on a slow handler and
 // answers empty; a handler that then drained the inbox would lose those messages. So the handler commits
 // before it drains (under c.mu) and the socket abandons only a handler that hasn't committed.
-type eventTicket struct{ state atomic.Int32 } // 0 open, 1 committed, 2 abandoned
+// It also carries what the handler did, for the hook log line (see hooklog.go): a store, never a lock.
+type eventTicket struct {
+	state   atomic.Int32 // 0 open, 1 committed, 2 abandoned
+	outcome atomic.Pointer[string]
+}
+
+// setOutcome records what the handler did (a nil ticket ignores it).
+func (t *eventTicket) setOutcome(s string) {
+	if t != nil {
+		t.outcome.Store(&s)
+	}
+}
+
+// result is what the handler recorded ("nothing" when it recorded nothing).
+func (t *eventTicket) result() string {
+	if p := t.outcome.Load(); p != nil {
+		return *p
+	}
+	return "nothing"
+}
 
 // commit reports whether the handler may take messages from the inbox (a nil ticket always may).
 func (t *eventTicket) commit() bool {
@@ -164,6 +183,7 @@ func (c *Claude) hook(raw []byte, tk *eventTicket) HookReply {
 		t.note(msgs)
 		c.statusLocked(id, "delivered", msgs...)
 		c.noteDeliveredLocked(id, msgs...)
+		tk.setOutcome(fmt.Sprintf("delivered %d", len(msgs)))
 		return HookReply{Context: formatMessages(msgs, "Along with the user's prompt, Rubi delivers")}
 	case "Stop":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "idle", now)
@@ -183,7 +203,7 @@ func (c *Claude) hook(raw []byte, tk *eventTicket) HookReply {
 
 // stop is the inbox part of a Stop hook: replies and asks from the turn's last answer, and the messages
 // that came meanwhile.
-func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) HookReply {
+func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) (r HookReply) {
 	c.mu.Lock()
 	t := c.turnLocked(id)
 	needReply := len(t.from) > 0
@@ -194,8 +214,26 @@ func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) 
 	if !in.StopHookActive {
 		t.chain = 0
 	}
+	replies, asks := 0, 0
+	// what Stop did, for the hook log line: counts only, never text
+	defer func() {
+		var parts []string
+		if replies > 0 {
+			parts = append(parts, fmt.Sprintf("replies %d", replies))
+		}
+		if asks > 0 {
+			parts = append(parts, fmt.Sprintf("asks %d", asks))
+		}
+		if r.Block {
+			parts = append(parts, "blocked")
+		}
+		if len(parts) > 0 {
+			tk.setOutcome(strings.Join(parts, " "))
+		}
+	}()
 	if ok && needReply && answer != "" {
 		text, cut := clip(answer, claudeMaxReply)
+		replies = len(t.from)
 		for _, to := range t.from {
 			c.pushOutLocked(ClaudeOut{Kind: "reply", SessionID: id, Cwd: in.Cwd, To: to, InReplyTo: t.ids, Text: text,
 				Truncated: cut, At: now})
@@ -211,6 +249,7 @@ func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) 
 		}
 		t.from, t.ids, t.idFrom = nil, nil, nil
 		for _, a := range extractAsks(answer) {
+			asks++
 			c.pushOutLocked(ClaudeOut{Kind: "ask", SessionID: id, Cwd: in.Cwd, AskKind: a.kind, Text: a.text, At: now})
 		}
 	}

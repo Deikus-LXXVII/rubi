@@ -215,7 +215,28 @@ func parseHookInput(raw []byte) (ClaudeRequest, error) {
 
 // Ask queues one hook request and waits for Rubi's decision. It always returns a decision: anything
 // but an answer from Rubi is a denial. ctx ends when the hook goes away.
-func (c *Claude) Ask(ctx context.Context, raw []byte) ClaudeDecision {
+func (c *Claude) Ask(ctx context.Context, raw []byte) ClaudeDecision { return c.ask(ctx, raw, nil) }
+
+// askInfo is what the hook log line says about a permission request: its id and the start of its digest.
+type askInfo struct{ id, digest string }
+
+func (a *askInfo) outcome(d ClaudeDecision) string {
+	o := "denied"
+	switch {
+	case d.Behavior == "allow":
+		o = "allowed"
+	case d.Message == claudeDeny(ClaudeNoAnswer).Message:
+		o = "denied (no answer)"
+	case d.Message == claudeDeny("the request was cancelled.").Message:
+		o = "denied (cancelled)"
+	}
+	if a.id != "" {
+		o += " req=" + a.id + " digest=" + a.digest
+	}
+	return o
+}
+
+func (c *Claude) ask(ctx context.Context, raw []byte, info *askInfo) ClaudeDecision {
 	req, err := parseHookInput(raw)
 	if err != nil {
 		return claudeDeny(err.Error() + "; denied.")
@@ -231,6 +252,9 @@ func (c *Claude) Ask(ctx context.Context, raw []byte) ClaudeDecision {
 		return claudeDeny("too many commands are already waiting for approval; denied.")
 	}
 	req.ID = "cc_" + rand.Text()
+	if info != nil {
+		info.id, info.digest = req.ID, hookToken(req.Digest, 8)
+	}
 	req.ExpiresAt = now.Add(c.wait()).UTC()
 	it := &claudeItem{req: req, answer: make(chan ClaudeDecision, 1)}
 	if c.pending == nil {
@@ -671,6 +695,7 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, p
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	start := time.Now()
 	switch hookEvent(line) { // the kernel says which processes host this session's hooks (see peer.go)
 	case "SessionStart", "UserPromptSubmit", "Stop", "PermissionRequest", claudeWaitEvent:
 		if sid := lineSession(line); sid != "" {
@@ -688,20 +713,24 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, p
 		} else {
 			_ = writeDecision(conn, claudeDeny(refuse))
 		}
+		logHook(hookEvent(line), lineSession(line), "refused (protocol)", start)
 		return
 	}
 	if hookEvent(line) == claudeToolEvent { // a sister tool of Claude (claude-mcp): its own slots, never an event or an approval
-		c.serveTool(conn, line, s.tools, peer)
+		sid, outcome := c.serveTool(conn, line, s.tools, peer)
+		logHook("RubiTool:"+toolName(line), sid, outcome, start)
 		return
 	}
 	if hookEvent(line) == claudeWaitEvent { // an idle session's waiter: its own slots, never an event or an approval
-		c.serveWaiter(ctx, conn, line, s.waits)
+		c.serveWaiter(ctx, conn, line, s.waits, start)
 		return
 	}
 	if ev := hookEvent(line); ev != "" && ev != "PermissionRequest" {
 		_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
-		b, _ := json.Marshal(c.event(line, s.events))
+		reply, outcome := c.event(line, s.events)
+		b, _ := json.Marshal(reply)
 		_, _ = conn.Write(append(b, '\n'))
+		logHook(ev, lineSession(line), outcome, start)
 		return
 	}
 	select {
@@ -709,6 +738,7 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, p
 		defer func() { <-s.perms }()
 	default:
 		_ = writeDecision(conn, claudeDeny("too many commands are already waiting for approval; denied."))
+		logHook("PermissionRequest", lineSession(line), "slots full", start)
 		return
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -718,18 +748,23 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots, p
 		_, _ = conn.Read(b[:])
 		cancel()
 	}()
-	_ = writeDecision(conn, c.Ask(ctx, line))
+	var info askInfo
+	d := c.ask(ctx, line, &info)
+	_ = writeDecision(conn, d)
+	logHook("PermissionRequest", lineSession(line), info.outcome(d), start) // the request id and digest, never the command
 }
 
 // event handles an event hook within claudeEventDeadline. The slot stays taken until Hook returns, so
 // handlers that hang are capped by the slots; with none free, or when Hook is late, the reply is empty
 // (Claude Code goes on as without a hook). A late handler is told its answer isn't wanted, so it leaves
 // the inbox alone (see eventTicket).
-func (c *Claude) event(line []byte, slots chan struct{}) HookReply {
+//
+// The second result says what happened, for the hook log line (see hooklog.go).
+func (c *Claude) event(line []byte, slots chan struct{}) (HookReply, string) {
 	select {
 	case slots <- struct{}{}:
 	default:
-		return HookReply{}
+		return HookReply{}, "slots full"
 	}
 	tk := &eventTicket{}
 	done := make(chan HookReply, 1)
@@ -738,6 +773,7 @@ func (c *Claude) event(line []byte, slots chan struct{}) HookReply {
 		defer func() { // a broken hook mustn't take the helper down with it
 			if p := recover(); p != nil {
 				log.Printf("claude: an event hook failed: %v", p)
+				tk.setOutcome("failed")
 				done <- HookReply{}
 			}
 		}()
@@ -747,21 +783,21 @@ func (c *Claude) event(line []byte, slots chan struct{}) HookReply {
 	defer t.Stop()
 	select {
 	case r := <-done:
-		return r
+		return r, tk.result()
 	case <-t.C:
 	}
 	if !tk.abandon() { // it took the messages just now: its reply is on the way
 		t.Reset(claudeCommitWait)
 		select {
 		case r := <-done:
-			return r
+			return r, tk.result()
 		case <-t.C:
 			log.Printf("claude: an event hook took its messages but didn't answer in time; answered without a reply")
-			return HookReply{}
+			return HookReply{}, "late (took messages)"
 		}
 	}
 	log.Printf("claude: an event hook took too long; answered without a reply")
-	return HookReply{}
+	return HookReply{}, "late"
 }
 
 func readLine(r io.Reader, limit int) ([]byte, error) {
