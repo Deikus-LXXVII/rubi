@@ -72,6 +72,8 @@ type ClaudeSession struct {
 	Title          string    `json:"title,omitempty"`
 	Cwd            string    `json:"cwd,omitempty"`
 	ProjectRoot    string    `json:"project_root,omitempty"`
+	RealCwd        string    `json:"real_cwd,omitempty"`          // Cwd with symlinks resolved
+	RealRoot       string    `json:"real_project_root,omitempty"` // ProjectRoot with symlinks resolved
 	RepoKey        string    `json:"repo_key,omitempty"`
 	Branch         string    `json:"branch,omitempty"`
 	Role           string    `json:"role"`             // "main", or "sub" (spawned from another session or in a .claude/worktrees worktree)
@@ -466,7 +468,12 @@ func (r *sessionRegistry) fillProject(s *ClaudeSession, dir string, gitBy time.T
 		return
 	}
 	g := r.gitInfo(dir, gitBy)
-	s.ProjectRoot, s.RepoKey = g.project, g.key
+	s.ProjectRoot, s.RepoKey, s.RealRoot = g.project, g.key, g.realProject
+	if s.Cwd == dir {
+		s.RealCwd = g.real
+	} else if s.Cwd != "" {
+		s.RealCwd = r.gitInfo(s.Cwd, gitBy).real
+	}
 	if s.Branch == "" {
 		s.Branch = g.branch
 	}
@@ -730,6 +737,8 @@ type gitInfo struct {
 	project string // the main worktree's directory (or the directory itself without git)
 	key     string // the normalized origin remote, or "local:" + project
 	branch  string
+	// real and realProject are the directory and the project with symlinks resolved ("" when that failed).
+	real, realProject string
 }
 
 func readGitInfo(dir string) gitInfo {
@@ -749,9 +758,11 @@ func readGitInfo(dir string) gitInfo {
 		root = parent
 	}
 	if gitPath == "" {
-		return gitInfo{project: dir, key: "local:" + dir}
+		return gitInfo{project: dir, key: "local:" + dir, real: resolved(dir), realProject: resolved(dir)}
 	}
 	gitDir := gitPath
+	worktree := false // .git is a file that names a worktree's directory inside the main repository's .git
+	common := gitDir
 	if fi, err := os.Stat(gitPath); err == nil && !fi.IsDir() {
 		b, _ := os.ReadFile(gitPath)
 		line := strings.TrimSpace(string(b))
@@ -762,20 +773,26 @@ func readGitInfo(dir string) gitInfo {
 		if !filepath.IsAbs(gitDir) {
 			gitDir = filepath.Join(root, gitDir)
 		}
-	}
-	common := gitDir
-	if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-		c := strings.TrimSpace(string(b))
-		if !filepath.IsAbs(c) {
-			c = filepath.Join(gitDir, c)
+		common = gitDir
+		if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+			c := strings.TrimSpace(string(b))
+			if !filepath.IsAbs(c) {
+				c = filepath.Join(gitDir, c)
+			}
+			c = filepath.Clean(c)
+			// Git's own layout is <common>/worktrees/<name>. A file that points elsewhere (a commondir
+			// naming an ancestor, say) must not make that ancestor the project.
+			if filepath.Dir(filepath.Clean(gitDir)) == filepath.Join(c, "worktrees") {
+				common, worktree = c, true
+			}
 		}
-		common = filepath.Clean(c)
 	}
 	project := root
-	if filepath.Base(common) == ".git" {
+	if worktree && filepath.Base(common) == ".git" {
 		project = filepath.Dir(common)
 	}
 	g := gitInfo{project: project, key: "local:" + project}
+	g.real, g.realProject = resolved(dir), resolved(project)
 	if b, err := os.ReadFile(filepath.Join(gitDir, "HEAD")); err == nil {
 		if ref, ok := strings.CutPrefix(strings.TrimSpace(string(b)), "ref: refs/heads/"); ok {
 			g.branch = ref
@@ -789,6 +806,15 @@ func readGitInfo(dir string) gitInfo {
 		}
 	}
 	return g
+}
+
+// resolved is dir with symlinks resolved, or "".
+func resolved(dir string) string {
+	r, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return ""
+	}
+	return r
 }
 
 // originURL reads [remote "origin"] url from a git config.

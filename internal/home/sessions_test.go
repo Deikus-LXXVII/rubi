@@ -224,3 +224,49 @@ func TestReadersStopAtTheDeadline(t *testing.T) {
 		t.Errorf("store without deadline: %+v", got)
 	}
 }
+
+// A .git file whose directory carries a commondir that names an ancestor must not make that ancestor the
+// project (a project root decides what a Claude Code trust covers): only git's own layout counts.
+func TestSpoofedCommondirDoesNotWidenTheProject(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	writeFile(t, filepath.Join(home, ".git", "config"), "[remote \"origin\"]\n\turl = git@github.com:me/home.git\n")
+	evil := filepath.Join(home, "work", "evil")
+	gd := filepath.Join(dir, "elsewhere", "gd")
+	writeFile(t, filepath.Join(gd, "commondir"), home+"/.git\n")
+	writeFile(t, filepath.Join(gd, "HEAD"), "ref: refs/heads/x\n")
+	writeFile(t, filepath.Join(evil, ".git"), "gitdir: "+gd+"\n")
+	if g := readGitInfo(filepath.Join(evil, "src")); g.project != evil {
+		t.Fatalf("project %q, want the directory with the .git file (%s)", g.project, evil)
+	}
+	// Same with a gitdir under <common>/worktrees of a different repository than its commondir says.
+	gd2 := filepath.Join(dir, "other", ".git", "worktrees", "w")
+	writeFile(t, filepath.Join(gd2, "commondir"), home+"/.git\n")
+	evil2 := filepath.Join(home, "work", "evil2")
+	writeFile(t, filepath.Join(evil2, ".git"), "gitdir: "+gd2+"\n")
+	if g := readGitInfo(evil2); g.project != evil2 {
+		t.Fatalf("project %q, want %s", g.project, evil2)
+	}
+	// A commondir inside a .git directory is not honoured either.
+	repo := filepath.Join(dir, "repo")
+	writeFile(t, filepath.Join(repo, ".git", "commondir"), home+"/.git\n")
+	if g := readGitInfo(repo); g.project != repo {
+		t.Fatalf("project %q, want %s", g.project, repo)
+	}
+}
+
+func TestGitInfoReportsResolvedPaths(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(dir, "real")
+	writeFile(t, filepath.Join(real, ".git", "HEAD"), "ref: refs/heads/main\n")
+	if err := os.Symlink(real, filepath.Join(dir, "link")); err != nil {
+		t.Skip(err)
+	}
+	g := readGitInfo(filepath.Join(dir, "link"))
+	if g.real != real || g.realProject != real {
+		t.Fatalf("%+v", g)
+	}
+}
