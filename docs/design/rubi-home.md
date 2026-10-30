@@ -159,6 +159,36 @@ The helper does only what it was built for, whatever Rubi asks:
   has exited: the session is not re-armed and waits for its next prompt or Stop. With `ok` they count as
   delivered and their senders get the turn's answer at the next Stop, as for the other deliveries.
 
+  **A local script can message a session: `rubi-home claude-send`** (B9, the documented path). Claude Code
+  documents [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging.md) only for
+  Claude to Claude (the SendMessage tool), says nothing about the line format of a session's inbox socket, and
+  its [channels](https://code.claude.com/docs/en/channels.md) don't work in the desktop app. What
+  [hooks](https://code.claude.com/docs/en/hooks.md) do document is that an `asyncRewake` command hook that
+  exits 2 wakes Claude even when the session is idle. So the path is Rubi Home's own inbox plus the waiter:
+  `printf '%s' "$text" | rubi-home claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS]`
+  (text on stdin, at most 4000 characters, rejected, never stripped, when it holds invisible or control
+  characters, like `claude-sessions.create`; it reads no config, so it works under any user shell). It sends the
+  socket line `RubiSend` (stamped like a hook line, its own 8 slots, a 5-second deadline; ops `send` and
+  `get_reply`; the session id is in `target_session_id`, so a helper without this line takes it for no hook
+  and answers `{}`, which the command reports as "Rubi Home is too old"). The helper checks it as it checks
+  `claude-sessions.send` (known session, not ended, at most 20 waiting), queues it with the sender
+  `local:<NAME>` and kicks the session's waiter. The session is told it is a message from a local process on
+  this computer, not the user and not a Bot, that the name is its own and unverified, and that it grants no
+  permissions. `--name` matches the desktop app's title (case-insensitive, live sessions only; two matches are an
+  error that lists the ids; `sessionNames` in `localsend.go` is where Rubi aliases plug in). The reply (the
+  turn's final answer, or an explicit `rubi_reply`) is not sent to Rubi: for a `local:` sender it goes to a
+  small reply box in the helper (by message id, 10 minutes, 50 entries, memory only), and the outbox for Bots
+  never sees it (the claude-code plugin also drops anything addressed to `local:`; a Bot's own message can't use
+  that prefix). `--wait-reply N` waits up to N seconds and prints the answer (exit 3 when none came);
+  `rubi-home claude-send --get-reply ID` fetches it later. When a Bot's and a local sender's messages arrive in one turn, the framing says so and the final answer goes to every sender in the turn (the Bot through the outbox, the local one into the reply box). A script should name its target with `--session`: titles can be influenced by whoever can write to a session, so `--name` is for interactive use. `get_reply` long-polls have their own 4 slots, so waiting clients cannot block sends. `RubiSend` lines are checked for protocol like hook lines but are not recorded as the hook binary in `claude-sessions.list`'s `hook` info. Only the same OS user can do this (the socket is 0600).
+  **The waiter is required to wake an idle session**: the second `Stop` hook with `asyncRewake: true` must be in
+  the managed settings (see `examples/managed-settings.json` of the plugin); without it a message to an idle
+  session waits for the next prompt, and `claude-send` says so. The old way, a script writing an undocumented
+  `{"type":"user",...}` line into the `messagingSocketPath` of `~/.claude/sessions/<pid>.json`
+  (`~/.citri/tell-rubi.py`), may break with any Claude Code update; nothing in Rubi or its plugins writes to that
+  socket, and it remains only as the caller's own fallback. A short example is
+  `docs/examples/tell-session.sh`.
+
   **The helper's log has one line per hook it handles**, so a silent session can be traced:
   `claude-hook <event> session=<first 8 characters of the id> outcome=<what happened> <ms>ms`. Outcomes:
   `nothing`, `delivered 2` (UserPromptSubmit), `replies 1 asks 1 blocked` (Stop), `refused (protocol)`,

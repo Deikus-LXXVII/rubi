@@ -16,6 +16,10 @@
 //	                         embedded Claude Code plugin (the sister tools) to a root-owned directory
 //	rubi-home claude-mcp     the stdio MCP server of the Claude Code plugin: rubi_sisters, rubi_ask, rubi_reply
 //	                         and rubi_inbox_status, for the sister bound to the calling session (reads no config)
+//	rubi-home claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS]
+//	                         queue the message on stdin for a Claude Code session (the documented way for a
+//	                         local script to talk to one; reads no config); --wait-reply prints the answer;
+//	                         rubi-home claude-send --get-reply MESSAGE_ID fetches an answer later
 //	rubi-home version        print the version (reads nothing)
 //	rubi-home claude-hook --wait [--wait-limit SECONDS]
 //	                         a second, asyncRewake Stop hook: stays while the session is idle and wakes it
@@ -72,6 +76,8 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "claude-send": // a local process's message for a session: talks to the helper on its socket, reads no configuration
+		os.Exit(home.RunClaudeSend(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, home.ClaudeSocketPath(home.DefaultDir())))
 	case "version": // reads and creates nothing: the installer and status run it on any copy
 		fmt.Println(version.Version)
 		return
@@ -136,7 +142,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
 	os.Exit(2)
 }
 

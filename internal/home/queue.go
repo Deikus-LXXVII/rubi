@@ -280,6 +280,9 @@ func (c *Claude) loadQueue() {
 		if o.Kind != "reply" && o.Kind != "ask" && o.Kind != "status" {
 			continue
 		}
+		if isLocalSender(o.To) { // never for a Bot, whatever a saved file says
+			continue
+		}
 		if o.Kind != "status" {
 			o.Text, _ = clip(o.Text, claudeMaxReply)
 		}
