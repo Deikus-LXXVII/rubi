@@ -79,6 +79,16 @@ The helper does only what it was built for, whatever Rubi asks:
   main repository as the project only when the `.git` file's `gitdir` is `<common>/worktrees/<name>`, so a
   spoofed `commondir` can't widen a trust's root.
 
+  The project trust can also be granted **until revoked** (a fourth run option, or `claude_code_trust_project`
+  with `until: "revoked"`): the record is flagged `unlimited`, has no end time and no count limit, and is
+  never pruned (the cap of 20 evicts timed trusts only); a revoke is the only way it ends, apart from Rubi
+  being locked, which stops every allow because an allow is a `claude.decide` sent through Rubi and the
+  helper denies while Rubi is not polling. Nothing in Rubi Home changes. The cost is plain: the trust is a
+  standing permission for plain, listed commands (builds and tests run the project's own code) in every
+  session of the project, and for the Bot to open sessions in it without asking, which may skip permission
+  prompts; so the approval says "UNTIL REVOKED — no end time" in capitals, the panel and
+  `claude_code_mandates` show the trust's age and use count, and each allow is audited as before.
+
   **Naming sessions (plugin-side; Rubi Home needs no change).** Claude Code documents `/rename`, `--name` and the
   session picker, all from inside Claude Code (checked against code.claude.com/docs `cli-reference`, `commands`,
   `sessions`, `desktop`); there is no documented way for another process to set a session's name, and writing

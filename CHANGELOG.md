@@ -27,6 +27,20 @@
   `RubiSend` with its own slots; an older Rubi Home gives "too old". The claude-code plugin ignores anything
   addressed to a local sender. Plan in `docs/plans/documented-messaging.md`, example in
   `docs/examples/tell-session.sh`.
+- **claude-code plugin: "trust this project until I revoke it" (project trust without an end time).** A fourth
+  option on run approvals, "Allow and trust the project <root> until I revoke it", and an `until` parameter
+  ("0400", the default, or "revoked") on `claude_code_trust_project` (still a strong, locked approval; the
+  approval names the mode). Such a `pt_…` has no end time and no count limit: it stays on across days and
+  across restarts of Rubi Home, the plugin and Rubi until it is revoked in the panel or with
+  `claude_code_mandates`, and while Rubi is locked the helper denies as always (the allow is still a
+  `claude.decide` through Rubi). The approval text, the panel and the Bot's messages say "UNTIL REVOKED — no end
+  time" and the risk (sessions that skip permission prompts, a Bot that can open sessions in the project without
+  asking). Same command check, branch rule and always-ask list as the 04:00 trust; each allow is still counted
+  and audited (no cap for this mode, so it can't end by surprise). It is never pruned: the 20-trust cap evicts
+  the oldest timed trust, and refuses a new grant when all 20 are unlimited. A new grant for the same computer
+  and root replaces the old one of either mode (audited with both modes). `claude_code_mandates` and the panel
+  show when a project trust was granted ("3 d 4 h ago") and how often it was used. Plugin repo, branch
+  `citri/trust-unlimited`; plan in `docs/plans/trust-unlimited.md`. No change to Rubi Home or Rubi.
 - **Rubi Home: a worktree's `commondir` no longer widens the project; sessions report resolved paths.** A `.git`
   file only makes the main repository the project when its `gitdir` is `<common>/worktrees/<name>` (git's own
   layout); a spoofed `commondir` naming an ancestor, or one inside a `.git` directory, is ignored and the
