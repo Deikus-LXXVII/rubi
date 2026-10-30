@@ -137,5 +137,50 @@ The helper does only what it was built for, whatever Rubi asks:
   never pushes out a reply or an ask. `claude-sessions.send` also answers `session_state` (idle, busy,
   ended, unknown) and `waiter` (whether an idle session will be woken now).
 
+  **The hook binary's version.** Claude Code runs a root-owned copy of `rubi-home` (`/usr/local/bin/rubi-home`;
+  a user-writable path would let any process swap in a binary that allows everything), which changes only
+  when the user re-installs it, so it can fall behind the helper. Every line a hook sends (all event kinds,
+  PermissionRequest and the `--wait` waiter) carries `rubi_hook_version`, `rubi_hook_protocol` (the constant
+  `ClaudeHookProtocol`, 1) and `rubi_hook_path` (`os.Executable`, best effort), spliced into the JSON text so
+  `tool_input` and its digest are untouched; the fields never reach what Rubi shows. The helper reads them
+  before anything else. No protocol: a legacy hook (v0.12), served and marked stale. A protocol outside the
+  supported range: refused. PermissionRequest is denied with "the Claude Code hook binary speaks protocol N,
+  Rubi Home speaks M: run `~/.rubi-home/bin/rubi-home install-hook`; denied."; events and `RubiWait` get
+  `{}`. Stale means the hook's version is older than the helper's (numeric semver; `dev` or unparseable is
+  never stale). The last hook seen (`version`, `path`, `protocol`, `at`) lives under its own small lock, never
+  held with the others and with no I/O under it; a mismatch or stale hook is logged once per distinct
+  (version, path, protocol). `claude-sessions.list` adds `hook` (`version`, `path`, `protocol`, `stale`,
+  `refused`, `legacy`, `seen_at`, `home_version`) once a hook has been seen. `rubi-home status` is another process,
+  so it runs `<hook> version` (default `/usr/local/bin/rubi-home`, `--hook PATH` or `RUBI_HOOK_BINARY`; 3 s,
+  the process group is killed) and prints version, sha256, whether the file is root-owned, not a symlink and
+  not group/world-writable, and "stale". The helper does the same check once at start (it has no
+  self-updater: upgrades are an `install-home.sh` run, which restarts it) and logs a warning; the installer
+  warns too.
+
+  The hook identity is advisory: the hook reports it itself, so a process that can reach the socket can claim
+  any version. Nothing trusts it for a decision; it only warns and refuses, and what Bots are shown of it is
+  filtered (version to `[0-9A-Za-z.+-]`, 40 characters; path printable, 200). A stamp field of the wrong
+  type, or a hook line that can't be decoded, is refused like an unknown protocol (fail closed). `rubi-home
+  status` hashes only a regular file of at most 256 MiB, so a FIFO or device can't hang it, and runs the hook
+  with a minimal environment.
+
+  `rubi-home install-hook [--dry-run] [--to PATH] [--sudo]` plans a copy of the running binary (symlinks
+  resolved) to the hook path. The privileged part is one script run by `/usr/bin/osascript` ("do shell script
+  ... with administrator privileges", the script passed as an argument so no AppleScript quoting is involved)
+  or, with `--sudo` in a terminal, `/usr/bin/sudo /bin/sh -c`, both with `PATH` reduced to the system
+  directories and every tool in the script an absolute path. The script, as root: checks that the target
+  directory and every ancestor are root-owned and not group/world-writable; reads the source once into a temp
+  file in the target directory; checks that file's sha256 against the hash the user was shown (computed
+  earlier from the same path); only then `chown root:wheel` (`root:root` off macOS), `chmod 0755` and an atomic
+  `mv -f` over the target; the temp file is removed on any failure. So a source swapped after the hash was
+  shown is not installed. The hash is of the file at the source path: it shows what will be installed, not that
+  it is genuine; the output says to compare it with the release's `SHA256SUMS`. The target must be a
+  plain file or absent (a symlink is refused), its directory must exist and have root-owned, closed
+  ancestors (otherwise install-hook refuses and says how to create the directory; it creates nothing). Paths
+  with quotes, backslashes, backticks, `$`, control, format or line-separator characters, invalid UTF-8, or
+  relative paths are refused instead of escaped. Afterwards it re-checks, as confirmation only, the target's
+  sha256, that `DST version` prints the same version, and that the target and its ancestors are secure, and exits
+  non-zero with the reason otherwise. `--dry-run` prints the plan (hashes, target, the script) and runs nothing.
+
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.

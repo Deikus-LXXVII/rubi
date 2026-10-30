@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Rubi Home: the Claude Code hook binary reports its version, and `install-hook` updates it.** Every hook
+  line (approvals, events, the `--wait` waiter) carries `rubi_hook_version`, `rubi_hook_protocol` (1) and
+  `rubi_hook_path`. The helper serves a hook without them (v0.12, marked stale), refuses a protocol it
+  doesn't speak (a denial that names `rubi-home install-hook`; events and the waiter get `{}`), logs a
+  stale or mismatched hook once, and `claude-sessions.list` adds `hook` (`version`, `path`, `protocol`,
+  `stale`, `seen_at`). `rubi-home status` runs `/usr/local/bin/rubi-home version` (3 s limit; `--hook PATH`
+  or `RUBI_HOOK_BINARY`) and shows its version, sha256, ownership and "stale"; the helper warns in its log
+  at start and `install-home.sh` warns after an upgrade. New `rubi-home install-hook [--dry-run] [--to PATH]
+  [--sudo]` installs the running binary to the root-owned path with an administrator prompt; root itself
+  copies the file once, checks its sha256 against the hash shown, and moves it into place atomically (refusing
+  targets whose directories others can write), and the result is verified afterwards. `rubi-home version` no longer opens the helper's directory.
 - **Rubi Home: idle Claude Code sessions are woken, and senders see what became of a message.** A second
   Stop hook, `rubi-home claude-hook --wait` (`asyncRewake: true`), stays connected while a session is
   idle; a message for the session wakes it (exit 2, the messages on stderr) and the helper counts it
