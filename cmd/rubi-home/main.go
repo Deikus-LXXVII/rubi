@@ -10,6 +10,10 @@
 //	rubi-home claude-hook    Claude Code's hooks: PermissionRequest asks Rubi and prints allow or deny;
 //	                         SessionStart, UserPromptSubmit, Stop and SessionEnd report the session and
 //	                         deliver messages waiting for it
+//	rubi-home claude-hook --wait [--wait-limit SECONDS]
+//	                         a second, asyncRewake Stop hook: stays while the session is idle and wakes it
+//	                         (exit 2, message on stderr) when a message arrives; gives up after the limit
+//	                         (default 3570 seconds), always exiting 0 then
 package main
 
 import (
@@ -20,6 +24,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +40,11 @@ import (
 func main() {
 	if len(os.Args) < 2 {
 		usage()
+	}
+	if os.Args[1] == "claude-hook" && slices.Contains(os.Args[2:], "--wait") {
+		// The idle-session waiter (a second Stop hook with asyncRewake): reads no config, prints nothing to
+		// stdout, exits 2 only to wake the session with messages (written to stderr), 0 on every failure.
+		os.Exit(runWait())
 	}
 	if os.Args[1] == "claude-hook" {
 		// Only talks to the running helper; never opens or changes its files. Always prints a decision
@@ -102,13 +113,36 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook | version")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | version")
 	os.Exit(2)
 }
 
 // claudeHookLimit bounds a claude-hook's wait. The helper answers sooner (claude_wait_seconds, 280 by
 // default); Claude Code's hook timeout (300 in the example settings) must be longer still.
 const claudeHookLimit = 295 * time.Second
+
+// runWait is the waiter; a panic anywhere in it exits 0 (only the deliberate 2 is non-zero).
+func runWait() (code int) {
+	defer func() {
+		if recover() != nil {
+			code = 0
+		}
+	}()
+	return home.RunClaudeWait(os.Stdin, os.Stderr, home.ClaudeSocketPath(home.DefaultDir()), waitLimit(os.Args[2:]))
+}
+
+// waitLimit is the waiter's --wait-limit in seconds (home.ClaudeWaitLimit when missing or not a positive
+// number: a waiter never fails loudly, since exit 2 would wake the session).
+func waitLimit(args []string) time.Duration {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--wait-limit" {
+			if n, err := strconv.Atoi(args[i+1]); err == nil && n > 0 && n <= 86400 {
+				return time.Duration(n) * time.Second
+			}
+		}
+	}
+	return home.ClaudeWaitLimit
+}
 
 func run(h *home.Helper) {
 	key, err := h.RelayKey()

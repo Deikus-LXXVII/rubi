@@ -82,6 +82,7 @@ type ClaudeSession struct {
 	State          string    `json:"state"` // "busy" (in a turn), "idle", "ended" or "unknown" (no hook seen)
 	LastActivity   time.Time `json:"last_activity,omitzero"`
 	Waiting        int       `json:"waiting,omitempty"` // messages in its inbox
+	Waiter         bool      `json:"waiter,omitempty"`  // a waiter hook is attached (an idle session is woken by a send)
 }
 
 type liveSession struct {
@@ -171,6 +172,16 @@ func (r *sessionRegistry) touch(id, cwd, transcript, mode, state string, now tim
 		s.state = state
 	}
 	s.last = now
+}
+
+// stateOf is what the hooks last said about a session: "idle", "busy", "ended", or "" when none did.
+func (r *sessionRegistry) stateOf(id string) string {
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
+	if s := r.live[id]; s != nil {
+		return s.state
+	}
+	return ""
 }
 
 func (r *sessionRegistry) transcriptOf(id string) string {

@@ -52,8 +52,9 @@ type ClaudeMessage struct {
 }
 
 // ClaudeOut is something a session says to the outside, handed to Rubi with claude.next: a "reply" (the
-// last answer of a turn that carried messages, for their senders) or an "ask" (a ```rubi-ask``` block).
-// Text is Claude's and untrusted.
+// last answer of a turn that carried messages, for their senders), an "ask" (a ```rubi-ask``` block) or a
+// "status" (what became of a message: ID is the message's id, To its sender, State where it stands; no
+// Text). Text is Claude's and untrusted.
 type ClaudeOut struct {
 	ID        string    `json:"id"`
 	Kind      string    `json:"kind"`
@@ -62,6 +63,7 @@ type ClaudeOut struct {
 	To        string    `json:"to,omitempty"`
 	InReplyTo []string  `json:"in_reply_to,omitempty"`
 	AskKind   string    `json:"ask_kind,omitempty"`
+	State     string    `json:"state,omitempty"` // kind "status": queued, delivered, answered or expired
 	Text      string    `json:"text"`
 	Truncated bool      `json:"truncated,omitempty"`
 	At        time.Time `json:"at"`
@@ -75,9 +77,10 @@ type HookReply struct {
 }
 
 type turnState struct {
-	chain int
-	from  []string // senders of the messages this turn carried
-	ids   []string
+	chain  int
+	from   []string // senders of the messages this turn carried
+	ids    []string
+	idFrom []string // the sender of each of ids
 }
 
 // eventInput is a hook's input (the fields used here).
@@ -128,8 +131,10 @@ func (c *Claude) hook(raw []byte, tk *eventTicket) HookReply {
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "idle", now)
 	case "SessionEnd":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "ended", now)
+		c.closeWaiter(id)
 	case "UserPromptSubmit":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "busy", now)
+		c.closeWaiter(id) // the prompt delivers what waits
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		t := c.turnLocked(id)
@@ -137,14 +142,21 @@ func (c *Claude) hook(raw []byte, tk *eventTicket) HookReply {
 		if len(c.inbox[id]) == 0 || !tk.commit() {
 			return HookReply{}
 		}
-		msgs := c.drainLocked(id)
+		msgs := c.takeLocked(id, now)
+		if len(msgs) == 0 {
+			return HookReply{}
+		}
 		t.note(msgs)
+		c.statusLocked(id, "delivered", msgs...)
 		return HookReply{Context: formatMessages(msgs, "Along with the user's prompt, Rubi delivers")}
 	case "Stop":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "idle", now)
 		r := c.stop(id, in, now, tk)
 		if r.Block { // not under c.mu: the registry is told after the inbox is done with
 			c.reg.touch(id, "", "", "", "busy", now)
+			c.closeWaiter(id)
+		} else {
+			c.kickWaiter(id) // idle now: messages that came during the Stop wake the session's waiter
 		}
 		return r
 	default:
@@ -172,9 +184,15 @@ func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) 
 			c.pushOutLocked(ClaudeOut{Kind: "reply", SessionID: id, Cwd: in.Cwd, To: to, InReplyTo: t.ids, Text: text,
 				Truncated: cut, At: now})
 		}
+		for i, mid := range t.ids {
+			c.pushOutLocked(ClaudeOut{Kind: "status", ID: mid, State: "answered", SessionID: id, To: t.sender(i), At: now})
+		}
 	}
 	if ok { // without the answer the reply is still owed: a later Stop sends it
-		t.from, t.ids = nil, nil
+		if len(t.from) > 0 {
+			c.dirtyLocked()
+		}
+		t.from, t.ids, t.idFrom = nil, nil, nil
 		for _, a := range extractAsks(answer) {
 			c.pushOutLocked(ClaudeOut{Kind: "ask", SessionID: id, Cwd: in.Cwd, AskKind: a.kind, Text: a.text, At: now})
 		}
@@ -182,15 +200,31 @@ func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) 
 	if len(c.inbox[id]) == 0 || t.chain >= claudeMaxChain || !tk.commit() {
 		return HookReply{}
 	}
-	msgs := c.drainLocked(id)
+	msgs := c.takeLocked(id, now)
+	if len(msgs) == 0 {
+		return HookReply{}
+	}
 	t.chain++
 	t.note(msgs)
+	c.statusLocked(id, "delivered", msgs...)
 	return HookReply{Block: true, Reason: formatMessages(msgs, "Before you stop, Rubi delivers")}
+}
+
+// sender is who sent the i-th of t.ids.
+func (t *turnState) sender(i int) string {
+	if i < len(t.idFrom) {
+		return t.idFrom[i]
+	}
+	if len(t.from) > 0 {
+		return t.from[0]
+	}
+	return ""
 }
 
 func (t *turnState) note(msgs []ClaudeMessage) {
 	for _, m := range msgs {
 		t.ids = append(t.ids, m.ID)
+		t.idFrom = append(t.idFrom, m.From)
 		found := false
 		for _, f := range t.from {
 			found = found || f == m.From
@@ -216,18 +250,62 @@ func (c *Claude) turnLocked(id string) *turnState {
 	return t
 }
 
-func (c *Claude) drainLocked(id string) []ClaudeMessage {
+// takeLocked takes a session's waiting messages out of the inbox. Those older than claudeQueueTTL are not
+// handed on; their senders get an "expired" status.
+func (c *Claude) takeLocked(id string, now time.Time) []ClaudeMessage {
 	m := c.inbox[id]
 	delete(c.inbox, id)
-	return m
+	c.dirtyLocked()
+	keep := m[:0:0]
+	for _, x := range m {
+		if now.Sub(x.At) > claudeQueueTTL {
+			c.statusLocked(id, "expired", x)
+			continue
+		}
+		keep = append(keep, x)
+	}
+	return keep
 }
 
+// statusLocked tells the senders where their messages stand (see ClaudeOut).
+func (c *Claude) statusLocked(sessionID, state string, msgs ...ClaudeMessage) {
+	now := time.Now().UTC()
+	for _, m := range msgs {
+		c.pushOutLocked(ClaudeOut{Kind: "status", ID: m.ID, State: state, SessionID: sessionID, To: m.From, At: now})
+	}
+}
+
+// pushOutLocked queues something for Rubi. When the outbox is full the oldest status entry goes first, then
+// the oldest other entry; a status never pushes out a reply or an ask (it is dropped itself). A reply or
+// ask that is pushed out is only logged.
 func (c *Claude) pushOutLocked(o ClaudeOut) {
-	o.ID = "co_" + rand.Text()
+	if o.Kind != "status" {
+		o.ID = "co_" + rand.Text()
+	}
+	if o.At.IsZero() {
+		o.At = time.Now().UTC()
+	}
 	if len(c.outbox) >= claudeMaxOut {
-		c.outbox = c.outbox[1:]
+		i := -1
+		for k, x := range c.outbox {
+			if x.Kind == "status" {
+				i = k
+				break
+			}
+		}
+		if i < 0 {
+			if o.Kind == "status" {
+				return
+			}
+			i = 0
+		}
+		if ev := c.outbox[i]; ev.Kind != "status" {
+			log.Printf("claude: the outbox is full; a %s for %s was dropped", ev.Kind, ev.To)
+		}
+		c.outbox = append(c.outbox[:i:i], c.outbox[i+1:]...)
 	}
 	c.outbox = append(c.outbox, o)
+	c.dirtyLocked()
 	if c.signal != nil {
 		close(c.signal)
 		c.signal = nil
@@ -280,15 +358,20 @@ func (c *Claude) Send(sessionID, from, text string) (ClaudeMessage, int, error) 
 	}
 	m := ClaudeMessage{ID: "cm_" + rand.Text()[:12], From: from, Text: text, At: time.Now().UTC()}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if len(c.inbox[sessionID]) >= claudeMaxInbox {
+		c.mu.Unlock()
 		return ClaudeMessage{}, 0, errors.New("too many messages are already waiting for that session")
 	}
 	if c.inbox == nil {
 		c.inbox = map[string][]ClaudeMessage{}
 	}
 	c.inbox[sessionID] = append(c.inbox[sessionID], m)
-	return m, len(c.inbox[sessionID]), nil
+	n := len(c.inbox[sessionID])
+	c.statusLocked(sessionID, "queued", m)
+	c.dirtyLocked()
+	c.mu.Unlock()
+	c.kickWaiter(sessionID) // an idle session with a waiter is woken
+	return m, n, nil
 }
 
 // sendScanWait is how long claude-sessions.send waits for the first scan of the session stores.
@@ -307,6 +390,12 @@ func (c *Claude) Sessions(repo string, includeArchived bool) []ClaudeSession {
 // part is.
 func (c *Claude) allSessions(includeArchived bool) ([]ClaudeSession, scanMeta) {
 	all, meta := c.reg.listMeta(c.DesktopStore, c.Transcripts, time.Now().UTC())
+	c.wmu.Lock() // not under c.mu: the two locks are never held together
+	waiting := make(map[string]bool, len(c.waiters))
+	for id := range c.waiters {
+		waiting[id] = true
+	}
+	c.wmu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]ClaudeSession, 0, len(all))
@@ -315,6 +404,7 @@ func (c *Claude) allSessions(includeArchived bool) ([]ClaudeSession, scanMeta) {
 			continue
 		}
 		s.Waiting = len(c.inbox[s.SessionID])
+		s.Waiter = waiting[s.SessionID]
 		out = append(out, s)
 	}
 	return out, meta

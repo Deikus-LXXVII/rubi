@@ -26,8 +26,19 @@ func liveClaude(t *testing.T, sessions ...string) *Claude {
 	return c
 }
 
-// outs drains what sessions said, without waiting.
+// outs drains what sessions said (replies and asks), without waiting; the message statuses are dropped.
 func outs(c *Claude) []ClaudeOut {
+	var got []ClaudeOut
+	for _, o := range outsAll(c) {
+		if o.Kind != "status" {
+			got = append(got, o)
+		}
+	}
+	return got
+}
+
+// outsAll drains everything for Rubi, statuses included.
+func outsAll(c *Claude) []ClaudeOut {
 	var got []ClaudeOut
 	for {
 		ctx, cancel := context.WithCancel(context.Background())

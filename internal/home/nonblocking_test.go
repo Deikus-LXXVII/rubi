@@ -268,7 +268,12 @@ func TestStopDoesNotWaitForAStuckTranscript(t *testing.T) {
 	}
 	c.mu.Lock()
 	owed := append([]string(nil), c.turns["s-1"].from...)
-	queued := len(c.outbox)
+	queued := 0
+	for _, o := range c.outbox {
+		if o.Kind != "status" {
+			queued++
+		}
+	}
 	c.mu.Unlock()
 	if len(owed) != 1 || queued != 0 {
 		t.Fatalf("the owed reply was dropped or sent without an answer: from %v, outbox %d", owed, queued)

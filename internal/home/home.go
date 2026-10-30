@@ -104,6 +104,8 @@ func Open(dir string) (*Helper, error) {
 	h.Hue = &Hue{Pins: h.huePins, SetPin: h.setHuePin}
 	h.Claude = &Claude{}
 	h.Claude.DesktopStore, h.Claude.Transcripts = DefaultClaudeDirs()
+	h.Claude.QueueFile = filepath.Join(dir, ClaudeQueueFile)
+	h.Claude.loadQueue()
 	if s := h.Config().ClaudeWaitSeconds; s >= 10 && s <= 590 {
 		h.Claude.Wait = time.Duration(s) * time.Second
 	}

@@ -93,6 +93,9 @@ type Claude struct {
 	// directory (~/.claude/projects); both are only read, and "" leaves one out (see sessions.go).
 	DesktopStore string
 	Transcripts  string
+	// QueueFile is where inbox, outbox and owed replies are kept between runs (see queue.go); "" keeps
+	// them in memory only.
+	QueueFile string
 
 	mu       sync.Mutex
 	pending  map[string]*claudeItem
@@ -109,6 +112,13 @@ type Claude struct {
 	inbox       map[string][]ClaudeMessage // by session id
 	turns       map[string]*turnState
 	outbox      []ClaudeOut
+	inflight    map[string][]ClaudeMessage // messages taken out for a wake that isn't acknowledged yet
+	saveKick    chan struct{}              // tells the saver the queue changed (see queue.go)
+	saveMu      sync.Mutex                 // one save at a time
+	writeQueue  func(path string, b []byte) error
+
+	wmu     sync.Mutex // guards waiters only; never held while doing I/O or taking mu
+	waiters map[string]*claudeWaiter
 }
 
 type claudeItem struct {
@@ -290,6 +300,7 @@ func (c *Claude) next(ctx context.Context, wait time.Duration, req, out bool) (*
 		if out && len(c.outbox) > 0 {
 			o := c.outbox[0]
 			c.outbox = c.outbox[1:]
+			c.dirtyLocked()
 			c.mu.Unlock()
 			return nil, &o, nil
 		}
@@ -428,7 +439,12 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"queued": true, "id": m.ID, "waiting": waiting}, nil
+		state := c.reg.stateOf(in.SessionID)
+		if state == "" {
+			state = "unknown"
+		}
+		return map[string]any{"queued": true, "id": m.ID, "waiting": waiting, "session_state": state,
+			"waiter": c.hasWaiter(in.SessionID)}, nil
 	case "claude.decide":
 		var a ClaudeAnswer
 		if json.Unmarshal(args, &a) != nil {
@@ -538,9 +554,29 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 	// deadline). Then a PermissionRequest takes a slot of perms (a denial when none is free), and an event
 	// takes one of events (an empty reply when none is free, never a denial: events can't block anything).
 	s := &claudeSlots{reading: make(chan struct{}, claudeMaxReading), perms: make(chan struct{}, claudeMaxConns),
-		events: make(chan struct{}, claudeMaxEvents)}
+		events: make(chan struct{}, claudeMaxEvents), waits: make(chan struct{}, claudeMaxWaiters)}
+	if c.QueueFile != "" {
+		// The saver outlives the connections: it is stopped after they are done, so its final save has
+		// their last commits and restores. Serve returning for any reason stops it.
+		sctx, stopSaver := context.WithCancel(context.Background())
+		saved := make(chan struct{})
+		go func() {
+			defer close(saved)
+			c.runSaver(sctx)
+		}()
+		defer func() { // a hung disk doesn't keep the helper from stopping
+			stopSaver()
+			select {
+			case <-saved:
+			case <-time.After(3 * time.Second):
+				log.Printf("claude: the final save of the queue takes too long; giving up on it")
+			}
+		}()
+	}
 	var wg sync.WaitGroup
 	defer wg.Wait()
+	ctx, stopConns := context.WithCancel(ctx) // also ends the waiters when Accept fails on its own
+	defer stopConns()
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -567,7 +603,7 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 	}
 }
 
-type claudeSlots struct{ reading, perms, events chan struct{} }
+type claudeSlots struct{ reading, perms, events, waits chan struct{} }
 
 func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots) {
 	defer conn.Close()
@@ -579,6 +615,10 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots) {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	if hookEvent(line) == claudeWaitEvent { // an idle session's waiter: its own slots, never an event or an approval
+		c.serveWaiter(ctx, conn, line, s.waits)
+		return
+	}
 	if ev := hookEvent(line); ev != "" && ev != "PermissionRequest" {
 		_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
 		b, _ := json.Marshal(c.event(line, s.events))

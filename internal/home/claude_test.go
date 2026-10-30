@@ -247,7 +247,7 @@ func TestClaudeHookInput(t *testing.T) {
 // serveSocket runs the local socket for c in a temp dir.
 func serveSocket(t *testing.T, c *Claude) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), ClaudeSocket)
+	path := filepath.Join(shortDir(t), ClaudeSocket)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { done <- c.Serve(ctx, path) }()
