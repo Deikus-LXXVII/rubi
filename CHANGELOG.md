@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.2 (2026-10-30)
 
 - **Rubi Home: a hanging disk no longer silences `claude-sessions.list`.** The session list reads each
   project's `.git` files; on a disk that stops answering (an external drive that hangs) the read blocks in

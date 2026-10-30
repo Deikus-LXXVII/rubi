@@ -75,7 +75,10 @@ The helper does only what it was built for, whatever Rubi asks:
   local_*.json`: title, origin directory, the session it was spawned from) and the transcripts in
   `~/.claude/projects`, all read only. A session's project is its origin remote, read from `.git/config`
   (worktrees resolve through `commondir`), so a sub-session in `.claude/worktrees/<name>` belongs to its
-  project; it is a "sub" when spawned from another session or in such a worktree. `claude-sessions.send` queues a
+  project; it is a "sub" when spawned from another session or in such a worktree. Git files are read with
+  a budget (2 seconds per scan, v0.12.2): a project on a disk that stops answering is listed as
+  `local:<dir>` while the read finishes in the background, and the list itself gives up with an error after
+  20 seconds, so a hanging disk shows as an error, not as silence. `claude-sessions.send` queues a
   message (at most 4000 characters, 20 waiting) for a session the registry knows. UserPromptSubmit adds
   waiting messages to the prompt's context; Stop, when messages wait, blocks the stop with them as the
   reason (at most 5 times in a row), so a session in a turn picks them up without the user. The last
