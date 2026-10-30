@@ -386,8 +386,10 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		if len(args) > 0 && json.Unmarshal(args, &in) != nil {
 			return nil, errors.New("bad arguments")
 		}
-		return map[string]any{"sessions": c.Sessions(in.Repo, in.IncludeArchived),
-			"sources": map[string]bool{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}}, nil
+		return within(ctx, sessionsListTimeout, func() (any, error) {
+			return map[string]any{"sessions": c.Sessions(in.Repo, in.IncludeArchived),
+				"sources": map[string]bool{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}}, nil
+		})
 	case "claude-sessions.send":
 		var in struct {
 			SessionID string `json:"session_id"`
@@ -413,6 +415,32 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		return map[string]any{"ok": true}, nil
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
+}
+
+// sessionsListTimeout bounds claude-sessions.list, which reads the session stores and git
+// files: well below the time a caller (Rubi, then its MCP client) waits, so a hanging disk gives an error.
+var sessionsListTimeout = 20 * time.Second
+
+// within runs fn but returns by d (or ctx's end) with an error if fn hasn't; fn keeps running.
+func within(ctx context.Context, d time.Duration, fn func() (any, error)) (any, error) {
+	type result struct {
+		v   any
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := fn()
+		done <- result{v, err}
+	}()
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		return r.v, r.err
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return nil, errors.New("reading the Claude Code sessions on this computer takes too long (a project's disk may not be responding); try again later")
 }
 
 // ---- the local socket ----

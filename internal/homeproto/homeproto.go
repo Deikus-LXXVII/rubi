@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -247,6 +248,28 @@ func (s *Server) fresh(env Envelope) error {
 	return nil
 }
 
+// handle runs the operation but answers by ctx's deadline even if the operation doesn't return (a read
+// stuck on a hanging disk can't be cancelled): the caller gets an error instead of silence, and the
+// relay server's slot for this answer is freed. The operation's goroutine finishes whenever it can.
+func (s *Server) handle(ctx context.Context, env Envelope) (any, error) {
+	type result struct {
+		v   any
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := s.Handle(ctx, env)
+		done <- result{v, err}
+	}()
+	select {
+	case r := <-done:
+		return r.v, r.err
+	case <-ctx.Done():
+		log.Printf("home: %s didn't finish in time; answered with an error", env.Op)
+		return nil, fmt.Errorf("Rubi Home couldn't finish %q in time", env.Op)
+	}
+}
+
 // HandleRPC serves one encrypted request (plug it into relay.Server.Handle).
 func (s *Server) HandleRPC(ctx context.Context, body []byte) (int, []byte) {
 	var req e2e.Request
@@ -264,7 +287,7 @@ func (s *Server) HandleRPC(ctx context.Context, body []byte) (int, []byte) {
 	var out reply
 	if err := s.fresh(env); err != nil {
 		out.Error = err.Error()
-	} else if res, err := s.Handle(ctx, env); err != nil {
+	} else if res, err := s.handle(ctx, env); err != nil {
 		out.Error = err.Error()
 	} else {
 		out.OK = true

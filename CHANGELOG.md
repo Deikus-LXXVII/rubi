@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **Rubi Home: a hanging disk no longer silences `claude-sessions.list`.** The session list reads each
+  project's `.git` files; on a disk that stops answering (an external drive that hangs) the read blocks in
+  the kernel, held the registry lock, and every later list (and `.send`) waited forever with nothing in the
+  log, until the caller's MCP timeout. Git info is now read in its own goroutine, waited for at most 2
+  seconds per scan; sessions whose git info doesn't come in time are listed with `local:<dir>` as their
+  project, and the log says which directory didn't answer. The read keeps going in the background (one per
+  directory, at most 16) and fills the cache when it ends.
+- **Rubi Home answers by the deadline.** `claude-sessions.list` gives up after 20 seconds with an error
+  ("a project's disk may not be responding"), and any operation still running when the relay answer's 60
+  seconds end now gets an error answer instead of none, which also frees its slot (8 at a time): before,
+  8 stuck requests made the helper drop every later request, approvals included.
+
 ## v0.12.1 (2026-10-29)
 
 - **Webhook key from a file Rubi reads (`key_file`).** v0.12.0's recipe passed the routine key to

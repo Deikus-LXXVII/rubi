@@ -1,9 +1,12 @@
 package home
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -112,5 +115,59 @@ func TestSessionsFromDesktopTranscriptsAndHooks(t *testing.T) {
 	}
 	if n := len(c.Sessions("other", false)); n != 0 {
 		t.Errorf("filtered out: %d", n)
+	}
+}
+
+// A project on a disk that stops answering (git files that can't be read) must not hold up the list: it
+// comes back within the budget, that session without git info, and the others with theirs.
+func TestHangingDiskDoesNotBlockTheList(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good")
+	fakeRepo(t, good, "git@github.com:me/good.git", "x")
+	hung := "/Volumes/Hung/proj"
+	block := make(chan struct{})
+	defer close(block)
+	tr := filepath.Join(dir, "projects")
+	writeFile(t, filepath.Join(tr, "a", "s-good.jsonl"), `{"cwd":"`+good+`"}`+"\n")
+	writeFile(t, filepath.Join(tr, "b", "s-hung.jsonl"), `{"cwd":"`+hung+`"}`+"\n")
+	var hungReads atomic.Int32
+	r := &sessionRegistry{readGit: func(d string) gitInfo {
+		if strings.HasPrefix(d, "/Volumes/Hung") {
+			hungReads.Add(1)
+			<-block // a blocked open(2): never returns while the disk hangs
+		}
+		return readGitInfo(d)
+	}}
+	for round := 0; round < 3; round++ { // the stuck read is reused, not started again each scan
+		start := time.Now()
+		list := r.list("", tr, time.Now().Add(time.Duration(round)*time.Minute))
+		if took := time.Since(start); took > gitScanBudget+time.Second {
+			t.Fatalf("round %d took %s", round, took)
+		}
+		keys := map[string]string{}
+		for _, s := range list {
+			keys[s.SessionID] = s.RepoKey
+		}
+		if keys["s-good"] != "github.com/me/good" || keys["s-hung"] != "local:"+hung {
+			t.Fatalf("round %d: %v", round, keys)
+		}
+		if n := hungReads.Load(); n != 1 {
+			t.Fatalf("round %d: the hanging directory was read %d times", round, n)
+		}
+	}
+}
+
+// claude-sessions.list answers with an error, not silence, when the listing doesn't finish in time.
+func TestSessionsListTimesOut(t *testing.T) {
+	old := sessionsListTimeout
+	sessionsListTimeout = 100 * time.Millisecond
+	defer func() { sessionsListTimeout = old }()
+	c := &Claude{}
+	c.reg.mu.Lock() // a scan stuck elsewhere holds the registry
+	defer c.reg.mu.Unlock()
+	start := time.Now()
+	_, err := c.handle(context.Background(), "claude-sessions.list", nil)
+	if err == nil || !strings.Contains(err.Error(), "too long") || time.Since(start) > 2*time.Second {
+		t.Fatalf("err %v after %s", err, time.Since(start))
 	}
 }

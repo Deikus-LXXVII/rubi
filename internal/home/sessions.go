@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -34,6 +35,13 @@ const (
 	transcriptMaxAge   = 30 * 24 * time.Hour
 	transcriptHeadRead = 64 << 10
 	maxSessionsListed  = 200
+
+	// A project directory can sit on a disk that stops answering (an external drive that hangs, a
+	// network volume): a read there blocks in the kernel and can't be cancelled. The scan waits at most
+	// gitScanBudget in total for git info, then lists the remaining sessions without it while the reads
+	// finish in the background (at most maxGitReads of them at a time).
+	gitScanBudget = 2 * time.Second
+	maxGitReads   = 16
 )
 
 // ClaudeSession is one Claude Code session as claude-sessions.list reports it. Title comes from the user or
@@ -67,6 +75,11 @@ type sessionRegistry struct {
 	scanned   []ClaudeSession
 	scannedAt time.Time
 	git       map[string]gitInfo
+	reading   map[string]bool // directories whose git info is being read in the background
+	// readGit reads git info (readGitInfo when nil; a seam for tests).
+	readGit func(dir string) gitInfo
+	// deadline ends the wait for git info in the current scan.
+	deadline time.Time
 }
 
 // touch records what a hook said about a session.
@@ -157,6 +170,7 @@ func (r *sessionRegistry) list(desktop, transcripts string, now time.Time) []Cla
 func (r *sessionRegistry) scanLocked(desktop, transcripts string, now time.Time) []ClaudeSession {
 	var out []ClaudeSession
 	seen := map[string]bool{}
+	r.deadline = time.Now().Add(gitScanBudget)
 	for _, s := range readDesktopStore(desktop) {
 		r.fillProjectLocked(&s, s.ProjectRoot)
 		if s.SessionID != "" {
@@ -192,21 +206,63 @@ func (r *sessionRegistry) fillProjectLocked(s *ClaudeSession, dir string) {
 	if dir == "" {
 		return
 	}
-	if r.git == nil {
-		r.git = map[string]gitInfo{}
-	}
 	g, ok := r.git[dir]
 	if !ok {
-		g = readGitInfo(dir)
-		if len(r.git) > 1000 {
-			r.git = map[string]gitInfo{}
-		}
-		r.git[dir] = g
+		g = r.gitInfoLocked(dir)
 	}
 	s.ProjectRoot, s.RepoKey = g.project, g.key
 	if s.Branch == "" {
 		s.Branch = g.branch
 	}
+}
+
+// gitInfoLocked reads a directory's git info without letting a hanging disk hold up the list: the read
+// runs in its own goroutine and is waited for until the scan's deadline. A read that doesn't finish in
+// time keeps going in the background and fills the cache when it ends; meanwhile the directory counts as
+// its own project ("local:" + dir).
+func (r *sessionRegistry) gitInfoLocked(dir string) gitInfo {
+	fallback := gitInfo{project: dir, key: "local:" + dir}
+	if r.reading == nil {
+		r.reading = map[string]bool{}
+	}
+	if r.reading[dir] || len(r.reading) >= maxGitReads {
+		return fallback
+	}
+	read := r.readGit
+	if read == nil {
+		read = readGitInfo
+	}
+	done := make(chan gitInfo, 1)
+	r.reading[dir] = true
+	go func() {
+		g := read(dir)
+		done <- g // buffered: never blocks, so the scan holding r.mu can take it
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		delete(r.reading, dir)
+		r.storeGitLocked(dir, g)
+	}()
+	wait := time.Until(r.deadline)
+	if wait <= 0 {
+		wait = time.Millisecond // past the budget: only what is answered at once
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case g := <-done:
+		r.storeGitLocked(dir, g)
+		return g
+	case <-t.C:
+		log.Printf("claude-sessions: git info of %s didn't come in time (is its disk responding?); listed without it", dir)
+		return fallback
+	}
+}
+
+func (r *sessionRegistry) storeGitLocked(dir string, g gitInfo) {
+	if r.git == nil || len(r.git) > 1000 {
+		r.git = map[string]gitInfo{}
+	}
+	r.git[dir] = g
 }
 
 func inClaudeWorktree(dir string) bool {
