@@ -122,6 +122,14 @@ The helper does only what it was built for, whatever Rubi asks:
   Without `ok` within 3 seconds the messages go back to the front of the inbox in order and that waiter
   has exited: the session is not re-armed and waits for its next prompt or Stop. With `ok` they count as
   delivered and their senders get the turn's answer at the next Stop, as for the other deliveries.
+
+  **The helper's log has one line per hook it handles**, so a silent session can be traced:
+  `claude-hook <event> session=<first 8 characters of the id> outcome=<what happened> <ms>ms`. Outcomes:
+  `nothing`, `delivered 2` (UserPromptSubmit), `replies 1 asks 1 blocked` (Stop), `refused (protocol)`,
+  `slots full`, `late` (an event that missed its deadline); `PermissionRequest` says `allowed`/`denied` with
+  `req=<request id> digest=<first 8 of the digest>`; `RubiWait` logs `attach`, `woke N`, `close` and `gone`;
+  `RubiTool:<tool>` logs `ok`, `error` or `timeout`. The line has counts, ids and digests only: never a
+  command, a message, a reply or a path. It is written after the work with no lock held.
   Waiters only wake sessions that are idle; if a waiter is attached while the session is busy (it arrived
   before the Stop hook marked it idle, or the Stop continued), the messages stay queued for the turn's
   hooks, and a Stop that ends the turn wakes the waiter if messages wait. UserPromptSubmit, SessionEnd, a

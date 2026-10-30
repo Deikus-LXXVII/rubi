@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Rubi Home logs every hook it handles.** One line per hook: `claude-hook <event> session=<first 8 of the id>
+  outcome=<what happened> <ms>ms` (for example `delivered 2`, `replies 1 asks 1 blocked`, `refused
+  (protocol)`, `slots full`; a permission request shows its request id and the first 8 characters of its
+  digest; the waiter logs attach, wake and close; a sister tool logs its name and ok/error). Counts, ids and
+  digests only, never a command or message text; written after the work, with no lock held. Checked while
+  adding it: `claude-sessions.send` already doesn't wait for the scan, and event hooks already have their
+  own deadline, slots and tickets, so no change was needed there.
 - **Rubi Home: `claude-start.create` starts a Claude Code session when none exists.** A new Home capability,
   `claude-start` (shown on the install screen as starting a new session with a first message, where
   sessions that skip permission prompts let Claude run any command; `claude-sessions` no longer says
