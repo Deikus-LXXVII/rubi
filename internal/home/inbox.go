@@ -17,10 +17,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,7 +37,11 @@ const (
 	claudeMaxAsk       = 2000      // runes in one ask
 	claudeTranscriptIn = 512 << 10 // bytes read from the end of a transcript
 	claudeEventWait    = 8 * time.Second
+	claudeAnswerReads  = 4 // transcript reads in flight at once
 )
+
+// claudeAnswerWait is how long Stop waits for the transcript read.
+var claudeAnswerWait = 2 * time.Second
 
 // ClaudeMessage is one message waiting for a session.
 type ClaudeMessage struct {
@@ -93,8 +99,24 @@ func hookEvent(raw []byte) string {
 	return in.E
 }
 
+// eventTicket tells a Hook whether its answer is still wanted. The socket gives up on a slow handler and
+// answers empty; a handler that then drained the inbox would lose those messages. So the handler commits
+// before it drains (under c.mu) and the socket abandons only a handler that hasn't committed.
+type eventTicket struct{ state atomic.Int32 } // 0 open, 1 committed, 2 abandoned
+
+// commit reports whether the handler may take messages from the inbox (a nil ticket always may).
+func (t *eventTicket) commit() bool {
+	return t == nil || t.state.CompareAndSwap(0, 1) || t.state.Load() == 1
+}
+
+// abandon reports whether the answer was given up on; false means the handler has committed and its reply
+// is coming.
+func (t *eventTicket) abandon() bool { return t.state.CompareAndSwap(0, 2) }
+
 // Hook handles SessionStart, UserPromptSubmit, Stop and SessionEnd.
-func (c *Claude) Hook(raw []byte) HookReply {
+func (c *Claude) Hook(raw []byte) HookReply { return c.hook(raw, nil) }
+
+func (c *Claude) hook(raw []byte, tk *eventTicket) HookReply {
 	var in eventInput
 	if json.Unmarshal(raw, &in) != nil || in.SessionID == "" || len(in.SessionID) > 200 {
 		return HookReply{}
@@ -112,48 +134,58 @@ func (c *Claude) Hook(raw []byte) HookReply {
 		defer c.mu.Unlock()
 		t := c.turnLocked(id)
 		t.chain = 0
-		msgs := c.drainLocked(id)
-		if len(msgs) == 0 {
+		if len(c.inbox[id]) == 0 || !tk.commit() {
 			return HookReply{}
 		}
+		msgs := c.drainLocked(id)
 		t.note(msgs)
 		return HookReply{Context: formatMessages(msgs, "Along with the user's prompt, Rubi delivers")}
 	case "Stop":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "idle", now)
-		answer := ""
-		c.mu.Lock()
-		t := c.turnLocked(id)
-		needReply := len(t.from) > 0
-		c.mu.Unlock()
-		answer = c.lastAnswer(in)
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		if !in.StopHookActive {
-			t.chain = 0
+		r := c.stop(id, in, now, tk)
+		if r.Block { // not under c.mu: the registry is told after the inbox is done with
+			c.reg.touch(id, "", "", "", "busy", now)
 		}
-		if needReply && answer != "" {
-			text, cut := clip(answer, claudeMaxReply)
-			for _, to := range t.from {
-				c.pushOutLocked(ClaudeOut{Kind: "reply", SessionID: id, Cwd: in.Cwd, To: to, InReplyTo: t.ids, Text: text,
-					Truncated: cut, At: now})
-			}
-		}
-		t.from, t.ids = nil, nil
-		for _, a := range extractAsks(answer) {
-			c.pushOutLocked(ClaudeOut{Kind: "ask", SessionID: id, Cwd: in.Cwd, AskKind: a.kind, Text: a.text, At: now})
-		}
-		if len(c.inbox[id]) == 0 || t.chain >= claudeMaxChain {
-			return HookReply{}
-		}
-		msgs := c.drainLocked(id)
-		t.chain++
-		t.note(msgs)
-		c.reg.touch(id, "", "", "", "busy", now)
-		return HookReply{Block: true, Reason: formatMessages(msgs, "Before you stop, Rubi delivers")}
+		return r
 	default:
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "", now)
 	}
 	return HookReply{}
+}
+
+// stop is the inbox part of a Stop hook: replies and asks from the turn's last answer, and the messages
+// that came meanwhile.
+func (c *Claude) stop(id string, in eventInput, now time.Time, tk *eventTicket) HookReply {
+	c.mu.Lock()
+	t := c.turnLocked(id)
+	needReply := len(t.from) > 0
+	c.mu.Unlock()
+	answer, ok := c.lastAnswer(in) // reads a file: no lock held
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !in.StopHookActive {
+		t.chain = 0
+	}
+	if ok && needReply && answer != "" {
+		text, cut := clip(answer, claudeMaxReply)
+		for _, to := range t.from {
+			c.pushOutLocked(ClaudeOut{Kind: "reply", SessionID: id, Cwd: in.Cwd, To: to, InReplyTo: t.ids, Text: text,
+				Truncated: cut, At: now})
+		}
+	}
+	if ok { // without the answer the reply is still owed: a later Stop sends it
+		t.from, t.ids = nil, nil
+		for _, a := range extractAsks(answer) {
+			c.pushOutLocked(ClaudeOut{Kind: "ask", SessionID: id, Cwd: in.Cwd, AskKind: a.kind, Text: a.text, At: now})
+		}
+	}
+	if len(c.inbox[id]) == 0 || t.chain >= claudeMaxChain || !tk.commit() {
+		return HookReply{}
+	}
+	msgs := c.drainLocked(id)
+	t.chain++
+	t.note(msgs)
+	return HookReply{Block: true, Reason: formatMessages(msgs, "Before you stop, Rubi delivers")}
 }
 
 func (t *turnState) note(msgs []ClaudeMessage) {
@@ -260,20 +292,35 @@ func (c *Claude) Send(sessionID, from, text string) (ClaudeMessage, int, error) 
 // Sessions lists the sessions on this computer, newest first. repo filters by a part of the project
 // key or directory (case-insensitive).
 func (c *Claude) Sessions(repo string, includeArchived bool) []ClaudeSession {
+	return filterSessions(c.allSessions(includeArchived), repo)
+}
+
+// allSessions is every session, with the number of messages waiting for each.
+func (c *Claude) allSessions(includeArchived bool) []ClaudeSession {
 	all := c.reg.list(c.DesktopStore, c.Transcripts, time.Now().UTC())
-	repo = strings.ToLower(strings.TrimSpace(repo))
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	out := []ClaudeSession{}
+	out := make([]ClaudeSession, 0, len(all))
 	for _, s := range all {
 		if s.Archived && !includeArchived {
 			continue
 		}
+		s.Waiting = len(c.inbox[s.SessionID])
+		out = append(out, s)
+	}
+	return out
+}
+
+// filterSessions keeps the sessions that match repo (a part of the project key or directory,
+// case-insensitive; all when empty), at most maxSessionsListed. It returns a new slice.
+func filterSessions(all []ClaudeSession, repo string) []ClaudeSession {
+	repo = strings.ToLower(strings.TrimSpace(repo))
+	out := []ClaudeSession{}
+	for _, s := range all {
 		if repo != "" && !strings.Contains(strings.ToLower(s.RepoKey), repo) && !strings.Contains(strings.ToLower(s.ProjectRoot), repo) &&
 			!strings.Contains(strings.ToLower(s.Cwd), repo) {
 			continue
 		}
-		s.Waiting = len(c.inbox[s.SessionID])
 		out = append(out, s)
 		if len(out) >= maxSessionsListed {
 			break
@@ -284,18 +331,44 @@ func (c *Claude) Sessions(repo string, includeArchived bool) []ClaudeSession {
 
 // lastAnswer is the text of Claude's last answer: the hook's own field when it has one, otherwise the
 // last assistant entry with text in the transcript (only one under Claude Code's projects directory).
-func (c *Claude) lastAnswer(in eventInput) string {
+// ok is false when the transcript couldn't be read in time (or too many reads are stuck): the answer is
+// unknown, not empty.
+func (c *Claude) lastAnswer(in eventInput) (text string, ok bool) {
 	if s := strings.TrimSpace(in.LastAssistantMessage); s != "" {
-		return s
+		return s, true
 	}
-	p := in.TranscriptPath
-	if p == "" {
-		p = c.reg.transcriptOf(in.SessionID)
+	// The read can hang on a bad disk and can't be cancelled: it runs in its own goroutine, at most
+	// claudeAnswerReads at a time, and Stop goes on without the answer when it isn't back in time.
+	c.answerOnce.Do(func() { c.answerSlots = make(chan struct{}, claudeAnswerReads) })
+	select {
+	case c.answerSlots <- struct{}{}:
+	default:
+		c.answerRejected.Add(1)
+		log.Printf("claude: too many transcript reads are stuck; Stop goes on without the last answer")
+		return "", false
 	}
-	if !c.transcriptAllowed(p) {
-		return ""
+	got := make(chan string, 1)
+	go func() {
+		defer func() { <-c.answerSlots }()
+		p := in.TranscriptPath
+		if p == "" {
+			p = c.reg.transcriptOf(in.SessionID)
+		}
+		if !c.transcriptAllowed(p) {
+			got <- ""
+			return
+		}
+		got <- lastAssistantText(p)
+	}()
+	t := time.NewTimer(claudeAnswerWait)
+	defer t.Stop()
+	select {
+	case a := <-got:
+		return a, true
+	case <-t.C:
+		log.Printf("claude: reading the transcript takes too long; Stop goes on without the last answer")
+		return "", false
 	}
-	return lastAssistantText(p)
 }
 
 func (c *Claude) transcriptAllowed(p string) bool {

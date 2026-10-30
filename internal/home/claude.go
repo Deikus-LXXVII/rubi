@@ -19,11 +19,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -38,11 +40,16 @@ const (
 	// claudeGrace: Rubi counts as connected while a claude.next is open and for this long after one ends.
 	claudeGrace       = 15 * time.Second
 	claudeMaxPending  = 16
-	claudeMaxConns    = 32
+	claudeMaxConns    = 32 // PermissionRequest connections at once
+	claudeMaxReading  = 64 // connections whose first line is still being read
+	claudeMaxEvents   = 16 // event hooks being handled at once
 	claudeMaxInput    = 1 << 20
 	claudeMaxTool     = 64 << 10
 	claudeMaxMessage  = 500
 	claudeReadTimeout = 10 * time.Second
+	// claudeFirstLineWait is how long a connection may take to send its request line. A hook writes it at
+	// once; a client that stalls holds one of the claudeMaxReading slots, so the wait is short.
+	claudeFirstLineWait = 3 * time.Second
 )
 
 // ClaudeRequest is a permission request as Rubi sees it. ToolInput is the tool input exactly as hashed
@@ -95,10 +102,16 @@ type Claude struct {
 	lastPoll time.Time
 	signal   chan struct{} // closed when a request or an outgoing message is queued
 
-	reg    sessionRegistry
-	inbox  map[string][]ClaudeMessage // by session id
-	turns  map[string]*turnState
-	outbox []ClaudeOut
+	reg         sessionRegistry
+	answerOnce  sync.Once
+	answerSlots chan struct{} // slots for transcript reads (see lastAnswer)
+	// answerRejected counts transcript reads refused because every slot was busy.
+	answerRejected atomic.Int32
+	flightMu       sync.Mutex
+	flights        map[string]*flight         // claude-sessions.list calls still running, by key (see within)
+	inbox          map[string][]ClaudeMessage // by session id
+	turns          map[string]*turnState
+	outbox         []ClaudeOut
 }
 
 type claudeItem struct {
@@ -386,10 +399,17 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		if len(args) > 0 && json.Unmarshal(args, &in) != nil {
 			return nil, errors.New("bad arguments")
 		}
-		return within(ctx, sessionsListTimeout, func() (any, error) {
-			return map[string]any{"sessions": c.Sessions(in.Repo, in.IncludeArchived),
-				"sources": map[string]bool{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}}, nil
+		// One flight per archived flag; the repo filter is applied to the shared result, so no number of
+		// different filters can use up the flights.
+		key := fmt.Sprintf("sessions.list|%v", in.IncludeArchived)
+		v, err := c.within(ctx, key, sessionsListTimeout, func() (any, error) {
+			return c.allSessions(in.IncludeArchived), nil
 		})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"sessions": filterSessions(v.([]ClaudeSession), in.Repo),
+			"sources": map[string]bool{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}}, nil
 	case "claude-sessions.send":
 		var in struct {
 			SessionID string `json:"session_id"`
@@ -417,30 +437,69 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
 }
 
+// claudeEventDeadline is how long the socket waits for an event hook's handler; it stays below
+// claudeEventWait, how long the hook itself waits.
+var claudeEventDeadline = 5 * time.Second
+
 // sessionsListTimeout bounds claude-sessions.list, which reads the session stores and git
 // files: well below the time a caller (Rubi, then its MCP client) waits, so a hanging disk gives an error.
 var sessionsListTimeout = 20 * time.Second
 
-// within runs fn but returns by d (or ctx's end) with an error if fn hasn't; fn keeps running.
-func within(ctx context.Context, d time.Duration, fn func() (any, error)) (any, error) {
-	type result struct {
-		v   any
-		err error
+var (
+	errListTooLong = errors.New("reading the Claude Code sessions on this computer takes too long (a project's disk may not be responding); try again later")
+	errListBusy    = errors.New("too many session listings are still running (a project's disk may not be responding); try again later")
+)
+
+// flight is one call of fn that callers of within share.
+type flight struct {
+	done chan struct{}
+	v    any
+	err  error
+}
+
+// maxFlights bounds the calls of within that may be running at once (each can be stuck on a disk).
+const maxFlights = 8
+
+// within runs fn but returns by d (or ctx's end) with an error if fn hasn't; fn keeps running. It is
+// single-flight per key: while a call for the key still runs, further callers wait for that call's result
+// (each for at most its own d) instead of starting another, so stuck calls don't pile up goroutines.
+func (c *Claude) within(ctx context.Context, key string, d time.Duration, fn func() (any, error)) (any, error) {
+	c.flightMu.Lock()
+	f := c.flights[key]
+	if f == nil {
+		if len(c.flights) >= maxFlights {
+			c.flightMu.Unlock()
+			return nil, errListBusy
+		}
+		if c.flights == nil {
+			c.flights = map[string]*flight{}
+		}
+		f = &flight{done: make(chan struct{})}
+		c.flights[key] = f
+		go func() {
+			defer func() { // also when fn panics: the flight must end and its waiters be released
+				if p := recover(); p != nil {
+					log.Printf("claude: %s panicked: %v", key, p)
+					f.v, f.err = nil, errors.New("reading the Claude Code sessions failed")
+				}
+				c.flightMu.Lock()
+				delete(c.flights, key)
+				c.flightMu.Unlock()
+				close(f.done)
+			}()
+			f.v, f.err = fn()
+		}()
 	}
-	done := make(chan result, 1)
-	go func() {
-		v, err := fn()
-		done <- result{v, err}
-	}()
+	c.flightMu.Unlock()
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
-	case r := <-done:
-		return r.v, r.err
+	case <-f.done:
+		return f.v, f.err
 	case <-t.C:
 	case <-ctx.Done():
 	}
-	return nil, errors.New("reading the Claude Code sessions on this computer takes too long (a project's disk may not be responding); try again later")
+	return nil, errListTooLong
 }
 
 // ---- the local socket ----
@@ -466,7 +525,11 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 	stop := context.AfterFunc(ctx, func() { ln.Close() })
 	defer stop()
 	defer os.Remove(path)
-	sem := make(chan struct{}, claudeMaxConns)
+	// Three limits. reading covers the time before a request is classified (one line, with a read
+	// deadline). Then a PermissionRequest takes a slot of perms (a denial when none is free), and an event
+	// takes one of events (an empty reply when none is free, never a denial: events can't block anything).
+	s := &claudeSlots{reading: make(chan struct{}, claudeMaxReading), perms: make(chan struct{}, claudeMaxConns),
+		events: make(chan struct{}, claudeMaxEvents)}
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	for {
@@ -478,25 +541,29 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 			return err
 		}
 		select {
-		case sem <- struct{}{}:
+		case s.reading <- struct{}{}:
 		default:
-			_ = writeDecision(conn, claudeDeny("too many commands are already waiting for approval; denied."))
+			// Not classified yet, so it may be an event: an empty reply (a hook that gets one goes on, and
+			// a PermissionRequest hook reads it as no answer and denies by itself), never a denial.
+			_, _ = conn.Write([]byte("{}\n"))
 			conn.Close()
 			continue
 		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			defer func() { <-sem }()
-			c.serveConn(ctx, conn)
+			c.serveConn(ctx, conn, s)
 		}()
 	}
 }
 
-func (c *Claude) serveConn(ctx context.Context, conn net.Conn) {
+type claudeSlots struct{ reading, perms, events chan struct{} }
+
+func (c *Claude) serveConn(ctx context.Context, conn net.Conn, s *claudeSlots) {
 	defer conn.Close()
-	_ = conn.SetReadDeadline(time.Now().Add(claudeReadTimeout))
+	_ = conn.SetReadDeadline(time.Now().Add(claudeFirstLineWait))
 	line, err := readLine(conn, claudeMaxInput)
+	<-s.reading
 	if err != nil {
 		_ = writeDecision(conn, claudeDeny("couldn't read the request; denied."))
 		return
@@ -504,8 +571,15 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn) {
 	_ = conn.SetReadDeadline(time.Time{})
 	if ev := hookEvent(line); ev != "" && ev != "PermissionRequest" {
 		_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
-		b, _ := json.Marshal(c.Hook(line))
+		b, _ := json.Marshal(c.event(line, s.events))
 		_, _ = conn.Write(append(b, '\n'))
+		return
+	}
+	select {
+	case s.perms <- struct{}{}:
+		defer func() { <-s.perms }()
+	default:
+		_ = writeDecision(conn, claudeDeny("too many commands are already waiting for approval; denied."))
 		return
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -516,6 +590,42 @@ func (c *Claude) serveConn(ctx context.Context, conn net.Conn) {
 		cancel()
 	}()
 	_ = writeDecision(conn, c.Ask(ctx, line))
+}
+
+// event handles an event hook within claudeEventDeadline. The slot stays taken until Hook returns, so
+// handlers that hang are capped by the slots; with none free, or when Hook is late, the reply is empty
+// (Claude Code goes on as without a hook). A late handler is told its answer isn't wanted, so it leaves
+// the inbox alone (see eventTicket).
+func (c *Claude) event(line []byte, slots chan struct{}) HookReply {
+	select {
+	case slots <- struct{}{}:
+	default:
+		return HookReply{}
+	}
+	tk := &eventTicket{}
+	done := make(chan HookReply, 1)
+	go func() {
+		defer func() { <-slots }()
+		defer func() { // a broken hook mustn't take the helper down with it
+			if p := recover(); p != nil {
+				log.Printf("claude: an event hook failed: %v", p)
+				done <- HookReply{}
+			}
+		}()
+		done <- c.hook(line, tk)
+	}()
+	t := time.NewTimer(claudeEventDeadline)
+	defer t.Stop()
+	select {
+	case r := <-done:
+		return r
+	case <-t.C:
+	}
+	if !tk.abandon() { // it took the messages just now: its reply is on the way
+		return <-done
+	}
+	log.Printf("claude: an event hook took too long; answered without a reply")
+	return HookReply{}
 }
 
 func readLine(r io.Reader, limit int) ([]byte, error) {

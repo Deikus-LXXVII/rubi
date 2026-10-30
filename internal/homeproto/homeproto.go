@@ -212,6 +212,7 @@ type Server struct {
 
 	mu   sync.Mutex
 	seen map[string]time.Time
+	ops  map[string]*opState // running handlers by operation
 }
 
 // processStart is when this process started; the replay memory doesn't go back further.
@@ -251,24 +252,87 @@ func (s *Server) fresh(env Envelope) error {
 // handle runs the operation but answers by ctx's deadline even if the operation doesn't return (a read
 // stuck on a hanging disk can't be cancelled): the caller gets an error instead of silence, and the
 // relay server's slot for this answer is freed. The operation's goroutine finishes whenever it can.
+// The handlers that can pile up are capped per operation: at most maxOpHandlers run at once, and once one
+// has run past its deadline no new call of that operation starts until it returns; such calls get an
+// error at once. The check and the registration of a call happen in one critical section, so a burst
+// can't get past the cap.
 func (s *Server) handle(ctx context.Context, env Envelope) (any, error) {
 	type result struct {
 		v   any
 		err error
 	}
+	s.mu.Lock()
+	st := s.ops[env.Op]
+	if st == nil {
+		if s.ops == nil {
+			s.ops = map[string]*opState{}
+		}
+		st = &opState{}
+		s.ops[env.Op] = st
+	}
+	if st.stuck > 0 || st.running >= maxOpHandlers {
+		s.mu.Unlock()
+		return nil, fmt.Errorf("Rubi Home is still busy with earlier %q calls; try again later", env.Op)
+	}
+	st.running++
+	me := &handlerCall{}
+	s.mu.Unlock()
 	done := make(chan result, 1)
 	go func() {
-		v, err := s.Handle(ctx, env)
-		done <- result{v, err}
+		var r result
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("home: %s panicked: %v", env.Op, p)
+				r = result{nil, fmt.Errorf("Rubi Home couldn't finish %q", env.Op)}
+			}
+			s.mu.Lock()
+			me.finished = true
+			st.running--
+			if me.stuck {
+				st.stuck--
+			}
+			if st.running == 0 && st.stuck == 0 && s.ops[env.Op] == st {
+				delete(s.ops, env.Op)
+			}
+			s.mu.Unlock()
+			done <- r
+		}()
+		r.v, r.err = s.Handle(ctx, env)
 	}()
 	select {
 	case r := <-done:
 		return r.v, r.err
 	case <-ctx.Done():
-		log.Printf("home: %s didn't finish in time; answered with an error", env.Op)
-		return nil, fmt.Errorf("Rubi Home couldn't finish %q in time", env.Op)
 	}
+	g := time.NewTimer(stuckGrace) // an operation that follows ctx returns a moment later: not stuck
+	select {
+	case r := <-done:
+		g.Stop()
+		return r.v, r.err
+	case <-g.C:
+	}
+	s.mu.Lock()
+	if !me.finished {
+		me.stuck = true
+		st.stuck++
+	}
+	s.mu.Unlock()
+	log.Printf("home: %s didn't finish in time; answered with an error", env.Op)
+	return nil, fmt.Errorf("Rubi Home couldn't finish %q in time", env.Op)
 }
+
+// opState counts the running handlers of one operation, and those of them past their deadline.
+type opState struct{ running, stuck int }
+
+// handlerCall is one running handler (under Server.mu).
+type handlerCall struct{ finished, stuck bool }
+
+// maxOpHandlers is how many handlers of one operation may run at once.
+const maxOpHandlers = 8
+
+// stuckGrace is how long handle waits for an operation to return after its deadline before it counts as
+// stuck.
+const stuckGrace = 250 * time.Millisecond
 
 // HandleRPC serves one encrypted request (plug it into relay.Server.Handle).
 func (s *Server) HandleRPC(ctx context.Context, body []byte) (int, []byte) {

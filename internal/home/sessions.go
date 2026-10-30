@@ -44,6 +44,25 @@ const (
 	maxGitReads   = 16
 )
 
+// The scan of the stores runs in the background, off every lock the hooks use. The same kind of read can
+// hang there, so the scan stops reading more files after sessionScanBudget; a single read that never
+// returns holds only the one scan goroutine, and lists go on serving the last result. Before the first
+// scan has finished, a list waits for it at most scanWait (the registry's wait when set). hookGitWait is how long a list waits for git
+// info of hook-reported sessions that no scan has seen.
+const (
+	scanWait = 6 * time.Second
+	// A scan whose read never returns would keep every later scan out: after 3 scan budgets a list may
+	// start one replacement (the stuck one's late result is dropped), and at most maxOldScans stuck scans
+	// are left behind in total.
+	scanStuckFactor = 3
+	maxOldScans     = 3
+)
+
+var (
+	sessionScanBudget = 4 * time.Second
+	hookGitWait       = 200 * time.Millisecond
+)
+
 // ClaudeSession is one Claude Code session as claude-sessions.list reports it. Title comes from the user or
 // Claude and is untrusted text.
 type ClaudeSession struct {
@@ -69,23 +88,43 @@ type liveSession struct {
 	last                         time.Time
 }
 
+// The registry has two locks, never held together. liveMu guards only live (what the hooks reported): touch
+// and transcriptOf take it for a few map operations, so a hook never waits for a scan. mu guards the scan
+// cache, the git cache and the scan state; nothing that can block (a file read, a wait) runs under it.
 type sessionRegistry struct {
+	liveMu sync.Mutex
+	live   map[string]*liveSession
+
 	mu        sync.Mutex
-	live      map[string]*liveSession
 	scanned   []ClaudeSession
 	scannedAt time.Time
+	hasScan   bool          // scanned holds a finished scan (it may be empty)
+	scanning  bool          // the current scan is running
+	scanDone  chan struct{} // closed when the current scan ends
+	scanGen   uint64        // the current scan's number; a result from an older scan is dropped
+	scanStart time.Time     // when the current scan started
+	oldScans  int           // replaced scans that haven't returned yet
 	git       map[string]gitInfo
-	reading   map[string]bool // directories whose git info is being read in the background
-	// readGit reads git info (readGitInfo when nil; a seam for tests).
-	readGit func(dir string) gitInfo
-	// deadline ends the wait for git info in the current scan.
-	deadline time.Time
+	reading   map[string]*gitRead // directories whose git info is being read in the background
+	// readGit reads git info (readGitInfo when nil; a seam for tests). readStore and readTx read the
+	// desktop store and the transcripts (readDesktopStore and readTranscripts when nil; seams too).
+	readGit   func(dir string) gitInfo
+	readStore func(dir string, deadline time.Time) []ClaudeSession
+	readTx    func(dir string, now, deadline time.Time) []ClaudeSession
+	// firstScanWait replaces scanWait, and scanStuckAfter 3*sessionScanBudget, when set (seams for tests).
+	firstScanWait, scanStuckAfter time.Duration
+}
+
+// gitRead is a git info read in progress; g is set before done is closed.
+type gitRead struct {
+	done chan struct{}
+	g    gitInfo
 }
 
 // touch records what a hook said about a session.
 func (r *sessionRegistry) touch(id, cwd, transcript, mode, state string, now time.Time) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
 	if r.live == nil {
 		r.live = map[string]*liveSession{}
 	}
@@ -119,26 +158,30 @@ func (r *sessionRegistry) touch(id, cwd, transcript, mode, state string, now tim
 }
 
 func (r *sessionRegistry) transcriptOf(id string) string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.liveMu.Lock()
+	defer r.liveMu.Unlock()
 	if s := r.live[id]; s != nil {
 		return s.transcript
 	}
 	return ""
 }
 
-// list merges the stores and the hooks. desktop and transcripts are directories ("" to skip).
+// list merges the stores and the hooks. desktop and transcripts are directories ("" to skip). It answers
+// from the last scan, however old, while a new one runs in the background; only before the first scan
+// finished does it wait for it, for at most scanWait, and then lists the hook-reported sessions alone.
 func (r *sessionRegistry) list(desktop, transcripts string, now time.Time) []ClaudeSession {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.scanned == nil || now.Sub(r.scannedAt) > sessionScanEvery {
-		r.scanned = r.scanLocked(desktop, transcripts, now)
-		r.scannedAt = now
+	scanned := r.scanResult(desktop, transcripts, now)
+	r.liveMu.Lock()
+	live := make(map[string]liveSession, len(r.live))
+	for id, l := range r.live {
+		live[id] = *l
 	}
-	out := make([]ClaudeSession, 0, len(r.scanned)+len(r.live))
+	r.liveMu.Unlock()
+
+	out := make([]ClaudeSession, 0, len(scanned)+len(live))
 	seen := map[string]bool{}
-	for _, s := range r.scanned {
-		if l := r.live[s.SessionID]; l != nil && s.SessionID != "" {
+	for _, s := range scanned {
+		if l, ok := live[s.SessionID]; ok && s.SessionID != "" {
 			s.State = l.state
 			if l.last.After(s.LastActivity) {
 				s.LastActivity = l.last
@@ -155,42 +198,125 @@ func (r *sessionRegistry) list(desktop, transcripts string, now time.Time) []Cla
 		}
 		out = append(out, s)
 	}
-	for id, l := range r.live {
+	gitBy := time.Now().Add(hookGitWait)
+	for id, l := range live {
 		if seen[id] {
 			continue
 		}
 		s := ClaudeSession{SessionID: id, Cwd: l.cwd, Source: "hook", State: l.state, PermissionMode: l.mode, LastActivity: l.last}
-		r.fillProjectLocked(&s, l.cwd)
+		r.fillProject(&s, l.cwd, gitBy)
 		out = append(out, s)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].LastActivity.After(out[j].LastActivity) })
 	return out
 }
 
-func (r *sessionRegistry) scanLocked(desktop, transcripts string, now time.Time) []ClaudeSession {
+// scanResult is the last finished scan, starting a new one when it is older than sessionScanEvery.
+func (r *sessionRegistry) scanResult(desktop, transcripts string, now time.Time) []ClaudeSession {
+	r.mu.Lock()
+	if r.hasScan && now.Sub(r.scannedAt) <= sessionScanEvery {
+		out := r.scanned
+		r.mu.Unlock()
+		return out
+	}
+	stuckAfter := r.scanStuckAfter
+	if stuckAfter <= 0 {
+		stuckAfter = scanStuckFactor * sessionScanBudget
+	}
+	replace := r.scanning && r.oldScans < maxOldScans && time.Since(r.scanStart) > stuckAfter
+	if !r.scanning || replace { // single-flight: one current scan at a time, whoever asks
+		if replace {
+			log.Printf("claude-sessions: a scan of the session stores has hung; starting another")
+			r.oldScans++
+		}
+		r.scanning = true
+		r.scanGen++
+		r.scanStart = time.Now()
+		r.scanDone = make(chan struct{})
+		go r.scan(desktop, transcripts, now, r.scanGen, r.scanDone)
+	}
+	done, have, out := r.scanDone, r.hasScan, r.scanned
+	r.mu.Unlock()
+	if have {
+		return out
+	}
+	wait := scanWait
+	if r.firstScanWait > 0 {
+		wait = r.firstScanWait
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		log.Printf("claude-sessions: the first scan of the session stores isn't done (is a disk responding?); listing hook-reported sessions only")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.scanned
+}
+
+// scan reads the stores and git info with no lock held and then stores the result, unless a newer scan
+// has replaced this one meanwhile. It ends the scan (and releases waiters) even when a read panics.
+func (r *sessionRegistry) scan(desktop, transcripts string, now time.Time, gen uint64, done chan struct{}) {
 	var out []ClaudeSession
+	ok := false
+	defer func() {
+		if p := recover(); p != nil {
+			log.Printf("claude-sessions: scanning the session stores panicked: %v", p)
+		}
+		r.mu.Lock()
+		switch {
+		case gen != r.scanGen: // replaced while stuck: its result is stale
+			r.oldScans--
+		case ok:
+			r.scanned, r.scannedAt, r.hasScan = out, now, true
+			r.scanning = false
+		default: // keep the old result; with none, an empty one until the next scan
+			if !r.hasScan {
+				r.scanned, r.scannedAt, r.hasScan = []ClaudeSession{}, now, true
+			}
+			r.scanning = false
+		}
+		r.mu.Unlock()
+		close(done)
+	}()
+	out = r.scanFiles(desktop, transcripts, now)
+	ok = true
+}
+
+func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) []ClaudeSession {
+	out := []ClaudeSession{}
 	seen := map[string]bool{}
-	r.deadline = time.Now().Add(gitScanBudget)
-	for _, s := range readDesktopStore(desktop) {
-		r.fillProjectLocked(&s, s.ProjectRoot)
+	start := time.Now()
+	readBy, gitBy := start.Add(sessionScanBudget), start.Add(gitScanBudget)
+	readStore, readTx := r.readStore, r.readTx
+	if readStore == nil {
+		readStore = readDesktopStore
+	}
+	if readTx == nil {
+		readTx = readTranscripts
+	}
+	for _, s := range readStore(desktop, readBy) {
+		r.fillProject(&s, s.ProjectRoot, gitBy)
 		if s.SessionID != "" {
 			seen[s.SessionID] = true
 		}
 		out = append(out, s)
 	}
-	for _, s := range readTranscripts(transcripts, now) {
+	for _, s := range readTx(transcripts, now, readBy) {
 		if seen[s.SessionID] {
 			continue
 		}
-		r.fillProjectLocked(&s, s.Cwd)
+		r.fillProject(&s, s.Cwd, gitBy)
 		out = append(out, s)
 	}
 	return out
 }
 
-// fillProjectLocked sets the project from dir (the origin directory for desktop sessions, otherwise the
-// working directory) and the role from the working directory.
-func (r *sessionRegistry) fillProjectLocked(s *ClaudeSession, dir string) {
+// fillProject sets the project from dir (the origin directory for desktop sessions, otherwise the
+// working directory) and the role from the working directory. Git info is waited for until gitBy.
+func (r *sessionRegistry) fillProject(s *ClaudeSession, dir string, gitBy time.Time) {
 	if dir == "" {
 		dir = s.Cwd
 	}
@@ -206,52 +332,69 @@ func (r *sessionRegistry) fillProjectLocked(s *ClaudeSession, dir string) {
 	if dir == "" {
 		return
 	}
-	g, ok := r.git[dir]
-	if !ok {
-		g = r.gitInfoLocked(dir)
-	}
+	g := r.gitInfo(dir, gitBy)
 	s.ProjectRoot, s.RepoKey = g.project, g.key
 	if s.Branch == "" {
 		s.Branch = g.branch
 	}
 }
 
-// gitInfoLocked reads a directory's git info without letting a hanging disk hold up the list: the read
-// runs in its own goroutine and is waited for until the scan's deadline. A read that doesn't finish in
-// time keeps going in the background and fills the cache when it ends; meanwhile the directory counts as
-// its own project ("local:" + dir).
-func (r *sessionRegistry) gitInfoLocked(dir string) gitInfo {
+// gitInfo reads a directory's git info without letting a hanging disk hold up the list: the read runs in
+// its own goroutine and is waited for until by (a read already in progress is waited for too). A read that
+// doesn't finish in time keeps going in the background and fills the cache when it ends; meanwhile the
+// directory counts as its own project ("local:" + dir). r.mu is held only to look at and update the
+// caches, never while waiting.
+func (r *sessionRegistry) gitInfo(dir string, by time.Time) gitInfo {
 	fallback := gitInfo{project: dir, key: "local:" + dir}
+	r.mu.Lock()
+	if g, ok := r.git[dir]; ok {
+		r.mu.Unlock()
+		return g
+	}
 	if r.reading == nil {
-		r.reading = map[string]bool{}
+		r.reading = map[string]*gitRead{}
 	}
-	if r.reading[dir] || len(r.reading) >= maxGitReads {
-		return fallback
+	rd := r.reading[dir]
+	if rd == nil {
+		if len(r.reading) >= maxGitReads {
+			r.mu.Unlock()
+			return fallback
+		}
+		rd = &gitRead{done: make(chan struct{})}
+		r.reading[dir] = rd
+		read := r.readGit
+		if read == nil {
+			read = readGitInfo
+		}
+		go func() {
+			g, ok := fallback, false
+			defer func() {
+				if p := recover(); p != nil {
+					log.Printf("claude-sessions: reading git info of %s panicked: %v", dir, p)
+				}
+				r.mu.Lock()
+				delete(r.reading, dir)
+				if ok {
+					r.storeGitLocked(dir, g)
+				}
+				r.mu.Unlock()
+				rd.g = g
+				close(rd.done)
+			}()
+			g = read(dir)
+			ok = true
+		}()
 	}
-	read := r.readGit
-	if read == nil {
-		read = readGitInfo
-	}
-	done := make(chan gitInfo, 1)
-	r.reading[dir] = true
-	go func() {
-		g := read(dir)
-		done <- g // buffered: never blocks, so the scan holding r.mu can take it
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		delete(r.reading, dir)
-		r.storeGitLocked(dir, g)
-	}()
-	wait := time.Until(r.deadline)
+	r.mu.Unlock()
+	wait := time.Until(by)
 	if wait <= 0 {
 		wait = time.Millisecond // past the budget: only what is answered at once
 	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
-	case g := <-done:
-		r.storeGitLocked(dir, g)
-		return g
+	case <-rd.done:
+		return rd.g
 	case <-t.C:
 		log.Printf("claude-sessions: git info of %s didn't come in time (is its disk responding?); listed without it", dir)
 		return fallback
@@ -287,7 +430,8 @@ type desktopSession struct {
 }
 
 // readDesktopStore reads <dir>/<account>/<org>/local_*.json (deleted_* entries are left out).
-func readDesktopStore(dir string) []ClaudeSession {
+// It stops with what it has once deadline has passed (checked between files).
+func readDesktopStore(dir string, deadline time.Time) []ClaudeSession {
 	if dir == "" {
 		return nil
 	}
@@ -297,6 +441,10 @@ func readDesktopStore(dir string) []ClaudeSession {
 	}
 	var out []ClaudeSession
 	for _, f := range files {
+		if pastDeadline(deadline) {
+			log.Printf("claude-sessions: reading the desktop store takes too long; listing what was read")
+			break
+		}
 		fi, err := os.Lstat(f)
 		if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxStoreFile {
 			continue
@@ -325,6 +473,8 @@ func readDesktopStore(dir string) []ClaudeSession {
 	}
 	return out
 }
+
+func pastDeadline(t time.Time) bool { return !t.IsZero() && time.Now().After(t) }
 
 // rawID reads an id that may be a string or an object with an id.
 func rawID(raw json.RawMessage) string {
@@ -372,8 +522,8 @@ func unixAny(n float64) time.Time {
 // ---- Claude Code's transcripts ----
 
 // readTranscripts lists the newest sessions under dir (~/.claude/projects), with the working directory
-// read from the first lines of each transcript.
-func readTranscripts(dir string, now time.Time) []ClaudeSession {
+// read from the first lines of each transcript. It stops with what it has once deadline has passed.
+func readTranscripts(dir string, now, deadline time.Time) []ClaudeSession {
 	if dir == "" {
 		return nil
 	}
@@ -387,7 +537,7 @@ func readTranscripts(dir string, now time.Time) []ClaudeSession {
 	}
 	var all []tf
 	for i, p := range projects {
-		if i >= maxTranscriptDirs {
+		if i >= maxTranscriptDirs || pastDeadline(deadline) {
 			break
 		}
 		if !p.IsDir() {
@@ -411,6 +561,9 @@ func readTranscripts(dir string, now time.Time) []ClaudeSession {
 	}
 	out := make([]ClaudeSession, 0, len(all))
 	for _, t := range all {
+		if pastDeadline(deadline) {
+			break
+		}
 		cwd, branch := transcriptHead(t.path)
 		out = append(out, ClaudeSession{SessionID: strings.TrimSuffix(filepath.Base(t.path), ".jsonl"), Cwd: cwd,
 			Branch: branch, Source: "transcript", LastActivity: t.mod.UTC()})

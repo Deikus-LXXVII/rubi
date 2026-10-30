@@ -157,17 +157,70 @@ func TestHangingDiskDoesNotBlockTheList(t *testing.T) {
 	}
 }
 
-// claude-sessions.list answers with an error, not silence, when the listing doesn't finish in time.
+// stuckStore is a readStore that never returns until release is called (a blocked read of a hanging disk).
+func stuckStore(t *testing.T) func(string, time.Time) []ClaudeSession {
+	t.Helper()
+	block := make(chan struct{})
+	t.Cleanup(func() { close(block) })
+	return func(string, time.Time) []ClaudeSession {
+		<-block
+		return nil
+	}
+}
+
+// claude-sessions.list answers with an error, not silence, when the listing doesn't finish in time (here
+// the first scan of the stores never ends).
 func TestSessionsListTimesOut(t *testing.T) {
 	old := sessionsListTimeout
 	sessionsListTimeout = 100 * time.Millisecond
 	defer func() { sessionsListTimeout = old }()
-	c := &Claude{}
-	c.reg.mu.Lock() // a scan stuck elsewhere holds the registry
-	defer c.reg.mu.Unlock()
+	c := &Claude{DesktopStore: t.TempDir()}
+	c.reg.readStore, c.reg.firstScanWait = stuckStore(t), 150*time.Millisecond
 	start := time.Now()
 	_, err := c.handle(context.Background(), "claude-sessions.list", nil)
 	if err == nil || !strings.Contains(err.Error(), "too long") || time.Since(start) > 2*time.Second {
 		t.Fatalf("err %v after %s", err, time.Since(start))
+	}
+}
+
+// Before the first scan has finished, a list waits for it only up to scanWait and then shows the sessions
+// the hooks reported; once a scan has finished, a stuck refresh doesn't hold lists up at all.
+func TestListServesWithoutWaitingForAStuckScan(t *testing.T) {
+	r := &sessionRegistry{readStore: stuckStore(t), firstScanWait: 100 * time.Millisecond}
+	r.touch("hooked", "/work", "", "", "busy", time.Now())
+	start := time.Now()
+	list := r.list("x", "", time.Now())
+	if len(list) != 1 || list[0].SessionID != "hooked" || list[0].Source != "hook" || time.Since(start) > time.Second {
+		t.Fatalf("list %+v after %s", list, time.Since(start))
+	}
+
+	// A registry that has a (stale) result serves it at once while the refresh hangs.
+	r.mu.Lock()
+	r.scanned = []ClaudeSession{{SessionID: "old", Source: "desktop", State: "unknown", Role: "main"}}
+	r.scannedAt, r.hasScan = time.Now().Add(-time.Hour), true
+	r.mu.Unlock()
+	start = time.Now()
+	list = r.list("x", "", time.Now())
+	if len(list) != 2 || time.Since(start) > 50*time.Millisecond {
+		t.Fatalf("stale list %+v after %s", list, time.Since(start))
+	}
+}
+
+// A scan that runs past its deadline stops reading more files and lists what it has.
+func TestReadersStopAtTheDeadline(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "store")
+	writeFile(t, filepath.Join(store, "a", "o", "local_1.json"), `{"sessionId":"local_1","cliSessionId":"cli-1"}`)
+	tr := filepath.Join(dir, "projects")
+	writeFile(t, filepath.Join(tr, "p", "s.jsonl"), `{"cwd":"/x"}`+"\n")
+	past := time.Now().Add(-time.Second)
+	if got := readDesktopStore(store, past); len(got) != 0 {
+		t.Errorf("store: %+v", got)
+	}
+	if got := readTranscripts(tr, time.Now(), past); len(got) != 0 {
+		t.Errorf("transcripts: %+v", got)
+	}
+	if got := readDesktopStore(store, time.Time{}); len(got) != 1 {
+		t.Errorf("store without deadline: %+v", got)
 	}
 }
