@@ -390,7 +390,7 @@ func (c *Core) WaitingFor(agent string) int {
 }
 
 func (c *Core) eventsVisible(agent string, includeAcked bool) ([]events.Event, error) {
-	all := c.Events.List(includeAcked)
+	all := c.Events.ListFor(agent, includeAcked)
 	var admin bool
 	var subs map[string]bool
 	var known, none bool
@@ -430,18 +430,66 @@ func (c *Core) eventsVisible(agent string, includeAcked bool) ([]events.Event, e
 	return out, nil
 }
 
-// AckFor marks an event as reported, if agent may see it.
-func (c *Core) AckFor(agent, code, id string) (bool, error) {
-	visible, err := c.EventsFor(agent, code, false)
+// Reasons AckFor gives (rubi_ack's `reason`); the first two are the store's.
+const (
+	AckAcked          = string(events.Acked)        // this agent's first ack
+	AckAlreadyAcked   = string(events.AlreadyAcked) // this agent acked it before
+	AckNotVisible     = "not_visible"               // the event exists but isn't addressed to this agent
+	AckNotStored      = "not_stored"                // delivered to a webhook only; there is nothing to ack
+	AckUnknownExpired = string(events.NotFound)     // no such event (never existed, pruned, or already gone)
+)
+
+// AckFor records that agent reported the event, if it may see it, and says why when it didn't: one of
+// the Ack* reasons. Acks are per agent: another Bot still sees the event until it acks it too.
+func (c *Core) AckFor(agent, code, id string) (string, error) {
+	visible, err := c.EventsFor(agent, code, true)
 	if err != nil {
-		return false, err
+		return "", err
 	}
+	// Ack under the registered name, so the key matches the one settleAcked checks.
+	name := agent
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if a := findAgent(d, agent); a != nil {
+			name = a.Name
+		}
+		return nil
+	})
 	for _, e := range visible {
 		if e.ID == id {
-			ok := c.Events.Ack(id)
-			c.saveEvents()
-			return ok, nil
+			res := c.Events.Ack(name, id)
+			if res == events.Acked {
+				c.settleAcked(id)
+				c.saveEvents()
+			}
+			return string(res), nil
 		}
 	}
-	return false, nil
+	if _, ok := c.Events.Get(id); ok {
+		return AckNotVisible, nil
+	}
+	if events.NotStored(id) {
+		return AckNotStored, nil
+	}
+	return AckUnknownExpired, nil
+}
+
+// settleAcked marks the event acked by everyone once no Bot is left that still sees it unacked, so it
+// is pruned early like before acks were per agent.
+func (c *Core) settleAcked(id string) {
+	var names []string
+	_ = c.Vault.View(func(d *vault.Data) error {
+		for _, a := range d.Agents {
+			names = append(names, a.Name)
+		}
+		return nil
+	})
+	for _, n := range names {
+		list, _ := c.eventsVisible(n, false)
+		for _, e := range list {
+			if e.ID == id {
+				return
+			}
+		}
+	}
+	c.Events.AckAll(id)
 }
