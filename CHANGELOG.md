@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Rubi Home: `rubi-home claude-send`, a documented way for a local script to message a Claude Code session.**
+  `printf '%s' "$text" | rubi-home claude-send --name "Remote control" --from Citri --wait-reply 300` (or
+  `--session ID`) queues the message in Rubi Home's inbox, where the waiter hook (`asyncRewake` Stop hook, in the
+  managed settings) wakes an idle session with it, and prints the session's answer. It replaces writing to the
+  undocumented `messagingSocketPath` socket of Claude Code, which stays only as the caller's fallback. The
+  session is told the message is from a local process, not the user or a Bot, and grants no permissions; the
+  answer goes to a small local reply box (`--get-reply ID`, 10 minutes), never to a Bot. A new socket line
+  `RubiSend` with its own slots; an older Rubi Home gives "too old". The claude-code plugin ignores anything
+  addressed to a local sender. Plan in `docs/plans/documented-messaging.md`, example in
+  `docs/examples/tell-session.sh`.
 - **Rubi Home: a worktree's `commondir` no longer widens the project; sessions report resolved paths.** A `.git`
   file only makes the main repository the project when its `gitdir` is `<common>/worktrees/<name>` (git's own
   layout); a spoofed `commondir` naming an ancestor, or one inside a `.git` directory, is ignored and the
