@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **`rubi_ack` is the same for every Bot.** Events were acked once for everyone, so of several Bots sharing a
+  broadcast (`plugin.update_available`, `approval.decided`, ...) only the first got `acked: true`, and its ack
+  hid the event from the others. Acks are now kept per Bot (case-insensitive name): an event acked by one Bot
+  stays in the others' `rubi_events` until they ack it. `rubi_ack` now also returns `reason`: `acked`,
+  `already_acked`, `not_visible` (exists, but not addressed to you), `not_stored` or `unknown_or_expired`.
+  `acked` stays, and is true only for a new ack (`already_acked` is false, as before).
+- **No ack for messages that aren't stored.** `access.granted` told the Bot to `rubi_ack` an event that
+  was never in the list; its `next_step` no longer mentions ack (same for `agent.code`), and acking such an id
+  gives `not_stored`.
+- Events saved by an older version with the old global flag count as acked by every Bot, so nothing old
+  reappears. An event is pruned after an hour once every Bot that could see it at the time of the last ack has acked it, otherwise after a day (a Bot added later doesn't see an event that was already settled). After a downgrade, events acked by only some Bots show as unacked again for them (harmless).
+
 ## v0.12.2 (2026-10-30)
 
 - **Rubi Home: a hanging disk no longer silences `claude-sessions.list`.** The session list reads each
