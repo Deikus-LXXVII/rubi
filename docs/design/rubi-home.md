@@ -64,6 +64,21 @@ The helper does only what it was built for, whatever Rubi asks:
   password) and answers only from its execute step, so only an approved action can allow a command. Its
   approvals count toward the same limit as every other approved action (30 per hour).
 
+  **Trusting a project (plugin-side; Rubi Home needs no change).** The plugin can turn one approval into a
+  trust that covers a whole project until 04:00: a run approval's third option, or the Bot's
+  `claude_code_trust_project` (strong, locked). It uses what Rubi Home already reports: the project's top
+  directory (`ClaudeSession.project_root` of `claude-sessions.list`) names the root, and any session whose
+  request directory is inside it is covered, so no per-session state is needed in the helper. The trust is a
+  record in the plugin's own encrypted state (id `pt_…`, computer, root, branch pattern, end, uses), so it
+  survives a restart of Rubi Home or of the plugin, and an allow is still a `claude.decide` through Rubi: with
+  Rubi locked the helper denies as before. Rubi Home does not report its computer's time zone, so the 04:00
+  end is computed in the zone of the machine Rubi runs on, and the approval says so. The same trust lets the
+  Bot bound to a session of the project call `claude-start.create` for a folder inside the root and bind
+  to other sessions in it without a new approval (the helper's own checks of the folder apply as always). For this
+  the list reports `real_cwd` and `real_project_root` (symlinks resolved), and `readGitInfo` takes a worktree's
+  main repository as the project only when the `.git` file's `gitdir` is `<common>/worktrees/<name>`, so a
+  spoofed `commondir` can't widen a trust's root.
+
   The boundary is the computer's user account: a process running as the same user can talk to the socket
   (it can only ask) or replace the helper binary, so the hook's command should be a root-owned path, and
   managed settings (which a user can't edit) should keep Claude Code from editing its own settings.

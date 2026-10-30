@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Rubi Home: a worktree's `commondir` no longer widens the project; sessions report resolved paths.** A `.git`
+  file only makes the main repository the project when its `gitdir` is `<common>/worktrees/<name>` (git's own
+  layout); a spoofed `commondir` naming an ancestor, or one inside a `.git` directory, is ignored and the
+  folder with the `.git` file is the project. `claude-sessions.list` adds `real_cwd` and `real_project_root`
+  (symlinks resolved; omitted when they can't be) so a plugin can check a trust against the real place.
+- **claude-code plugin: one trust per project ("trust this project until 04:00").** A run approval gets a
+  third option, "Allow and trust this project until <weekday date time zone>", and a Bot can ask for the same
+  with `claude_code_trust_project` (strong, locked approval, for the project of the session it is bound to). Until
+  the next 04:00 (at most 24 hours; the time is in the zone of the machine Rubi runs on, because Rubi Home does
+  not report its computer's zone, and the approval says so) every Claude Code session on that computer inside
+  the project's root runs plain, listed commands without asking (the 2-hour trust's check, each allow audited
+  with the `pt_…` id, at most 2000), and switching to or creating a git branch is allowed only for names matching
+  the trust's pattern (default `citri/*`). Push and every remote git command, `--force`, sudo, the network,
+  installs, `git tag`, writes outside the root and branches outside the pattern still ask. The Bot bound to a
+  session of the project can start sessions in it and bind to its other sessions without a new approval
+  (audited). One live trust per computer and root (a new one replaces the old); it lives in the plugin's saved
+  state, so it survives a restart of Rubi Home, the plugin or Rubi; revoke it in the panel or with
+  `claude_code_mandates`. No change to Rubi Home. Plugin repo, branch `citri/project-trust`; plan in
+  `docs/plans/project-trust.md`.
 - **Rubi Home logs every hook it handles.** One line per hook: `claude-hook <event> session=<first 8 of the id>
   outcome=<what happened> <ms>ms` (for example `delivered 2`, `replies 1 asks 1 blocked`, `refused
   (protocol)`, `slots full`; a permission request shows its request id and the first 8 characters of its
