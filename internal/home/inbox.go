@@ -264,16 +264,18 @@ func (c *Claude) Send(sessionID, from, text string) (ClaudeMessage, int, error) 
 	case len([]rune(text)) > claudeMaxText:
 		return ClaudeMessage{}, 0, fmt.Errorf("text is longer than %d characters: send a short ask, not a task", claudeMaxText)
 	}
-	known := false
-	for _, s := range c.Sessions("", true) {
-		if s.SessionID == sessionID {
-			if s.State == "ended" {
-				return ClaudeMessage{}, 0, errors.New("that session has ended")
-			}
-			known = true
-		}
+	// What the hooks and the last scan know; before the first scan has finished, it is waited for only
+	// briefly (sendScanWait), never the full scanWait.
+	found, ended, ready := c.reg.lookup(c.DesktopStore, c.Transcripts, sessionID, time.Now().UTC())
+	if !found && !ready && c.reg.waitScan(sendScanWait) {
+		found, ended, ready = c.reg.lookup(c.DesktopStore, c.Transcripts, sessionID, time.Now().UTC())
 	}
-	if !known {
+	switch {
+	case ended:
+		return ClaudeMessage{}, 0, errors.New("that session has ended")
+	case !found && !ready:
+		return ClaudeMessage{}, 0, errSessionsNotReady
+	case !found:
 		return ClaudeMessage{}, 0, errors.New("unknown session")
 	}
 	m := ClaudeMessage{ID: "cm_" + rand.Text()[:12], From: from, Text: text, At: time.Now().UTC()}
@@ -289,15 +291,22 @@ func (c *Claude) Send(sessionID, from, text string) (ClaudeMessage, int, error) 
 	return m, len(c.inbox[sessionID]), nil
 }
 
+// sendScanWait is how long claude-sessions.send waits for the first scan of the session stores.
+const sendScanWait = 300 * time.Millisecond
+
+var errSessionsNotReady = errors.New("session list not ready: Rubi Home is still reading this computer's Claude Code sessions (a disk may be slow); try again in a few seconds")
+
 // Sessions lists the sessions on this computer, newest first. repo filters by a part of the project
 // key or directory (case-insensitive).
 func (c *Claude) Sessions(repo string, includeArchived bool) []ClaudeSession {
-	return filterSessions(c.allSessions(includeArchived), repo)
+	all, _ := c.allSessions(includeArchived)
+	return filterSessions(all, repo)
 }
 
-// allSessions is every session, with the number of messages waiting for each.
-func (c *Claude) allSessions(includeArchived bool) []ClaudeSession {
-	all := c.reg.list(c.DesktopStore, c.Transcripts, time.Now().UTC())
+// allSessions is every session, with the number of messages waiting for each, and how fresh the scanned
+// part is.
+func (c *Claude) allSessions(includeArchived bool) ([]ClaudeSession, scanMeta) {
+	all, meta := c.reg.listMeta(c.DesktopStore, c.Transcripts, time.Now().UTC())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	out := make([]ClaudeSession, 0, len(all))
@@ -308,7 +317,7 @@ func (c *Claude) allSessions(includeArchived bool) []ClaudeSession {
 		s.Waiting = len(c.inbox[s.SessionID])
 		out = append(out, s)
 	}
-	return out
+	return out, meta
 }
 
 // filterSessions keeps the sessions that match repo (a part of the project key or directory,
@@ -343,7 +352,6 @@ func (c *Claude) lastAnswer(in eventInput) (text string, ok bool) {
 	select {
 	case c.answerSlots <- struct{}{}:
 	default:
-		c.answerRejected.Add(1)
 		log.Printf("claude: too many transcript reads are stuck; Stop goes on without the last answer")
 		return "", false
 	}

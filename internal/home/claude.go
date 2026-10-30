@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode"
 )
@@ -105,13 +104,11 @@ type Claude struct {
 	reg         sessionRegistry
 	answerOnce  sync.Once
 	answerSlots chan struct{} // slots for transcript reads (see lastAnswer)
-	// answerRejected counts transcript reads refused because every slot was busy.
-	answerRejected atomic.Int32
-	flightMu       sync.Mutex
-	flights        map[string]*flight         // claude-sessions.list calls still running, by key (see within)
-	inbox          map[string][]ClaudeMessage // by session id
-	turns          map[string]*turnState
-	outbox         []ClaudeOut
+	flightMu    sync.Mutex
+	flights     map[string]*flight         // claude-sessions.list calls still running, by key (see within)
+	inbox       map[string][]ClaudeMessage // by session id
+	turns       map[string]*turnState
+	outbox      []ClaudeOut
 }
 
 type claudeItem struct {
@@ -403,13 +400,21 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		// different filters can use up the flights.
 		key := fmt.Sprintf("sessions.list|%v", in.IncludeArchived)
 		v, err := c.within(ctx, key, sessionsListTimeout, func() (any, error) {
-			return c.allSessions(in.IncludeArchived), nil
+			all, meta := c.allSessions(in.IncludeArchived)
+			return sessionsListed{all, meta}, nil
 		})
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"sessions": filterSessions(v.([]ClaudeSession), in.Repo),
-			"sources": map[string]bool{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}}, nil
+		l := v.(sessionsListed)
+		sources := map[string]any{"desktop_app": dirExists(c.DesktopStore), "transcripts": dirExists(c.Transcripts)}
+		if !l.meta.at.IsZero() {
+			sources["scanned_at"] = l.meta.at
+		}
+		if l.meta.stale { // an older scan (a refresh runs), or the hook-reported sessions only
+			sources["stale"] = true
+		}
+		return map[string]any{"sessions": filterSessions(l.all, in.Repo), "sources": sources}, nil
 	case "claude-sessions.send":
 		var in struct {
 			SessionID string `json:"session_id"`
@@ -438,17 +443,27 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 }
 
 // claudeEventDeadline is how long the socket waits for an event hook's handler; it stays below
-// claudeEventWait, how long the hook itself waits.
-var claudeEventDeadline = 5 * time.Second
+// claudeEventWait, how long the hook itself waits. claudeCommitWait is how much longer it waits for a
+// handler that has taken its messages just at the deadline (its reply only needs building).
+var (
+	claudeEventDeadline = 5 * time.Second
+	claudeCommitWait    = time.Second
+)
+
+// claudeTooManyAtOnce is the denial when more connections arrive at once than can be read.
+const claudeTooManyAtOnce = "too many hook requests are arriving at once, so the command was denied."
 
 // sessionsListTimeout bounds claude-sessions.list, which reads the session stores and git
 // files: well below the time a caller (Rubi, then its MCP client) waits, so a hanging disk gives an error.
 var sessionsListTimeout = 20 * time.Second
 
-var (
-	errListTooLong = errors.New("reading the Claude Code sessions on this computer takes too long (a project's disk may not be responding); try again later")
-	errListBusy    = errors.New("too many session listings are still running (a project's disk may not be responding); try again later")
-)
+var errListTooLong = errors.New("reading the Claude Code sessions on this computer takes too long (a project's disk may not be responding); try again later")
+
+// sessionsListed is what one claude-sessions.list flight found.
+type sessionsListed struct {
+	all  []ClaudeSession
+	meta scanMeta
+}
 
 // flight is one call of fn that callers of within share.
 type flight struct {
@@ -457,20 +472,14 @@ type flight struct {
 	err  error
 }
 
-// maxFlights bounds the calls of within that may be running at once (each can be stuck on a disk).
-const maxFlights = 8
-
 // within runs fn but returns by d (or ctx's end) with an error if fn hasn't; fn keeps running. It is
 // single-flight per key: while a call for the key still runs, further callers wait for that call's result
-// (each for at most its own d) instead of starting another, so stuck calls don't pile up goroutines.
+// (each for at most its own d) instead of starting another, so stuck calls don't pile up goroutines. The
+// keys are fixed (one per include_archived value), so at most two calls are ever running.
 func (c *Claude) within(ctx context.Context, key string, d time.Duration, fn func() (any, error)) (any, error) {
 	c.flightMu.Lock()
 	f := c.flights[key]
 	if f == nil {
-		if len(c.flights) >= maxFlights {
-			c.flightMu.Unlock()
-			return nil, errListBusy
-		}
 		if c.flights == nil {
 			c.flights = map[string]*flight{}
 		}
@@ -543,9 +552,10 @@ func (c *Claude) Serve(ctx context.Context, path string) error {
 		select {
 		case s.reading <- struct{}{}:
 		default:
-			// Not classified yet, so it may be an event: an empty reply (a hook that gets one goes on, and
-			// a PermissionRequest hook reads it as no answer and denies by itself), never a denial.
-			_, _ = conn.Write([]byte("{}\n"))
+			// Not classified yet, so it may be an event: a denial with its reason, which an approval shows
+			// and an event hook reads as an empty reply (it has none of a HookReply's fields).
+			_ = conn.SetWriteDeadline(time.Now().Add(claudeReadTimeout))
+			_ = writeDecision(conn, claudeDeny(claudeTooManyAtOnce))
 			conn.Close()
 			continue
 		}
@@ -622,7 +632,14 @@ func (c *Claude) event(line []byte, slots chan struct{}) HookReply {
 	case <-t.C:
 	}
 	if !tk.abandon() { // it took the messages just now: its reply is on the way
-		return <-done
+		t.Reset(claudeCommitWait)
+		select {
+		case r := <-done:
+			return r
+		case <-t.C:
+			log.Printf("claude: an event hook took its messages but didn't answer in time; answered without a reply")
+			return HookReply{}
+		}
 	}
 	log.Printf("claude: an event hook took too long; answered without a reply")
 	return HookReply{}

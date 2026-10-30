@@ -140,12 +140,13 @@ func TestTimedOutListsDontLeakGoroutines(t *testing.T) {
 	t.Run("store read blocked", func(t *testing.T) {
 		c := &Claude{DesktopStore: t.TempDir()}
 		c.reg.readStore, c.reg.firstScanWait = stuckStore(t), 50*time.Millisecond
+		c.reg.scanBudget = 20 * time.Millisecond // scans end quickly and reuse the one stuck read
 		before := settled()
 		for i := 0; i < 100; i++ {
 			// Most time out; one that joins the flight just before its end may get the hook-only list.
 			_, _ = c.handle(context.Background(), "claude-sessions.list", nil)
 		}
-		// The one blocked scan is all that is left (the waiting list call ends after firstScanWait).
+		// The one blocked store read is all that is left (scans and list calls all end).
 		time.Sleep(200 * time.Millisecond)
 		if after := settled(); after > before+1 {
 			t.Fatalf("goroutines %d -> %d", before, after)
@@ -262,8 +263,8 @@ func TestStopDoesNotWaitForAStuckTranscript(t *testing.T) {
 			t.Fatalf("stop %d: %+v after %s", i, r, time.Since(start))
 		}
 	}
-	if n := c.answerRejected.Load(); n != 2 {
-		t.Fatalf("%d reads refused, want 2", n)
+	if n := len(c.answerSlots); n != claudeAnswerReads { // the 2 extra Stops didn't start a read
+		t.Fatalf("%d reads running, want %d", n, claudeAnswerReads)
 	}
 	c.mu.Lock()
 	owed := append([]string(nil), c.turns["s-1"].from...)
@@ -329,7 +330,8 @@ func TestEventTicketStates(t *testing.T) {
 	}
 }
 
-// More connections than the read gate allows get an empty reply, never a denial.
+// More connections than the read gate allows get a denial that says why; an event hook reads the same
+// line as an empty reply.
 func TestReadGate(t *testing.T) {
 	c := &Claude{}
 	sock := serveSocket(t, c)
@@ -359,45 +361,104 @@ func TestReadGate(t *testing.T) {
 			break
 		}
 	}
-	if err != nil || strings.TrimSpace(string(line)) != "{}" {
+	var d ClaudeDecision
+	if err != nil || json.Unmarshal(line, &d) != nil || d.Behavior != "deny" || !strings.Contains(d.Message, "too many") {
 		t.Fatalf("overflow got %q (%v)", line, err)
+	}
+	var r HookReply
+	if json.Unmarshal(line, &r) != nil || r != (HookReply{}) {
+		t.Fatalf("as an event reply: %+v", r)
 	}
 }
 
-// A scan whose read never returns is replaced after a while; the stuck one's late result is dropped.
-func TestHungScanIsReplaced(t *testing.T) {
-	release := make(chan struct{})
-	var calls atomic.Int32
-	r := &sessionRegistry{firstScanWait: 100 * time.Millisecond, scanStuckAfter: 50 * time.Millisecond}
+// A desktop store whose read never returns doesn't hide the transcript sessions, and later scans reuse
+// the stuck read instead of starting another.
+func TestStuckStoreDoesNotHideTranscripts(t *testing.T) {
+	tr := filepath.Join(t.TempDir(), "projects")
+	writeFile(t, filepath.Join(tr, "p", "s-tx.jsonl"), `{"cwd":"/x"}`+"\n")
+	var storeReads atomic.Int32
+	block := make(chan struct{})
+	defer close(block)
+	r := &sessionRegistry{firstScanWait: 2 * time.Second, scanBudget: 300 * time.Millisecond, readGit: func(string) gitInfo { return gitInfo{} }}
 	r.readStore = func(string, time.Time) []ClaudeSession {
-		if calls.Add(1) == 1 {
-			<-release // the first scan hangs, then returns something stale
-			return []ClaudeSession{{SessionID: "stale", Source: "desktop"}}
+		storeReads.Add(1)
+		<-block
+		return nil
+	}
+	for round := 0; round < 3; round++ {
+		now := time.Now().Add(time.Duration(round) * time.Minute) // each round's cache is old
+		start := time.Now()
+		list := r.list("store", tr, now)
+		if round > 0 { // the round's scan runs in the background; the next list gets it
+			waitFor(t, "the scan to end", func() bool {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				return !r.scanning
+			})
+			list = r.list("store", tr, now)
 		}
-		return []ClaudeSession{{SessionID: "fresh", Source: "desktop"}}
-	}
-	ids := func() map[string]bool {
-		out := map[string]bool{}
-		for _, s := range r.list("x", "", time.Now()) {
-			out[s.SessionID] = true
+		if len(list) != 1 || list[0].SessionID != "s-tx" || time.Since(start) > time.Second {
+			t.Fatalf("round %d: %+v after %s", round, list, time.Since(start))
 		}
-		return out
+		if n := storeReads.Load(); n != 1 {
+			t.Fatalf("round %d: the store was read %d times", round, n)
+		}
 	}
-	if got := ids(); len(got) != 0 { // the first scan hangs: nothing to show yet
-		t.Fatalf("first list %v", got)
+}
+
+// claude-sessions.send answers within sendScanWait while the first scan is stuck: a session the hooks reported takes
+// the message, any other id gets "not ready" (and "unknown session" once a scan has finished).
+func TestSendDoesNotWaitForTheScan(t *testing.T) {
+	c := &Claude{DesktopStore: t.TempDir()}
+	block := make(chan struct{})
+	c.reg.readStore = func(string, time.Time) []ClaudeSession {
+		<-block
+		return []ClaudeSession{{SessionID: "s-desk", Source: "desktop"}}
 	}
-	time.Sleep(80 * time.Millisecond) // past scanStuckAfter
-	if got := ids(); !got["fresh"] {
-		t.Fatalf("after the replacement: %v", got)
+	c.Hook([]byte(`{"hook_event_name":"SessionStart","session_id":"s-hook","cwd":"/w"}`))
+	start := time.Now()
+	if _, _, err := c.Send("s-hook", "sister", "hi"); err != nil {
+		t.Fatalf("hook-reported session: %v", err)
 	}
-	close(release)
-	waitFor(t, "the stuck scan to end", func() bool {
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		return r.oldScans == 0
+	if _, _, err := c.Send("s-desk", "sister", "hi"); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("before the first scan: %v", err)
+	}
+	if took := time.Since(start); took > sendScanWait+500*time.Millisecond {
+		t.Fatalf("send took %s", took)
+	}
+	close(block)
+	waitFor(t, "the scan to end", func() bool {
+		c.reg.mu.Lock()
+		defer c.reg.mu.Unlock()
+		return c.reg.hasScan
 	})
-	if got := ids(); got["stale"] || !got["fresh"] {
-		t.Fatalf("after the stuck scan returned: %v", got)
+	if _, _, err := c.Send("s-desk", "sister", "hi"); err != nil {
+		t.Fatalf("after the scan: %v", err)
+	}
+	if _, _, err := c.Send("nope", "sister", "hi"); err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("unknown id after the scan: %v", err)
+	}
+}
+
+// A list served from an old scan says so in sources, with the time of that scan.
+func TestListSaysWhenItIsStale(t *testing.T) {
+	c := &Claude{DesktopStore: t.TempDir()}
+	c.reg.readStore = stuckStore(t)
+	at := time.Now().Add(-time.Hour).UTC()
+	c.reg.scanned, c.reg.scannedAt, c.reg.hasScan = []ClaudeSession{}, at, true
+	v, err := c.handle(context.Background(), "claude-sessions.list", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := v.(map[string]any)["sources"].(map[string]any)
+	if src["stale"] != true || src["scanned_at"] != at {
+		t.Fatalf("sources %v", src)
+	}
+	c = &Claude{}
+	c.reg.scanned, c.reg.scannedAt, c.reg.hasScan = []ClaudeSession{}, time.Now().UTC(), true
+	v, _ = c.handle(context.Background(), "claude-sessions.list", nil)
+	if src := v.(map[string]any)["sources"].(map[string]any); src["stale"] != nil || src["scanned_at"] == nil {
+		t.Fatalf("fresh sources %v", src)
 	}
 }
 
@@ -450,5 +511,37 @@ func TestListFiltersShareOneFlight(t *testing.T) {
 	c.flightMu.Unlock()
 	if n != 1 {
 		t.Fatalf("%d flights", n)
+	}
+}
+
+// A store that doesn't come in time is listed as its last full read, and the scan counts as partial: the
+// list says stale and an id it doesn't find isn't called unknown.
+func TestPartialScanKeepsTheLastFullRead(t *testing.T) {
+	var reads atomic.Int32
+	block := make(chan struct{})
+	defer close(block)
+	r := &sessionRegistry{firstScanWait: 2 * time.Second, scanBudget: 100 * time.Millisecond}
+	r.readStore = func(string, time.Time) []ClaudeSession {
+		if reads.Add(1) > 1 {
+			<-block // the disk hangs from the second read on
+		}
+		return []ClaudeSession{{SessionID: "s-desk", Source: "desktop"}}
+	}
+	if list, meta := r.listMeta("store", "", time.Now()); len(list) != 1 || meta.stale {
+		t.Fatalf("first scan: %+v %+v", list, meta)
+	}
+	later := time.Now().Add(time.Minute)
+	r.list("store", "", later) // starts the second scan, whose store read hangs
+	waitFor(t, "the second scan to end", func() bool {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return !r.scanning && r.scannedAt.Equal(later)
+	})
+	list, meta := r.listMeta("store", "", later)
+	if len(list) != 1 || list[0].SessionID != "s-desk" || !meta.stale {
+		t.Fatalf("partial scan: %+v %+v", list, meta)
+	}
+	if found, _, ready := r.lookup("store", "", "s-other", later); found || ready {
+		t.Fatalf("lookup of an id a partial scan doesn't have: found %v ready %v", found, ready)
 	}
 }

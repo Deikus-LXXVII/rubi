@@ -45,17 +45,18 @@ const (
 )
 
 // The scan of the stores runs in the background, off every lock the hooks use. The same kind of read can
-// hang there, so the scan stops reading more files after sessionScanBudget; a single read that never
-// returns holds only the one scan goroutine, and lists go on serving the last result. Before the first
-// scan has finished, a list waits for it at most scanWait (the registry's wait when set). hookGitWait is how long a list waits for git
-// info of hook-reported sessions that no scan has seen.
+// hang there: the desktop store and the transcripts are each read in their own goroutine, which stops
+// reading more files after sessionScanBudget, and the scan waits for each until then (plus scanReadGrace)
+// and lists what came in, so a hung store doesn't hide the transcript sessions. A store that doesn't come
+// in time (or comes in after its deadline, so possibly cut short) is listed as the last full read of it
+// and the scan counts as partial (lists say stale; send says "not ready" for ids it doesn't find). A read
+// that never returns is reused by later scans (at most one read per store at a time). Lists go on serving the last result
+// while a scan runs; before the first one has finished, a list waits for it at most scanWait (the
+// registry's wait when set). hookGitWait is how long a list waits for git info of hook-reported sessions
+// that no scan has seen.
 const (
-	scanWait = 6 * time.Second
-	// A scan whose read never returns would keep every later scan out: after 3 scan budgets a list may
-	// start one replacement (the stuck one's late result is dropped), and at most maxOldScans stuck scans
-	// are left behind in total.
-	scanStuckFactor = 3
-	maxOldScans     = 3
+	scanWait      = 6 * time.Second
+	scanReadGrace = 250 * time.Millisecond
 )
 
 var (
@@ -99,11 +100,13 @@ type sessionRegistry struct {
 	scanned   []ClaudeSession
 	scannedAt time.Time
 	hasScan   bool          // scanned holds a finished scan (it may be empty)
-	scanning  bool          // the current scan is running
-	scanDone  chan struct{} // closed when the current scan ends
-	scanGen   uint64        // the current scan's number; a result from an older scan is dropped
-	scanStart time.Time     // when the current scan started
-	oldScans  int           // replaced scans that haven't returned yet
+	scanning  bool          // a scan is running
+	scanDone  chan struct{} // closed when the running scan ends
+	partial   bool          // a store of the last scan didn't come in full in time
+	storeRead *sourceRead   // reads of the desktop store and the transcripts in progress (see readSource)
+	txRead    *sourceRead
+	lastStore []ClaudeSession // the last full read of each store
+	lastTx    []ClaudeSession
 	git       map[string]gitInfo
 	reading   map[string]*gitRead // directories whose git info is being read in the background
 	// readGit reads git info (readGitInfo when nil; a seam for tests). readStore and readTx read the
@@ -111,8 +114,21 @@ type sessionRegistry struct {
 	readGit   func(dir string) gitInfo
 	readStore func(dir string, deadline time.Time) []ClaudeSession
 	readTx    func(dir string, now, deadline time.Time) []ClaudeSession
-	// firstScanWait replaces scanWait, and scanStuckAfter 3*sessionScanBudget, when set (seams for tests).
-	firstScanWait, scanStuckAfter time.Duration
+	// firstScanWait replaces scanWait, and scanBudget sessionScanBudget, when set (seams for tests).
+	firstScanWait, scanBudget time.Duration
+}
+
+// scanMeta says how fresh the scanned part of a list is.
+type scanMeta struct {
+	at    time.Time // when the scan it comes from started (zero before the first scan)
+	stale bool      // older than sessionScanEvery (a refresh runs meanwhile), partial, or no scan yet
+}
+
+// sourceRead is a read of one store in progress; out and late are set before done is closed.
+type sourceRead struct {
+	done chan struct{}
+	out  []ClaudeSession
+	late bool // it ended after its deadline: the readers stop there, so out may be cut short
 }
 
 // gitRead is a git info read in progress; g is set before done is closed.
@@ -170,7 +186,13 @@ func (r *sessionRegistry) transcriptOf(id string) string {
 // from the last scan, however old, while a new one runs in the background; only before the first scan
 // finished does it wait for it, for at most scanWait, and then lists the hook-reported sessions alone.
 func (r *sessionRegistry) list(desktop, transcripts string, now time.Time) []ClaudeSession {
-	scanned := r.scanResult(desktop, transcripts, now)
+	out, _ := r.listMeta(desktop, transcripts, now)
+	return out
+}
+
+// listMeta is list, with how fresh its scanned part is.
+func (r *sessionRegistry) listMeta(desktop, transcripts string, now time.Time) ([]ClaudeSession, scanMeta) {
+	scanned, meta := r.scanResult(desktop, transcripts, now)
 	r.liveMu.Lock()
 	live := make(map[string]liveSession, len(r.live))
 	for id, l := range r.live {
@@ -208,37 +230,66 @@ func (r *sessionRegistry) list(desktop, transcripts string, now time.Time) []Cla
 		out = append(out, s)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].LastActivity.After(out[j].LastActivity) })
-	return out
+	return out, meta
+}
+
+// lookup says what the hooks and the last scan know about a session, without waiting for anything: found,
+// whether a hook reported its end, and ready, false while no scan has finished (an id the hooks haven't
+// reported can't be judged yet). It starts a scan when the last one is old.
+func (r *sessionRegistry) lookup(desktop, transcripts, id string, now time.Time) (found, ended, ready bool) {
+	r.liveMu.Lock()
+	l := r.live[id]
+	if l != nil {
+		ended = l.state == "ended"
+	}
+	r.liveMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.hasScan || now.Sub(r.scannedAt) > sessionScanEvery {
+		r.startScanLocked(desktop, transcripts, now)
+	}
+	if l != nil {
+		return true, ended, true
+	}
+	for _, s := range r.scanned {
+		if s.SessionID == id {
+			return true, false, true
+		}
+	}
+	return false, false, r.hasScan && !r.partial
+}
+
+// waitScan waits up to d for the running scan, if any, and reports whether it ended.
+func (r *sessionRegistry) waitScan(d time.Duration) bool {
+	r.mu.Lock()
+	done, running := r.scanDone, r.scanning
+	r.mu.Unlock()
+	if !running {
+		return true
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
 }
 
 // scanResult is the last finished scan, starting a new one when it is older than sessionScanEvery.
-func (r *sessionRegistry) scanResult(desktop, transcripts string, now time.Time) []ClaudeSession {
+func (r *sessionRegistry) scanResult(desktop, transcripts string, now time.Time) ([]ClaudeSession, scanMeta) {
 	r.mu.Lock()
 	if r.hasScan && now.Sub(r.scannedAt) <= sessionScanEvery {
-		out := r.scanned
+		out, meta := r.scanned, scanMeta{at: r.scannedAt, stale: r.partial}
 		r.mu.Unlock()
-		return out
+		return out, meta
 	}
-	stuckAfter := r.scanStuckAfter
-	if stuckAfter <= 0 {
-		stuckAfter = scanStuckFactor * sessionScanBudget
-	}
-	replace := r.scanning && r.oldScans < maxOldScans && time.Since(r.scanStart) > stuckAfter
-	if !r.scanning || replace { // single-flight: one current scan at a time, whoever asks
-		if replace {
-			log.Printf("claude-sessions: a scan of the session stores has hung; starting another")
-			r.oldScans++
-		}
-		r.scanning = true
-		r.scanGen++
-		r.scanStart = time.Now()
-		r.scanDone = make(chan struct{})
-		go r.scan(desktop, transcripts, now, r.scanGen, r.scanDone)
-	}
-	done, have, out := r.scanDone, r.hasScan, r.scanned
+	r.startScanLocked(desktop, transcripts, now)
+	done, have, out, at := r.scanDone, r.hasScan, r.scanned, r.scannedAt
 	r.mu.Unlock()
 	if have {
-		return out
+		return out, scanMeta{at: at, stale: true}
 	}
 	wait := scanWait
 	if r.firstScanWait > 0 {
@@ -253,43 +304,55 @@ func (r *sessionRegistry) scanResult(desktop, transcripts string, now time.Time)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.scanned
+	return r.scanned, scanMeta{at: r.scannedAt, stale: !r.hasScan || r.partial || now.Sub(r.scannedAt) > sessionScanEvery}
 }
 
-// scan reads the stores and git info with no lock held and then stores the result, unless a newer scan
-// has replaced this one meanwhile. It ends the scan (and releases waiters) even when a read panics.
-func (r *sessionRegistry) scan(desktop, transcripts string, now time.Time, gen uint64, done chan struct{}) {
+// startScanLocked starts a scan unless one is running (single-flight: one scan at a time, whoever asks).
+// A scan always ends: its reads are waited for only until their deadline.
+func (r *sessionRegistry) startScanLocked(desktop, transcripts string, now time.Time) {
+	if r.scanning {
+		return
+	}
+	r.scanning = true
+	r.scanDone = make(chan struct{})
+	go r.scan(desktop, transcripts, now, r.scanDone)
+}
+
+// scan reads the stores and git info with no lock held and then stores the result. It ends the scan (and
+// releases waiters) even when something panics.
+func (r *sessionRegistry) scan(desktop, transcripts string, now time.Time, done chan struct{}) {
 	var out []ClaudeSession
-	ok := false
+	ok, partial := false, false
 	defer func() {
 		if p := recover(); p != nil {
 			log.Printf("claude-sessions: scanning the session stores panicked: %v", p)
 		}
 		r.mu.Lock()
 		switch {
-		case gen != r.scanGen: // replaced while stuck: its result is stale
-			r.oldScans--
 		case ok:
-			r.scanned, r.scannedAt, r.hasScan = out, now, true
-			r.scanning = false
-		default: // keep the old result; with none, an empty one until the next scan
-			if !r.hasScan {
-				r.scanned, r.scannedAt, r.hasScan = []ClaudeSession{}, now, true
-			}
-			r.scanning = false
+			r.scanned, r.scannedAt, r.hasScan, r.partial = out, now, true, partial
+		case !r.hasScan: // keep the old result; with none, an empty one until the next scan
+			r.scanned, r.scannedAt, r.hasScan = []ClaudeSession{}, now, true
 		}
+		r.scanning = false
 		r.mu.Unlock()
 		close(done)
 	}()
-	out = r.scanFiles(desktop, transcripts, now)
+	out, partial = r.scanFiles(desktop, transcripts, now)
 	ok = true
 }
 
-func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) []ClaudeSession {
-	out := []ClaudeSession{}
+// scanFiles reads both stores and fills in git info. partial is true when a store didn't come in full in
+// time: its last full read is used instead (nothing when there is none).
+func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) (out []ClaudeSession, partial bool) {
+	out = []ClaudeSession{}
 	seen := map[string]bool{}
 	start := time.Now()
-	readBy, gitBy := start.Add(sessionScanBudget), start.Add(gitScanBudget)
+	budget := sessionScanBudget
+	if r.scanBudget > 0 {
+		budget = r.scanBudget
+	}
+	readBy, gitBy := start.Add(budget), start.Add(gitScanBudget)
 	readStore, readTx := r.readStore, r.readTx
 	if readStore == nil {
 		readStore = readDesktopStore
@@ -297,21 +360,79 @@ func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) 
 	if readTx == nil {
 		readTx = readTranscripts
 	}
-	for _, s := range readStore(desktop, readBy) {
+	store := r.readSource(&r.storeRead, readBy, func() []ClaudeSession { return readStore(desktop, readBy) })
+	tx := r.readSource(&r.txRead, readBy, func() []ClaudeSession { return readTx(transcripts, now, readBy) })
+	waitBy := readBy.Add(scanReadGrace)
+	stores, okStore := r.waitSource(store, &r.lastStore, waitBy, "the desktop app's session store")
+	txs, okTx := r.waitSource(tx, &r.lastTx, waitBy, "the Claude Code transcripts")
+	partial = !okStore || !okTx
+	for _, s := range stores {
 		r.fillProject(&s, s.ProjectRoot, gitBy)
 		if s.SessionID != "" {
 			seen[s.SessionID] = true
 		}
 		out = append(out, s)
 	}
-	for _, s := range readTx(transcripts, now, readBy) {
+	for _, s := range txs {
 		if seen[s.SessionID] {
 			continue
 		}
 		r.fillProject(&s, s.Cwd, gitBy)
 		out = append(out, s)
 	}
-	return out
+	return out, partial
+}
+
+// readSource starts fn in its own goroutine, unless the read of the same store from an earlier scan is
+// still running (stuck on a hanging disk): that one is returned instead, so there is at most one read per
+// store at a time.
+func (r *sessionRegistry) readSource(slot **sourceRead, deadline time.Time, fn func() []ClaudeSession) *sourceRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if *slot != nil {
+		return *slot
+	}
+	rd := &sourceRead{done: make(chan struct{})}
+	*slot = rd
+	go func() {
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("claude-sessions: reading a session store panicked: %v", p)
+			}
+			r.mu.Lock()
+			*slot = nil
+			r.mu.Unlock()
+			close(rd.done)
+		}()
+		rd.out = fn()
+		rd.late = time.Now().After(deadline)
+	}()
+	return rd
+}
+
+// waitSource is what rd read, and true, when it is done by by and wasn't cut short; then it is also kept
+// in *last. Otherwise it is *last (the last full read of that store) and false.
+func (r *sessionRegistry) waitSource(rd *sourceRead, last *[]ClaudeSession, by time.Time, what string) ([]ClaudeSession, bool) {
+	t := time.NewTimer(max(time.Until(by), time.Millisecond))
+	defer t.Stop()
+	select {
+	case <-rd.done:
+	case <-t.C:
+		log.Printf("claude-sessions: reading %s didn't finish in time (is its disk responding?); listing its last full read", what)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return *last, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if rd.late {
+		if *last == nil { // cut short, but better than nothing
+			return rd.out, false
+		}
+		return *last, false
+	}
+	*last = rd.out
+	return rd.out, true
 }
 
 // fillProject sets the project from dir (the origin directory for desktop sessions, otherwise the
