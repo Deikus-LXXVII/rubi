@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+- **Rubi Home: a hung disk never blocks Claude Code hooks or approvals.** Hooks only touch the
+  hook-reported sessions under their own lock; the session stores are scanned in the background, the
+  desktop store and the transcripts each in its own goroutine with a deadline, and a list answers from
+  the last scan while a newer one runs (`sources.scanned_at` and `sources.stale: true` say so). A hung
+  desktop store no longer hides the transcript sessions: it is listed as its last full read (the list
+  says stale), and a stuck read is reused, not repeated.
+- **Approvals and events have separate slots on the socket.** Reading the first line has its own cap
+  (64); then approvals take one of 32 slots (denied when full) and events one of 16 (an empty reply
+  when full, never a denial). Over the reading cap an approval is denied with the reason ("too many hook
+  requests are arriving at once") instead of "an answer that couldn't be read".
+- **`claude-sessions.send` doesn't wait for the session scan.** It checks the id against the
+  hook-reported sessions and the last scan, waits at most 0.3 seconds for a first scan, and answers
+  "session list not ready" for an id it can't judge yet instead of waiting up to 6 seconds. The cap on
+  concurrent session listings is gone (there are only two kinds of listing, each shared).
+- **A stuck Rubi Home operation answers "still busy".** While a call of an op runs past its deadline, a
+  new call of the same op gets "Rubi Home is still busy with earlier calls" at once (at most 8 per op),
+  so one stuck call blocks that op only. Stop reads the transcript with a 2-second limit and keeps the
+  reply it owes for a later Stop; a late event handler leaves the inbox alone.
+
 ## v0.12.2 (2026-10-30)
 
 - **Rubi Home: a hanging disk no longer silences `claude-sessions.list`.** The session list reads each

@@ -29,8 +29,8 @@ approvals. Branch `citri/home-nonblocking`, not pushed.
 4. **Hooks never wait on the scan.** Stop's `touch` moves out of the `c.mu` section. `lastAnswer` runs
    with a time limit and at most a few reads at once; past the limit, Stop goes on without the answer.
 5. **Separate admission for approvals and events.** `Serve` reads the first line under a general
-   connection cap with the read deadline, then classifies: PermissionRequest takes a slot of `permSem`
-   (deny when full, as today); events take `eventSem` (when full, answer an empty HookReply, never a
+   connection cap with the read deadline, then classifies: PermissionRequest takes a slot of `claudeSlots.perms`
+   (deny when full, as today); events take `claudeSlots.events` (when full, answer an empty HookReply, never a
    deny). Event handling gets its own deadline so a slot is always released.
 6. **Capped leaks.** `within` becomes single-flight per key: while a call for the key still runs, new
    callers wait on the same result (bounded by their own timeout) instead of starting another goroutine.
@@ -56,6 +56,19 @@ approvals. Branch `citri/home-nonblocking`, not pushed.
 - A hung scan is replaced after 3x the scan budget (generation counter, at most 3 left behind).
 - within, scan, git reads, event hooks and homeproto handlers recover from panics.
 - homeproto: per-op running/stuck state in one critical section, at most 8 handlers per op.
-- Reading-gate overflow answers `{}` (approvals still fail closed); first line within 3 s.
-- One list flight per includeArchived; repo filter applied per caller; distinct busy error.
+- Reading-gate overflow answers `{}` (approvals still fail closed); first line within 3 s. (B1-fix: now a
+  denial with the reason, which events read as an empty reply.)
+- One list flight per includeArchived; repo filter applied per caller. (B1-fix: the busy error and its
+  cap were removed: the keys are fixed.)
 - gitInfo waits on a read already in flight.
+
+## B1-fix (Цитри's review of 2d7998d)
+- [x] CHANGELOG (Unreleased) and docs/design/rubi-home.md
+- [x] Reading-cap overflow: a denial with the reason (events read it as an empty reply)
+- [x] Desktop store and transcripts read in separate bounded goroutines, merged; stuck read reused
+      (this replaced the hung-scan replacement: a scan can no longer hang). A store that doesn't come in
+      full in time is listed as its last full read and the scan is partial (stale; send: not ready).
+- [x] Stale cache: `sources.scanned_at`, `sources.stale`
+- [x] Send: hooks + cache, at most 0.3 s wait, "session list not ready"
+- [x] Minor: plan names, bounded wait after a failed abandon, maxFlights/errListBusy removed (fixed keys),
+      answerRejected removed (the test checks the slots)

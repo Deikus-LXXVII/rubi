@@ -78,7 +78,25 @@ The helper does only what it was built for, whatever Rubi asks:
   project; it is a "sub" when spawned from another session or in such a worktree. Git files are read with
   a budget (2 seconds per scan, v0.12.2): a project on a disk that stops answering is listed as
   `local:<dir>` while the read finishes in the background, and the list itself gives up with an error after
-  20 seconds, so a hanging disk shows as an error, not as silence. `claude-sessions.send` queues a
+  20 seconds, so a hanging disk shows as an error, not as silence. The stores are scanned in the
+  background, off every lock the hooks use (unreleased): the desktop store and the transcripts are each
+  read in their own goroutine with a 4-second budget, and the scan lists what came in, so a hung store
+  doesn't hide the transcript sessions; a store that doesn't come in full in time is listed as its last
+  full read and the scan counts as partial, and a read that never returns is reused by later scans (one
+  per store). A list answers from the last scan at once while a newer one runs; `sources` then carries
+  `scanned_at` and `stale: true` (also after a partial scan, and when no scan has finished yet and only
+  hook-reported sessions are listed). Before the first scan a list waits for it at most 6 seconds; `claude-sessions.send` checks
+  the id against the hook-reported sessions and the last scan, waits at most 0.3 seconds for a first scan,
+  and answers "session list not ready" for an id it can't judge yet (no scan, or a partial one).
+
+  The socket never lets events and approvals starve each other: reading the first line (3 seconds) has
+  its own cap of 64 connections, then a PermissionRequest takes one of 32 approval slots (a denial when
+  none is free) and an event one of 16 event slots (an empty reply when none is free, never a denial;
+  its handler gets 5 seconds). A connection over the reading cap gets a denial naming the reason ("too
+  many hook requests are arriving at once"), which an event hook reads as an empty reply. Over the relay,
+  a Rubi Home operation still running past its deadline keeps its place: while one call of an op is stuck
+  that way, a new call of the same op answers "Rubi Home is still busy with earlier calls" at once (at
+  most 8 handlers per op run), so one stuck call blocks new calls of that op, not of others. `claude-sessions.send` queues a
   message (at most 4000 characters, 20 waiting) for a session the registry knows. UserPromptSubmit adds
   waiting messages to the prompt's context; Stop, when messages wait, blocks the stop with them as the
   reason (at most 5 times in a row), so a session in a turn picks them up without the user. The last
