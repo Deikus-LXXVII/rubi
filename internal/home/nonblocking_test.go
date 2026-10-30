@@ -467,6 +467,51 @@ func TestListSaysWhenItIsStale(t *testing.T) {
 	}
 }
 
+// A list says "truncated" when it was cut at maxSessionsListed, when a store hit its cap, or when it is stale,
+// so a plugin never reads a missing session as an ended one; a complete, fresh list doesn't say it.
+func TestListSaysWhenItIsTruncated(t *testing.T) {
+	list := func(c *Claude, repo string) map[string]any {
+		t.Helper()
+		v, err := c.handle(context.Background(), "claude-sessions.list", json.RawMessage(`{"repo":"`+repo+`"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v.(map[string]any)
+	}
+	many := make([]ClaudeSession, maxSessionsListed+5)
+	for i := range many {
+		many[i] = ClaudeSession{SessionID: fmt.Sprintf("s-%03d", i), Cwd: "/w/app", Source: "desktop"}
+	}
+	c := &Claude{}
+	c.reg.scanned, c.reg.scannedAt, c.reg.hasScan = many, time.Now().UTC(), true
+	res := list(c, "")
+	if res["truncated"] != true || res["total"] != len(many) || len(res["sessions"].([]ClaudeSession)) != maxSessionsListed {
+		t.Fatalf("cut list: truncated %v total %v", res["truncated"], res["total"])
+	}
+	if res := list(c, "nowhere"); res["truncated"] != nil {
+		t.Fatalf("a filter that matches nothing is not truncated: %v", res["truncated"])
+	}
+	// A store at its cap: older sessions may be missing.
+	c = &Claude{}
+	c.reg.scanned, c.reg.scannedAt, c.reg.hasScan, c.reg.capped = many[:3], time.Now().UTC(), true, true
+	if res := list(c, ""); res["truncated"] != true || res["total"] != nil {
+		t.Fatalf("capped scan: %v", res)
+	}
+	// Whole and fresh: not truncated.
+	c = &Claude{}
+	c.reg.scanned, c.reg.scannedAt, c.reg.hasScan = many[:3], time.Now().UTC(), true
+	if res := list(c, ""); res["truncated"] != nil {
+		t.Fatalf("complete list: %v", res["truncated"])
+	}
+	// Stale (an old scan, or a partial one).
+	c = &Claude{DesktopStore: t.TempDir()}
+	c.reg.readStore = stuckStore(t)
+	c.reg.scanned, c.reg.scannedAt, c.reg.hasScan = many[:3], time.Now().Add(-time.Hour).UTC(), true
+	if res := list(c, ""); res["truncated"] != true {
+		t.Fatalf("stale list: %v", res)
+	}
+}
+
 // A panic in a read ends the scan cleanly, and one in a flight ends the flight.
 func TestPanicsDontWedge(t *testing.T) {
 	r := &sessionRegistry{firstScanWait: time.Second}

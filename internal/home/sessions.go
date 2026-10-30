@@ -107,6 +107,7 @@ type sessionRegistry struct {
 	scanning  bool          // a scan is running
 	scanDone  chan struct{} // closed when the running scan ends
 	partial   bool          // a store of the last scan didn't come in full in time
+	capped    bool          // a store of the last scan reached its cap, so it may lack sessions
 	storeRead *sourceRead   // reads of the desktop store and the transcripts in progress (see readSource)
 	txRead    *sourceRead
 	lastStore []ClaudeSession // the last full read of each store
@@ -126,6 +127,8 @@ type sessionRegistry struct {
 type scanMeta struct {
 	at    time.Time // when the scan it comes from started (zero before the first scan)
 	stale bool      // older than sessionScanEvery (a refresh runs meanwhile), partial, or no scan yet
+	// capped: a store hit its cap (maxStoreFiles, maxTranscripts), so older sessions may be missing.
+	capped bool
 }
 
 // sourceRead is a read of one store in progress; out and late are set before done is closed.
@@ -295,15 +298,15 @@ func (r *sessionRegistry) waitScan(d time.Duration) bool {
 func (r *sessionRegistry) scanResult(desktop, transcripts string, now time.Time) ([]ClaudeSession, scanMeta) {
 	r.mu.Lock()
 	if r.hasScan && now.Sub(r.scannedAt) <= sessionScanEvery {
-		out, meta := r.scanned, scanMeta{at: r.scannedAt, stale: r.partial}
+		out, meta := r.scanned, scanMeta{at: r.scannedAt, stale: r.partial, capped: r.capped}
 		r.mu.Unlock()
 		return out, meta
 	}
 	r.startScanLocked(desktop, transcripts, now)
-	done, have, out, at := r.scanDone, r.hasScan, r.scanned, r.scannedAt
+	done, have, out, at, capped := r.scanDone, r.hasScan, r.scanned, r.scannedAt, r.capped
 	r.mu.Unlock()
 	if have {
-		return out, scanMeta{at: at, stale: true}
+		return out, scanMeta{at: at, stale: true, capped: capped}
 	}
 	wait := scanWait
 	if r.firstScanWait > 0 {
@@ -318,7 +321,7 @@ func (r *sessionRegistry) scanResult(desktop, transcripts string, now time.Time)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.scanned, scanMeta{at: r.scannedAt, stale: !r.hasScan || r.partial || now.Sub(r.scannedAt) > sessionScanEvery}
+	return r.scanned, scanMeta{at: r.scannedAt, stale: !r.hasScan || r.partial || now.Sub(r.scannedAt) > sessionScanEvery, capped: r.capped}
 }
 
 // startScanLocked starts a scan unless one is running (single-flight: one scan at a time, whoever asks).
@@ -336,7 +339,7 @@ func (r *sessionRegistry) startScanLocked(desktop, transcripts string, now time.
 // releases waiters) even when something panics.
 func (r *sessionRegistry) scan(desktop, transcripts string, now time.Time, done chan struct{}) {
 	var out []ClaudeSession
-	ok, partial := false, false
+	ok, partial, capped := false, false, false
 	defer func() {
 		if p := recover(); p != nil {
 			log.Printf("claude-sessions: scanning the session stores panicked: %v", p)
@@ -344,7 +347,7 @@ func (r *sessionRegistry) scan(desktop, transcripts string, now time.Time, done 
 		r.mu.Lock()
 		switch {
 		case ok:
-			r.scanned, r.scannedAt, r.hasScan, r.partial = out, now, true, partial
+			r.scanned, r.scannedAt, r.hasScan, r.partial, r.capped = out, now, true, partial, capped
 		case !r.hasScan: // keep the old result; with none, an empty one until the next scan
 			r.scanned, r.scannedAt, r.hasScan = []ClaudeSession{}, now, true
 		}
@@ -352,13 +355,13 @@ func (r *sessionRegistry) scan(desktop, transcripts string, now time.Time, done 
 		r.mu.Unlock()
 		close(done)
 	}()
-	out, partial = r.scanFiles(desktop, transcripts, now)
+	out, partial, capped = r.scanFiles(desktop, transcripts, now)
 	ok = true
 }
 
 // scanFiles reads both stores and fills in git info. partial is true when a store didn't come in full in
 // time: its last full read is used instead (nothing when there is none).
-func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) (out []ClaudeSession, partial bool) {
+func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) (out []ClaudeSession, partial, capped bool) {
 	out = []ClaudeSession{}
 	seen := map[string]bool{}
 	start := time.Now()
@@ -380,6 +383,8 @@ func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) 
 	stores, okStore := r.waitSource(store, &r.lastStore, waitBy, "the desktop app's session store")
 	txs, okTx := r.waitSource(tx, &r.lastTx, waitBy, "the Claude Code transcripts")
 	partial = !okStore || !okTx
+	// A store that returned as many sessions as its cap allows may have had more.
+	capped = len(stores) >= maxStoreFiles || len(txs) >= maxTranscripts
 	for _, s := range stores {
 		r.fillProject(&s, s.ProjectRoot, gitBy)
 		if s.SessionID != "" {
@@ -394,7 +399,7 @@ func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) 
 		r.fillProject(&s, s.Cwd, gitBy)
 		out = append(out, s)
 	}
-	return out, partial
+	return out, partial, capped
 }
 
 // readSource starts fn in its own goroutine, unless the read of the same store from an earlier scan is

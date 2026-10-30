@@ -1998,9 +1998,37 @@ async function notesScreen(ctx, id, back, query = "") {
   );
 }
 
+// PROMPT_FORBIDDEN: words a plugin's text question may not use (it could imitate an unlock or approval prompt).
+const PROMPT_FORBIDDEN = /password|passkey|rubi|\bpin\b/i;
+
+// askText shows a small box drawn by the panel (title and label are text, never HTML) and resolves with what the
+// user typed, or null on Cancel / Escape / a click outside. The title names the plugin, so the question is not
+// mistaken for one from Rubi.
+function askText(title, label, value) {
+  return new Promise((resolve) => {
+    const input = h("input", { type: "text", maxlength: "200", autocomplete: "off", value });
+    const done = (v) => { overlay.remove(); document.removeEventListener("keydown", onKey, true); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); done(null); } };
+    const form = h("form", { class: "ask-box", role: "dialog", "aria-modal": "true", onsubmit: (e) => { e.preventDefault(); done(input.value.slice(0, 200)); } },
+      h("h2", {}, title),
+      h("label", {}, h("span", { class: "muted small" }, label), input),
+      h("div", { class: "view-actions" },
+        h("button", { type: "button", class: "secondary small", onclick: () => done(null) }, "Cancel"),
+        h("button", { type: "submit", class: "primary small" }, "OK")));
+    const overlay = h("div", { class: "ask-overlay", onclick: (e) => { if (e.target === overlay) done(null); } }, form);
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(overlay);
+    input.focus();
+    input.select();
+  });
+}
+
 // pluginViewScreen shows a plugin's own page, described by the plugin: sections of items, each with
 // buttons. The plugin answers op "view"; a button calls its op with its args (the user's own request),
-// then the page reloads. Pages with refresh reload themselves (e.g. a countdown to sending).
+// then the page reloads. An action with prompt {arg, label, value} first asks the user for text in a box titled
+// "<plugin name> asks:" (label shown as plain text, at most 200 characters; value prefilled, at most 200; a label
+// that mentions a password, passkey, PIN or Rubi is refused, so a plugin can't pose as Rubi's own prompts; cancel
+// does nothing) and adds the answer to args under arg. Pages with refresh reload themselves (e.g. a countdown to sending).
 async function pluginViewScreen(ctx, id, name, back) {
   currentView = () => pluginViewScreen(ctx, id, name, back);
   const err = errorBox();
@@ -2015,9 +2043,19 @@ async function pluginViewScreen(ctx, id, name, back) {
   const act = (a) => async (e) => {
     const btn = e.currentTarget;
     if (a.confirm && !confirm(a.confirm)) return;
+    let args = a.args || {};
+    if (a.prompt && a.prompt.arg) {
+      // The plugin wants text from the user: ask in a panel-drawn box that says whose question it is, and
+      // pass the answer (empty is an answer) as args[prompt.arg].
+      const label = String(a.prompt.label || "").slice(0, 200);
+      if (PROMPT_FORBIDDEN.test(label)) { showError(err, new UserError("This plugin asked for text in a way the panel won't show.")); return; }
+      const v = await askText(`${name} asks:`, label, String(a.prompt.value || "").slice(0, 200));
+      if (v === null) return;
+      args = { ...args, [a.prompt.arg]: v };
+    }
     btn.disabled = true;
     try {
-      await call(a.op, a.args || {});
+      await call(a.op, args);
       again();
     } catch (x) {
       btn.disabled = false;

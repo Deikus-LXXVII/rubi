@@ -1137,3 +1137,9 @@ button.copy { box-shadow: none; }
 .view-text { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .view-actions { display: flex; gap: 6px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 @media (max-width: 520px) { .view-list li { flex-direction: column; align-items: stretch; } .view-actions { justify-content: flex-start; } }
+
+/* askText: a small box a plugin page can ask for text in; titled with the plugin's name */
+.ask-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, 0.55); }
+.ask-box { display: grid; gap: 12px; width: min(420px, 100%); padding: 18px; border-radius: 14px; background: var(--card); border: 1px solid var(--line-2); }
+.ask-box h2 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
+.ask-box label { display: grid; gap: 6px; overflow-wrap: anywhere; }

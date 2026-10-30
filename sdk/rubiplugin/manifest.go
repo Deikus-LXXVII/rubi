@@ -54,8 +54,12 @@ type Manifest struct {
 	// keeps; the panel calls the plugin's OnPanel (the user's own requests, never the agent's). "notes" is
 	// the notes page. "view" is a page the plugin describes itself: OnPanel answers op "view" with
 	// {title, note, refresh (seconds, 0 for none), sections: [{title, note, empty, items: [{title, detail,
-	// actions: [{label, op, args, danger, confirm}]}]}]}; a button calls its op with its args, then the page
-	// reloads. Requires Rubi v0.10.0.
+	// actions: [{label, op, args, danger, confirm, prompt}]}]}]}; a button calls its op with its args, then the page
+	// reloads. Requires Rubi v0.10.0. An action may carry prompt {arg, label, value}: the panel first asks the
+	// user for text in a box titled with the plugin's name (label shown as text, cut at 200 characters, refused if it
+	// mentions a password, passkey, PIN or Rubi; value prefilled, cut at 200; cancel does nothing) and adds the answer, possibly empty, to args
+	// under arg. A panel that predates prompt sends the call without it, so an op that takes text must
+	// refuse a call where the key is missing.
 	Panel string `json:"panel,omitempty"`
 	// Config are settings only the user can change, in the Rubi panel and with their approval (for example
 	// a privacy filter). The agent can't read or change them through Rubi; the plugin reads them.

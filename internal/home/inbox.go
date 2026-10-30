@@ -471,19 +471,26 @@ func (c *Claude) allSessions(includeArchived bool) ([]ClaudeSession, scanMeta) {
 // filterSessions keeps the sessions that match repo (a part of the project key or directory,
 // case-insensitive; all when empty), at most maxSessionsListed. It returns a new slice.
 func filterSessions(all []ClaudeSession, repo string) []ClaudeSession {
+	out, _, _ := filterSessionsCut(all, repo)
+	return out
+}
+
+// filterSessionsCut is filterSessions that also says how many sessions matched in all and whether the
+// list was cut at maxSessionsListed.
+func filterSessionsCut(all []ClaudeSession, repo string) (out []ClaudeSession, total int, cut bool) {
 	repo = strings.ToLower(strings.TrimSpace(repo))
-	out := []ClaudeSession{}
+	out = []ClaudeSession{}
 	for _, s := range all {
 		if repo != "" && !strings.Contains(strings.ToLower(s.RepoKey), repo) && !strings.Contains(strings.ToLower(s.ProjectRoot), repo) &&
 			!strings.Contains(strings.ToLower(s.Cwd), repo) {
 			continue
 		}
-		out = append(out, s)
-		if len(out) >= maxSessionsListed {
-			break
+		total++
+		if len(out) < maxSessionsListed {
+			out = append(out, s)
 		}
 	}
-	return out
+	return out, total, total > len(out)
 }
 
 // lastAnswer is the text of Claude's last answer: the hook's own field when it has one, otherwise the

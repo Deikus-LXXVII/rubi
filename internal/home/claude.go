@@ -473,7 +473,16 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 		if l.meta.stale { // an older scan (a refresh runs), or the hook-reported sessions only
 			sources["stale"] = true
 		}
-		res := map[string]any{"sessions": filterSessions(l.all, in.Repo), "sources": sources}
+		listed, total, cut := filterSessionsCut(l.all, in.Repo)
+		res := map[string]any{"sessions": listed, "sources": sources}
+		// truncated: the list may lack sessions that exist (cut at maxSessionsListed, or a scan that was
+		// capped or didn't finish). A caller must not read a session's absence as its end then.
+		if cut || l.meta.capped || l.meta.stale {
+			res["truncated"] = true
+		}
+		if cut {
+			res["total"] = total
+		}
 		if hk := c.hookInfo(); hk != nil {
 			res["hook"] = hk
 		}
