@@ -730,13 +730,13 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_ack",
-		Description: "Mark an event as reported to the user."},
+		Description: "Mark an event as reported to the user. Acks are per Bot: every Bot that is told about an event acks it itself. Returns reason: acked (your first ack; acked=true only then), already_acked, not_visible (the event isn't addressed to you), not_stored (webhook-only message, nothing to ack) or unknown_or_expired."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in ackIn) (*mcp.CallToolResult, out, error) {
-			ok, err := s.core.AckFor(in.Agent, in.Code, in.EventID)
+			reason, err := s.core.AckFor(in.Agent, in.Code, in.EventID)
 			if err != nil {
 				return nil, nil, err
 			}
-			return nil, out{"acked": ok}, nil
+			return nil, out{"acked": reason == core.AckAcked, "reason": reason}, nil
 		})
 }
 
