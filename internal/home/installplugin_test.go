@@ -46,12 +46,12 @@ func TestEmbeddedPluginFiles(t *testing.T) {
 		}
 	}
 	for _, want := range []string{".claude-plugin/marketplace.json", "rubi-sisters/.claude-plugin/plugin.json", "rubi-sisters/.mcp.json",
-		"rubi-sisters/skills/rubi-sisters/SKILL.md"} {
+		"rubi-sisters/skills/rubi-sisters/SKILL.md", "rubi-sisters/skills/rubi-claude-pair/SKILL.md"} {
 		if len(by[want]) == 0 {
 			t.Errorf("%s isn't embedded", want)
 		}
 	}
-	if _, has := by["embed.go"]; has || len(files) != 4 {
+	if _, has := by["embed.go"]; has || len(files) != 5 {
 		t.Errorf("files: %d, embed.go %v", len(files), has)
 	}
 	var mk struct {
