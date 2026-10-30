@@ -115,12 +115,15 @@ func TestVerifiedCaller(t *testing.T) {
 func TestClaudeCapabilitiesAreSeparate(t *testing.T) {
 	c := targetCore(t)
 	for _, tc := range []struct{ cap, op string }{{"claude", "claude-sessions.list"}, {"claude", "claude-sessions.next"},
-		{"claude-sessions", "claude.decide"}, {"claude-sessions", "claude.next"}} {
+		{"claude-sessions", "claude.decide"}, {"claude-sessions", "claude.next"},
+		{"claude", "claude-start.create"}, {"claude-sessions", "claude-start.create"}, {"claude-start", "claude-sessions.send"},
+		{"claude-start", "claude.decide"}} {
 		if _, err := c.homeCall(context.Background(), "p", []string{tc.cap}, "", tc.op, nil); err == nil || !strings.Contains(err.Error(), "doesn't allow") {
 			t.Errorf("%s reached %s: %v", tc.cap, tc.op, err)
 		}
 	}
-	if _, ok := homeCapabilities["claude-sessions"]; !ok || strings.Contains(homeCapabilities["claude"], "sessions") {
+	if _, ok := homeCapabilities["claude-sessions"]; !ok || strings.Contains(homeCapabilities["claude"], "sessions") ||
+		strings.Contains(homeCapabilities["claude-sessions"], "start") || !strings.Contains(homeCapabilities["claude-start"], "can run any command") {
 		t.Errorf("install screen texts: %v", homeCapabilities)
 	}
 }

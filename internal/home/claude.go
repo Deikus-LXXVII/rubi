@@ -99,6 +99,15 @@ type Claude struct {
 	// QueueFile is where inbox, outbox and owed replies are kept between runs (see queue.go); "" keeps
 	// them in memory only.
 	QueueFile string
+	// Launcher starts a session for claude-sessions.create (nil: the op is refused; see startsession.go).
+	Launcher Launcher
+	// StartDirs returns the directories the user allowed sessions to be started in (config claude_start_dirs).
+	StartDirs func() []string
+	// HomeDir is the user's home (os.UserHomeDir when empty) and ProtectedDirs more directories no session is
+	// started in (the helper's own); both feed refusedStartDir.
+	HomeDir       string
+	ProtectedDirs []string
+	systemDirs    []string // replaces sensitiveSysDirs when set (tests)
 
 	mu       sync.Mutex
 	pending  map[string]*claudeItem
@@ -127,6 +136,10 @@ type Claude struct {
 	saveKick    chan struct{}              // tells the saver the queue changed (see queue.go)
 	saveMu      sync.Mutex                 // one save at a time
 	writeQueue  func(path string, b []byte) error
+
+	startMu   sync.Mutex // guards the three fields below; no I/O under it
+	starting  bool       // a claude-sessions.create is running
+	startHits []time.Time
 
 	wmu     sync.Mutex // guards waiters only; never held while doing I/O or taking mu
 	waiters map[string]*claudeWaiter
@@ -387,7 +400,7 @@ func cleanMessage(s string) string {
 }
 
 // handle serves a paired Rubi: claude.next and claude.decide (the "claude" capability, approvals) and
-// claude-sessions.list, .send and .next (the "claude-sessions" capability: sessions and messages).
+// claude-sessions.list, .send, .next and .bound (the "claude-sessions" capability: sessions and messages).
 func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (any, error) {
 	switch op {
 	case "claude.next", "claude-sessions.next":
@@ -475,6 +488,16 @@ func (c *Claude) handle(ctx context.Context, op string, args json.RawMessage) (a
 			return nil, err
 		}
 		return map[string]any{"ok": true}, nil
+	case "claude-start.create":
+		var in struct {
+			Cwd    string `json:"cwd"`
+			Prompt string `json:"prompt"`
+			From   string `json:"from"`
+		}
+		if json.Unmarshal(args, &in) != nil {
+			return nil, errors.New("bad arguments")
+		}
+		return c.createSession(ctx, in.Cwd, in.Prompt, in.From)
 	case "claude.decide":
 		var a ClaudeAnswer
 		if json.Unmarshal(args, &a) != nil {

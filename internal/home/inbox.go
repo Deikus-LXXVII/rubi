@@ -90,6 +90,7 @@ type eventInput struct {
 	Cwd                  string `json:"cwd"`
 	PermissionMode       string `json:"permission_mode"`
 	HookEventName        string `json:"hook_event_name"`
+	Source               string `json:"source"` // SessionStart: startup, resume, clear or compact
 	StopHookActive       bool   `json:"stop_hook_active"`
 	LastAssistantMessage string `json:"last_assistant_message"`
 }
@@ -140,6 +141,9 @@ func (c *Claude) hook(raw []byte, tk *eventTicket) HookReply {
 	switch in.HookEventName {
 	case "SessionStart":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "idle", now)
+		if in.Source == "startup" { // a resumed or cleared session is not a new one
+			c.reg.markStarted(id, now)
+		}
 	case "SessionEnd":
 		c.reg.touch(id, in.Cwd, in.TranscriptPath, in.PermissionMode, "ended", now)
 		c.closeWaiter(id)

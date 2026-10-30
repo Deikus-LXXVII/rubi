@@ -88,6 +88,7 @@ type ClaudeSession struct {
 type liveSession struct {
 	cwd, transcript, mode, state string
 	last                         time.Time
+	started                      time.Time // the last SessionStart hook (see startsession.go)
 }
 
 // The registry has two locks, never held together. liveMu guards only live (what the hooks reported): touch

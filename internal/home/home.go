@@ -44,6 +44,9 @@ type Config struct {
 	// ClaudeWaitSeconds is how long a Claude Code request waits for Rubi (default 280; keep it below the
 	// hook's timeout in Claude Code's settings).
 	ClaudeWaitSeconds int `json:"claude_wait_seconds,omitempty"`
+	// ClaudeStartDirs are the absolute directories (and everything inside them) where a Bot may have a new
+	// Claude Code session started, besides the projects Claude Code already has sessions in. Default none.
+	ClaudeStartDirs []string `json:"claude_start_dirs,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -105,6 +108,9 @@ func Open(dir string) (*Helper, error) {
 	h.Claude = &Claude{}
 	h.Claude.DesktopStore, h.Claude.Transcripts = DefaultClaudeDirs()
 	h.Claude.QueueFile = filepath.Join(dir, ClaudeQueueFile)
+	h.Claude.Launcher = newDefaultLauncher()
+	h.Claude.StartDirs = func() []string { return h.Fresh().ClaudeStartDirs }
+	h.Claude.ProtectedDirs = []string{dir}
 	h.Claude.loadQueue()
 	if s := h.Config().ClaudeWaitSeconds; s >= 10 && s <= 590 {
 		h.Claude.Wait = time.Duration(s) * time.Second
@@ -286,7 +292,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 			return nil, errors.New("bad arguments")
 		}
 		return h.Hue.Do(ctx, in)
-	case "claude.next", "claude.decide", "claude-sessions.list", "claude-sessions.send", "claude-sessions.next", "claude-sessions.bound":
+	case "claude.next", "claude.decide", "claude-sessions.list", "claude-sessions.send", "claude-sessions.next", "claude-sessions.bound", "claude-start.create":
 		return h.Claude.handle(ctx, env.Op, env.Args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
@@ -295,7 +301,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
-		"can": []string{"hue", "shortcuts", "claude", "claude-sessions"}}
+		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start"}}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {
