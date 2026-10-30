@@ -182,5 +182,92 @@ The helper does only what it was built for, whatever Rubi asks:
   sha256, that `DST version` prints the same version, and that the target and its ancestors are secure, and exits
   non-zero with the reason otherwise. `--dry-run` prints the plan (hashes, target, the script) and runs nothing.
 
+  **The sister tools of Claude Code** (`rubi-home claude-mcp`). A stdio MCP server (go-sdk) that reads no
+  configuration and gives Claude four tools: `rubi_sisters`, `rubi_ask {text, kind?}`, `rubi_reply
+  {message_id, text}` and `rubi_inbox_status`. Each call is one line on `claude.sock`: `{"hook_event_name":
+  "RubiTool","tool":...,"claude_session_id":...,"tool_cwd":...,args}`, stamped like a hook line (version,
+  protocol, path). The session id sits in `claude_session_id`, not `session_id`, so an older helper, which
+  sees an unknown event and answers `{}`, doesn't even register a session from it; the tools then say Rubi
+  Home is too old. The helper routes `RubiTool` right after the version check, before the waiter and the
+  event path: it is never an approval or an event, has 16 slots of its own (full: `{"error":...}`), a 5 s
+  deadline, a panic guard, and the handler does memory work only. Answers are `{"ok":true,...}` or
+  `{"error":"..."}`.
+
+  Which session calls is decided by the kernel's view of the process tree, not by what the line says (the
+  `session_id` and directory in a tool line, and `CLAUDE_CODE_SESSION_ID`, are sent for diagnostics only).
+  Right after Accept, before the line is read, the helper asks for the peer's pid (macOS `LOCAL_PEERPID`,
+  Linux `SO_PEERCRED`) and its start time. A session is one `claude` process, so the identity is anchored
+  there: for the peer the helper walks up at most 6 levels to the first ancestor whose process name is
+  `claude` (macOS `kern.proc.pid` `P_comm`, Linux `/proc/<pid>/stat`) and uses that one process with its
+  start time; with no such ancestor it uses the peer's direct parent. Shells, terminals and the desktop app
+  above it are never recorded or consulted. A hook line for session S (SessionStart, UserPromptSubmit, Stop,
+  PermissionRequest, RubiWait) makes that process S's. While S keeps sending hooks, a hook line naming another
+  session from the same process is ignored (logged once). A claim ends with a SessionEnd line, but only one
+  whose peer anchor is the process holding the claim (a SessionEnd from another tree leaves it alone; the
+  registry and inbox handling of SessionEnd are unchanged, and `/clear` works because its SessionEnd comes from
+  the same `claude`); when the start time no longer matches (pid reuse: a new `claude` under the same shell has
+  another pid and no claim yet); after 24 hours without a hook; or when its session has been silent for 10
+  minutes and a hook line for a different session arrives from the same process (a missed SessionEnd; logged).
+  The map holds at most 2000 processes. A tool call is attributed by looking up exactly the caller's anchor,
+  and nothing past it: no entry, no tools ("this session isn't known to Rubi Home yet ... try again after its
+  next prompt"). The process must be named `claude` for the anchor to be the session's own process;
+  otherwise the direct parent is used, which for hooks and MCP servers are different processes, so the tools
+  are refused (fail closed). Where the peer can't be identified (an OS without it) the tools are refused too.
+
+  What this does and doesn't guarantee. Tool identity is the claude process tree as the kernel reports it,
+  plus the hook lines, which are trusted as before. Any process inside session A's tree acts as A: it can
+  use A's tools, end A's claim with a SessionEnd line and claim the process for another session id (which is
+  what `/clear` does). A same-user process outside every `claude` tree is refused unless it first claims a
+  process of its own by sending hook lines (it could always forge hook lines): it can then claim a session
+  id that no `claude` process has claimed yet, and act as that id, nothing more; it cannot take a process that
+  an active session holds. The tools add no approval power: they queue an ask or a reply for a session's
+  sister and read that session's inbox state; there is no way to approve a command, decide anything or
+  address another Bot. A session is known from its first hook, so the tools work from its first prompt on. An
+  ask from a session that isn't bound may still go to the Bot of its project (the plugin's route, as for a
+  text block).
+
+  `rubi_ask` queues a `kind: "ask"` outbox entry like a ```` ```rubi-ask ```` block (kinds research, audit,
+  lookup; at most 2000 characters, but an error instead of a silent drop; at most 3 per session per minute and
+  20 per minute for all tool calls together; the rate keys are bounded, the least recently used goes first)
+  and returns its id. `rubi_reply` answers a message that was delivered to the session within 24 h (the
+  helper remembers 100 deliveries per session: id, sender, time, answered): a `kind: "reply"` entry with
+  `to` the message's sender and `in_reply_to` its id (the plugin delivers a reply only to the Bot it is
+  bound to, so `to` must be the sender), `answered` status once, and the message leaves the turn's owed
+  replies, so the turn's final answer doesn't repeat it (other senders' messages still get the final
+  answer). A message can be answered once: a reply to one already answered, by a reply or by the final
+  answer, is refused. At most 3 per session per minute. `rubi_inbox_status` shows the session state, waiting
+  messages, owed replies, whether a waiter is attached, how many asks and replies of the session are still
+  queued for Rubi (`queued_outgoing`) and the last 10 message states. `rubi_sisters` shows
+  the Bots bound to the session (name, since) and the senders of messages delivered in the last 24 h.
+
+  When the queue file is loaded, the bound lists and delivered messages are sanitized (a few Bots per session,
+  one binding per Bot, message ids of the helper's shape, one-line senders, no times in the future).
+
+  Bound Bots are told by the plugin: `claude-sessions.bound {session_id, sister, bound}` (capability
+  `claude-sessions`; a Bot has one binding, so binding it takes it off any other session; 500 sessions at
+  most). Bound sisters and the delivered messages are saved in `claude-queue.json` as the optional keys
+  `bound` and `delivered`; `version` stays 1, and an older helper ignores them.
+
+  `rubi-home install-hook --with-claude-plugin [--plugin-to DIR]` also installs the marketplace embedded in
+  the binary (`claude-plugin/`, `go:embed`: marketplace `rubi`, plugin `rubi-sisters` with a skill and an
+  `.mcp.json` that runs `/usr/local/bin/rubi-home claude-mcp`) to `/Library/Application Support/Rubi Home/
+  claude-plugin`, in the same privileged run, after the binary. No TOCTOU: the file contents are inline in the
+  script (a base64 literal per file), so root reads nothing a user can write. As root the script checks the
+  ancestors as for the binary, creates the parent directory if missing, removes leftover `.claude-plugin.*`
+  entries of a cut-off earlier run, decodes into a fresh `mktemp -d`
+  next to the target, checks each file's sha256, `chown -R root:wheel`, `chmod -R go-w`, then moves the old
+  directory aside, renames the new one into place and removes the old one; if the rename fails the old one is
+  moved back. (Between the two renames the target briefly doesn't exist.) Afterwards the command re-hashes
+  every installed file. Without the flag the plan prints a hint. Managed settings register it
+  (`extraKnownMarketplaces` with a `directory` source, `enabledPlugins`); `managed-mcp.json` is not used
+  because it takes exclusive control of MCP servers. What this does and doesn't protect: the folder is
+  root-owned, and the docs say a marketplace added from a local directory with a relative `source` is read in
+  place (no copy), but they say that for adding a marketplace, not for managed `extraKnownMarketplaces`. If
+  Claude Code copies the plugin into `~/.claude/plugins`, that copy is user-writable and the root-owned folder
+  protects only the source. Either way the MCP server command is `/usr/local/bin/rubi-home` (root-owned) and
+  the managed `strictKnownMarketplaces` setting can lock which marketplaces may be added. The hook binary at
+  that path must be new enough to have `claude-mcp`; with an older one the MCP server fails to start (Claude
+  Code shows the server as failed) until `install-hook` is run again.
+
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.

@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Rubi Home: sister tools inside Claude Code, installed with zero setup.** `rubi-home claude-mcp` is a
+  stdio MCP server (reads no config) with `rubi_sisters`, `rubi_ask`, `rubi_reply` and `rubi_inbox_status`;
+  asks and replies reach the Bot through the existing outbox, so a bound Bot sees `claude_ask` and
+  `claude_reply` (with `in_reply_to`) as before. Calls travel on the hook socket as a new `RubiTool` line
+  with their own 16 slots and a deadline; it is never an approval or an event, and an older helper
+  answers `{}` (the tools then report that Rubi Home is too old). The calling session is
+  decided by the kernel's view, not by the line: the helper takes the socket peer's pid (`LOCAL_PEERPID` /
+  `SO_PEERCRED`) right after Accept, anchors on the session's own `claude` process (the first ancestor named
+  `claude` within 6 levels, else the direct parent; never shells or the app above it), lets the first session
+  that claims a process keep it, and attributes a tool call to the session that holds the caller's anchor
+  (none: an error; an OS without peer pids refuses the tools). Any process started inside a session's
+  `claude` tree counts as that session and could end its claim and re-claim as another id (as `/clear`
+  does); the first claim holds while its session is active, a SessionEnd releases it only from the claiming
+  process, and a claim silent for 10 minutes can move. A same-user process outside every tree gets nothing
+  unless it forges hook lines for a session id no `claude` has claimed (as it always could). The CLI process
+  must be named `claude`, else the tools are refused. The tools give no approval power. Tool asks and replies are rate limited per session (3 a minute) and
+  overall (20 a minute), a message can be answered once. New op `claude-sessions.bound` (the plugin tells the helper which Bot is bound
+  to a session); bound Bots and recent deliveries are kept in `claude-queue.json` (new optional keys,
+  version still 1). The tools add no trust: nothing they return approves a command, and they act for the caller's own session
+  (an ask from an unbound session may still go to its project's Bot, as for a text block).
+  `rubi-home install-hook --with-claude-plugin` installs the embedded marketplace `rubi` (plugin
+  `rubi-sisters`: tools, skill, `.mcp.json`) to `/Library/Application Support/Rubi Home/claude-plugin` in the
+  same administrator step, with the files inline in the root script (no TOCTOU), a sha256 check per file and
+  an atomic directory swap that keeps the old folder until the rename worked. Managed settings register it
+  (`extraKnownMarketplaces` + `enabledPlugins`; not `managed-mcp.json`).
 - **Rubi Home: the Claude Code hook binary reports its version, and `install-hook` updates it.** Every hook
   line (approvals, events, the `--wait` waiter) carries `rubi_hook_version`, `rubi_hook_protocol` (1) and
   `rubi_hook_path`. The helper serves a hook without them (v0.12, marked stale), refuses a protocol it
