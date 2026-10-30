@@ -290,6 +290,16 @@ Review checks this, because the user approves what the preview shows.
 Plugin tools are added to the MCP server when a plugin is installed. The server sends
 `notifications/tools/list_changed`.
 
+**Plugin pages.** A plugin with `panel: "view"` describes its own page: sections of items, each with buttons
+(`label`, `op`, `args`, `danger`, `confirm`). A button may also carry `prompt: {arg, label, value}`: the panel
+shows a box it draws itself, titled "<plugin name> asks:", with `label` as plain text (cut at 200 characters) and
+a text field prefilled with `value` (cut at 200, the answer is at most 200 too); Cancel, Escape or a click outside
+sends nothing. The panel refuses a `label` that mentions a password, passkey, PIN or Rubi (case-insensitive), so
+a plugin can't dress its question as an unlock or approval prompt. The answer, possibly empty, is passed as
+`args[arg]`. A panel that predates `prompt` sends the call without that key, so a plugin op that takes text must
+refuse a call where the key is missing instead of reading it as empty. The page is the user's own request: it
+needs a settings link, and what a button does needs no approval unless the plugin asks for one.
+
 **Panel.** A **Store** screen lists the catalog: install, update, open setup. Settings lists installed
 plugins with their version, review status, Update and Remove. Approval screens render the permission
 table from §5.

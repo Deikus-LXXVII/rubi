@@ -79,6 +79,27 @@ The helper does only what it was built for, whatever Rubi asks:
   main repository as the project only when the `.git` file's `gitdir` is `<common>/worktrees/<name>`, so a
   spoofed `commondir` can't widen a trust's root.
 
+  **Naming sessions (plugin-side; Rubi Home needs no change).** Claude Code documents `/rename`, `--name` and the
+  session picker, all from inside Claude Code (checked against code.claude.com/docs `cli-reference`, `commands`,
+  `sessions`, `desktop`); there is no documented way for another process to set a session's name, and writing
+  `~/.claude/sessions/<pid>.json` or the desktop app's store is undocumented, so Rubi writes neither. The
+  `claude-code` plugin keeps the name as an **alias in its own encrypted state** (`session_names`: computer,
+  session id and the desktop app's id, name, set, seen). Rules: 1 to 64 characters, trimmed, no control, format
+  (zero-width, bidirectional, tag), private-use or separator characters, no special spaces, not like an id
+  (`local_`, UUID, 8+ hex characters, Rubi ids, a session id of that computer), unique per computer ignoring case; only
+  letters, numbers, punctuation, symbols and the ordinary space are allowed (no marks, variation selectors, fillers or
+  blanks).
+  `claude_code_sessions` shows `name` beside `title`; `claude_code_bind` accepts `name` for `session_id`
+  (unknown, ambiguous and vanished names are errors). `claude_code_rename` needs no approval for the session the
+  Bot is bound to (audited), none for a session inside a trusted project when the Bot is bound inside it
+  (audited with the trust's id, as the other trust shortcuts), and a locked **tap** approval otherwise (a name
+  is a reversible label; strong stays for what gives a Bot reach). The panel renames or clears any session
+  directly. A Bot needs a tap to replace or clear a name the user set. A name is dropped after its session has been
+  missing for 30 days from a *whole* list: `claude-sessions.list` now answers `truncated: true` (and `total` when it
+  cut the list at 200) when the list may lack sessions that exist (the cut, a store at its cap of 2000 files / 200
+  transcripts, a partial or old scan), and the plugin never drops a name on such a list. The panel needed one
+  generic addition: a `view` action may carry `prompt` (see `plugins.md`).
+
   The boundary is the computer's user account: a process running as the same user can talk to the socket
   (it can only ask) or replace the helper binary, so the hook's command should be a root-owned path, and
   managed settings (which a user can't edit) should keep Claude Code from editing its own settings.

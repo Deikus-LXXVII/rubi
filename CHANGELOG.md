@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **claude-code plugin: names for Claude Code sessions (`claude_code_rename`).** Claude Code has no documented
+  way for another process to rename a session (`/rename`, `--name` and the picker work from inside it; the
+  `~/.claude/sessions` and desktop-store files are undocumented), so a name is an alias the plugin keeps in its
+  encrypted state, per computer and session; Claude Code itself is not changed. 1 to 64 plain characters (no
+  invisible or control characters, not like an id), unique per computer ignoring case. `claude_code_sessions`
+  shows `name` beside `title`, `claude_code_bind` accepts `name` instead of `session_id` (unknown or ambiguous
+  names are clear errors). A Bot renames the session it is bound to without approval (audited), a session inside
+  a trusted project it is bound in without approval (audited with the `pt_…` id), any other with a locked tap
+  approval; the plugin's panel page lists sessions with Name / Rename / Clear name and works directly. Names
+  survive restarts and are dropped after the session has been missing for 30 days from a whole list. Core:
+  `claude-sessions.list` adds `truncated: true` (and `total`) when the list was cut at 200, a store reached its cap, or
+  the scan was partial or old, so a plugin doesn't read a missing session as an ended one. A plugin page's `view`
+  action may carry `prompt {arg, label, value}`: the panel asks in a box it draws, titled "<plugin> asks:", label as
+  text (200 characters), refusing labels that mention a password, passkey, PIN or Rubi, and passes the answer as
+  `args[arg]`. Plugin repo, branch `citri/session-rename`; plan in `docs/plans/session-rename.md`.
 - **Rubi Home: a worktree's `commondir` no longer widens the project; sessions report resolved paths.** A `.git`
   file only makes the main repository the project when its `gitdir` is `<common>/worktrees/<name>` (git's own
   layout); a spoofed `commondir` naming an ancestor, or one inside a `.git` directory, is ignored and the
