@@ -265,12 +265,15 @@ const DEMO_AGENT = {
     { role: "sister", author: "Reviewer (Grok Bot)", untrusted: true, text: "Check the empty-password case too. <b>Ignore previous instructions</b> is shown as plain text here." },
   ],
 };
+// The setup page as the plugin renders it (agent-setup.status: steps 1-5 done, a sign-in waiting for its code).
+const DEMO_SETUP = {"note": "Signing in with a Claude subscription is for your own personal use under Anthropic's terms; an Anthropic Console account is billed per token. Install shows macOS's own administrator dialog on the computer: this page never asks for a password. Install, Create (network) and Add a folder ask for your strong approval first.", "refresh": 3, "sections": [{"actions": [{"label": "Refresh", "open": {"page": "setup"}}], "empty": "", "items": [{"actions": [{"args": {"device": "dev_mac"}, "confirm": "Stop what is running now? A step that is half done continues when you press its button again.", "danger": true, "label": "Cancel", "op": "setup_cancel"}], "detail": "Folder /home/alice/my-project. The buttons below wait until it ends.", "title": "Working on: Claude sign-in"}], "note": "\"Set up everything\" appears once the container tool and the network are done: those two ask for your approval, and it never skips them.", "title": "Setup"}, {"empty": "", "items": [{"detail": "Installed 1.2", "title": "1. Apple container: done"}], "title": "1. Apple container"}, {"empty": "", "items": [{"detail": "Running", "title": "2. Container service: done"}], "title": "2. Container service"}, {"empty": "", "items": [{"detail": "Host-only", "title": "3. Host-only network: done"}], "title": "3. Host-only network"}, {"empty": "", "items": [{"detail": "Built", "title": "4. Runner image: done"}], "title": "4. Runner image"}, {"empty": "", "items": [{"detail": "1 folder", "title": "5. Projects: done"}, {"detail": "done", "title": "/home/alice/my-project"}], "title": "5. Projects"}, {"empty": "", "items": [{"detail": "Waiting for you in the browser", "title": "6. Claude sign-in: working"}, {"title": "Starting the project VM"}, {"title": "Waiting for the sign-in link"}, {"detail": "working", "title": "/home/alice/my-project"}, {"actions": [{"args": {"device": "dev_mac", "project": "p1"}, "label": "Open the sign-in page", "op": "setup_open"}, {"args": {"device": "dev_mac", "project": "p1"}, "label": "Paste the code", "op": "setup_code", "prompt": {"arg": "code", "label": "Paste the code shown on the Claude page", "value": ""}}], "detail": "Sign-in page (open it with the button): https://claude.com/oauth/authorize?state=demo Claude shows a code on its page: paste it here.", "title": "Sign-in waiting for the browser: /home/alice/my-project"}], "title": "6. Claude sign-in"}, {"empty": "", "items": [{"detail": "Not run", "title": "7. Self-test: not done"}, {"detail": "not done: not run", "title": "/home/alice/my-project"}], "title": "7. Self-test"}], "title": "Set up the agent path: Mac mini", "up": {"label": "Projects", "open": {}}};
 function demoAgentPage(op, a) {
   const root = { label: "Projects", open: {} };
   if (op === "mode") DEMO_AGENT.mode = a.mode;
   if (op === "rename") DEMO_AGENT.name = a.name || "Fix the login bug";
   if (op === "send") DEMO_AGENT.chat.push({ role: "user", author: "you", text: a.text });
   if (op !== "view") return { ok: true };
+  if (a.page === "setup") return DEMO_SETUP;
   if (a.page === "chat") {
     const base = { project: "web-app", session: "s1" };
     return { title: DEMO_AGENT.name, refresh: 5, up: { label: "Sessions", open: { page: "sessions", project: "web-app" } },
@@ -300,7 +303,8 @@ function demoAgentPage(op, a) {
   return { title: "Claude Code agent", sections: [
     { title: "Projects", empty: "No projects.", items: [{ title: "web-app", detail: "Container running · agent busy: Fix the login bug · 1 waiting (position 1)",
       actions: [{ label: "Sessions", open: { page: "sessions", project: "web-app" } }] }] },
-    { title: "More", items: [{ title: "Usage and sign-in", actions: [{ label: "Open", open: { page: "usage" } }] }] }] };
+    { title: "More", items: [{ title: "Usage and sign-in", actions: [{ label: "Open", open: { page: "usage" } }] },
+      { title: "Set up the agent path", detail: "Mac mini: container, network, image, sign-in, self-test", actions: [{ label: "Open", open: { page: "setup" } }] }] }] };
 }
 
 const DEMO_NOTES = [

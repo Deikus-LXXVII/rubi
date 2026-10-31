@@ -31,8 +31,9 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-// screen replaces the panel's content. An optional first argument {cls, focus} adds a class to the card
-// and controls autofocus (off for screens where a keyboard popping up would get in the way).
+// screen replaces the panel's content. An optional first argument {cls, focus, keepScroll} adds a class to the card
+// and controls autofocus (off for screens where a keyboard popping up would get in the way); keepScroll is where
+// the page is scrolled to (the top by default).
 // Screens change with a view transition where the browser has one: the old card fades out, the new one's
 // blocks rise in turn, and Rubi flies from where it was to where it is now (the "rubi" transition name).
 function screen(...children) {
@@ -53,7 +54,7 @@ function screen(...children) {
   if (viaVT) main.classList.add("vt");
   const swap = () => {
     root.replaceChildren(main);
-    window.scrollTo({ top: 0 });
+    window.scrollTo({ top: opts.keepScroll || 0 });
     animateIn(main, morph ? hero : null);
     for (const svg of main.querySelectorAll(".mascot")) svg.enter?.(morph && svg === hero);
     // Focus the first field; otherwise the title, so screen readers announce the new screen.
@@ -2031,7 +2032,8 @@ function askText(title, label, value) {
 // does nothing) and adds the answer to args under arg. An action with open {..} calls nothing: it shows the page the
 // plugin returns for "view" with those args (a drill-down), and the page's up {label, open} is the way back.
 // A section of kind "chat" is a message list with an input (see chatSection). Pages with refresh reload themselves
-// (e.g. a countdown to sending), but not while a box on the page holds text the user typed.
+// (e.g. a countdown to sending), but not while a box on the page holds text the user typed or a prompt box is open,
+// and a reload of the same page keeps its scroll position.
 const VIEW_TEXT_MAX = 600;
 const CHAT_TEXT_MAX = 4000;
 const CHAT_ITEMS_MAX = 300;
@@ -2062,6 +2064,8 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
   const key = JSON.stringify([id, viewArgs]);
   const oldLog = document.querySelector(".chat-log");
   const keep = oldLog && chatKey === key ? { top: oldLog.scrollTop, bottom: oldLog.scrollHeight - oldLog.scrollTop - oldLog.clientHeight < 24 } : null;
+  // A reload of the same page (its own refresh, or after a button) keeps the page where the user scrolled it.
+  const pageTop = chatKey === key ? window.scrollY : 0;
   chatKey = key;
   const again = () => { if (currentView === mine) mine(); };
   const go = (open) => pluginViewScreen(ctx, id, name, back, open && typeof open === "object" && !Array.isArray(open) ? open : {});
@@ -2146,7 +2150,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
   });
   const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
   screen(
-    { cls: "wide", focus: false },
+    { cls: "wide", focus: false, keepScroll: pageTop },
     header(ctx.hello),
     up ? backBar(clip(up.label, 40) || "Back", () => go(up.open)) : backBar("Settings", back),
     h("div", { class: "section-head" }, h("h1", {}, clip(data.title, 120) || name)),
@@ -2159,6 +2163,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
     const tick = () => {
       if (currentView !== mine) return; // another page has been opened
       if ([...document.querySelectorAll("textarea.chat-input")].some((t) => t.value)) return setTimeout(tick, 2000); // keep the draft
+      if (document.querySelector(".ask-overlay")) return setTimeout(tick, 2000); // a reload would drop the answer being typed
       again();
     };
     setTimeout(tick, Math.max(refresh, 2) * 1000);
