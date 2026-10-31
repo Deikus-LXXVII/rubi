@@ -22,10 +22,11 @@ func TestEachProjectStartGetsItsOwnGatewayAndSecret(t *testing.T) {
 	os.WriteFile(filepath.Join(helper, "agent-auth", "token", "oauth-token"), []byte(fakeToken+"\n"), 0o600)
 	up := newRecUpstream(t, nil)
 	fakes := map[string]*Fake{"alpha": {}, "beta": {}}
+	testGateway.upstream, testGateway.client = up.srv.URL, up.srv.Client()
+	t.Cleanup(func() { testGateway.upstream, testGateway.client = "", nil })
 	m := New(Options{Dir: helper, Wait: 5 * time.Second,
-		Projects:        func() []string { return []string{projs["alpha"], projs["beta"]} },
-		NewVM:           func(p Project) VM { return fakes[p.ID] },
-		GatewayUpstream: up.srv.URL, GatewayClient: up.srv.Client()})
+		Projects: func() []string { return []string{projs["alpha"], projs["beta"]} },
+		NewVM:    func(p Project) VM { return fakes[p.ID] }})
 	t.Cleanup(m.Close)
 	for _, id := range []string{"alpha", "beta"} {
 		if _, err := m.Sandbox(t.Context(), id); err != nil {
@@ -92,5 +93,27 @@ func TestEachProjectStartGetsItsOwnGatewayAndSecret(t *testing.T) {
 	})
 	if post("beta", env["beta"]["CLAUDE_CODE_OAUTH_TOKEN"]) != 200 {
 		t.Error("beta's gateway stopped with alpha's runner")
+	}
+}
+
+// The gateway sits on the address the VM reports for the Mac on its network, whatever the CONNECT proxy was
+// given (agent_proxy_listen, agent_proxy_vm_host); the VM is told that address.
+func TestGatewayAddressIsTheVMNetworksNotTheProxysSetting(t *testing.T) {
+	e := newEnv(t, func(o *Options) {
+		o.ProxyListen = "127.0.0.1:0"
+		o.ProxyVMHost = "mac.example.com"
+	})
+	e.fake.Gateway = "127.0.0.1"
+	if _, err := e.m.Sandbox(e.ctx, "my-project"); err != nil {
+		t.Fatal(err)
+	}
+	env := e.fake.Env()
+	u, err := url.Parse(env["ANTHROPIC_BASE_URL"])
+	if err != nil || u.Hostname() != "127.0.0.1" || env["NO_PROXY"] != "127.0.0.1" {
+		t.Errorf("base %q no_proxy %q", env["ANTHROPIC_BASE_URL"], env["NO_PROXY"])
+	}
+	// the proxy keeps the host name it was given
+	if !strings.Contains(env["HTTPS_PROXY"], "mac.example.com") {
+		t.Errorf("proxy: %q", env["HTTPS_PROXY"])
 	}
 }

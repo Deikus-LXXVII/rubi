@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -32,6 +33,18 @@ const (
 	// gatewayStall ends a response that sends nothing for this long (a stream sends pings every few seconds).
 	gatewayStall = 5 * time.Minute
 	oauthBeta    = "oauth-2025-04-20"
+)
+
+// Vars, so that tests can shorten them.
+var (
+	// gatewayMaxInFlight is how many requests are served at once; more get 429 (a runner makes a few at a time).
+	gatewayMaxInFlight = 64
+	// gatewayReadBudget is how long a request, body included, may take to arrive.
+	gatewayReadBudget = 5 * time.Minute
+	// gatewayWriteChunk is how long one write to the guest may take: a guest that stops reading is cut off.
+	gatewayWriteChunk = 60 * time.Second
+	// gatewayLogEvery limits the log of one kind of refusal.
+	gatewayLogEvery = 10 * time.Second
 )
 
 // gatewayPaths are the only requests that are forwarded (the spike in docs/design/home-setup-wizard.md found
@@ -66,10 +79,10 @@ type GatewayConfig struct {
 	Secret string
 	// TokenFile is the file with the real token. It is read at each request (a sign-in or sign-out applies at once).
 	TokenFile string
-	// Upstream and Client are for tests only: the production values are AnthropicAPI and a client that never
-	// follows a redirect.
-	Upstream string
-	Client   *http.Client
+	// upstream and client replace https://api.anthropic.com for tests. They are unexported: only code in this
+	// package can set them (its tests, or the build-tagged hook in gateway_testhook.go), never a configuration.
+	upstream string
+	client   *http.Client
 	// Logf receives refusals and failures, never a header, a body or a token (nil discards).
 	Logf func(format string, args ...any)
 }
@@ -82,9 +95,13 @@ type Gateway struct {
 	srv      *http.Server
 	ln       net.Listener
 
-	mu       sync.Mutex
-	refusals map[string]int
-	served   int
+	sem chan struct{}
+
+	mu         sync.Mutex
+	refusals   map[string]int
+	lastLog    map[string]time.Time
+	suppressed map[string]int
+	served     int
 }
 
 // StartGateway starts the gateway.
@@ -92,27 +109,28 @@ func StartGateway(cfg GatewayConfig) (*Gateway, error) {
 	if len(cfg.Secret) < 32 {
 		return nil, errors.New("the gateway needs a long secret")
 	}
-	if cfg.Upstream == "" {
-		cfg.Upstream = AnthropicAPI
+	if cfg.upstream == "" {
+		cfg.upstream = AnthropicAPI
 	}
-	up, err := url.Parse(cfg.Upstream)
+	up, err := url.Parse(cfg.upstream)
 	if err != nil || up.Host == "" || up.User != nil {
 		return nil, errors.New("bad upstream")
 	}
-	if cfg.Client == nil && (up.Scheme != "https" || up.Host != "api.anthropic.com") {
+	// The lock on the Anthropic host holds unless the test-only seam (cfg.client) is used.
+	if cfg.client == nil && (up.Scheme != "https" || up.Host != "api.anthropic.com") {
 		return nil, errors.New("the gateway only talks to https://api.anthropic.com")
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = "127.0.0.1:0"
 	}
-	if host, _, err := net.SplitHostPort(cfg.Listen); err != nil || host == "" || host == "0.0.0.0" || host == "::" {
-		return nil, errors.New("the gateway must listen on one address, not on all of them")
+	if err := validateListen(cfg.Listen, "gateway"); err != nil {
+		return nil, err
 	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return nil, err
 	}
-	client := cfg.Client
+	client := cfg.client
 	if client == nil {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
 		tr.Proxy = nil // the upstream is reached directly, with the Mac's own network
@@ -121,9 +139,12 @@ func StartGateway(cfg GatewayConfig) (*Gateway, error) {
 	}
 	c := *client
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse } // the token goes nowhere else
-	g := &Gateway{cfg: cfg, upstream: up, client: &c, ln: ln, refusals: map[string]int{}}
-	g.srv = &http.Server{Handler: http.HandlerFunc(g.handle), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 2 * time.Minute,
-		ErrorLog: log.New(io.Discard, "", 0)}
+	g := &Gateway{cfg: cfg, upstream: up, client: &c, ln: ln, refusals: map[string]int{}, lastLog: map[string]time.Time{}, suppressed: map[string]int{},
+		sem: make(chan struct{}, gatewayMaxInFlight)}
+	// ReadTimeout is the budget for a request including its body; there is no WriteTimeout, a response is
+	// streamed and each chunk gets its own write deadline (handle).
+	g.srv = &http.Server{Handler: http.HandlerFunc(g.handle), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: gatewayReadBudget,
+		IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10, ErrorLog: log.New(io.Discard, "", 0)}
 	go func() { _ = g.srv.Serve(ln) }()
 	return g, nil
 }
@@ -131,8 +152,13 @@ func StartGateway(cfg GatewayConfig) (*Gateway, error) {
 // Addr is the address the gateway listens on.
 func (g *Gateway) Addr() string { return g.ln.Addr().String() }
 
-// Close stops the gateway and ends the requests in flight.
-func (g *Gateway) Close() { _ = g.srv.Close() }
+// Close stops the gateway and ends the requests in flight. It is safe on a nil Gateway.
+func (g *Gateway) Close() {
+	if g == nil {
+		return
+	}
+	_ = g.srv.Close()
+}
 
 // Refusals counts what the gateway refused, by reason (for tests and the status).
 func (g *Gateway) Refusals() map[string]int {
@@ -154,22 +180,42 @@ func (g *Gateway) logf(format string, args ...any) {
 func (g *Gateway) refuse(w http.ResponseWriter, status int, reason, errType, msg string) {
 	g.mu.Lock()
 	g.refusals[reason]++
+	// A guest can make a refusal as often as it likes: the log gets each reason once per interval, with a count.
+	now := time.Now()
+	var logIt bool
+	var n int
+	if now.Sub(g.lastLog[reason]) >= gatewayLogEvery {
+		g.lastLog[reason], n, g.suppressed[reason] = now, g.suppressed[reason], 0
+		logIt = true
+	} else {
+		g.suppressed[reason]++
+	}
 	g.mu.Unlock()
-	g.logf("agent gateway: refused (%s)", reason)
+	if logIt && n > 0 {
+		g.logf("agent gateway: refused (%s), and %d more since the last line", reason, n)
+	} else if logIt {
+		g.logf("agent gateway: refused (%s)", reason)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	b, _ := json.Marshal(map[string]any{"type": "error", "error": map[string]string{"type": errType, "message": msg}})
 	_, _ = w.Write(b)
 }
 
-// readToken reads the real token: a plain file of at most 4096 bytes that starts with sk-ant-.
+// readToken reads the real token: a plain file of at most 4096 bytes that starts with sk-ant-. The file is
+// opened without following a symlink and checked through the open descriptor, so what is checked is what is read.
 func readToken(file string) (string, bool) {
-	st, err := os.Lstat(file)
+	f, err := os.OpenFile(file, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // NONBLOCK: a FIFO in its place doesn't hang the open
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Size() == 0 || st.Size() > 4096 {
 		return "", false
 	}
-	b, err := os.ReadFile(file)
-	if err != nil {
+	b, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil || len(b) > 4096 {
 		return "", false
 	}
 	t := strings.TrimSpace(string(b))
@@ -180,6 +226,15 @@ func readToken(file string) (string, bool) {
 }
 
 func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
+	// 0. how many: a bound on what the guest can hold open.
+	select {
+	case g.sem <- struct{}{}:
+		defer func() { <-g.sem }()
+	default:
+		w.Header().Set("Retry-After", "5")
+		g.refuse(w, http.StatusTooManyRequests, "too many requests", "rate_limit_error", "Rubi: the agent gateway is busy; try again shortly.")
+		return
+	}
 	// 1. who: only the runner this gateway was started for.
 	auth := r.Header.Get("Authorization")
 	secret, ok := strings.CutPrefix(auth, "Bearer ")
@@ -220,12 +275,16 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	out.ContentLength = r.ContentLength
 	out.Header.Set("Authorization", "Bearer "+token)
-	if beta := out.Header.Get("Anthropic-Beta"); !strings.Contains(beta, oauthBeta) {
+	// Every anthropic-beta line is kept (they are joined into one): whichever beta the agent asks for is passed
+	// on, by design, the gateway is a credential injector and not a policy on the API's features.
+	beta := strings.Join(out.Header.Values("Anthropic-Beta"), ",")
+	if !strings.Contains(beta, oauthBeta) {
 		if beta != "" {
 			beta += ","
 		}
-		out.Header.Set("Anthropic-Beta", beta+oauthBeta)
+		beta += oauthBeta
 	}
+	out.Header.Set("Anthropic-Beta", beta)
 	resp, err := g.client.Do(out)
 	if err != nil {
 		g.refuse(w, http.StatusBadGateway, "upstream", "api_error", "Rubi: the agent gateway couldn't reach the Claude API.")
@@ -242,7 +301,7 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	g.served++
 	g.mu.Unlock()
 	// 5. stream: each chunk goes out as it arrives; a response that stalls is ended.
-	fl, _ := w.(http.Flusher)
+	rc := http.NewResponseController(w)
 	stall := time.AfterFunc(gatewayStall, cancel)
 	defer stall.Stop()
 	buf := make([]byte, 32<<10)
@@ -250,11 +309,14 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 		n, rerr := resp.Body.Read(buf)
 		if n > 0 {
 			stall.Reset(gatewayStall)
+			// A guest that stops reading can't pin this goroutine and the upstream stream: the chunk must be
+			// taken within gatewayWriteChunk.
+			_ = rc.SetWriteDeadline(time.Now().Add(gatewayWriteChunk))
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				return
 			}
-			if fl != nil {
-				fl.Flush()
+			if ferr := rc.Flush(); ferr != nil {
+				return
 			}
 		}
 		if rerr != nil {

@@ -129,12 +129,8 @@ func StartProxy(cfg ProxyConfig) (*Proxy, error) {
 	if cfg.Listen == "" {
 		cfg.Listen = "127.0.0.1:0"
 	}
-	lh, _, err := net.SplitHostPort(cfg.Listen)
-	if err != nil {
-		return nil, fmt.Errorf("proxy listen address: %w", err)
-	}
-	if ip := net.ParseIP(strings.Trim(lh, "[]")); lh == "" || (ip != nil && ip.IsUnspecified()) {
-		return nil, errors.New("the proxy must not listen on a wildcard address; give the Mac's address on the VM network")
+	if err := validateListen(cfg.Listen, "proxy"); err != nil {
+		return nil, err
 	}
 	if len(cfg.AuthToken) < 16 {
 		return nil, errors.New("the proxy needs an authentication token")
@@ -193,6 +189,9 @@ func (p *Proxy) Refused() (refused []string, opened int) {
 
 // Close stops the proxy and ends every tunnel.
 func (p *Proxy) Close() error {
+	if p == nil {
+		return nil
+	}
 	p.mu.Lock()
 	p.closed = true
 	for c := range p.conns {
@@ -436,4 +435,19 @@ func closeWrite(c net.Conn) {
 	} else {
 		c.Close()
 	}
+}
+
+// validateListen refuses an address that isn't one address: no host, or a wildcard. A listener for a VM's
+// traffic must be bound to the Mac's address on the VM network, never to every interface.
+func validateListen(listen, what string) error {
+	lh, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("%s listen address: %w", what, err)
+	}
+	// An address literal (or localhost), and not a wildcard: "0" or an empty host would listen on every interface.
+	ip := net.ParseIP(strings.Trim(lh, "[]"))
+	if lh == "" || (ip != nil && ip.IsUnspecified()) || (ip == nil && lh != "localhost") {
+		return fmt.Errorf("the %s must listen on one address (the Mac's address on the VM network), not on a wildcard or a name", what)
+	}
+	return nil
 }

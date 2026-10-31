@@ -77,7 +77,7 @@ func newGW(t *testing.T, signedIn bool, secret string) *gwEnv {
 	}
 	var logs strings.Builder
 	var mu sync.Mutex
-	g, err := StartGateway(GatewayConfig{Secret: secret, TokenFile: tf, Upstream: up.srv.URL, Client: up.srv.Client(),
+	g, err := StartGateway(GatewayConfig{Secret: secret, TokenFile: tf, upstream: up.srv.URL, client: up.srv.Client(),
 		Logf: func(f string, a ...any) { mu.Lock(); fmt.Fprintf(&logs, f+"\n", a...); mu.Unlock() }})
 	if err != nil {
 		t.Fatal(err)
@@ -224,7 +224,7 @@ func TestGatewayStreamsWithoutBuffering(t *testing.T) {
 	tf := filepath.Join(dir, "token", "oauth-token")
 	os.MkdirAll(filepath.Dir(tf), 0o700)
 	os.WriteFile(tf, []byte(fakeToken), 0o600)
-	g, err := StartGateway(GatewayConfig{Secret: testSecret, TokenFile: tf, Upstream: up.srv.URL, Client: up.srv.Client()})
+	g, err := StartGateway(GatewayConfig{Secret: testSecret, TokenFile: tf, upstream: up.srv.URL, client: up.srv.Client()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestGatewayNeverFollowsARedirect(t *testing.T) {
 	tf := filepath.Join(dir, "token", "oauth-token")
 	os.MkdirAll(filepath.Dir(tf), 0o700)
 	os.WriteFile(tf, []byte(fakeToken), 0o600)
-	g, _ := StartGateway(GatewayConfig{Secret: testSecret, TokenFile: tf, Upstream: up.srv.URL, Client: up.srv.Client()})
+	g, _ := StartGateway(GatewayConfig{Secret: testSecret, TokenFile: tf, upstream: up.srv.URL, client: up.srv.Client()})
 	defer g.Close()
 	req, _ := http.NewRequest("POST", "http://"+g.Addr()+"/v1/messages", strings.NewReader("{}"))
 	req.Header.Set("Authorization", "Bearer "+testSecret)
@@ -322,13 +322,13 @@ func TestGatewayNeverFollowsARedirect(t *testing.T) {
 func TestGatewayOnlyTalksToAnthropicAndNotToEveryone(t *testing.T) {
 	cfg := GatewayConfig{Secret: testSecret, TokenFile: "/nonexistent"}
 	for _, up := range []string{"https://example.com", "http://api.anthropic.com", "https://api.anthropic.com.evil.example", "https://user@api.anthropic.com"} {
-		cfg.Upstream = up
+		cfg.upstream = up
 		if g, err := StartGateway(cfg); err == nil {
 			g.Close()
 			t.Errorf("upstream %q accepted", up)
 		}
 	}
-	cfg.Upstream = ""
+	cfg.upstream = ""
 	if g, err := StartGateway(cfg); err != nil {
 		t.Errorf("the default upstream: %v", err)
 	} else {

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,9 +52,7 @@ type Options struct {
 	// AuthDir is the shared sign-in's directory (Dir/agent-auth by default): no project may be, contain or be
 	// inside it. The auth gateway reads the token in it; a VM never sees it.
 	AuthDir string
-	// GatewayUpstream and GatewayClient replace https://api.anthropic.com for the auth gateway. For tests only.
-	GatewayUpstream string
-	GatewayClient   *http.Client
+
 	// Projects returns the directories agents may work in (config agent_projects); GitHosts the git hosts
 	// the proxy and the credential helper serve (config agent_git_hosts).
 	Projects func() []string
@@ -475,17 +472,24 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		proxyURL := "http://rubi:" + proxyToken + "@" + net.JoinHostPort(host, port)
 		// The auth gateway: the VM talks to the model API only through it, with a secret that is good for this start.
 		// It listens on the proxy's host; claude is told not to send it through the CONNECT proxy (NO_PROXY).
+		// The gateway has its own listener, always on the Mac's address on the VM network when the VM reports one
+		// (the CONNECT proxy may have been given another address by agent_proxy_listen); the VM reaches it there.
 		lhost, _, _ := net.SplitHostPort(px.Addr())
+		vmHost := host
+		if gateway != "" {
+			lhost, vmHost = gateway, gateway
+		}
+		upstream, client := gatewaySeam()
 		gw, err = StartGateway(GatewayConfig{Listen: net.JoinHostPort(lhost, "0"), Secret: gwSecret, TokenFile: TokenFileOf(authDir),
-			Upstream: m.opt.GatewayUpstream, Client: m.opt.GatewayClient, Logf: log.Printf})
+			upstream: upstream, client: client, Logf: log.Printf})
 		if err != nil {
 			px.Close()
 			return nil, fmt.Errorf("gateway: %w", err)
 		}
 		_, gport, _ := net.SplitHostPort(gw.Addr())
 		penv = map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL,
-			"ANTHROPIC_BASE_URL": "http://" + net.JoinHostPort(host, gport), "CLAUDE_CODE_OAUTH_TOKEN": gwSecret,
-			"NO_PROXY": host, "no_proxy": host}
+			"ANTHROPIC_BASE_URL": "http://" + net.JoinHostPort(vmHost, gport), "CLAUDE_CODE_OAUTH_TOKEN": gwSecret,
+			"NO_PROXY": vmHost, "no_proxy": vmHost}
 		return penv, nil
 	}
 	env := map[string]string{"RUBI_RUN_TOKEN": token, "GIT_TERMINAL_PROMPT": "0"}
