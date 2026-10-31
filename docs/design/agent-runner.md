@@ -279,9 +279,9 @@ Plugin operations (`claude-agent.*`, the plugin gates them; strict arguments, an
 | Op | Arguments | Result |
 |---|---|---|
 | `ssh.scan` | `{host, port?}` | `{fingerprint, key_type}`: Home dials from this computer and reads the host key; no authentication |
-| `ssh.register` | `{name, host, port?, user, fingerprint, allowed_commands?, ask_each_time?}` | `{public_key_line}`; refused when the live host key's fingerprint is not `fingerprint`, or the name exists |
+| `ssh.register` | `{name, host, port?, user, fingerprint, allowed_commands?, ask_each_time?, reuse?}` | `{public_key_line}`; refused when the live host key's fingerprint is not `fingerprint`, or the name exists, or the name belongs to a removed target and `reuse` is not `true` (the plugin sends `reuse:true` only after a strong approval) |
 | `ssh.list` | `{}` | `{targets:[{name, host, port, user, fingerprint, key_type, allowed_commands, ask_each_time, created_at, host_key_changed?, roles:[{id, name, project}]}]}` |
-| `ssh.remove` | `{name}` | `{ok, closed_streams}`: deletes the key, forgets the target, cuts its streams |
+| `ssh.remove` | `{name}` | `{ok, closed_streams}`: deletes the key, forgets the target, cuts its streams, and keeps the name as a tombstone (`removed` in `targets.json`) so it can't be registered again without `reuse:true`: roles may still list it |
 | `ssh.audit` | `{target?, limit?}` | `{entries:[{stream?, role, project, bot?, target, command, start, end, exit?, bytes_in, bytes_out, result, reason?}]}`, newest first |
 
 `allowed_commands` entries are exact commands, or prefixes when they end in `*` (the rest of the command may then hold only

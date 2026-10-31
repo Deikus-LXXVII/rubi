@@ -95,6 +95,9 @@ type Store struct {
 	mu      sync.Mutex
 	targets map[string]Target
 	changed map[string]string // target -> when a dial found another host key
+	// removed holds the names of removed targets (a tombstone). A role record may still list such a name, so a new
+	// target under it would be granted to those roles at once; Register refuses it unless Reuse is set.
+	removed map[string]bool
 }
 
 // Open opens (creating it, 0700) the registry in dir. dial may be nil (a plain TCP dial); now may be nil.
@@ -105,7 +108,7 @@ func Open(dir string, dial Dialer, now func() time.Time) (*Store, error) {
 	if now == nil {
 		now = time.Now
 	}
-	s := &Store{dir: dir, dial: dial, now: now, targets: map[string]Target{}, changed: map[string]string{}}
+	s := &Store{dir: dir, dial: dial, now: now, targets: map[string]Target{}, changed: map[string]string{}, removed: map[string]bool{}}
 	for _, d := range []string{dir, filepath.Join(dir, keysDir)} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return nil, err
@@ -122,6 +125,7 @@ func Open(dir string, dial Dialer, now func() time.Time) (*Store, error) {
 	default:
 		var f struct {
 			Targets []Target `json:"targets"`
+			Removed []string `json:"removed"`
 		}
 		if err := json.Unmarshal(b, &f); err != nil {
 			return nil, fmt.Errorf("%s: %w", targetsFile, err)
@@ -129,6 +133,11 @@ func Open(dir string, dial Dialer, now func() time.Time) (*Store, error) {
 		for _, t := range f.Targets {
 			if nameRE.MatchString(t.Name) {
 				s.targets[t.Name] = t
+			}
+		}
+		for _, n := range f.Removed {
+			if nameRE.MatchString(n) {
+				s.removed[n] = true
 			}
 		}
 	}
@@ -141,8 +150,13 @@ func (s *Store) Dir() string { return s.dir }
 func (s *Store) saveLocked() error {
 	var f struct {
 		Targets []Target `json:"targets"`
+		Removed []string `json:"removed,omitempty"`
 	}
 	f.Targets = []Target{}
+	for n := range s.removed {
+		f.Removed = append(f.Removed, n)
+	}
+	sort.Strings(f.Removed)
 	for _, t := range s.targets {
 		f.Targets = append(f.Targets, t)
 	}
@@ -234,6 +248,9 @@ type RegisterArgs struct {
 	Fingerprint     string   `json:"fingerprint"`
 	AllowedCommands []string `json:"allowed_commands"`
 	AskEachTime     bool     `json:"ask_each_time"`
+	// Reuse allows a name that was removed before. The plugin sends it only after a strong approval that says the
+	// roles still listing the name will get the new target.
+	Reuse bool `json:"reuse,omitempty"`
 }
 
 func badText(s string) bool {
@@ -289,10 +306,14 @@ func (s *Store) Register(ctx context.Context, a RegisterArgs) (string, error) {
 	}
 	s.mu.Lock()
 	_, exists := s.targets[a.Name]
+	gone := s.removed[a.Name]
 	n := len(s.targets)
 	s.mu.Unlock()
 	if exists {
 		return "", fmt.Errorf("a target named %q exists; remove it first", a.Name)
+	}
+	if gone && !a.Reuse {
+		return "", fmt.Errorf("the name %q was used by a removed target and roles may still list it; choose another name", a.Name)
 	}
 	if n >= MaxTargets {
 		return "", fmt.Errorf("more than %d targets", MaxTargets)
@@ -328,9 +349,17 @@ func (s *Store) Register(ctx context.Context, a RegisterArgs) (string, error) {
 	if err := writeFileAtomic(kp, pemBytes(blk), 0o600); err != nil {
 		return "", err
 	}
+	wasRemoved := s.removed[a.Name]
+	if wasRemoved && !a.Reuse {
+		return "", fmt.Errorf("the name %q was used by a removed target and roles may still list it; choose another name", a.Name)
+	}
 	s.targets[a.Name] = t
+	delete(s.removed, a.Name)
 	if err := s.saveLocked(); err != nil {
 		delete(s.targets, a.Name)
+		if wasRemoved {
+			s.removed[a.Name] = true
+		}
 		_ = os.Remove(kp)
 		return "", err
 	}
@@ -358,6 +387,7 @@ func (s *Store) Remove(name string) error {
 	}
 	delete(s.targets, name)
 	delete(s.changed, name)
+	s.removed[name] = true
 	err := s.saveLocked()
 	if e := os.Remove(s.keyPath(name)); e != nil && !errors.Is(e, os.ErrNotExist) && err == nil {
 		err = e

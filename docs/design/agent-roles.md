@@ -597,7 +597,9 @@ seam to the Manager). The wire contract and the `ssh.scan/register/list/remove/a
 - The audit is `agent-ssh/audit.jsonl` (rotated at 1 MiB), including refusals (result `refused`, `denied`, `host key
   changed`). Plugin-side audit entries are the plugin's to add from `ssh.audit`.
 - Removing a target does not edit the role records that name it; a later target registered under the same name would be
-  granted again. Treat names as not reusable until the plugin clears the grants (R12).
+  granted again. So `ssh.remove` keeps a tombstone of the name (persisted in `targets.json`, never expires), and
+  `ssh.register` refuses a tombstoned name unless the call carries `reuse:true`, which the plugin sends only after a
+  strong approval that says which roles still list the name.
 
 ### 9.6 Deliberate difference from the addendum
 
