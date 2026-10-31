@@ -72,6 +72,12 @@ const APPROVALS = {
         help: "The routine's key (crsr_\u2026). It stays in Rubi; nobody else sees it." },
     ],
   },
+  curator: {
+    kind: "rubi.library.curator", summary: "Make Writer the skill library's curator",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { "curator now": "Librarian", "curator after": "Writer",
+      allows: "the curator Bot can admit skills into the shared library, publish new versions, deprecate and withdraw them. Admitted skills are trusted by every role that uses them, and the curator may admit its own. The automatic scan still has to pass." },
+  },
   settings: {
     kind: "rubi.settings", summary: "Add Rubi Home on Mac mini",
     options: [{ key: "apply", label: "Approve" }],
@@ -198,6 +204,8 @@ export class DemoClient {
         return { approval_id: "settings", ticket: "demo" };
       case "agent.add":
         return { approval_id: "bot", ticket: "demo" };
+      case "library.list": case "library.entry": case "library.version": case "library.queue": case "library.curator.set":
+        return demoLibrary(op, args);
       case "plugin.panel": {
         if (args.id === "gmail") return demoMailPage(args.op, args.args);
         if (args.id === "claude-code") return demoAgentPage(args.op, args.args || {});
@@ -307,6 +315,67 @@ function demoAgentPage(op, a) {
       { title: "Set up the agent path", detail: "Mac mini: container, network, image, sign-in, self-test", actions: [{ label: "Open", open: { page: "setup" } }] }] }] };
 }
 
+// The skill library: a few generic skills, one self-admitted by the curator, one proposal with a flag.
+const DEMO_LIB = {
+  curator: "Librarian",
+  versions: {
+    "design-tokens": [
+      { version: 1, state: "deprecated", description: "Use the shared design tokens for colors and spacing.", tags: ["design", "css"], author_bot: "Designer", submitted_at: iso(now() - 86400e3 * 20),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 19), scan_verdict: "pass", scanner_version: "1", sha256: "9f2c5a1e7b3d4c80a6e1f0b92d7c3a54e8b6f1d0c2a79e43b5d8f6a1c0e7b392",
+        content: "---\nname: design-tokens\ndescription: Use the shared design tokens for colors and spacing.\n---\n# Design tokens\nUse the tokens, never raw hex values.\n" },
+      { version: 2, state: "admitted", description: "Use the shared design tokens for colors, spacing and type.", tags: ["design", "css"], author_bot: "Designer", submitted_at: iso(now() - 86400e3 * 6),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 5), scan_verdict: "pass", scanner_version: "1", sha256: "3b7e1c9a52d84f60e1a7c3b8d9f20e56a4c18b7d3e90f2a615c4b8e7d1a03f96",
+        content: "---\nname: design-tokens\ndescription: Use the shared design tokens for colors, spacing and type.\n---\n# Design tokens\nUse the tokens for colors, spacing and type.\nNever write raw hex values.\n" },
+    ],
+    "release-notes": [
+      { version: 1, state: "admitted", description: "Write short, user-facing release notes from a list of changes.", tags: ["writing", "release"], author_bot: "Writer", submitted_at: iso(now() - 86400e3 * 9),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 8), scan_verdict: "pass", scanner_version: "1", sha256: "c40a9e7d31b58f2a6e0d4c7b19a3f85e2d6b0c48a7f1e93d5b2c6a80f4e1d7b3",
+        content: "---\nname: release-notes\ndescription: Write short, user-facing release notes from a list of changes.\n---\n# Release notes\nOne line per change, in the user's words.\n" },
+    ],
+    "commit-style": [
+      { version: 1, state: "admitted", description: "Keep commit messages short and in the imperative.", tags: ["git"], author_bot: "Librarian", submitted_at: iso(now() - 86400e3 * 3),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 3), self_admitted: true, scan_verdict: "pass", scanner_version: "1", sha256: "7d1f3a9c5e20b84f6a1d7c3e9b05f2a8c4e6d1b7a30f95c2e8b4d6a1f07c3e59",
+        content: "---\nname: commit-style\ndescription: Keep commit messages short and in the imperative.\n---\n# Commit style\nSubject under 60 characters, imperative mood.\n" },
+    ],
+    "link-checker": [
+      { version: 1, state: "proposed", description: "Check the links in a document before it goes out.", tags: ["writing", "qa"], author_bot: "Writer", submitted_at: iso(now() - 3600e3 * 5),
+        scan_verdict: "flag", scanner_version: "1", sha256: "e85b2d7a14c9f3601a5e8d2b7c4f90a3d6e1b58c7a2f04d9e3b6a1c85f27d04b",
+        scan_hits: [{ id: "net.unlisted-host", line: 6, severity: "flag", excerpt: "Read https://unlisted.example.org/docs first." }],
+        content: "---\nname: link-checker\ndescription: Check the links in a document before it goes out.\n---\n# Link checker\nList every link, then test each one.\nRead https://unlisted.example.org/docs first.\n" },
+    ],
+  },
+};
+function libSummary(id) {
+  const vs = DEMO_LIB.versions[id];
+  const latest = Math.max(0, ...vs.filter((v) => v.state === "admitted").map((v) => v.version));
+  const shown = vs.find((v) => v.version === latest) || vs[vs.length - 1];
+  return { id, description: shown.description, tags: shown.tags, latest_admitted: latest, versions: vs.map((v) => ({ version: v.version, state: v.state })) };
+}
+function demoLibrary(op, a) {
+  const strip = (id, v) => ({ id, ...v, content: undefined, latest_admitted: libSummary(id).latest_admitted });
+  if (op === "library.list") {
+    const q = (a.query || "").toLowerCase();
+    const skills = Object.keys(DEMO_LIB.versions).map(libSummary)
+      .filter((s) => (!a.tag || s.tags.includes(a.tag)) && (!q || (s.id + " " + s.description + " " + s.tags.join(" ")).toLowerCase().includes(q)));
+    return { skills, curator: DEMO_LIB.curator };
+  }
+  if (op === "library.queue") {
+    return { proposals: Object.entries(DEMO_LIB.versions).flatMap(([id, vs]) => vs.filter((v) => v.state === "proposed").map((v) => strip(id, v))), curator: DEMO_LIB.curator };
+  }
+  if (op === "library.entry") {
+    const vs = DEMO_LIB.versions[a.id];
+    if (!vs) throw new Error("no skill " + a.id);
+    return { id: a.id, versions: vs.map((v) => strip(a.id, v)), curator: DEMO_LIB.curator };
+  }
+  if (op === "library.version") {
+    const v = (DEMO_LIB.versions[a.id] || []).find((x) => x.version === a.version);
+    if (!v) throw new Error("no such version");
+    return { id: a.id, ...v };
+  }
+  if (a.name && a.name.toLowerCase() === DEMO_LIB.curator.toLowerCase()) throw new Error("that is already the curator");
+  return { approval_id: "curator", ticket: "demo" };
+}
+
 const DEMO_NOTES = [
   { id: "n1", title: "Gift ideas for Anna", body: "Ceramics class\nThe novel she mentioned (ask Bob for the title)", tags: ["birthday"], pinned: true, by: "agent", updated: iso(now() - 3600e3) },
   { id: "n2", title: "Door code for the new office", body: "Ask reception on Monday", tags: ["work"], private: true, by: "you", updated: iso(now() - 86400e3) },
@@ -330,6 +399,7 @@ export const DEMO_SCREENS = [
   ["setup", "Connect with a code"],
   ["home", "Add a home computer"],
   ["bots", "Grok Bot connections"],
+  ["library", "Skill library"],
   ["connect", "Connect a Bot"],
   ["updates", "Updates"],
   ["notes", "Notes"],
