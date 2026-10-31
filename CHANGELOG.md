@@ -1,8 +1,29 @@
 # Changelog
 
-## Unreleased
+## v0.14.0-rc.1 (2026-11-01)
 
-- **No network for VMs (agent roles, R13, option D).** Every project, role and sign-in VM now runs with
+Release candidate. What changes for you:
+
+- **Agent SDK sessions in VMs, set up from the panel.** The claude-code plugin's setup page walks through Apple
+  `container`, the runner image, project folders, one Claude sign-in and a self-test, one button per step.
+- **One Claude sign-in for every project, and the token never enters a VM.** Rubi Home keeps the token and adds it to
+  requests to Anthropic; a VM gets only a per-start secret.
+- **VMs have no network.** Every VM runs with `--network none`; its only way out is Rubi Home's allow-list proxy and
+  auth gateway, reached through a pipe over the runner channel. Nothing on your Mac is reachable from a VM.
+- **Roles.** A role is a profile with its own skills, tools, MCP servers, instructions and mode, run in its own VM.
+  Bots may curate their own roles within limits; anything that widens a role needs your strong approval, and every
+  change can be reverted from the panel.
+- **Shared skill library.** Skills are scanned, admitted by a curator Bot and signed; you can withdraw a skill from
+  the panel ("Skills" tab).
+- **SSH targets.** Rubi Home is the SSH client and keeps the key; a role's VM gets an `ssh` command for the targets
+  granted to that role. Registering a target needs your strong approval.
+- **Usage modes and session limits.** Maximum, Medium (default) and Light per Bot, a cap on sessions per project, per
+  role and for the whole computer (default 4), and a cap on subagents.
+- **Requires** the claude-code plugin built for v0.14 (its minimum Rubi is v0.14.0-rc.1).
+
+### Details
+
+- **No network for VMs (agent roles).** Every project, role and sign-in VM now runs with
   `container run --network none`: loopback only, no route, so nothing on the Mac (another app's open port, the gateway
   address) is reachable from a VM and DNS is moot. The VM's way out is `rubi-netpipe`, a forwarder in the image that listens
   on `127.0.0.1:3128` (the CONNECT proxy) and `127.0.0.1:3129` (the auth gateway) and carries every connection as a stream
@@ -27,19 +48,19 @@
   (`library.revoked`), admission signs the acknowledged rule ids (Home holds a skill with other flags), key pinning
   no longer stalls `library.get` on an offline Home, and sealed entry files carry a counter against restored old copies.
 
-- **Skill library in the panel (agent roles, R10).** Settings has a "Skills" tab: search and tag filter, each skill's
+- **Skill library in the panel (agent roles).** Settings has a "Skills" tab: search and tag filter, each skill's
   versions with state, scan rules (line and excerpt), author Bot, who admitted it ("self-admitted by curator" when the
   curator admitted its own), hash and dates, the skill's text in a text-only box, and the queue of proposals waiting for
   the curator. The curator can be changed there (a Bot name, then a strong approval). Everything a Bot wrote is shown as
   clipped, marked text. The panel reads only; admitting, deprecating and withdrawing stay the curator Bot's. New panel ops
   `library.list`, `library.entry`, `library.version`, `library.queue`, `library.curator.set` (full settings ticket only).
   The demo has the screen (`#demo=library`).
-- **SSH from a role's VM (agent roles, R12 runner and image).** The VM image has an `ssh <target> <command>` wrapper
+- **SSH from a role's VM (agent roles).** The VM image has an `ssh <target> <command>` wrapper
   (`rubi-ssh`, first in `PATH`): no options, no `user@host`, no TTY; it talks to the runner over a unix socket and the
   runner relays the stream to Rubi Home, which is the SSH client (input with end of input, output, exit status,
   8 MiB flow control each way, close on interrupt or exit). Git over ssh is off. A removed SSH target's name can't be
   registered again unless the call says `reuse`, since roles may still list it.
-- **Agent roles: security review fixes (R4-R7).** Session operations of a role are refused for a session that isn't the
+- **Agent roles: security review fixes.** Session operations of a role are refused for a session that isn't the
   role's own (not in its slots, not in its runner's list), and the runner resumes from disk only sessions its config
   directory lists. Reads of a role whose VM is stopped answer empty (`vm_state: "stopped"`) instead of starting it, and no
   read keeps a VM from its idle stop. A role VM sees `/work/.rubi` as an empty read-only directory and the project's
@@ -48,7 +69,7 @@
   window. A role's container is named by its id and 64 bits of hash (old-style leftovers are removed on start). Removing a
   host from a role cuts it off on the running VM; archiving stops an idle VM and blocks new sends. Items to the plugin
   carry `role_name`.
-- **Shared skill library (agent roles, R8).** New `internal/library`: skills are submitted by any connected Bot and admitted
+- **Shared skill library (agent roles).** New `internal/library`: skills are submitted by any connected Bot and admitted
   by one curator Bot, with versions that never change, each file sealed under a key derived from the vault key (32 KiB per
   version, 500 skills, 20 versions each). The scan runs on submit (a reject is final) and again on admit; every flag must be
   acknowledged by rule id. Admitting signs the version with a new library key kept in the vault (Ed25519, made on first
@@ -60,7 +81,7 @@
   read-only host method `library.get {id, version}` (content and signature). Rubi Home pins the library public key on the
   new op `library.key`, which only Rubi's core sends (no plugin capability reaches it) and verifies library skills in roles
   with it; before, every library skill was refused. A role's skill `sig` may now be up to 600 characters.
-- **Rubi Home: SSH targets (agent roles, R11).** New ops `claude-agent.ssh.scan/register/list/remove/audit` and the runner
+- **Rubi Home: SSH targets (agent roles).** New ops `claude-agent.ssh.scan/register/list/remove/audit` and the runner
   request `ssh.open` with `ssh.data/ack/close/exit` notifications (contract in `docs/design/agent-runner.md`). Home is the SSH
   client: it reads and pins the target's host key, generates an Ed25519 key per target in `<helper>/agent-ssh/keys/` (0600;
   it never leaves Home and is in no result, item, event, log or environment), returns the public key as a `restrict`
@@ -72,7 +93,7 @@
   a stopped runner or Home stopping cuts live streams. Audit per stream in `agent-ssh/audit.jsonl`: no output, no key
   material. The runner/wrapper side is R12.
 
-- **Rubi Home: one VM per role (agent roles, R4).** `claude-agent.start/send/sessions/messages/rename/fork/interrupt/close/mode`
+- **Rubi Home: one VM per role (agent roles).** `claude-agent.start/send/sessions/messages/rename/fork/interrupt/close/mode`
   take an optional `role` (a role id; missing means the project's legacy role, which keeps its VM, mounts and environment
   exactly). An isolated role runs in its own container (`rubi-agent-<role>-<hash of dir|role>`) with the project at `/work`,
   its content read-only at `/rubi-role`, its own config directory at `/rubi-claude`, `RUBI_ROLE_DIR`/`RUBI_CLAUDE_DIR`, no
@@ -82,7 +103,7 @@
   An archived role refuses starts. `status` slot and queue rows and `projects` rows gain `role` and `role_name` (the
   legacy role: the project id and `default`); `projects` has one row per (project, role) for roles with a VM, session or
   queued item; event and queue items to the plugin carry `role`.
-- **Rubi Home: session slots per profile (agent roles, R5).** New `agent_max_sessions_per_profile` (default 1, at least 1)
+- **Rubi Home: session slots per profile (agent roles).** New `agent_max_sessions_per_profile` (default 1, at least 1)
   limits top-level sessions per role; `agent_max_sessions_per_project` is now an optional extra cap on a project's roles
   together (unset or 0 = none; anyone who raised it before should also set the new value). The computer cap
   (`agent_max_sessions`, 4) and the per-Bot modes are unchanged. Queue reasons name the role ("waiting: role
@@ -90,7 +111,7 @@
   `per_profile`. New user-only op `claude-agent.limits {per_profile?, per_project?, total?}` (like `usage_mode`: panel
   button only, never a Bot tool). The setup self-test still holds its whole project.
 
-- **Agent roles: security review fixes (R1-R3).** Role mode turns off inline shell in skills (`disableSkillShellExecution`):
+- **Agent roles: security review fixes.** Role mode turns off inline shell in skills (`disableSkillShellExecution`):
   with the real `claude`, ``!`cmd` `` and ```` ```! ```` blocks in a skill ran with no `perm.ask` (in `bypassPermissions`, and
   read-only commands in `default` mode); the scanner now rejects the syntax too (`hid.shell`). `sdk/skillscan` (version
   `skillscan/2`): a double-quoted frontmatter value with a backslash is refused and the decoded description is scanned
@@ -103,7 +124,7 @@
   `role.json` size before writing blobs, caps a role's skill text at 4 MiB, removes the blobs of a failed put and stray
   `.tmp-*` files, and a stored version a stricter scanner rejects no longer bricks the role. The runner reads project
   `CLAUDE.md` files through a non-blocking descriptor and refuses a `.claude` that resolves outside the working directory.
-- **Runner: role mode (agent roles, R1).** With `RUBI_ROLE_DIR` set, the runner loads a role written by Rubi Home
+- **Runner: role mode (agent roles).** With `RUBI_ROLE_DIR` set, the runner loads a role written by Rubi Home
   (`current -> v<n>/{role.json,plugin/}` on a read-only mount) instead of the repository's `.claude`: `settingSources: []`,
   the role's skills and subagents as one SDK local plugin, a `skills` allowlist, a `tools` base set, the role's MCP servers
   only (`strictMcpConfig`), extra deny rules, and the role's instructions plus the repo's `CLAUDE.md` through the system
@@ -112,7 +133,7 @@
   missing or bad role refuses `session.start`, never falling back to legacy mode. Sessions live in `RUBI_CLAUDE_DIR`. The
   permission gate, subagent gate and auth gateway env are unchanged; without `RUBI_ROLE_DIR` nothing changes. A new
   integration suite (`roles.integration.test.ts`) runs two roles on one repository against the real SDK.
-- **Rubi Home: the role store and `claude-agent.role.*` ops (agent roles, R3).** Home keeps agent roles per computer
+- **Rubi Home: the role store and `claude-agent.role.*` ops (agent roles).** Home keeps agent roles per computer
   in `<helper dir>/agent-roles/<id>/`: immutable numbered versions (0600), content-addressed ad-hoc skill blobs
   (re-hashed by Home), and for each version a materialized directory (`role.json`, a plugin named `role` with
   `skills/<name>/SKILL.md` normalized by `sdk/skillscan` and `agents/<name>.md` rebuilt from fields) behind an
@@ -123,7 +144,7 @@
   store repairs. `role.list` (with each project's implicit legacy role `default`), `role.get`, `role.history` and
   `role.diff` (structured changes and clipped unified text diffs) read it. GC keeps the newest 5 materialized
   versions and any version marked in use. No VM, mount or slot changes yet.
-- **SDK: `sdk/skillscan`, a deterministic skill scanner (agent roles, R2).** `skillscan.Scan(name, content, allowedHosts)`
+- **SDK: `sdk/skillscan`, a deterministic skill scanner (agent roles).** `skillscan.Scan(name, content, allowedHosts)`
   checks a `SKILL.md` and returns a verdict (pass, flag, reject), the rule hits (id, line, an excerpt of at most 80
   characters with secrets masked), the frontmatter keys it stripped, the scanner version and a normalized file whose
   frontmatter keeps only `name` and `description`. Rejects: format limits, hidden text (zero-width, bidi, tag
@@ -214,9 +235,9 @@
   the scan was partial or old, so a plugin doesn't read a missing session as an ended one. A plugin page's `view`
   action may carry `prompt {arg, label, value}`: the panel asks in a box it draws, titled "<plugin> asks:", label as
   text (200 characters), refusing labels that mention a password, passkey, PIN or Rubi, and passes the answer as
-  `args[arg]`. Plugin repo, branch `citri/session-rename`; plan in `docs/plans/session-rename.md`.
+  `args[arg]`. Plugin repo.
 - **Rubi Home: `rubi-home claude-send`, a documented way for a local script to message a Claude Code session.**
-  `printf '%s' "$text" | rubi-home claude-send --name "Remote control" --from Citri --wait-reply 300` (or
+  `printf '%s' "$text" | rubi-home claude-send --name "Remote control" --from bot-a --wait-reply 300` (or
   `--session ID`) queues the message in Rubi Home's inbox, where the waiter hook (`asyncRewake` Stop hook, in the
   managed settings) wakes an idle session with it, and prints the session's answer. It replaces writing to the
   undocumented `messagingSocketPath` socket of Claude Code, which stays only as the caller's fallback. The
@@ -237,8 +258,7 @@
   and audited (no cap for this mode, so it can't end by surprise). It is never pruned: the 20-trust cap evicts
   the oldest timed trust, and refuses a new grant when all 20 are unlimited. A new grant for the same computer
   and root replaces the old one of either mode (audited with both modes). `claude_code_mandates` and the panel
-  show when a project trust was granted ("3 d 4 h ago") and how often it was used. Plugin repo, branch
-  `citri/trust-unlimited`; plan in `docs/plans/trust-unlimited.md`. No change to Rubi Home or Rubi.
+  show when a project trust was granted ("3 d 4 h ago") and how often it was used. Plugin repo. No change to Rubi Home or Rubi.
 - **Rubi Home: a worktree's `commondir` no longer widens the project; sessions report resolved paths.** A `.git`
   file only makes the main repository the project when its `gitdir` is `<common>/worktrees/<name>` (git's own
   layout); a spoofed `commondir` naming an ancestor, or one inside a `.git` directory, is ignored and the
@@ -251,13 +271,12 @@
   not report its computer's zone, and the approval says so) every Claude Code session on that computer inside
   the project's root runs plain, listed commands without asking (the 2-hour trust's check, each allow audited
   with the `pt_…` id, at most 2000), and switching to or creating a git branch is allowed only for names matching
-  the trust's pattern (default `citri/*`). Push and every remote git command, `--force`, sudo, the network,
+  the trust's pattern (default `agent/*`). Push and every remote git command, `--force`, sudo, the network,
   installs, `git tag`, writes outside the root and branches outside the pattern still ask. The Bot bound to a
   session of the project can start sessions in it and bind to its other sessions without a new approval
   (audited). One live trust per computer and root (a new one replaces the old); it lives in the plugin's saved
   state, so it survives a restart of Rubi Home, the plugin or Rubi; revoke it in the panel or with
-  `claude_code_mandates`. No change to Rubi Home. Plugin repo, branch `citri/project-trust`; plan in
-  `docs/plans/project-trust.md`.
+  `claude_code_mandates`. No change to Rubi Home. Plugin repo.
 - **Rubi Home logs every hook it handles.** One line per hook: `claude-hook <event> session=<first 8 of the id>
   outcome=<what happened> <ms>ms` (for example `delivered 2`, `replies 1 asks 1 blocked`, `refused
   (protocol)`, `slots full`; a permission request shows its request id and the first 8 characters of its

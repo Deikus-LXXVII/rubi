@@ -226,7 +226,7 @@ func TestDefaultSystemDirsAndVolumes(t *testing.T) {
 			t.Errorf("%s allowed", p)
 		}
 	}
-	if c.refusedStartDir("/Volumes/Crucial/Projects") != "" {
+	if c.refusedStartDir("/Volumes/External/Projects") != "" {
 		t.Error("a project on a volume was refused")
 	}
 }

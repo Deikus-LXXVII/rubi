@@ -1,7 +1,7 @@
 # B2: Wake idle Claude Code sessions, delivery status for senders
 
-Task from Цитри's audit (F3/B2). Branches: core `citri/idle-wake` (from `citri/home-nonblocking`), plugin
-`citri/idle-wake` (from `citri/mandate-hardening`). Not pushed.
+Task from the reviewer's audit (F3/B2). Branches: core `feature/idle-wake` (from `feature/home-nonblocking`), plugin
+`feature/idle-wake` (from `feature/mandate-hardening`). Not pushed.
 
 ## Problem
 A message for a session reaches it only on UserPromptSubmit or Stop (internal/home/inbox.go). An idle

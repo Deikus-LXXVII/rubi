@@ -1,7 +1,7 @@
 # Documented messaging path (B9)
 
 Goal: a local process (a script, another tool) hands a message to a Claude Code session through documented
-means only. The old way (`~/.citri/tell-rubi.py` writing an undocumented `{"type":"user"}` line into the
+means only. The old way (`~/.feature/tell-rubi.py` writing an undocumented `{"type":"user"}` line into the
 `messagingSocketPath` of `~/.claude/sessions/<pid>.json`) stays only as the caller's own fallback; nothing in
 this repo writes to that socket.
 

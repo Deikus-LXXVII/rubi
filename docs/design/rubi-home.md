@@ -195,7 +195,7 @@ The helper does only what it was built for, whatever Rubi asks:
   the managed settings (see `examples/managed-settings.json` of the plugin); without it a message to an idle
   session waits for the next prompt, and `claude-send` says so. The old way, a script writing an undocumented
   `{"type":"user",...}` line into the `messagingSocketPath` of `~/.claude/sessions/<pid>.json`
-  (`~/.citri/tell-rubi.py`), may break with any Claude Code update; nothing in Rubi or its plugins writes to that
+  (`~/.feature/tell-rubi.py`), may break with any Claude Code update; nothing in Rubi or its plugins writes to that
   socket, and it remains only as the caller's own fallback. A short example is
   `docs/examples/tell-session.sh`.
 
