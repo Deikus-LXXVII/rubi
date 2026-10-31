@@ -38,7 +38,7 @@ type Entry struct {
 	Reason string `json:"reason,omitempty"`
 }
 
-var secretArg = regexp.MustCompile(`(?i)((?:pass(?:word|wd)?|token|secret|api[_-]?key|authorization|bearer|credential)s?["']?\s*[=:]\s*|bearer\s+|--(?:password|token|secret)\s+)\S+`)
+var secretArg = regexp.MustCompile(`(?i)((?:pass(?:word|wd)?|token|secret|api[_-]?key|authorization|bearer|credential)s?["']?\s*[=:]\s*(?:(?:bearer|basic|token)\s+)?|bearer\s+|--(?:password|token|secret)\s+)\S+`)
 
 // redact hides what looks like a secret in a command line.
 func redact(s string) string {
