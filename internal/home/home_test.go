@@ -370,3 +370,65 @@ func TestApplyUsageChange(t *testing.T) {
 		t.Fatalf("all: %+v", c)
 	}
 }
+
+// The library key is pinned by the first library.key from a paired Rubi, a different one is refused, and a
+// new pairing starts over.
+func TestLibraryKeyPinning(t *testing.T) {
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := homeproto.RandomToken()
+	_ = h.Update(func(c *Config) { c.Paired = []Pairing{{TokenHash: tokenHash(token)}} })
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	args := func(k ed25519.PublicKey) json.RawMessage {
+		b, _ := json.Marshal(map[string]string{"public_key": base64.StdEncoding.EncodeToString(k)})
+		return b
+	}
+	do := func(tok string, a json.RawMessage) error {
+		_, err := h.Handle(context.Background(), homeproto.Envelope{Op: "library.key", Token: tok, Args: a})
+		return err
+	}
+	if err := do(homeproto.RandomToken(), args(pub)); err == nil || h.libraryKey() != nil {
+		t.Fatalf("an unpaired token pinned a key: %v", err)
+	}
+	if h.libraryKey() != nil {
+		t.Fatal("a key is pinned before any was presented")
+	}
+	for _, bad := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`{"public_key":"AAAA"}`), json.RawMessage(`[1]`)} {
+		if err := do(token, bad); err == nil {
+			t.Fatalf("bad arguments %s accepted", bad)
+		}
+	}
+	if err := do(token, args(pub)); err != nil || !h.libraryKey().Equal(pub) {
+		t.Fatalf("first pin: %v", err)
+	}
+	if err := do(token, args(pub)); err != nil {
+		t.Fatalf("presenting the same key again: %v", err)
+	}
+	if err := do(token, args(pub2)); err == nil || !h.libraryKey().Equal(pub) {
+		t.Fatalf("a different key replaced the pin: %v", err)
+	}
+	// The pin survives a restart.
+	h2, _ := Open(h.Dir)
+	if !h2.libraryKey().Equal(pub) {
+		t.Fatal("pin lost on reopen")
+	}
+	// A new pairing is a new Rubi: the pin starts over.
+	_ = h.Update(func(c *Config) { c.Pending = &Pending{Secret: "s", Expires: time.Now().Add(time.Minute)} })
+	token = homeproto.RandomToken()
+	pair, _ := json.Marshal(map[string]string{"secret": "s", "token": token})
+	if _, err := h.pair(pair); err != nil {
+		t.Fatal(err)
+	}
+	if h.libraryKey() != nil {
+		t.Fatal("the pin survived a new pairing")
+	}
+	// A plugin's capability prefix never gets here: Home has no such op under another name.
+	for _, op := range []string{"claude-agent.library.key", "agent-setup.library.key", "library.get", "library.keys"} {
+		if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: op, Token: token}); err == nil {
+			t.Fatalf("%s", op)
+		}
+	}
+}
