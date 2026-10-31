@@ -151,10 +151,10 @@ const connect = (host) => new Promise(r => { const u = new URL(process.env.HTTPS
     ":443\r\nProxy-Authorization: Basic " + Buffer.from(decodeURIComponent(u.username) + ":" + decodeURIComponent(u.password)).toString("base64") + "\r\n\r\n"));
   s.once("data", d => { s.destroy(); r(d.toString().split("\r\n")[0]); }); s.on("timeout", () => { s.destroy(); r("timeout"); }); s.on("error", e => r(e.code)); });
 (async () => {
-  out.dns = await new Promise(r => dns.lookup("api.anthropic.com", (e, a) => r(e ? e.code : a)));
+  out.dns = await new Promise(r => dns.lookup("registry.npmjs.org", (e, a) => r(e ? e.code : a)));
   out.direct_ip = await tcp("1.1.1.1", 443);
   out.direct_default_gw = await tcp("192.168.64.1", 53);
-  out.proxy_allowed = await connect("api.anthropic.com");
+  out.proxy_allowed = await connect("registry.npmjs.org");
   out.proxy_not_listed = await connect("example.org");
   console.log(JSON.stringify(out));
 })();`

@@ -13,7 +13,7 @@ import (
 
 // isolationProbe runs in the VM as the runner's user. It checks that /work/.rubi is writable, that direct
 // connections and name lookups fail (a public address, and the gateway of the container tool's default NAT
-// network when RUBI_PROBE_GW names it), and that the proxy lets an Anthropic host through and refuses one not on the list.
+// network when RUBI_PROBE_GW names it), and that the proxy lets a registry host through and refuses one not on the list.
 const isolationProbe = `
 const net = require("net"), dns = require("dns"), fs = require("fs");
 const out = {};
@@ -26,10 +26,10 @@ const connect = (host) => new Promise(r => { const u = new URL(process.env.HTTPS
     ":443\r\nProxy-Authorization: Basic " + Buffer.from(decodeURIComponent(u.username) + ":" + decodeURIComponent(u.password)).toString("base64") + "\r\n\r\n"));
   s.once("data", d => { s.destroy(); r(d.toString().split("\r\n")[0]); }); s.on("timeout", () => { s.destroy(); r("timeout"); }); s.on("error", e => r(e.code)); });
 (async () => {
-  out.dns = await new Promise(r => dns.lookup("api.anthropic.com", (e, a) => r(e ? e.code : a)));
+  out.dns = await new Promise(r => dns.lookup("registry.npmjs.org", (e, a) => r(e ? e.code : a)));
   out.direct_ip = await tcp("1.1.1.1", 443);
   out.direct_default_gw = process.env.RUBI_PROBE_GW ? await tcp(process.env.RUBI_PROBE_GW, 53) : "skipped";
-  out.proxy_allowed = await connect("api.anthropic.com");
+  out.proxy_allowed = await connect("registry.npmjs.org");
   out.proxy_not_listed = await connect("example.org");
   console.log(JSON.stringify(out));
 })();`

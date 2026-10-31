@@ -3,7 +3,6 @@
 // one long-lived query per session fed by a queue, session id chosen up front, fork via
 // forkSession() + resume, steering with priority "now", a permission callback kept installed.
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import { serveCredentials, type CredServer } from "./cred.js";
 import { Inbox } from "./inbox.js";
@@ -44,12 +43,6 @@ export interface RunnerConfig {
   /** Unix socket for git-credential-rubi; unset = no credential socket. */
   credSock?: string;
   credTimeoutMs?: number; // default 295 s (an approval can take minutes)
-  /**
-   * Directory of the sign-in shared by all projects (default $RUBI_AUTH_DIR, else /rubi-auth): when
-   * <authDir>/token/oauth-token holds a token, every query gets it as CLAUDE_CODE_OAUTH_TOKEN. Only the token
-   * is shared; the config dir stays the project's own.
-   */
-  authDir?: string;
 }
 
 export const EXIT_NO_TOKEN = 2;
@@ -133,23 +126,10 @@ export function toolSummary(name: string, input: unknown): string {
   }
 }
 
-/** The shared sign-in token, or undefined when there is none (no file, empty, or not a plain token). */
-export function readSharedToken(authDir: string): string | undefined {
-  try {
-    const file = `${authDir}/token/oauth-token`;
-    const st = lstatSync(file); // a symlink is no token file
-    if (!st.isFile() || st.size === 0 || st.size > 4096) return undefined;
-    const t = readFileSync(file, "utf8").trim();
-    return t.startsWith("sk-ant-") && /^[\x21-\x7e]+$/.test(t) ? t : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Environment of every `claude` child: explicit, never the runner's whole env (M0 surprise 1). */
 export function buildChildEnv(env: NodeJS.ProcessEnv, configDir: string): Record<string, string> {
   const out: Record<string, string> = {};
-  const keep = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "NO_PROXY", "no_proxy"];
+  const keep = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "NO_PROXY", "no_proxy"];
   for (const k of keep) {
     const v = env[k];
     if (v !== undefined) out[k] = v;
@@ -161,6 +141,10 @@ export function buildChildEnv(env: NodeJS.ProcessEnv, configDir: string): Record
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     GIT_TERMINAL_PROMPT: "0",
   });
+  // Claude Code prefers ANTHROPIC_API_KEY to an OAuth token. Home gives the runner a per-start secret as the
+  // OAuth token and the address of its auth gateway as the base URL (the gateway holds the real token): a key must
+  // not take the requests around it.
+  if (out.CLAUDE_CODE_OAUTH_TOKEN !== undefined) delete out.ANTHROPIC_API_KEY;
   const proxy = env.HTTPS_PROXY ?? env.https_proxy;
   if (proxy) {
     out.HTTPS_PROXY = proxy;
@@ -174,12 +158,9 @@ export function buildChildEnv(env: NodeJS.ProcessEnv, configDir: string): Record
  * `Edit(...)` covers every file-editing tool including Write (a `Write(...)` rule did not block);
  * `Read(...)` keeps the login in the config dir unreadable.
  */
-export function disallowedEditTools(cwd: string, authDir?: string): string[] {
+export function disallowedEditTools(cwd: string): string[] {
   const abs = `//${cwd.replace(/^\/+/, "")}`; // "//abs" is the SDK's absolute-path rule syntax
-  const rules = [`Edit(${abs}/.rubi/**)`, `Edit(${abs}/.claude/**)`, `Edit(${abs}/.mcp.json)`, `Read(${abs}/.rubi/**)`];
-  // The shared sign-in's token is not for the Read tool either (a shell can still read it: see the design).
-  if (authDir) rules.push(`Read(//${authDir.replace(/^\/+/, "")}/**)`);
-  return rules;
+  return [`Edit(${abs}/.rubi/**)`, `Edit(${abs}/.claude/**)`, `Edit(${abs}/.mcp.json)`, `Read(${abs}/.rubi/**)`];
 }
 
 export class Runner {
@@ -213,7 +194,6 @@ export class Runner {
       waitKeepaliveMs: c.waitKeepaliveMs ?? 300_000,
       askTimeoutMs: c.askTimeoutMs ?? 295_000,
       credTimeoutMs: c.credTimeoutMs ?? 295_000,
-      authDir: c.authDir ?? c.env.RUBI_AUTH_DIR ?? "/rubi-auth",
     };
     this.childEnv = buildChildEnv(c.env, this.cfg.configDir);
   }
@@ -222,15 +202,6 @@ export class Runner {
     this.c.log?.(m.replace(/sk-ant-[A-Za-z0-9_-]+/g, "[redacted]"));
   }
 
-  /** The environment of a `claude` child: read at each query start, so a sign-in or sign-out applies to the next one. */
-  private queryEnv(): Record<string, string> {
-    const token = readSharedToken(this.cfg.authDir);
-    if (token === undefined) return this.childEnv;
-    // Claude Code prefers ANTHROPIC_API_KEY to an OAuth token when both are set; with a shared sign-in stored
-    // the token is the one to use, so a key from the runner's environment is not passed along with it.
-    const { ANTHROPIC_API_KEY: _key, ...rest } = this.childEnv;
-    return { ...rest, CLAUDE_CODE_OAUTH_TOKEN: token };
-  }
 
   private exit(code: number) {
     if (this.exited) return;
@@ -458,7 +429,7 @@ export class Runner {
 
   private async usageProbe() {
     try {
-      const r = await this.sdk.probe({ env: this.queryEnv(), cwd: this.cfg.cwd });
+      const r = await this.sdk.probe({ env: this.childEnv, cwd: this.cfg.cwd });
       const a = r.account ?? {};
       const none = (v?: string) => v === undefined || v === "none";
       const logged_in = !!a.subscriptionType || !none(a.tokenSource) || !none(a.apiKeySource);
@@ -489,8 +460,8 @@ export class Runner {
       mcpServers: {},
       allowDangerouslySkipPermissions: true,
       permissionMode: s.mode,
-      env: this.queryEnv(),
-      disallowedTools: disallowedEditTools(this.cfg.cwd, this.cfg.authDir),
+      env: this.childEnv,
+      disallowedTools: disallowedEditTools(this.cfg.cwd),
       abortController: abort,
       // The hook runs for the main session, subagents and forks, in every mode (M0 exp 2-4).
       // Every tool is asked about by the first hook, with the usual timeout. A second hook, only for the subagent
