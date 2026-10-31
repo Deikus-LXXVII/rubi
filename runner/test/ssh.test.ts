@@ -83,6 +83,21 @@ describe("ssh wrapper argument parser", () => {
     assert.equal(await w.done, 255);
     assert.match(w.err, /relay isn't available/);
   });
+  it("refuses a frame longer than the runner's cap instead of buffering it", async () => {
+    const sock = tmpSock();
+    const srv = net.createServer((c) => {
+      const h = Buffer.alloc(5);
+      h[0] = F.STDOUT;
+      h.writeUInt32BE(0x7fffffff, 1);
+      c.on("error", () => {});
+      c.write(h);
+    });
+    await new Promise<void>((r) => srv.listen(sock, r));
+    const w = wrapper(sock, ["web-1", "ls"]);
+    assert.equal(await w.done, 255);
+    assert.match(w.err, /frame that is too long/);
+    srv.close();
+  });
 });
 
 describe("ssh relay", () => {
