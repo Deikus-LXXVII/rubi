@@ -36,7 +36,7 @@ describe("perm.ask from the PreToolUse hook", () => {
     };
     await start(h);
     await h.waitEvent("result");
-    assert.deepEqual(outcome, { allowed: false, reason: "no pushing" });
+    assert.deepEqual({ ...(outcome as object), id: undefined }, { id: undefined, allowed: false, reason: "no pushing" });
   });
 
   it("updated_input from Home is returned through the hook", async () => {
@@ -67,7 +67,7 @@ describe("perm.ask from the PreToolUse hook", () => {
     assert.equal(h.asks.length, 2);
     assert.equal(h.asks[1]!.agent_id, "agent-1");
     assert.equal(h.asks[1]!.agent_type, "pusher");
-    assert.deepEqual(out, [{ allowed: true }, { allowed: false, reason: "subagents may not" }]);
+    assert.deepEqual(out.map((o: any) => [o.allowed, o.reason]), [[true, undefined], [false, "subagents may not"]]);
   });
 
   it("is asked in a forked session too (fork then send)", async () => {
@@ -84,7 +84,7 @@ describe("perm.ask from the PreToolUse hook", () => {
     await h.ok("session.send", { id: f.id, text: "again" });
     await h.waitFor((l) => l.msg.method === "event" && l.msg.params.kind === "result" && l.msg.params.session_id === f.id);
     assert.equal(h.asks.at(-1)!.session_id, f.id);
-    assert.deepEqual(outcome, { allowed: false, reason: "fork denied" });
+    assert.deepEqual([(outcome as any).allowed, (outcome as any).reason], [false, "fork denied"]);
   });
 
   it("denies when Home does not answer in time (runner side ask timeout)", async () => {
@@ -188,6 +188,96 @@ describe("canUseTool and AskUserQuestion", () => {
     await start(h, { mode: "default" });
     await h.waitEvent("result");
     assert.deepEqual(r, { behavior: "deny", message: "stricter mode says no" });
+  });
+});
+
+describe("no double ask", () => {
+  it("canUseTool for a call the hook already decided returns that decision without a second perm.ask (stricter mode)", async () => {
+    const h = await new Home().up();
+    h.askHandler = () => ({ behavior: "allow", updated_input: { command: "ls -la" } });
+    let second: unknown;
+    h.sdk.turn = async (ctx) => {
+      const r = await ctx.tool("Bash", { command: "ls" });
+      second = await ctx.canUseTool("Bash", { command: "ls" }, r.id);
+      ctx.result();
+    };
+    await start(h, { mode: "default" });
+    await h.waitEvent("result");
+    assert.equal(h.asks.length, 1);
+    assert.deepEqual(second, { behavior: "allow", updatedInput: { command: "ls -la" } });
+  });
+
+  it("a different tool_use_id is asked as usual; AskUserQuestion is asked once", async () => {
+    const h = await new Home().up();
+    h.sdk.turn = async (ctx) => {
+      await ctx.tool("Bash", { command: "ls" });
+      await ctx.canUseTool("Bash", { command: "pwd" }, "toolu_other");
+      await ctx.tool("AskUserQuestion", { questions: [] });
+      await ctx.canUseTool("AskUserQuestion", { questions: [] });
+      ctx.result();
+    };
+    await start(h, { mode: "default" });
+    await h.waitEvent("result");
+    assert.deepEqual(h.asks.map((a) => [a.tool, a.via]), [["Bash", "hook"], ["Bash", "can_use_tool"], ["AskUserQuestion", "can_use_tool"]]);
+  });
+});
+
+describe("perm.cancel", () => {
+  const cancels = (h: Home) => h.lines.filter((l) => l.from === "runner" && l.msg.method === "perm.cancel").map((l) => l.msg.params);
+
+  it("is sent when the SDK's hook timeout (simulated) aborts the hook", async () => {
+    const h = await new Home().up();
+    h.askHandler = () => new Promise(() => {});
+    h.sdk.turn = async (ctx) => {
+      await ctx.tool("Bash", { command: "x" }, { hookTimeoutMs: 40 });
+      ctx.result();
+    };
+    const { id } = await start(h);
+    await h.waitEvent("result");
+    await h.waitFor((l) => l.msg.method === "perm.cancel");
+    assert.deepEqual(cancels(h), [{ ask_id: h.asks[0]!.ask_id, session_id: id }]);
+  });
+
+  it("is sent when the runner's own ask timeout expires", async () => {
+    const h = await new Home({ askTimeoutMs: 40 }).up();
+    h.askHandler = () => new Promise(() => {});
+    h.sdk.turn = async (ctx) => {
+      await ctx.tool("Bash", { command: "x" });
+      ctx.result();
+    };
+    await start(h);
+    await h.waitEvent("result");
+    assert.equal(cancels(h)[0]!.ask_id, h.asks[0]!.ask_id);
+  });
+
+  it("is sent on interrupt and on close, and the call is denied", async () => {
+    for (const op of ["session.interrupt", "session.close"]) {
+      const h = await new Home().up();
+      h.askHandler = () => new Promise(() => {});
+      let outcome: any;
+      h.sdk.turn = async (ctx) => {
+        outcome = await ctx.tool("Bash", { command: "x" });
+      };
+      const { id } = await start(h);
+      await h.waitFor((l) => l.msg.method === "perm.ask");
+      await h.ok(op, { id });
+      await h.waitFor((l) => l.msg.method === "perm.cancel");
+      assert.equal(cancels(h)[0]!.ask_id, h.asks[0]!.ask_id, op);
+      await tick(20);
+      assert.equal(outcome?.allowed, false, op);
+    }
+  });
+
+  it("is not sent for an ask that was answered", async () => {
+    const h = await new Home().up();
+    h.sdk.turn = async (ctx) => {
+      await ctx.tool("Bash", { command: "x" });
+      ctx.result();
+    };
+    await start(h);
+    await h.waitEvent("result");
+    await tick(20);
+    assert.deepEqual(cancels(h), []);
   });
 });
 

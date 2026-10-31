@@ -21,6 +21,7 @@ export interface ToolOpts {
   hookTimeoutMs?: number;
 }
 export interface ToolOutcome {
+  id?: string;
   allowed: boolean;
   reason?: string;
   timedOut?: boolean;
@@ -33,7 +34,7 @@ export interface TurnCtx {
   emit(m: SdkMessage): void;
   say(text: string, parent?: string): void;
   tool(name: string, input: Record<string, unknown>, o?: ToolOpts): Promise<ToolOutcome>;
-  canUseTool(name: string, input: Record<string, unknown>): Promise<CanUseToolResult>;
+  canUseTool(name: string, input: Record<string, unknown>, toolUseID?: string): Promise<CanUseToolResult>;
   result(extra?: Record<string, unknown>): void;
   /** Resolves when the test calls q.release(); lets a turn stay "busy". */
   hold(): Promise<void>;
@@ -86,7 +87,7 @@ export class FakeQuery implements SdkQuery {
       emit: (m) => this.emit(m),
       say: (t, parent) => this.emit({ type: "assistant", parent_tool_use_id: parent ?? null, message: { content: [{ type: "text", text: t }] } }),
       tool: (n, i, o) => this.runTool(n, i, o),
-      canUseTool: (n, i) => this.options.canUseTool(n, i, { signal: this.options.abortController.signal, toolUseID: `toolu_${++this.seq}` }),
+      canUseTool: (n, i, id) => this.options.canUseTool(n, i, { signal: this.options.abortController.signal, toolUseID: id ?? `toolu_${++this.seq}` }),
       result: (extra) =>
         this.emit({
           type: "result",
@@ -147,7 +148,7 @@ export class FakeQuery implements SdkQuery {
         timedOut = true;
         ac.abort();
         this.userResult(id, true, "PreToolUse hook did not respond before its timeout. The tool call was not executed");
-        return { allowed: false, timedOut, reason: "timeout" };
+        return { id, allowed: false, timedOut, reason: "timeout" };
       }
       out = r;
     } else {
@@ -156,10 +157,10 @@ export class FakeQuery implements SdkQuery {
     const hso = out.hookSpecificOutput as { permissionDecision?: string; permissionDecisionReason?: string } | undefined;
     if (hso?.permissionDecision === "deny") {
       this.userResult(id, true, `PreToolUse:${name} hook error: ${hso.permissionDecisionReason}`);
-      return { allowed: false, reason: hso.permissionDecisionReason ?? "" };
+      return { id, allowed: false, reason: hso.permissionDecisionReason ?? "" };
     }
     this.userResult(id, false, "ok");
-    return { allowed: true };
+    return { id, allowed: true };
   }
 
   private userResult(id: string, isError: boolean, content: string) {

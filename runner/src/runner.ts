@@ -54,6 +54,10 @@ interface Session {
   tasks: Map<string, { task_id: string; subagent_type?: string; description?: string }>;
   lastStatus: Status;
   closed: boolean;
+  /** Decisions the hook got, by tool_use_id, so canUseTool for the same call does not ask again. */
+  decided: Map<string, Decision>;
+  /** Asks in flight, so an interrupt can cancel them. */
+  asking: Set<AbortController>;
 }
 
 interface Decision {
@@ -220,6 +224,7 @@ export class Runner {
       }
       case "session.interrupt": {
         const s = this.get(str(p, "id"));
+        for (const a of [...s.asking]) a.abort(); // pending asks are given up (perm.cancel) and denied
         if (s.query) await s.query.interrupt();
         return { ok: true };
       }
@@ -261,6 +266,8 @@ export class Runner {
       tasks: new Map(),
       lastStatus: "idle",
       closed: false,
+      decided: new Map(),
+      asking: new Set(),
     };
     this.sessions.set(s.id, s);
     return s;
@@ -528,6 +535,10 @@ export class Runner {
       },
       signal,
     );
+    if (input.tool_use_id) {
+      s.decided.set(input.tool_use_id, d);
+      if (s.decided.size > 500) s.decided.delete(s.decided.keys().next().value as string);
+    }
     if (d.behavior === "deny") {
       return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.message ?? "Denied by Rubi" } };
     }
@@ -539,6 +550,13 @@ export class Runner {
 
   private async canUseTool(s: Session, tool: string, input: Record<string, unknown>, o: { signal: AbortSignal; toolUseID?: string; agentID?: string }): Promise<CanUseToolResult> {
     if (tool === "AskUserQuestion") this.event(s, "ask", { tool_use_id: o.toolUseID, input });
+    else if (o.toolUseID && s.decided.has(o.toolUseID)) {
+      // The hook already got Home's decision for this very call: no second question.
+      const prev = s.decided.get(o.toolUseID)!;
+      s.decided.delete(o.toolUseID);
+      if (prev.behavior === "deny") return { behavior: "deny", message: prev.message ?? "Denied by Rubi" };
+      return { behavior: "allow", updatedInput: prev.updated_input ?? input };
+    }
     const d = await this.askHome(
       s,
       { tool, input, ...(o.toolUseID ? { tool_use_id: o.toolUseID } : {}), ...(o.agentID ? { agent_id: o.agentID } : {}), cwd: this.cfg.cwd, via: "can_use_tool" },
@@ -550,18 +568,27 @@ export class Runner {
 
   /** Sends perm.ask and waits. Anything but an explicit allow is a deny. */
   private async askHome(s: Session, p: Record<string, unknown>, signal: AbortSignal): Promise<Decision> {
-    const both = AbortSignal.any([signal, ...(s.abort ? [s.abort.signal] : [])]);
+    const own = new AbortController();
+    s.asking.add(own);
+    const both = AbortSignal.any([signal, own.signal, ...(s.abort ? [s.abort.signal] : [])]);
+    const ask_id = randomUUID();
     try {
-      const r = (await this.peer.request("perm.ask", { ask_id: randomUUID(), session_id: s.id, ...p, mode: s.mode }, { timeoutMs: this.cfg.askTimeoutMs, signal: both })) as Record<string, unknown> | null;
+      const r = (await this.peer.request("perm.ask", { ask_id, session_id: s.id, ...p, mode: s.mode }, { timeoutMs: this.cfg.askTimeoutMs, signal: both })) as Record<string, unknown> | null;
       if (r?.behavior === "allow") {
         const ui = r.updated_input;
         return { behavior: "allow", ...(ui && typeof ui === "object" && !Array.isArray(ui) ? { updated_input: ui as Record<string, unknown> } : {}) };
       }
       return { behavior: "deny", message: typeof r?.message === "string" && r.message ? r.message : "Denied by Rubi" };
     } catch (e) {
-      const why = e instanceof RpcError && e.code === ERR.timeout ? "Rubi did not answer in time" : both.aborted ? "The call was cancelled" : "Rubi could not be reached";
+      const timedOut = e instanceof RpcError && e.code === ERR.timeout;
+      const why = timedOut ? "Rubi did not answer in time" : both.aborted ? "The call was cancelled" : "Rubi could not be reached";
       this.log(`perm.ask failed (${errMsg(e)}); denying`);
+      // We gave up (timeout, SDK hook timeout, interrupt, close): tell Home to drop the pending item.
+      // Not when Home is gone: there is nobody to tell.
+      if (!this.peer.isClosed && (timedOut || both.aborted)) this.peer.notify("perm.cancel", { ask_id, session_id: s.id });
       return { behavior: "deny", message: `${why}, so the call was denied.` };
+    } finally {
+      s.asking.delete(own);
     }
   }
 }
