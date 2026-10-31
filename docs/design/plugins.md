@@ -310,7 +310,7 @@ untrusted, time}` with `role` one of `user`, `assistant`, `tool`, `sister` (othe
 dashed outline. `input: {op, args, arg, label, send}` adds a text box: the text goes to `op` as `args[arg]` (the
 user's own message, at most 4000 characters). Every string is drawn as text (no HTML, no links), clipped
 (message 4000 characters, item detail 600, title 200, at most 300 messages); the panel keeps what the user
-typed in a chat box when the page refreshes itself. Panels that predate these keys show the sections as plain
+typed in a chat box when the page refreshes itself. The panel marks a line untrusted itself when the item has `role: "sister"`, `untrusted`, or a `from`/`sister`/`sender` field, whatever the plugin's flag says (a plugin can't draw another sender's line as the user's); an author that mentions a password, passkey, PIN, Rubi, or reads like the user or an administrator is shown as "Bot". Lists tolerate null and non-list data; non-chat pages show at most 20 sections, 100 items per section and 12 buttons per item or section; a reload keeps the chat's scroll position when the user has scrolled up. Panels that predate these keys show the sections as plain
 lists, so a plugin should keep every chat message and action usable that way or say so in the page note.
 
 **Panel.** A **Store** screen lists the catalog: install, update, open setup. Settings lists installed
