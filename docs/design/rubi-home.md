@@ -387,3 +387,45 @@ The helper does only what it was built for, whatever Rubi asks:
 
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.
+
+## Agents in a VM (`claude-agent`)
+
+Contract: `docs/design/agent-runner.md`. Code: `internal/home/agent`. Capability `claude-agent`, operations
+`claude-agent.projects | sessions | messages | start | send | rename | fork | interrupt | close | mode | next |
+decide | status`; a plugin that declares `claude-agent` can call only those.
+
+- **Projects** are the directories in config `agent_projects` (absolute, existing, each its own project, id from
+  the directory name). A directory that is `/`, that holds the helper's own directory (its keys) or that is the
+  user's home is skipped. Encrypted per-project volumes (design section 9a) are a later milestone.
+- **VM.** `VM` is an interface; `AppleContainer` shells out to Apple's `container` CLI (1.6.x): `build` of the
+  image from `runner/container/Dockerfile`, a host-only network (`network create --internal`), `run -d` with the
+  project bind-mounted at `/work`, a non-root user, `--cap-drop ALL`, a read-only root, then
+  `exec -i --env-file` for the runner. The run token and proxy settings go in an environment file (0600) that
+  is deleted once the handshake succeeded, never on a command line. `Fake` plays a runner in-process for tests.
+- **Handshake.** Per start Home makes a random `run_token`; the runner's first line must be `hello` with it
+  (constant-time compare), else stdin is closed and the process killed; no hello in 10 s ends it too.
+- **Slot.** One top-level query on the computer. Events decide it: `status busy` takes it, `status idle` frees
+  it only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
+  done:true}` or a `result` with that `agent_id` removes it), `status closed` frees it. A `send` to the session
+  that holds the slot goes straight to the runner; anything else for a busy slot goes to the disk queue
+  (`<helper dir>/agent-queue.json`, 0600, atomic, 24 h, 64 items, 64 KiB each) and is delivered in order when
+  the slot frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The plugin sees
+  `queue` items (`queued`, `delivered`, `failed`, `expired`) in `next`.
+- **Asks.** `perm.ask` from the runner and `cred.ask` from the git helper become `next` items with Home's own
+  `ask_id` and wait for `decide`. No decision in 280 s (`claude_wait_seconds` does not apply here), no `next`
+  poll for 15 s, a cancelled runner or more than 16 pending: deny. Home never decides itself.
+- **Proxy.** One per running project, HTTP CONNECT to port 443 only, host names from the list, TLS not
+  decrypted. Allowed: `api.anthropic.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, the login
+  candidates `claude.ai`, `console.anthropic.com`, `platform.claude.com` (TO CONFIRM with a real login), the
+  hosts in `agent_git_hosts`, and the https hosts in the project's `Package.resolved`, read on the Mac when the
+  VM starts (the file is in `/work`, so a change during a run does not widen the list). Refused and logged:
+  everything else; Datadog and `downloads.claude.ai` even if listed. Listens on `agent_proxy_listen`
+  (default `127.0.0.1:0`; a VM cannot reach the Mac's loopback, so a real setup sets it to the Mac's address on
+  the VM network) and tells the VM `agent_proxy_vm_host`.
+- **Git credentials.** The helper in the VM (`runner/container/git-credential-rubi`) hands `git credential
+  get|store|erase` to the runner, which sends `git.credential {op, input, purpose}` to Home. Hosts must be in
+  `agent_git_hosts` and https. `get` for a read is served from the source (file `agent-git-credentials.json`,
+  0600: `{"git.example.com": {"read": {...}, "push": {...}}}`); `purpose: "push"` first raises a `cred.ask` and
+  gets the separate push credential only on an allow (the mandate check is the plugin's). `store` and `erase`
+  are accepted and ignored.
+- **Not in M2.** The runner itself (M1), the plugin (M4), encrypted volumes, a cap on running VMs.

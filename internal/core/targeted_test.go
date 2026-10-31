@@ -117,13 +117,14 @@ func TestClaudeCapabilitiesAreSeparate(t *testing.T) {
 	for _, tc := range []struct{ cap, op string }{{"claude", "claude-sessions.list"}, {"claude", "claude-sessions.next"},
 		{"claude-sessions", "claude.decide"}, {"claude-sessions", "claude.next"},
 		{"claude", "claude-start.create"}, {"claude-sessions", "claude-start.create"}, {"claude-start", "claude-sessions.send"},
-		{"claude-start", "claude.decide"}} {
+		{"claude-start", "claude.decide"}, {"claude", "claude-agent.next"}, {"claude-sessions", "claude-agent.decide"},
+		{"claude-agent", "claude.decide"}, {"claude-agent", "claude-sessions.send"}, {"claude-agent", "claude-start.create"}} {
 		if _, err := c.homeCall(context.Background(), "p", []string{tc.cap}, "", tc.op, nil); err == nil || !strings.Contains(err.Error(), "doesn't allow") {
 			t.Errorf("%s reached %s: %v", tc.cap, tc.op, err)
 		}
 	}
 	if _, ok := homeCapabilities["claude-sessions"]; !ok || strings.Contains(homeCapabilities["claude"], "sessions") ||
-		strings.Contains(homeCapabilities["claude-sessions"], "start") || !strings.Contains(homeCapabilities["claude-start"], "can run any command") {
+		strings.Contains(homeCapabilities["claude-sessions"], "start") || !strings.Contains(homeCapabilities["claude-start"], "can run any command") || homeCapabilities["claude-agent"] == "" {
 		t.Errorf("install screen texts: %v", homeCapabilities)
 	}
 }

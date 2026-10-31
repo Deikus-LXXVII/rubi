@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
@@ -47,6 +48,20 @@ type Config struct {
 	// ClaudeStartDirs are the absolute directories (and everything inside them) where a Bot may have a new
 	// Claude Code session started, besides the projects Claude Code already has sessions in. Default none.
 	ClaudeStartDirs []string `json:"claude_start_dirs,omitempty"`
+	// AgentProjects are the absolute directories an agent (the Agent SDK runner in a VM, capability
+	// "claude-agent") may work in, one project each, mounted at /work. Default none. Encrypted per-project
+	// volumes are a later milestone (agent-runner.md); for now these are plain directories.
+	AgentProjects []string `json:"agent_projects,omitempty"`
+	// AgentGitHosts are the git hosts the agent's proxy allows and the credential helper serves, for
+	// example "git.example.com".
+	AgentGitHosts []string `json:"agent_git_hosts,omitempty"`
+	// AgentProxyListen is where the agent proxy listens ("127.0.0.1:0" by default) and AgentProxyVMHost
+	// the host name the VM uses to reach it (the listen host by default). A VM can't reach the Mac's
+	// 127.0.0.1: set both to the Mac's address on the VM's network.
+	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
+	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
+	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
+	AgentRunnerDir string `json:"agent_runner_dir,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -74,6 +89,8 @@ type Helper struct {
 	Watch *watch.Watcher
 	// Claude holds Claude Code's permission requests for Rubi (see claude.go).
 	Claude *Claude
+	// Agent runs the Agent SDK runner in a VM per project (see agent/ and claude-agent.* ops).
+	Agent *agent.Manager
 
 	mu  sync.Mutex
 	cfg Config
@@ -112,10 +129,31 @@ func Open(dir string) (*Helper, error) {
 	h.Claude.StartDirs = func() []string { return h.Fresh().ClaudeStartDirs }
 	h.Claude.ProtectedDirs = []string{dir}
 	h.Claude.loadQueue()
+	h.Agent = h.newAgent()
 	if s := h.Config().ClaudeWaitSeconds; s >= 10 && s <= 590 {
 		h.Claude.Wait = time.Duration(s) * time.Second
 	}
 	return h, nil
+}
+
+// AgentCredFile is the git credential file for agents in the helper's directory (see agent.FileCredSource).
+const AgentCredFile = "agent-git-credentials.json"
+
+// newAgent makes the agent manager from the configuration (read at each use, so the CLI's changes apply).
+func (h *Helper) newAgent() *agent.Manager {
+	home, _ := os.UserHomeDir()
+	return agent.New(agent.Options{
+		Dir:       h.Dir,
+		Protected: []string{home},
+		Projects:  func() []string { return h.Fresh().AgentProjects },
+		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
+		NewVM: func(p agent.Project) agent.VM {
+			return &agent.AppleContainer{RunnerDir: h.Fresh().AgentRunnerDir, EnvDir: h.Dir}
+		},
+		Cred:        agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
+		ProxyListen: h.Fresh().AgentProxyListen,
+		ProxyVMHost: h.Fresh().AgentProxyVMHost,
+	})
 }
 
 func (h *Helper) path() string { return filepath.Join(h.Dir, "config.json") }
@@ -294,6 +332,10 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		return h.Hue.Do(ctx, in)
 	case "claude.next", "claude.decide", "claude-sessions.list", "claude-sessions.send", "claude-sessions.next", "claude-sessions.bound", "claude-start.create":
 		return h.Claude.handle(ctx, env.Op, env.Args)
+	case "claude-agent.projects", "claude-agent.sessions", "claude-agent.messages", "claude-agent.start", "claude-agent.send",
+		"claude-agent.rename", "claude-agent.fork", "claude-agent.interrupt", "claude-agent.close", "claude-agent.mode",
+		"claude-agent.next", "claude-agent.decide", "claude-agent.status":
+		return h.Agent.Handle(ctx, env.Op, env.Args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
 }
@@ -301,7 +343,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
-		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start"}}
+		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent"}}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {

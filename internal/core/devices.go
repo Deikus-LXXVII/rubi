@@ -19,12 +19,13 @@ import (
 
 // Rubi Home devices: helpers on a computer at the user's home (see internal/home). The user pairs one by
 // pasting the code it prints into the panel. Plugins reach it only for what their manifest declares
-// (manifest "home": "hue", "shortcuts", "claude", "claude-sessions", "claude-start").
+// (manifest "home": "hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent").
 
 var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Shortcuts",
 	"claude":          "answering Claude Code's permission requests on that computer (it can allow or deny commands)",
 	"claude-sessions": "listing the Claude Code sessions on that computer and passing messages to and from them (it can't approve commands)",
-	"claude-start":    "starting a new Claude Code session on that computer with a first message; in sessions that skip permission prompts, Claude can run any command there without asking"}
+	"claude-start":    "starting a new Claude Code session on that computer with a first message; in sessions that skip permission prompts, Claude can run any command there without asking",
+	"claude-agent":    "running Claude agents in a virtual machine on that computer: starting and steering their sessions, approving or denying each tool call, and allowing git pushes with your credentials"}
 
 type deviceClients struct {
 	mu      sync.Mutex
