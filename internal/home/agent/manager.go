@@ -716,6 +716,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	}
 	var roleHosts []string
 	var shield Project
+	var shieldGuard fileGuard
 	if p.Role == "" {
 		if err := prepareWorkDir(p.Dir); err != nil {
 			return nil, err
@@ -731,6 +732,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			return nil, err
 		}
 		shield = roleShield(p.Dir, filepath.Join(m.opt.Dir, RoleEmptyDir))
+		shieldGuard = newFileGuard(p.Dir)
 		if shield.EmptyDir == "" {
 			return nil, fmt.Errorf("role %s: can't prepare the empty directory that covers /work/.rubi", clip(p.RoleName, 40))
 		}
@@ -873,8 +875,15 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	if p.Role != "" {
 		m.ensureLoop() // the loop stops an idle role VM
 	}
+	guard := fileGuard(nil)
+	if p.Role != "" {
+		guard = shieldGuard
+	}
 	go func() {
 		<-r.Done()
+		if guard != nil {
+			guard.report(p.Dir, p.RoleName)
+		}
 		m.runnerGone(p, r)
 	}()
 	return r, nil
@@ -2353,10 +2362,11 @@ func (m *Manager) askOpenLocked(s *slotState) bool {
 // RoleEmptyDir (under the helper directory) is the empty directory a role VM sees at /work/.rubi, read-only.
 const RoleEmptyDir = "agent-role-empty"
 
-// roleShield decides what covers the project for a role VM: the empty directory over /work/.rubi, and the
-// project's own .claude (when it is a plain directory: a bind of a symlink would follow it) read-only. Only existing
-// directories are mounted; a missing mount point would be created in the project by the container tool. Nothing
-// is read from them. EmptyDir is "" when the empty directory can't be made.
+// roleShield decides what covers the project for a role VM: the empty directory over /work/.rubi, and read-only
+// Home-owned snapshots over the project's .claude and .git/hooks (shield.go). The places are created when
+// missing, so a role can't make them for another session to load; the snapshot (not the project's own directory)
+// is what is mounted, so a swap of the directory for a symlink can't redirect the mount. EmptyDir is "" when
+// the shield can't be made; the start then refuses.
 func roleShield(projectDir, emptyDir string) Project {
 	var s Project
 	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
@@ -2368,10 +2378,22 @@ func roleShield(projectDir, emptyDir string) Project {
 	if ents, err := os.ReadDir(emptyDir); err != nil || len(ents) != 0 {
 		return s // it must stay empty: Home never writes in it, a VM can't (read-only)
 	}
-	s.EmptyDir = emptyDir
-	if st, err := os.Lstat(filepath.Join(projectDir, ".claude")); err == nil && st.IsDir() {
-		s.ReadOnly = []string{".claude"}
+	names, err := shieldTargetsOf(projectDir)
+	if err != nil {
+		log.Printf("agent: can't shield the project: %v", err)
+		return s
 	}
+	root := filepath.Join(filepath.Dir(emptyDir), RoleShieldDir, snapshotKey(projectDir))
+	var mounts []ShieldMount
+	for _, name := range names {
+		dst := filepath.Join(root, strings.NewReplacer("/", "_", ".", "").Replace(name))
+		if err := snapshotDir(filepath.Join(projectDir, name), dst); err != nil {
+			log.Printf("agent: can't snapshot %s: %v", name, err)
+			return s
+		}
+		mounts = append(mounts, ShieldMount{Name: name, Source: dst})
+	}
+	s.EmptyDir, s.ReadOnly = emptyDir, mounts
 	return s
 }
 

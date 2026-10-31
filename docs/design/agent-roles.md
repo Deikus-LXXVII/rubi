@@ -215,10 +215,19 @@ Mounts of a role VM (the legacy role keeps today's):
 
 - **The project is shielded from a role.** Nested binds on top of the read-write `/work` work with container 1.6.1
   (checked live): `/work/.rubi` is covered by an empty read-only directory (`<helper>/agent-role-empty`, so a role never
-  sees or rewrites the legacy role's state) and the project's own `.claude` is bound read-only when it is a plain
-  directory (a symlink or a missing one is not bound: the tool would create the mount point in the project). A single
-  file can't be bound (the tool refuses a file as source, and a directory over a file), so **`/work/CLAUDE.md` stays
-  writable by a role, as does a `.claude` that doesn't exist yet**: a residual, known. A role bound to a different
+  sees or rewrites the legacy role's state) and the project's `.claude` and `.git/hooks` are bound read-only. Home creates them (0755, owned by the user)
+  when missing, so a role can never create them for another session or the host's Claude Code to load, and refuses the
+  start when one exists as a symlink or a file. What is mounted is a **Home-owned snapshot copy**
+  (`<helper>/agent-role-shield/<project key>/`, symlinks skipped, capped at 8 MiB / 2000 files, an empty copy past the
+  cap), never the project's own directory: a writer VM of the same project can't swap the directory for a symlink
+  between Home's check and the container tool's mount (the swap can't redirect a mount whose source is outside the
+  project). The snapshot is refreshed at each VM start. A `.git` that is a file (a worktree) gets no hooks overlay.
+  A single file can't be bound (the tool refuses a file as source, and a directory over a file), so **`/work/CLAUDE.md`,
+  `/work/.mcp.json` and `/work/.git/config` stay writable by a role**: residuals, known. Mounting `.git` read-only
+  would stop agents committing, so instead Home fingerprints `.mcp.json` and `.git/config` when a role VM starts and
+  logs a warning naming the files when they differ after it ends (detection, not prevention: review them before
+  another session or your editor loads them). Role sessions themselves load neither (`strictMcpConfig`, no setting
+  sources). A role bound to a different
   directory than the one its project id names now (ids come from directory names) is refused, and a role records the
   hash of its project's directory when it is made, never from the caller.
 - **Session ids stay inside the role.** Home refuses send, messages, rename, fork, interrupt, close and mode for a session
