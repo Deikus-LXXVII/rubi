@@ -49,6 +49,9 @@ type Options struct {
 	// project may contain or be (the user's home, by default).
 	Dir       string
 	Protected []string
+	// AuthDir is the shared sign-in's directory (Dir/agent-auth by default): no project may be, contain or be
+	// inside it.
+	AuthDir string
 	// Projects returns the directories agents may work in (config agent_projects); GitHosts the git hosts
 	// the proxy and the credential helper serve (config agent_git_hosts).
 	Projects func() []string
@@ -327,7 +330,22 @@ func badMountPath(dir string) bool {
 }
 
 func (m *Manager) protected(dir string) bool {
-	return ProtectedDir(dir, append([]string{m.opt.Dir}, m.opt.Protected...)...)
+	if ProtectedDir(dir, append([]string{m.opt.Dir}, m.opt.Protected...)...) {
+		return true
+	}
+	// Nothing inside the helper's directory (its keys, the shared sign-in) is a project either.
+	for _, p := range []string{m.opt.Dir, m.opt.AuthDir, AuthDirOf(m.opt.Dir)} {
+		if p == "" {
+			continue
+		}
+		if rp, err := filepath.EvalSymlinks(p); err == nil {
+			p = rp
+		}
+		if dir == p || strings.HasPrefix(dir, p+string(filepath.Separator)) || strings.HasPrefix(p, dir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProtectedDir says whether dir can never be a project: it can't be mounted, it is, or contains, the user's
@@ -711,7 +729,7 @@ func (h *handler) Ask(ctx context.Context, a AskParams) AskResult {
 		return deny("Rubi: the tool input is too large to review, so the call was denied.")
 	}
 	it := Item{Type: "perm.ask", Project: h.p.ID, SessionID: a.SessionID, AgentID: a.AgentID, AgentType: a.AgentType,
-		Tool: a.Tool, ToolUseID: a.ToolUseID, Via: a.Via, Input: a.Input, Cwd: a.Cwd, Mode: a.Mode}
+		Tool: a.Tool, ToolUseID: a.ToolUseID, Via: a.Via, Input: RedactCredentials(a.Input), Cwd: a.Cwd, Mode: a.Mode}
 	return h.m.waitDecision(ctx, h.p.ID, it)
 }
 
@@ -999,7 +1017,7 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 			m.addUsageLocked(ev.SessionID, f.Usage.In, f.Usage.Out, f.TotalCost)
 		}
 	}
-	raw := ev.Raw
+	raw := RedactCredentials(ev.Raw)
 	if len(raw) > maxItemBytes {
 		raw, _ = json.Marshal(map[string]any{"kind": ev.Kind, "session_id": ev.SessionID, "truncated": true})
 	}

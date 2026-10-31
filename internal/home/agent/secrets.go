@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"regexp"
 	"strings"
 )
@@ -21,4 +22,15 @@ func LooksSecret(line string) bool {
 		}
 	}
 	return secretWord.MatchString(line)
+}
+
+var credentialRE = regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`)
+
+// RedactCredentials replaces anything shaped like an Anthropic credential with "[redacted credential]". It is
+// the second line of defense behind the runner's own redaction, applied to what Home hands to the plugin.
+func RedactCredentials(b []byte) []byte {
+	if !bytes.Contains(b, []byte("sk-ant-")) {
+		return b
+	}
+	return credentialRE.ReplaceAll(b, []byte("[redacted credential]"))
 }

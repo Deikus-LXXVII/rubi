@@ -115,3 +115,31 @@ func TestSelfTestHoldsOnlyItsProject(t *testing.T) {
 	st.End()
 	eventually(t, "the held session starts", func() bool { return mu.startsOf("my-project") == 1 })
 }
+
+// A credential-shaped string never reaches the plugin, in an event or in the input of a question.
+func TestCredentialsAreRedactedBeforeTheyReachThePlugin(t *testing.T) {
+	const tok = "sk-ant-oat01-FAKEFAKEFAKE0123456789_abcdefghij-KLMNOP"
+	e := newEnv(t)
+	pl := startPoller(t, e.m)
+	if _, err := e.op("start", map[string]any{"project": "my-project", "prompt": "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	fr := e.fake.Runner()
+	eventually(t, "runner", func() bool { return e.fake.Runner() != nil })
+	fr = e.fake.Runner()
+	fr.Emit(map[string]any{"session_id": "sess-1", "kind": "assistant", "text": "here: " + tok})
+	go fr.Ask(e.ctx, AskParams{SessionID: "sess-1", Tool: "Bash", Input: json.RawMessage(`{"command":"echo ` + tok + `"}`)})
+	ev := pl.wait(t, "event")
+	for ev.Event == nil || !strings.Contains(string(ev.Event), "here:") {
+		ev = pl.wait(t, "event")
+	}
+	ask := pl.wait(t, "perm.ask")
+	for _, raw := range []string{string(ev.Event), string(ask.Input)} {
+		if strings.Contains(raw, "FAKEFAKE") || !strings.Contains(raw, "[redacted credential]") {
+			t.Errorf("not redacted: %s", raw)
+		}
+	}
+	if string(RedactCredentials([]byte("sk-ant-short"))) != "sk-ant-short" {
+		t.Error("a short string was changed")
+	}
+}

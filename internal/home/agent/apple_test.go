@@ -17,7 +17,7 @@ import (
 // Only the command lines are tested; no container is ever started.
 
 func TestAppleContainerArgs(t *testing.T) {
-	a := &AppleContainer{Bin: "container", RunnerDir: "/opt/rubi/runner", CPUs: "2", Memory: "2G"}
+	a := &AppleContainer{Bin: "container", RunnerDir: "/opt/rubi/runner", CPUs: "2", Memory: "2G", AuthDir: "/home/alice/rubi-home/agent-auth"}
 	p := Project{ID: "my-project", Dir: "/home/alice/my-project"}
 	name := containerName(p)
 	if !strings.HasPrefix(name, "rubi-agent-my-project-") || containerName(p) != name || containerName(Project{ID: "my-project", Dir: "/other"}) == name {
@@ -33,7 +33,7 @@ func TestAppleContainerArgs(t *testing.T) {
 	run := a.RunArgs(p)
 	want := []string{"container", "run", "-d", "--name", name, "--init", "--network", DefaultNetwork, "--user", "10001",
 		"--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp", "--mount", "type=bind,source=/home/alice/my-project,target=/work",
-		"--mount", "type=volume,source=rubi-agent-auth,target=/rubi-auth,readonly", "--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
+		"--mount", "type=bind,source=/home/alice/rubi-home/agent-auth,target=/rubi-auth,readonly", "--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
 	if !reflect.DeepEqual(run, want) {
 		t.Fatalf("run\n got %v\nwant %v", run, want)
 	}
@@ -126,7 +126,7 @@ func TestAppleContainerStartSequence(t *testing.T) {
 			t.Errorf("token on a command line: %v", c)
 		}
 	}
-	want := []string{"image inspect", "build --progress", "network inspect", "network create", "network inspect", "volume inspect", "delete --force", "run -d", "exec -i"}
+	want := []string{"image inspect", "build --progress", "network inspect", "network create", "network inspect", "delete --force", "run -d", "exec -i"}
 	if !reflect.DeepEqual(seq, want) {
 		t.Fatalf("sequence %v", seq)
 	}

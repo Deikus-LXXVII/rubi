@@ -41,8 +41,9 @@ type AppleContainer struct {
 	// CPUs and Memory limit the VM ("" = the CLI's defaults).
 	CPUs   string
 	Memory string
-	// AuthVolume is the volume holding the sign-in shared by all projects (DefaultAuthVolume when empty).
-	AuthVolume string
+	// AuthDir is the host directory holding the sign-in shared by all projects (EnvDir/agent-auth when empty);
+	// it is bind-mounted read-only at /rubi-auth in each VM (auth.go).
+	AuthDir string
 	// EnvDir is where the exec's environment file is written (0600, in a 0700 directory of its own).
 	EnvDir string
 
@@ -216,9 +217,11 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 		"--network", a.network(), "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
 		"--tmpfs", "/tmp",
 		"--mount", "type=bind,source=" + p.Dir + ",target=/work",
-		// The shared sign-in's volume, read-only and outside /work: only its token is shared (auth.go).
-		"--mount", a.authMount(true),
 		"--workdir", "/work"}
+	// The shared sign-in's directory, read-only and outside /work: only its token is shared (auth.go).
+	if m := a.authMount(true); m != "" {
+		args = append(args[:len(args)-2], "--mount", m, "--workdir", "/work")
+	}
 	if a.CPUs != "" {
 		args = append(args, "--cpus", a.CPUs)
 	}
@@ -394,7 +397,7 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	if err != nil {
 		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
 	}
-	if err := a.EnsureAuthVolume(ctx); err != nil {
+	if err := a.EnsureAuthDir(); err != nil {
 		return fail(err)
 	}
 	_, _ = a.do(ctx, a.deleteArgs(spec.Project)) // a leftover of a crash

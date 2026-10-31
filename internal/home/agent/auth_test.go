@@ -2,45 +2,21 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// authFake answers the container CLI for the auth volume; nothing real runs.
-type authFake struct {
-	cmds       [][]string
-	volume     bool // the volume exists
-	initFails  bool
-	statusOut  string
-	imageThere bool
-}
+// authFake answers the container CLI; nothing real runs.
+type authFake struct{ cmds [][]string }
 
 func (f *authFake) run(ctx context.Context, argv []string) ([]byte, error) {
 	f.cmds = append(f.cmds, argv)
 	j := strings.Join(argv[1:], " ")
-	switch {
-	case strings.HasPrefix(j, "image inspect"):
-		return nil, nil
-	case strings.HasPrefix(j, "network inspect"):
+	if strings.HasPrefix(j, "network inspect") {
 		return os.ReadFile("testdata/container-1.6.1-network-internal.json")
-	case strings.HasPrefix(j, "volume inspect"):
-		if !f.volume {
-			return nil, os.ErrNotExist
-		}
-		return nil, nil
-	case strings.HasPrefix(j, "volume create"):
-		f.volume = true
-	case strings.HasPrefix(j, "volume delete"):
-		f.volume = false
-	case strings.Contains(j, "--cap-add CHOWN"):
-		if f.initFails {
-			return nil, errors.New("exit status 1")
-		}
-	case strings.Contains(j, "SIGNED_IN"):
-		return []byte(f.statusOut), nil
 	}
 	return nil, nil
 }
@@ -54,121 +30,148 @@ func (f *authFake) find(prefix string) []string {
 	return nil
 }
 
-func newAuthVM(f *authFake) *AppleContainer {
-	a := &AppleContainer{Bin: "container", EnvDir: os.TempDir()}
+func newAuthVM(t *testing.T, f *authFake) (*AppleContainer, string) {
+	env := t.TempDir()
+	a := &AppleContainer{Bin: "container", EnvDir: env}
 	a.run = f.run
-	return a
+	return a, filepath.Join(env, "agent-auth")
 }
 
-func TestAuthVolumeIsCreatedAndPreparedOnce(t *testing.T) {
-	f := &authFake{}
-	a := newAuthVM(f)
-	if err := a.EnsureAuthVolume(context.Background()); err != nil {
+func TestAuthDirIsPrivateAndCreatedByHome(t *testing.T) {
+	a, dir := newAuthVM(t, &authFake{})
+	if err := a.EnsureAuthDir(); err != nil {
 		t.Fatal(err)
 	}
-	init := strings.Join(f.find("run --rm --progress none --network rubi-agent --user 0"), " ")
-	for _, want := range []string{"--cap-drop ALL", "--cap-add CHOWN", "--cap-add FOWNER", "type=volume,source=rubi-agent-auth,target=/rubi-auth",
-		"mkdir -p /rubi-auth/token && chown 10001:10001 /rubi-auth/token && chmod 700 /rubi-auth/token"} {
-		if !strings.Contains(init, want) {
-			t.Errorf("init lacks %q: %s", want, init)
+	for _, d := range []string{dir, filepath.Join(dir, "token")} {
+		if st, err := os.Stat(d); err != nil || !st.IsDir() || st.Mode().Perm() != 0o700 {
+			t.Errorf("%s: %v %v", d, st, err)
 		}
 	}
-	n := len(f.cmds)
-	if err := a.EnsureAuthVolume(context.Background()); err != nil || len(f.cmds) != n+1 { // one inspect
-		t.Errorf("second call: %v, %d commands", err, len(f.cmds)-n)
+	// others' access is taken away again
+	os.Chmod(dir, 0o755)
+	if err := a.EnsureAuthDir(); err != nil {
+		t.Fatal(err)
 	}
-	// a failed preparation removes the volume, so the next call starts over
-	f2 := &authFake{initFails: true}
-	if err := newAuthVM(f2).EnsureAuthVolume(context.Background()); err == nil || f2.volume {
-		t.Errorf("failed init: %v, volume %v", err, f2.volume)
+	if st, _ := os.Stat(dir); st.Mode().Perm() != 0o700 {
+		t.Errorf("mode %v", st.Mode())
 	}
-	// the volume name is configurable
-	f3 := &authFake{}
-	b := newAuthVM(f3)
-	b.AuthVolume = "my-auth"
-	b.EnsureAuthVolume(context.Background())
-	if c := f3.find("volume create"); c[len(c)-1] != "my-auth" {
-		t.Errorf("create: %v", c)
+	// a symlink in its place is refused
+	b, dir2 := newAuthVM(t, &authFake{})
+	target := t.TempDir()
+	os.Symlink(target, dir2)
+	if err := b.EnsureAuthDir(); err == nil {
+		t.Error("a symlinked sign-in directory was accepted")
+	}
+	// a path that can't be mounted
+	c := &AppleContainer{AuthDir: "/tmp/a,b"}
+	if err := c.EnsureAuthDir(); err == nil {
+		t.Error("a comma in the path was accepted")
+	}
+	// no directory configured: nothing to mount, nothing to create
+	if (&AppleContainer{}).authMount(true) != "" || (&AppleContainer{}).EnsureAuthDir() != nil {
+		t.Error("no EnvDir should mean no mount")
 	}
 }
 
-// Every project's VM mounts the volume read-only at /rubi-auth, outside /work, and nothing of the
-// sign-in is in the arguments; the per-project config directory is still the image's /work one.
-func TestProjectVMsMountTheAuthVolumeReadOnly(t *testing.T) {
-	a := &AppleContainer{Bin: "container"}
+// Every project's VM mounts the directory read-only at /rubi-auth, outside /work; nothing of the sign-in is in
+// the arguments, and the per-project config directory is still the image's /work one.
+func TestProjectVMsMountTheAuthDirReadOnly(t *testing.T) {
+	a := &AppleContainer{Bin: "container", AuthDir: "/home/alice/Rubi Home/agent-auth"}
 	for _, p := range []Project{{ID: "alpha", Dir: "/home/alice/alpha"}, {ID: "beta", Dir: "/home/alice/beta"}} {
 		args := strings.Join(a.RunArgs(p), " ")
-		if !strings.Contains(args, "--mount type=volume,source=rubi-agent-auth,target=/rubi-auth,readonly") {
+		if !strings.Contains(args, "--mount type=bind,source=/home/alice/Rubi Home/agent-auth,target=/rubi-auth,readonly") {
 			t.Errorf("%s: no read-only auth mount: %s", p.ID, args)
 		}
-		if !strings.Contains(args, "source="+p.Dir+",target=/work") || strings.Contains(args, p.Dir+"/rubi-auth") {
+		if !strings.Contains(args, "source="+p.Dir+",target=/work") {
 			t.Errorf("%s: %s", p.ID, args)
 		}
-		for _, bad := range []string{"oauth", "CLAUDE_CODE_OAUTH_TOKEN", "sk-ant", "CLAUDE_CONFIG_DIR"} {
+		for _, bad := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "sk-ant", "CLAUDE_CONFIG_DIR", "volume"} {
 			if strings.Contains(args, bad) {
 				t.Errorf("%s: %q in the run arguments", p.ID, bad)
 			}
 		}
 	}
-	if got := a.RunArgs(Project{ID: "alpha", Dir: "/home/alice/alpha"}); strings.Contains(strings.Join(got, " "), "readonly,") {
-		t.Error("odd mount option")
+}
+
+func TestStartMakesTheAuthDirBeforeTheVM(t *testing.T) {
+	f := &authFake{}
+	a, dir := newAuthVM(t, f)
+	a.spawn = func(ctx context.Context, argv []string) (Conn, error) { return nopConn{}, nil }
+	if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "my-project", Dir: "/home/alice/my-project"}}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(filepath.Join(dir, "token")); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("token dir: %v %v", st, err)
+	}
+	if f.find("volume") != nil {
+		t.Error("a volume command ran")
 	}
 }
 
-func TestAuthStatusNeverReadsTheToken(t *testing.T) {
-	f := &authFake{volume: true, statusOut: "SIGNED_IN\n{\"created\":\"2026-10-31T10:00:00Z\",\"expires\":\"2027-10-31T10:00:00Z\",\"method\":\"setup-token\"}\n"}
-	a := newAuthVM(f)
+func TestAuthStatusStatsTheTokenAndReadsOnlyTheMeta(t *testing.T) {
+	a, dir := newAuthVM(t, &authFake{})
+	if err := a.EnsureAuthDir(); err != nil {
+		t.Fatal(err)
+	}
 	st, err := a.AuthStatus(context.Background())
+	if err != nil || st.SignedIn {
+		t.Fatalf("empty: %+v %v", st, err)
+	}
+	tok := filepath.Join(dir, "token", "oauth-token")
+	os.WriteFile(tok, nil, 0o600) // empty is not signed in
+	if st, _ := a.AuthStatus(context.Background()); st.SignedIn {
+		t.Error("an empty token file counts")
+	}
+	os.WriteFile(tok, []byte("sk-ant-oat01-FAKEFAKEFAKEFAKEFAKEFAKE\n"), 0o600)
+	os.WriteFile(filepath.Join(dir, "token", "oauth-token.meta"),
+		[]byte(`{"created":"2026-10-31T10:00:00Z","expires":"2027-10-31T10:00:00Z","method":"setup-token"}`), 0o600)
+	st, err = a.AuthStatus(context.Background())
 	if err != nil || !st.SignedIn || st.Expires.Year() != 2027 || st.Created.Year() != 2026 {
 		t.Fatalf("%+v %v", st, err)
 	}
-	probe := strings.Join(f.find("run --rm"), " ")
-	if !strings.Contains(probe, "target=/rubi-auth,readonly") || !strings.Contains(probe, "--cap-drop ALL") || !strings.Contains(probe, "--read-only") {
-		t.Errorf("probe container: %s", probe)
-	}
-	// the script tests that the file isn't empty and prints the metadata file only
-	if !strings.Contains(statusScript, "[ -s /rubi-auth/token/oauth-token ]") || strings.Count(statusScript, "cat ") != 1 ||
-		!strings.Contains(statusScript, "cat /rubi-auth/token/oauth-token.meta") {
-		t.Errorf("the status script could read the token: %s", statusScript)
-	}
-	for _, c := range f.cmds {
-		for _, x := range c {
-			if strings.HasSuffix(x, "/oauth-token") {
-				t.Errorf("the token path is an argument: %v", c)
-			}
-		}
-	}
-	if st.Expired(time.Date(2027, 11, 1, 0, 0, 0, 0, time.UTC)) != true || st.Expired(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)) {
+	if !st.Expired(time.Date(2027, 11, 1, 0, 0, 0, 0, time.UTC)) || st.Expired(time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)) {
 		t.Error("expiry")
 	}
-	for out, want := range map[string]bool{"NOT_SIGNED_IN\n": false, "SIGNED_IN\n": true} {
-		f.statusOut = out
-		if st, err := a.AuthStatus(context.Background()); err != nil || st.SignedIn != want || !st.Expires.IsZero() {
-			t.Errorf("%q: %+v %v", out, st, err)
-		}
+	// no meta: signed in, expiry unknown; a garbage meta likewise; a symlink for the token isn't a token
+	os.WriteFile(filepath.Join(dir, "token", "oauth-token.meta"), []byte("garbage"), 0o600)
+	if st, _ := a.AuthStatus(context.Background()); !st.SignedIn || !st.Expires.IsZero() {
+		t.Errorf("garbage meta: %+v", st)
 	}
-	f.statusOut = "garbage"
-	if _, err := a.AuthStatus(context.Background()); err == nil {
-		t.Error("garbage accepted")
+	os.Remove(tok)
+	os.Symlink("/etc/hosts", tok)
+	if st, _ := a.AuthStatus(context.Background()); st.SignedIn {
+		t.Error("a symlink counts as a token")
+	}
+	// the status code never opens the token file
+	src, _ := os.ReadFile("auth.go")
+	body := string(src)
+	i := strings.Index(body, "func AuthStatusOf")
+	j := strings.Index(body, "// AuthStatus reports")
+	if strings.Contains(body[i:j], "ReadFile") || strings.Contains(body[i:j], "Open(filepath.Join(dir, \"token\", tokenFile") {
+		t.Error("AuthStatusOf reads the token file")
 	}
 }
 
-func TestAuthSignOutDeletesTokenAndMeta(t *testing.T) {
-	f := &authFake{volume: true}
-	if err := newAuthVM(f).AuthSignOut(context.Background()); err != nil {
+func TestAuthSignOutRemovesBothFiles(t *testing.T) {
+	a, dir := newAuthVM(t, &authFake{})
+	a.EnsureAuthDir()
+	for _, f := range []string{"oauth-token", "oauth-token.meta"} {
+		os.WriteFile(filepath.Join(dir, "token", f), []byte("x"), 0o600)
+	}
+	if err := a.AuthSignOut(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	c := f.find("run --rm")
-	j := strings.Join(c, " ")
-	if strings.Contains(j, "readonly") || !strings.Contains(j, "type=volume,source=rubi-agent-auth,target=/rubi-auth") ||
-		!strings.Contains(j, "rm -f /rubi-auth/token/oauth-token /rubi-auth/token/oauth-token.meta") {
-		t.Errorf("sign-out: %s", j)
+	if ents, _ := os.ReadDir(filepath.Join(dir, "token")); len(ents) != 0 {
+		t.Errorf("left: %v", ents)
+	}
+	if err := a.AuthSignOut(context.Background()); err != nil {
+		t.Errorf("signing out twice: %v", err)
 	}
 }
 
 func TestStartAuthIsolatedAndProxyAllowsOnlySignInHosts(t *testing.T) {
-	f := &authFake{volume: true}
-	a := newAuthVM(f)
+	f := &authFake{}
+	a, dir := newAuthVM(t, f)
 	a.spawn = func(ctx context.Context, argv []string) (Conn, error) { return nopConn{}, nil }
 	a.authListen = "127.0.0.1:0"
 	s, err := a.StartAuth(context.Background())
@@ -177,49 +180,87 @@ func TestStartAuthIsolatedAndProxyAllowsOnlySignInHosts(t *testing.T) {
 	}
 	defer s.Close()
 	run := strings.Join(f.find("run -d"), " ")
-	for _, want := range []string{"--name rubi-agent-auth", "--network rubi-agent", "--user 10001", "--cap-drop ALL", "--read-only",
-		"--mount type=volume,source=rubi-agent-auth,target=/rubi-auth "} {
+	for _, want := range []string{"--name rubi-agent-auth", "--label rubi.role=auth", "--network rubi-agent", "--user 10001", "--cap-drop ALL", "--read-only",
+		"--mount type=bind,source=" + dir + ",target=/rubi-auth "} {
 		if !strings.Contains(run+" ", want) {
 			t.Errorf("auth container lacks %q: %s", want, run)
 		}
 	}
-	if strings.Contains(run, "target=/work") || strings.Contains(run, "type=bind") {
-		t.Errorf("a project is mounted in the auth container: %s", run)
+	if strings.Contains(run, "target=/work") || strings.Contains(run, "readonly") {
+		t.Errorf("a project is mounted, or the directory is read-only: %s", run)
 	}
-	// the proxy listens on the network's gateway and tunnels only to the sign-in hosts
-	px := s.px
 	for _, h := range AuthHosts {
-		if !px.Allowed(h) {
+		if !s.px.Allowed(h) {
 			t.Errorf("%s not allowed", h)
 		}
 	}
 	for _, h := range []string{"example.org", "github.com", "registry.npmjs.org", "downloads.claude.ai"} {
-		if px.Allowed(h) {
+		if s.px.Allowed(h) {
 			t.Errorf("%s allowed", h)
 		}
 	}
-	// Exec passes the proxy through an env file, not an argument
+	// the exec's environment file (it holds the proxy password) goes away shortly after the exec started
+	old := envFileGrace
+	envFileGrace = 50 * time.Millisecond
+	defer func() { envFileGrace = old }()
+	var envPath string
+	a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
+		for i, x := range argv {
+			if x == "--env-file" {
+				envPath = argv[i+1]
+			}
+		}
+		return nopConn{}, nil
+	}
 	c, err := s.Exec(context.Background(), []string{AuthHelper}, map[string]string{"CLAUDE_CONFIG_DIR": "/tmp/claude"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Close()
+	defer c.Close()
+	if _, err := os.Stat(envPath); err != nil {
+		t.Fatalf("env file missing at exec time: %v", err)
+	}
+	eventually(t, "env file removed", func() bool { _, err := os.Stat(envPath); return err != nil })
 	s.Close()
 	if f.find("stop --time 2 rubi-agent-auth") == nil || f.find("delete --force rubi-agent-auth") == nil {
 		t.Errorf("not cleaned up: %v", f.cmds)
 	}
 }
 
-// Lines the container tool prints before the script's own (its progress) don't hide the answer.
-func TestParseAuthStatusSkipsToolOutput(t *testing.T) {
-	st, err := parseAuthStatus("[0/6] [0s]\n[6/6] Starting container [0s]\nSIGNED_IN\n{\"created\":\"2026-10-31T10:00:00Z\",\"expires\":\"2027-10-31T10:00:00Z\"}\n")
-	if err != nil || !st.SignedIn || st.Expires.Year() != 2027 {
-		t.Fatalf("%+v %v", st, err)
+func TestSweepRemovesALeftoverAuthContainer(t *testing.T) {
+	f := &authFake{}
+	a, _ := newAuthVM(t, f)
+	a.SweepAuth(context.Background())
+	if c := f.find("delete --force rubi-agent-auth"); c == nil {
+		t.Errorf("no sweep: %v", f.cmds)
 	}
-	if st, err := parseAuthStatus("[0/6] [0s]\nNOT_SIGNED_IN\n"); err != nil || st.SignedIn {
-		t.Fatalf("%+v %v", st, err)
+}
+
+// No project can be, contain or sit inside the helper's directory, where the sign-in directory is.
+func TestProjectsCantTouchTheAuthDir(t *testing.T) {
+	root := t.TempDir()
+	helper := filepath.Join(root, "helper")
+	auth := filepath.Join(helper, "agent-auth")
+	os.MkdirAll(filepath.Join(auth, "token"), 0o700)
+	outside := filepath.Join(root, "my-project")
+	os.MkdirAll(outside, 0o755)
+	m := New(Options{Dir: helper, Projects: func() []string { return nil }})
+	for name, dir := range map[string]string{"auth dir": auth, "inside it": filepath.Join(auth, "token"), "helper dir": helper, "the parent": root} {
+		real, _ := filepath.EvalSymlinks(dir)
+		if !m.protected(real) {
+			t.Errorf("%s is allowed as a project", name)
+		}
 	}
-	if _, err := parseAuthStatus("[0/6] [0s]\nsomething else\n"); err == nil {
-		t.Fatal("no marker was accepted")
+	real, _ := filepath.EvalSymlinks(outside)
+	if m.protected(real) {
+		t.Error("an ordinary folder is protected")
+	}
+	// a custom directory elsewhere is protected the same way
+	custom := filepath.Join(root, "elsewhere", "auth")
+	os.MkdirAll(custom, 0o700)
+	m2 := New(Options{Dir: helper, AuthDir: custom})
+	rc, _ := filepath.EvalSymlinks(custom)
+	if !m2.protected(rc) || !m2.protected(filepath.Dir(rc)) {
+		t.Error("a custom sign-in directory can be a project")
 	}
 }

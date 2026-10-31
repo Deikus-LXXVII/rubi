@@ -190,6 +190,11 @@ func run(h *home.Helper) {
 		}
 	}()
 	h.Agent.Resume() // deliver what the agent queue still holds from an earlier run
+	go func() {      // a sign-in container left by a crash
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		h.SweepAgent(ctx)
+	}()
 	defer h.Agent.Close()
 	rpc := &homeproto.Server{Key: h.ID.Box, Handle: h.Handle}
 	relays := h.Relays()

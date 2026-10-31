@@ -59,7 +59,6 @@ type Settings struct {
 	ProxyListen string   // agent_proxy_listen
 	ProxyVMHost string   // agent_proxy_vm_host
 	RunnerDir   string   // agent_runner_dir
-	AuthVolume  string   // agent_auth_volume
 }
 
 // Box is a project's running VM, to run commands in.

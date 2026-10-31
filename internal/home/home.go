@@ -66,9 +66,10 @@ type Config struct {
 	// to pin a port or to use another address.
 	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
-	// AgentAuthVolume is the container volume that holds the sign-in shared by all projects
-	// ("rubi-agent-auth" by default); every project VM mounts it read-only outside /work.
-	AgentAuthVolume string `json:"agent_auth_volume,omitempty"`
+	// AgentAuthDir is the directory that holds the sign-in shared by all projects (<helper dir>/agent-auth by
+	// default, 0700, made by Home). It is bind-mounted read-only at /rubi-auth in every project VM; Home never
+	// reads the token in it. No project may be, contain or sit inside it.
+	AgentAuthDir string `json:"agent_auth_dir,omitempty"`
 	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
 	AgentRunnerDir string `json:"agent_runner_dir,omitempty"`
 	// AgentAllowedHosts are extra hosts (port 443) the agents' proxy allows for every project, for example
@@ -172,6 +173,13 @@ func Open(dir string) (*Helper, error) {
 	return h, nil
 }
 
+// SweepAgent removes what a crash of an earlier run can have left in the container tool: the sign-in
+// container. It is for Rubi Home's start (not for tests, which never run the real tool).
+func (h *Helper) SweepAgent(ctx context.Context) {
+	c := h.Fresh()
+	(&agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}).SweepAuth(ctx)
+}
+
 // AgentCredFile is the git credential file for agents in the helper's directory (see agent.FileCredSource).
 const AgentCredFile = "agent-git-credentials.json"
 
@@ -181,11 +189,12 @@ func (h *Helper) newAgent() *agent.Manager {
 	return agent.New(agent.Options{
 		Dir:       h.Dir,
 		Protected: []string{home},
+		AuthDir:   h.Fresh().AgentAuthDir,
 		Projects:  func() []string { return h.Fresh().AgentProjects },
 		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
 		NewVM: func(p agent.Project) agent.VM {
 			c := h.Fresh()
-			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthVolume: c.AgentAuthVolume}
+			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
 		},
 		AllowedHosts:    func() []string { return h.Fresh().AgentAllowedHosts },
 		NoDefaultForges: func() bool { return h.Fresh().AgentNoDefaultForges },
@@ -214,12 +223,12 @@ func (h *Helper) newSetup() *setup.Setup {
 		Dir: h.Dir,
 		Agents: setup.ManagerAgents{M: h.Agent, Auth: func() *agent.AppleContainer {
 			c := h.Fresh()
-			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthVolume: c.AgentAuthVolume}
+			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
 		}},
 		Settings: func() setup.Settings {
 			c := h.Fresh()
 			return setup.Settings{Projects: c.AgentProjects, Network: c.AgentNetwork, ProxyListen: c.AgentProxyListen,
-				ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir, AuthVolume: c.AgentAuthVolume}
+				ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir}
 		},
 		Update: func(fn func(*setup.Settings)) error {
 			return h.Update(func(c *Config) {
