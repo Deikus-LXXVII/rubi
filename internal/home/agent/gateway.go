@@ -8,6 +8,7 @@ package agent
 // only there. It lives as long as the runner it was started for: the secret is useless afterwards and anywhere else.
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -81,6 +82,9 @@ type GatewayConfig struct {
 	Secret string
 	// TokenFile is the file with the real token. It is read at each request (a sign-in or sign-out applies at once).
 	TokenFile string
+	// AllowWebSearch lets requests carry the server-side web search tool (default: refused). It is set for the
+	// start of a session whose role grants WebSearch; no other server-side tool is ever let through.
+	AllowWebSearch bool
 	// upstream and client replace https://api.anthropic.com for tests. They are unexported: only code in this
 	// package can set them (its tests, or the build-tagged hook in gateway_testhook.go), never a configuration.
 	upstream string
@@ -262,12 +266,28 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 			"Rubi: Rubi Home isn't signed in to Claude. Sign in on the agent setup page, then try again.")
 		return
 	}
-	// 4. forward, with only the headers on the list and the real credential.
+	// 4. the body: no server-side tool, no MCP connector (they run on Anthropic's servers, outside the allow-list).
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, gatewayMaxBody))
+	if err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			g.refuse(w, http.StatusRequestEntityTooLarge, "body size", "request_too_large", "Rubi: the request is too large for the agent gateway.")
+		} else {
+			g.refuse(w, http.StatusBadRequest, "request", "invalid_request_error", "Rubi: bad request.")
+		}
+		return
+	}
+	if why := checkBody(body, g.cfg.AllowWebSearch); why != "" {
+		g.refuse(w, http.StatusForbidden, "server-side feature", "permission_error",
+			"Rubi: the agent gateway doesn't pass this request on: "+why+". Server-side tools and the MCP connector run outside Rubi's network allow-list.")
+		return
+	}
+	// 5. forward, with only the headers on the list and the real credential.
 	up := *g.upstream
 	up.Path, up.RawQuery = r.URL.Path, r.URL.RawQuery
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	out, err := http.NewRequestWithContext(ctx, r.Method, up.String(), http.MaxBytesReader(w, r.Body, gatewayMaxBody))
+	out, err := http.NewRequestWithContext(ctx, r.Method, up.String(), bytes.NewReader(body))
 	if err != nil {
 		g.refuse(w, http.StatusBadRequest, "request", "invalid_request_error", "Rubi: bad request.")
 		return
@@ -277,18 +297,10 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 			out.Header[http.CanonicalHeaderKey(name)] = append([]string(nil), vals...)
 		}
 	}
-	out.ContentLength = r.ContentLength
+	out.ContentLength = int64(len(body))
 	out.Header.Set("Authorization", "Bearer "+token)
-	// Every anthropic-beta line is kept (they are joined into one): whichever beta the agent asks for is passed
-	// on, by design, the gateway is a credential injector and not a policy on the API's features.
-	beta := strings.Join(out.Header.Values("Anthropic-Beta"), ",")
-	if !strings.Contains(beta, oauthBeta) {
-		if beta != "" {
-			beta += ","
-		}
-		beta += oauthBeta
-	}
-	out.Header.Set("Anthropic-Beta", beta)
+	// Only the betas on the list are passed on (see betaPrefixes), plus the OAuth beta.
+	out.Header.Set("Anthropic-Beta", filterBeta(out.Header.Values("Anthropic-Beta")))
 	resp, err := g.client.Do(out)
 	if err != nil {
 		g.refuse(w, http.StatusBadGateway, "upstream", "api_error", "Rubi: the agent gateway couldn't reach the Claude API.")
@@ -304,7 +316,7 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.served++
 	g.mu.Unlock()
-	// 5. stream: each chunk goes out as it arrives; a response that stalls is ended.
+	// 6. stream: each chunk goes out as it arrives; a response that stalls is ended.
 	rc := http.NewResponseController(w)
 	stall := time.AfterFunc(gatewayStall, cancel)
 	defer stall.Stop()

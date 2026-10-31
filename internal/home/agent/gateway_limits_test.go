@@ -294,7 +294,7 @@ func TestAStartThatFailsBeforePrepareDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestMultipleBetaLinesAreAllKept(t *testing.T) {
+func TestBetaLinesAreFilteredToTheAllowList(t *testing.T) {
 	up := newRecUpstream(t, nil)
 	g, _ := gwWith(t, up, nil)
 	do := func(lines ...string) string {
@@ -321,9 +321,12 @@ func TestMultipleBetaLinesAreAllKept(t *testing.T) {
 	if got := do(); got != "oauth-2025-04-20" {
 		t.Errorf("none: %q", got)
 	}
-	// whichever beta the agent asks for is passed on: the gateway injects a credential, it is no policy on features
-	if got := do("some-future-beta-2030-01-01"); !strings.Contains(got, "some-future-beta-2030-01-01") {
-		t.Errorf("a beta was dropped: %q", got)
+	// a beta that isn't on the list is dropped, not refused; a server-tool beta never passes
+	if got := do("some-future-beta-2030-01-01", "code-execution-2025-08-25,context-1m-2025-08-07", "mcp-client-2025-11-20"); got != "context-1m-2025-08-07,oauth-2025-04-20" {
+		t.Errorf("unknown betas: %q", got)
+	}
+	if got := do("claude-code-20250219, interleaved-thinking-2025-05-14,claude-code-20250219"); got != "claude-code-20250219,interleaved-thinking-2025-05-14,oauth-2025-04-20" {
+		t.Errorf("comma list: %q", got)
 	}
 }
 

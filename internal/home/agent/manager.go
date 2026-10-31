@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -716,6 +717,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	}
 	var roleHosts []string
 	var shield Project
+	allowWebSearch := true // the legacy role has Claude Code's default tools
 	if p.Role == "" {
 		if err := prepareWorkDir(p.Dir); err != nil {
 			return nil, err
@@ -750,6 +752,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			return nil, err
 		}
 		roleHosts = role.Hosts
+		allowWebSearch = roleAllowsWebSearch(role)
 	}
 	// A VM start can take minutes (the image); it must not die with the request that asked for it.
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
@@ -804,7 +807,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			lhost, vmHost = gateway, gateway
 		}
 		upstream, client := gatewaySeam()
-		gw, err = StartGateway(GatewayConfig{Listen: net.JoinHostPort(lhost, "0"), Secret: gwSecret, TokenFile: TokenFileOf(authDir),
+		gw, err = StartGateway(GatewayConfig{Listen: net.JoinHostPort(lhost, "0"), Secret: gwSecret, TokenFile: TokenFileOf(authDir), AllowWebSearch: allowWebSearch,
 			upstream: upstream, client: client, Logf: log.Printf})
 		if err != nil {
 			px.Close()
@@ -834,7 +837,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		if err != nil {
 			return nil, fmt.Errorf("proxy: %w", err)
 		}
-		gw, err = StartGateway(GatewayConfig{Listener: gl, Secret: gwSecret, TokenFile: TokenFileOf(authDir),
+		gw, err = StartGateway(GatewayConfig{Listener: gl, Secret: gwSecret, TokenFile: TokenFileOf(authDir), AllowWebSearch: allowWebSearch,
 			upstream: upstream, client: client, Logf: log.Printf})
 		if err != nil {
 			px.Close()
@@ -2398,4 +2401,19 @@ func prepareWorkDir(dir string) error {
 	defer f.Close()
 	_, err = f.WriteString("*\n")
 	return err
+}
+
+// roleAllowsWebSearch says whether the gateway of a role's VM passes on the server-side web search tool: only when
+// the role grants WebSearch and has no deny rule for all of it. It is read when the VM starts; a role version put
+// later that adds WebSearch applies at the next start.
+func roleAllowsWebSearch(r *roles.Role) bool {
+	if r == nil || !slices.Contains(r.Tools, "WebSearch") {
+		return false
+	}
+	for _, d := range r.Deny {
+		if strings.TrimSpace(d.Rule) == "WebSearch" {
+			return false
+		}
+	}
+	return true
 }
