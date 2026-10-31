@@ -117,24 +117,25 @@ export function parseRole(raw: unknown, dir: string): Role {
 
 const inside = (root: string, p: string) => p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
 
-/** Reads a regular file without following a symlink, up to `max` bytes; undefined when it does not exist. */
+/**
+ * Reads a regular file without following a symlink, up to `max` bytes; undefined when it does not exist. The file is
+ * opened O_NONBLOCK and checked with fstat on the descriptor, so a FIFO swapped in for the file cannot block the
+ * runner and nothing checked by path can change before the read.
+ */
 export function readPlain(file: string, max: number, what: string): string | undefined {
-  let st: fs.Stats;
-  try {
-    st = fs.lstatSync(file);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    return fail(`${what}: ${(e as Error).message}`);
-  }
-  if (st.isSymbolicLink() || !st.isFile()) return fail(`${what} is not a regular file`);
-  if (st.size > max) return fail(`${what} is larger than ${max} bytes`);
   let fd: number;
   try {
-    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return undefined;
+    if (code === "ELOOP") return fail(`${what} is not a regular file`);
     return fail(`${what}: ${(e as Error).message}`);
   }
   try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) return fail(`${what} is not a regular file`);
+    if (st.size > max) return fail(`${what} is larger than ${max} bytes`);
     const buf = Buffer.alloc(max + 1);
     const n = fs.readSync(fd, buf, 0, max + 1, 0);
     if (n > max) fail(`${what} is larger than ${max} bytes`);
@@ -185,13 +186,29 @@ export function instructionsBlock(role: Role, cwd: string): string {
   if (role.project_instructions) {
     let left = PROJECT_TEXT_MAX;
     const texts: string[] = [];
+    let realCwd: string;
+    try {
+      realCwd = fs.realpathSync(cwd);
+    } catch {
+      return parts.join("\n\n");
+    }
     for (const rel of ["CLAUDE.md", ".claude/CLAUDE.md"]) {
       if (left <= 0) break;
       let t: string | undefined;
       try {
-        t = readPlain(path.join(cwd, rel), left, rel);
+        // .claude may itself be a symlink to somewhere else: its real path has to stay inside the working directory
+        // (checked before and after the read, so a swap in between shows).
+        const dirOf = () => {
+          if (rel !== ".claude/CLAUDE.md") return realCwd;
+          const d = fs.realpathSync(path.join(realCwd, ".claude"));
+          if (!inside(realCwd, d)) throw new RoleError(".claude leaves the working directory");
+          return d;
+        };
+        const d = dirOf();
+        t = readPlain(path.join(d, "CLAUDE.md"), left, rel);
+        if (dirOf() !== d) continue;
       } catch {
-        continue; // a symlink, a directory or something too large is left out
+        continue; // a symlink, a missing or foreign directory, or something too large is left out
       }
       if (t === undefined || t.trim() === "") continue;
       left -= Buffer.byteLength(t);

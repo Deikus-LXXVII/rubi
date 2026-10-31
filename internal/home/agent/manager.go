@@ -249,6 +249,7 @@ func New(opt Options) *Manager {
 			Verifier: opt.RoleVerifier,
 			MaxTotal: opt.RoleMaxTotal,
 			Now:      opt.Now,
+			Logf:     log.Printf,
 		})
 	}
 	return m
