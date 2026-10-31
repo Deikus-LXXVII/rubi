@@ -13,7 +13,9 @@
   reach the plugin through `next` and wait for `decide`: no answer in 280 s, or no `next` poll for 15 s, is a
   denial; an allow-list CONNECT proxy (no TLS decryption) and a git credential helper (reads always, a push
   only after the plugin approves). Configuration: `agent_projects`, `agent_git_hosts`, `agent_proxy_listen`,
-  `agent_proxy_vm_host`, `agent_runner_dir`. Nothing starts a VM until a project is configured and an
+  `agent_proxy_vm_host`, `agent_runner_dir`, `agent_allowed_hosts`, `agent_no_default_forges`,
+  `agent_allow_bypass`. The proxy takes its hosts only from this configuration and from approvals (`net.ask`),
+  never from a project's files; refuses non-public addresses; and needs a per-start proxy password. Nothing starts a VM until a project is configured and an
   operation uses it.
 
 ## v0.13.0 (2026-10-31)

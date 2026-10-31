@@ -417,15 +417,48 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
 - **Proxy.** One per running project, HTTP CONNECT to port 443 only, host names from the list, TLS not
   decrypted. Allowed: `api.anthropic.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, the login
   candidates `claude.ai`, `console.anthropic.com`, `platform.claude.com` (TO CONFIRM with a real login), the
-  hosts in `agent_git_hosts`, and the https hosts in the project's `Package.resolved`, read on the Mac when the
-  VM starts (the file is in `/work`, so a change during a run does not widen the list). Refused and logged:
-  everything else; Datadog and `downloads.claude.ai` even if listed. Listens on `agent_proxy_listen`
-  (default `127.0.0.1:0`; a VM cannot reach the Mac's loopback, so a real setup sets it to the Mac's address on
-  the VM network) and tells the VM `agent_proxy_vm_host`.
+  hosts in `agent_git_hosts`, the owner's `agent_allowed_hosts`, the forges `github.com`, `gitlab.com`,
+  `bitbucket.org` (unless `agent_no_default_forges`), and hosts the owner approved for that project.
+  **Nothing is derived from the project's files**: `/work` is written by the agent, so a `Package.resolved`,
+  `.gitmodules` or `.git/config` there must not widen the list. A host that is not listed is asked about: the
+  proxy holds the CONNECT and raises a `net.ask {host}` item; the plugin answers with `decide`; an allow is
+  recorded per project in `<helper dir>/agent-net.json` (0600, 100 hosts per project), a denial is
+  remembered for 5 minutes, and with Rubi locked the answer is deny. Datadog and `downloads.claude.ai` are
+  refused even if listed, and are never asked about. The proxy resolves names itself and refuses to connect to
+  an address that is loopback, private (RFC 1918), link-local, ULA, CGNAT (100.64/10), 0.0.0.0/8, multicast,
+  reserved, or an IPv4-mapped/NAT64/6to4 form of those: one such address in the answer refuses the host, and
+  the socket's own address is checked again when it connects. Only `agent_git_hosts` may resolve to private
+  addresses (an owner's own git server). It refuses a wildcard listen address, requires
+  `Proxy-Authorization: Basic` with a per-start token (put into `HTTPS_PROXY` as `http://rubi:<token>@host:port`;
+  not the run token), and ends tunnels idle for 10 minutes. It listens on `agent_proxy_listen` (default
+  `127.0.0.1:0`; a VM cannot reach the Mac's loopback, so a real setup sets it to the Mac's address on the VM
+  network) and tells the VM `agent_proxy_vm_host`.
+- **Network check.** Before every start Home inspects the VM network and refuses to start unless the output says
+  it is internal (host-only); output it cannot read is a refusal. The inspect JSON schema of `container 1.6.x`
+  is not confirmed (a key `internal`, any case, anywhere in the document, must be `true`).
 - **Git credentials.** The helper in the VM (`runner/container/git-credential-rubi`) hands `git credential
-  get|store|erase` to the runner, which sends `git.credential {op, input, purpose}` to Home. Hosts must be in
-  `agent_git_hosts` and https. `get` for a read is served from the source (file `agent-git-credentials.json`,
-  0600: `{"git.example.com": {"read": {...}, "push": {...}}}`); `purpose: "push"` first raises a `cred.ask` and
-  gets the separate push credential only on an allow (the mandate check is the plugin's). `store` and `erase`
-  are accepted and ignored.
-- **Not in M2.** The runner itself (M1), the plugin (M4), encrypted volumes, a cap on running VMs.
+  get|store|erase` to the runner, which sends `git.credential {op, input, purpose}` to Home (the runner side
+  of the relay is part of the runner, not yet in M1). Hosts must be in `agent_git_hosts` and https. `get` for a
+  read is served from the source (file `agent-git-credentials.json`, 0600: `{"git.example.com": {"read":
+  {...}, "push": {...}}}`); `purpose: "push"` raises a `cred.ask {host, path}` (path cleaned and cut at 200)
+  **every time**, so each distinct repository path is asked about again, and gets the separate push credential
+  only on an allow (the mandate check is the plugin's). `store` and `erase` are accepted and ignored. The read
+  credential must be a read-only token. The push credential must be scoped to the repositories the agent
+  may push to and short-lived: once the VM has it, nothing stops it using it until it expires, and the VM can
+  keep it. Home never logs the credential helper's input or output (tested).
+- **Slot watchdog.** A session that holds the slot with no event and no pending ask for 30 minutes
+  (`SlotIdleTTL`) is interrupted and the slot freed (logged, and the plugin sees a `status closed` event).
+- **Modes.** `agent_allow_bypass` (default `true`) allows `start` and `mode` with `bypassPermissions` or
+  `dontAsk`; set it `false` to refuse them. The plugin still decides every tool call and approves loosening a
+  mode with a passkey.
+- **Projects and `/work`.** A project directory is refused if it is `/`, the home, a parent of the home
+  (`/Users`), a parent of the helper's directory, `~/.ssh`, `~/Library`, `~/.gnupg`, `~/.aws`, `~/.config`,
+  `~/.kube` or inside them, or has a `,` or control character in its path (it would break the `--mount`
+  option). `/work` is the same directory the user sees on the Mac: what the agent writes there (git hooks,
+  `.vscode/tasks.json`, build scripts, `.envrc`) runs with the user's rights the next time they use an editor or
+  git there, so review it like code from a stranger. On the first start Home creates `/work/.rubi/` and a
+  `.gitignore` containing `*` in it (never through a symlink; an existing file is left alone), because the
+  runner's sessions and config live there. Home reads nothing else from `/work` and makes no decision from it.
+- **Resource limits.** The runner serves at most 64 requests at once; more are answered with an error.
+- **Not in M2.** The plugin (M4), encrypted volumes, a cap on running VMs, the `git.credential` relay inside
+  the runner.
