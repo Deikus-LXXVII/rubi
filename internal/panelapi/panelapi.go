@@ -328,7 +328,8 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
 		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel",
-		"approval.list", "approval.open":
+		"approval.list", "approval.open",
+		"library.list", "library.entry", "library.version", "library.queue", "library.curator.set":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -699,6 +700,10 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	if (env.Op == "approval.list" || env.Op == "approval.open") && purpose != "settings" {
 		return nil, errViewOnly
 	}
+	// The library holds text Bots wrote; like a plugin's page it opens only from a settings link.
+	if strings.HasPrefix(env.Op, "library.") && purpose != "settings" {
+		return nil, errViewOnly
+	}
 	if purpose != "settings" && purpose != settingsView && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
 		return nil, errors.New("this link can't change settings; ask your agent for a settings link")
 	}
@@ -725,6 +730,10 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		// ApprovalID is for approval.open.
 		ApprovalID string `json:"approval_id"`
 		Wait       bool   `json:"wait"`
+		// Query, Tag and Version are for the library.* ops.
+		Query   string `json:"query"`
+		Tag     string `json:"tag"`
+		Version int    `json:"version"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -781,6 +790,24 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		id, ok := res["approval_id"].(string)
 		if !ok {
 			return res, nil // e.g. already up to date
+		}
+		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
+	case "library.list":
+		return s.core.LibraryPanelList(args.Query, args.Tag)
+	case "library.entry":
+		return s.core.LibraryPanelEntry(args.ID)
+	case "library.version":
+		return s.core.LibraryPanelVersion(args.ID, args.Version)
+	case "library.queue":
+		return s.core.LibraryPanelQueue()
+	case "library.curator.set":
+		res, err := s.core.RequestLibraryCurator(ctx, args.Name)
+		if err != nil {
+			return nil, err
+		}
+		id, ok := res["approval_id"].(string)
+		if !ok {
+			return res, nil
 		}
 		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
 	case "policy.get":

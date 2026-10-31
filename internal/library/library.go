@@ -654,3 +654,59 @@ func versionSuffix(n int) string {
 	}
 	return "@" + strconv.Itoa(n)
 }
+
+// ---- the owner's view (panel) ----
+
+// PanelVersion is a version as the panel shows it: Info and the scan's hits. It never carries content; the
+// panel asks for one version's content with Get. Every text in it came from a Bot and is drawn as text only.
+type PanelVersion struct {
+	Info
+	Hits     []skillscan.Hit `json:"scan_hits,omitempty"`
+	Stripped []string        `json:"scan_stripped,omitempty"`
+}
+
+func panelVersion(e *Entry, v *Version) PanelVersion {
+	pv := PanelVersion{Info: info(e, v, false, true), Hits: v.Scan.Rules, Stripped: v.Scan.Stripped}
+	pv.Info.Content = ""
+	return pv
+}
+
+// Entry returns every version of one skill (all states) for the owner, without content.
+func (l *Library) Entry(id string) ([]PanelVersion, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !idRE.MatchString(id) {
+		return nil, fmt.Errorf("no skill %s", id)
+	}
+	e, err := l.load(id)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("no skill %s", id)
+		}
+		return nil, err
+	}
+	out := make([]PanelVersion, 0, len(e.Versions))
+	for _, v := range e.Versions {
+		out = append(out, panelVersion(e, v))
+	}
+	return out, nil
+}
+
+// Queue returns the proposals waiting for the curator, oldest first by skill id, without content.
+func (l *Library) Queue() ([]PanelVersion, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := []PanelVersion{}
+	for _, id := range l.ids() {
+		e, err := l.load(id)
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range e.Versions {
+			if v.State == Proposed {
+				out = append(out, panelVersion(e, v))
+			}
+		}
+	}
+	return out, nil
+}
