@@ -1,10 +1,11 @@
 // The sign-in shared by all projects: only the token is shared, read at each query start, into the SDK
 // child's environment and nowhere else.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
+import { redactCredentials } from "../src/protocol.js";
 import { readSharedToken } from "../src/runner.js";
 import { Home, TOKEN as RUN_TOKEN } from "./harness.js";
 
@@ -99,16 +100,57 @@ describe("shared sign-in token", () => {
     const none = mkdtempSync(join(tmpdir(), "rubi-auth-"));
     try {
       assert.equal(readSharedToken(none), undefined);
-      for (const bad of ["", "\n", "two words", "a".repeat(5000), "tab\there"]) {
+      for (const bad of ["", "\n", "two words", "a".repeat(5000), "tab\there", "not-a-token-0123456789", "sk-ant"]) {
         const d = authDir(bad);
         assert.equal(readSharedToken(d), undefined, JSON.stringify(bad.slice(0, 20)));
         rmSync(d, { recursive: true, force: true });
       }
       const ok = authDir(TOKEN);
       assert.equal(readSharedToken(ok), TOKEN);
-      rmSync(ok, { recursive: true, force: true });
+      // a symlink is no token file, whatever it points to
+      const real = authDir(TOKEN);
+      const link = authDir();
+      symlinkSync(join(real, "token", "oauth-token"), join(link, "token", "oauth-token"));
+      assert.equal(readSharedToken(link), undefined);
+      for (const d of [ok, real, link]) rmSync(d, { recursive: true, force: true });
     } finally {
       rmSync(none, { recursive: true, force: true });
     }
+  });
+
+  it("with a shared token an API key of the runner's environment is not passed along (Claude Code prefers the key)", async () => {
+    const dir = authDir(TOKEN);
+    try {
+      const h = await new Home({ authDir: dir, env: { PATH: "/usr/bin", RUBI_RUN_TOKEN: RUN_TOKEN, ANTHROPIC_API_KEY: "sk-ant-api03-FAKEKEYFAKEKEYFAKEKEY" } }).up();
+      h.sdk.turn = (ctx) => ctx.result();
+      await start(h);
+      await h.waitEvent("result");
+      const env = h.sdk.queries[0]!.options.env!;
+      assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, TOKEN);
+      assert.equal(env.ANTHROPIC_API_KEY, undefined);
+      // without a token the key is passed as before
+      rmSync(join(dir, "token", "oauth-token"));
+      await start(h);
+      await h.waitFor(() => h.sdk.queries.length === 2);
+      assert.match(h.sdk.queries[1]!.options.env!.ANTHROPIC_API_KEY!, /^sk-ant-api03-/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("anything shaped like a credential is redacted in every event, answer and question before it leaves", async () => {
+    const h = await new Home().up();
+    h.sdk.turn = async (ctx) => {
+      ctx.say(`the key is ${TOKEN} ok`);
+      await ctx.tool("Bash", { command: `echo ${TOKEN}` });
+      ctx.result({ result: `done ${TOKEN}` });
+    };
+    await start(h);
+    await h.waitEvent("result");
+    const everything = JSON.stringify(h.lines);
+    assert.equal(everything.includes("FAKEFAKE"), false, everything);
+    assert.ok(everything.includes("[redacted credential]"));
+    assert.equal(redactCredentials("sk-ant-short"), "sk-ant-short"); // too short to be one
+    assert.equal(redactCredentials(`a ${TOKEN} b ${TOKEN}`), "a [redacted credential] b [redacted credential]");
   });
 });

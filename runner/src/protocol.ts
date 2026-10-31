@@ -271,7 +271,7 @@ export class Peer {
     if (this.output.destroyed || this.output.writableEnded) return;
     let line: string;
     try {
-      line = JSON.stringify(msg) + "\n";
+      line = redactCredentials(JSON.stringify(msg)) + "\n";
     } catch (e) {
       this.log(`serialize failed: ${errMsg(e)}`);
       return;
@@ -329,4 +329,13 @@ function idOrNull(id: unknown): string | number | null {
 
 export function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Defense in depth: anything shaped like an Anthropic credential never leaves the runner, in an event, a tool
+ * result or a question. Best effort (a token split or encoded by a tool isn't recognised); the real protection is
+ * that nothing but the SDK child gets the token.
+ */
+export function redactCredentials(text: string): string {
+  return text.replace(/sk-ant-[A-Za-z0-9_-]{20,}/g, "[redacted credential]");
 }

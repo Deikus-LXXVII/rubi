@@ -3,7 +3,7 @@
 // one long-lived query per session fed by a queue, session id chosen up front, fork via
 // forkSession() + resume, steering with priority "now", a permission callback kept installed.
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import { serveCredentials, type CredServer } from "./cred.js";
 import { Inbox } from "./inbox.js";
@@ -136,8 +136,11 @@ export function toolSummary(name: string, input: unknown): string {
 /** The shared sign-in token, or undefined when there is none (no file, empty, or not a plain token). */
 export function readSharedToken(authDir: string): string | undefined {
   try {
-    const t = readFileSync(`${authDir}/token/oauth-token`, "utf8").trim();
-    return t.length > 0 && t.length <= 4096 && /^[\x21-\x7e]+$/.test(t) ? t : undefined;
+    const file = `${authDir}/token/oauth-token`;
+    const st = lstatSync(file); // a symlink is no token file
+    if (!st.isFile() || st.size === 0 || st.size > 4096) return undefined;
+    const t = readFileSync(file, "utf8").trim();
+    return t.startsWith("sk-ant-") && /^[\x21-\x7e]+$/.test(t) ? t : undefined;
   } catch {
     return undefined;
   }
@@ -222,7 +225,11 @@ export class Runner {
   /** The environment of a `claude` child: read at each query start, so a sign-in or sign-out applies to the next one. */
   private queryEnv(): Record<string, string> {
     const token = readSharedToken(this.cfg.authDir);
-    return token === undefined ? this.childEnv : { ...this.childEnv, CLAUDE_CODE_OAUTH_TOKEN: token };
+    if (token === undefined) return this.childEnv;
+    // Claude Code prefers ANTHROPIC_API_KEY to an OAuth token when both are set; with a shared sign-in stored
+    // the token is the one to use, so a key from the runner's environment is not passed along with it.
+    const { ANTHROPIC_API_KEY: _key, ...rest } = this.childEnv;
+    return { ...rest, CLAUDE_CODE_OAUTH_TOKEN: token };
   }
 
   private exit(code: number) {
