@@ -38,7 +38,13 @@ type Project struct {
 	// (".claude") that are mounted read-only over their place in /work. A single file can't be bound, so
 	// /work/CLAUDE.md stays writable (docs/design/agent-roles.md section 3).
 	EmptyDir string
-	ReadOnly []string
+	ReadOnly []ShieldMount
+}
+
+// ShieldMount is one read-only overlay: the project-relative place and the Home-owned host directory shown there.
+type ShieldMount struct {
+	Name   string
+	Source string
 }
 
 // RoleMountDir and RoleClaudeDir are where a role VM sees its content and its config directory.

@@ -94,10 +94,11 @@ func TestAppleContainerRoleArgs(t *testing.T) {
 	}
 	// The shield: the empty directory over /work/.rubi and the project's .claude, read-only, on top of /work.
 	sh := r1
-	sh.EmptyDir, sh.ReadOnly = "/home/alice/rubi-home/agent-role-empty", []string{".claude"}
+	sh.EmptyDir, sh.ReadOnly = "/home/alice/rubi-home/agent-role-empty", []ShieldMount{{Name: ".claude", Source: "/home/alice/rubi-home/agent-role-shield/k/claude"}, {Name: ".git/hooks", Source: "/home/alice/rubi-home/agent-role-shield/k/git_hooks"}}
 	want0 := "--mount type=bind,source=/home/alice/my-project,target=/work" +
 		" --mount type=bind,source=/home/alice/rubi-home/agent-role-empty,target=/work/.rubi,readonly" +
-		" --mount type=bind,source=/home/alice/my-project/.claude,target=/work/.claude,readonly" +
+		" --mount type=bind,source=/home/alice/rubi-home/agent-role-shield/k/claude,target=/work/.claude,readonly" +
+		" --mount type=bind,source=/home/alice/rubi-home/agent-role-shield/k/git_hooks,target=/work/.git/hooks,readonly" +
 		" --mount type=bind,source=/home/alice/rubi-home/agent-roles/r_aaaaaaaa/content"
 	if sj := strings.Join(a.RunArgs(sh), " "); !strings.Contains(sj, want0) {
 		t.Errorf("shielded run lacks the nested mounts, in order, in %s", sj)

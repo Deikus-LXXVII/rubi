@@ -107,7 +107,7 @@ func TestRoleVMGetsTheShield(t *testing.T) {
 	re.startRole(a, "x")
 	eventually(t, "slot", func() bool { return re.running() == 1 })
 	pj := re.vm(a).Runner().Project
-	if pj.EmptyDir != filepath.Join(re.dir, RoleEmptyDir) || len(pj.ReadOnly) != 1 || pj.ReadOnly[0] != ".claude" {
+	if pj.EmptyDir != filepath.Join(re.dir, RoleEmptyDir) || len(pj.ReadOnly) != 1 || pj.ReadOnly[0].Name != ".claude" {
 		t.Fatalf("role project %+v", pj)
 	}
 	if ents, err := os.ReadDir(pj.EmptyDir); err != nil || len(ents) != 0 {
@@ -116,24 +116,37 @@ func TestRoleVMGetsTheShield(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(proj, ".rubi")); err != nil {
 		t.Fatalf("/work/.rubi must exist to be covered: %v", err)
 	}
-	// No .claude in the project, or one that is a symlink: nothing to bind (the tool would create the mount point).
+	if len(pj.ReadOnly) != 1 || !strings.HasPrefix(pj.ReadOnly[0].Source, filepath.Join(re.dir, RoleShieldDir)) {
+		t.Fatalf("the mount isn't a Home-owned snapshot: %+v", pj.ReadOnly)
+	}
+	// No .claude in the project: it is created (owned by the user) and still shielded.
 	if err := os.RemoveAll(filepath.Join(proj, ".claude")); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); len(s.ReadOnly) != 0 || s.EmptyDir == "" {
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir), "r_a"); len(s.ReadOnly) != 1 || s.EmptyDir == "" {
 		t.Fatalf("no .claude: %+v", s)
+	}
+	if st, err := os.Lstat(filepath.Join(proj, ".claude")); err != nil || !st.IsDir() || st.Mode().Perm() != 0o755 {
+		t.Fatalf("the .claude mount point: %v %v", st, err)
+	}
+	// A symlinked .claude is refused, not followed.
+	if err := os.RemoveAll(filepath.Join(proj, ".claude")); err != nil {
+		t.Fatal(err)
 	}
 	if err := os.Symlink("/etc", filepath.Join(proj, ".claude")); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); len(s.ReadOnly) != 0 {
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir), "r_a"); s.EmptyDir != "" || len(s.ReadOnly) != 0 {
 		t.Fatalf("symlinked .claude: %+v", s)
+	}
+	if err := os.Remove(filepath.Join(proj, ".claude")); err != nil {
+		t.Fatal(err)
 	}
 	// Something in the empty directory: no shield, so the start refuses.
 	if err := os.WriteFile(filepath.Join(re.dir, RoleEmptyDir, "x"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); s.EmptyDir != "" {
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir), "r_a"); s.EmptyDir != "" {
 		t.Fatalf("dirty empty dir: %+v", s)
 	}
 }
@@ -321,5 +334,142 @@ func TestAsksCarryTheRoleAndItsName(t *testing.T) {
 		re.m.mu.Lock()
 		delete(re.m.netDenied, c.p.key()+"|asked.example.net")
 		re.m.mu.Unlock()
+	}
+}
+
+func TestRoleShieldGit(t *testing.T) {
+	root := t.TempDir()
+	proj, empty := filepath.Join(root, "p"), filepath.Join(root, "home", RoleEmptyDir)
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := roleShield(proj, empty, "r_a")
+	if len(s.ReadOnly) != 2 || s.ReadOnly[1].Name != filepath.Join(".git", "hooks") {
+		t.Fatalf("hooks aren't shielded: %+v", s)
+	}
+	if st, err := os.Lstat(filepath.Join(proj, ".git", "hooks")); err != nil || !st.IsDir() {
+		t.Fatalf("hooks mount point: %v", err)
+	}
+	// Content is copied (executable bit kept); symlinks are not followed.
+	hooks := filepath.Join(proj, ".git", "hooks")
+	if err := os.WriteFile(filepath.Join(hooks, "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/hosts", filepath.Join(hooks, "link")); err != nil {
+		t.Fatal(err)
+	}
+	s = roleShield(proj, empty, "r_a")
+	src := s.ReadOnly[1].Source
+	if st, err := os.Stat(filepath.Join(src, "pre-commit")); err != nil || st.Mode()&0o111 == 0 {
+		t.Fatalf("pre-commit not copied: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(src, "link")); err == nil {
+		t.Fatal("a symlink was copied")
+	}
+	// hooks swapped for a symlink: refused. .git as a file (worktree): no hooks overlay.
+	if err := os.RemoveAll(hooks); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc", hooks); err != nil {
+		t.Fatal(err)
+	}
+	if s := roleShield(proj, empty, "r_a"); s.EmptyDir != "" {
+		t.Fatalf("symlinked hooks: %+v", s)
+	}
+	if err := os.RemoveAll(filepath.Join(proj, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".git"), []byte("gitdir: x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if s := roleShield(proj, empty, "r_a"); len(s.ReadOnly) != 1 {
+		t.Fatalf("worktree .git: %+v", s)
+	}
+}
+
+func TestSnapshotIgnoresASwapAfterwards(t *testing.T) {
+	root := t.TempDir()
+	src, dst := filepath.Join(root, "src"), filepath.Join(root, "snap")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshotDir(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	// The swap after the snapshot (the TOCTOU window) doesn't touch what gets mounted.
+	if err := os.RemoveAll(src); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc", src); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dst, "a")); err != nil || string(b) != "1" {
+		t.Fatalf("snapshot: %q %v", b, err)
+	}
+	if err := snapshotDir(src, dst); err != nil { // a symlinked source yields an empty copy, never /etc
+		t.Fatal(err)
+	}
+	if ents, _ := os.ReadDir(dst); len(ents) != 0 {
+		t.Fatalf("followed the symlink: %v", ents)
+	}
+}
+
+func TestFileGuard(t *testing.T) {
+	proj := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g := newFileGuard(proj)
+	if len(g.changed(proj)) != 0 {
+		t.Fatal("changed with nothing done")
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".mcp.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".git", "config"), []byte("[core]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.changed(proj)) != 2 {
+		t.Fatalf("changed: %v", g.changed(proj))
+	}
+}
+
+func TestShieldSnapshotsArePerVM(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	proj, empty := filepath.Join(root, "p"), filepath.Join(home, RoleEmptyDir)
+	if err := os.MkdirAll(filepath.Join(proj, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".claude", "a"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := roleShield(proj, empty, "r_a")
+	if err := os.WriteFile(filepath.Join(proj, ".claude", "b"), []byte("2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := roleShield(proj, empty, "r_b") // the second VM starts: the first one's snapshot stays as it was
+	if a.ReadOnly[0].Source == b.ReadOnly[0].Source {
+		t.Fatal("two VMs share a snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(a.ReadOnly[0].Source, "b")); err == nil {
+		t.Fatal("the second start changed the first VM's snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(b.ReadOnly[0].Source, "b")); err != nil {
+		t.Fatalf("the second VM's snapshot is stale: %v", err)
+	}
+	removeShield(home, proj, "r_a")
+	if _, err := os.Stat(a.ReadOnly[0].Source); err == nil {
+		t.Fatal("the stopped VM's snapshot stays")
+	}
+	if _, err := os.Stat(b.ReadOnly[0].Source); err != nil {
+		t.Fatal("removing one VM's snapshot took the other's")
+	}
+	sweepShields(home)
+	if _, err := os.Stat(b.ReadOnly[0].Source); err == nil {
+		t.Fatal("the sweep left a snapshot")
 	}
 }

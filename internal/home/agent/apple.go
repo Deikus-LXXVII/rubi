@@ -255,8 +255,8 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 		if p.EmptyDir != "" {
 			args = append(args, "--mount", "type=bind,source="+p.EmptyDir+",target=/work/.rubi,readonly")
 		}
-		for _, name := range p.ReadOnly {
-			args = append(args, "--mount", "type=bind,source="+filepath.Join(p.Dir, name)+",target=/work/"+name+",readonly")
+		for _, m := range p.ReadOnly {
+			args = append(args, "--mount", "type=bind,source="+m.Source+",target=/work/"+filepath.ToSlash(m.Name)+",readonly")
 		}
 		args = append(args,
 			"--mount", "type=bind,source="+p.RoleDir+",target="+RoleMountDir+",readonly",
@@ -371,8 +371,8 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 		return nil, err
 	}
 	bad := badMountPath(spec.Project.Dir) || badMountPath(spec.Project.RoleDir) || badMountPath(spec.Project.ClaudeDir) || badMountPath(spec.Project.EmptyDir)
-	for _, n := range spec.Project.ReadOnly {
-		bad = bad || badMountPath(n)
+	for _, m := range spec.Project.ReadOnly {
+		bad = bad || badMountPath(m.Name) || badMountPath(m.Source)
 	}
 	if bad {
 		return fail(errors.New("the project path can't be mounted (a comma or control character in it)"))
