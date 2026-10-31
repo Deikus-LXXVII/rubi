@@ -157,7 +157,10 @@ type projState struct {
 	// lastUse is the last time something used a role's VM (guarded by Manager.mu); pins hold the role versions
 	// this VM may be reading, released when it stops.
 	lastUse time.Time
-	pins    []func()
+	// pins is one pin per role version this VM may be reading (deduplicated: at most the versions put while it runs);
+	// starting is set from before the role is read until the runner is up, so a put in that window is pinned too.
+	pins     map[int]func()
+	starting bool
 	// proxyEnv is the proxy variables the runner was started with (the proxy password is in them: never
 	// logged); guarded by Manager.mu like runner.
 	proxyEnv map[string]string
@@ -585,24 +588,37 @@ func (m *Manager) unpinLocked(p *projState) {
 	p.pins = nil
 }
 
+// pinLocked pins a role version for the VM once.
+func (m *Manager) pinLocked(p *projState, version int) {
+	if p.pins == nil {
+		p.pins = map[int]func(){}
+	}
+	if _, ok := p.pins[version]; !ok {
+		p.pins[version] = m.roles.Pin(p.Role, version)
+	}
+}
+
 // pinRole reads the role and marks its current version as in use by the VM about to start (the runner reads
-// `current` at each query start, so every version put while the VM runs is pinned too, until it stops). The caller
-// releases the pin if the start fails, else hands it to the VM (m.mu must not be held).
-func (m *Manager) pinRole(p *projState) (*roles.Role, func(), error) {
+// `current` at each query start, so every version put while the VM runs is pinned too, until it stops: see rolePut).
+// p.starting must be set already. The pins are released when the VM stops or the start fails (m.mu must not be held).
+func (m *Manager) pinRole(p *projState) (*roles.Role, error) {
 	if m.roles == nil {
-		return nil, nil, errors.New("roles aren't available here")
+		return nil, errors.New("roles aren't available here")
 	}
 	r, err := m.roles.Get(p.Role, 0)
 	if err != nil {
-		return nil, nil, fmt.Errorf("role %q: %w", clip(p.Role, 64), err)
+		return nil, fmt.Errorf("role %q: %w", clip(p.Role, 64), err)
 	}
 	if err := m.roleBoundTo(r, p.ID); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if roles.DirHash(p.Dir) != r.DirHash { // the VM about to mount p.Dir
-		return nil, nil, fmt.Errorf("role %s was made for another directory than the one this VM would mount", clip(r.Name, 40))
+		return nil, fmt.Errorf("role %s was made for another directory than the one this VM would mount", clip(r.Name, 40))
 	}
-	return r, m.roles.Pin(p.Role, r.Version), nil
+	m.mu.Lock()
+	m.pinLocked(p, r.Version)
+	m.mu.Unlock()
+	return r, nil
 }
 
 // rolePut is called after a role.put went through: the name may have changed and a running VM may read the new version.
@@ -616,8 +632,8 @@ func (m *Manager) rolePut(res any) {
 	m.nameMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if p := m.projs[pr.ID]; p != nil && p.runner != nil {
-		p.pins = append(p.pins, m.roles.Pin(pr.ID, pr.Version))
+	if p := m.projs[pr.ID]; p != nil && (p.runner != nil || p.starting) {
+		m.pinLocked(p, pr.Version)
 	}
 }
 
@@ -641,7 +657,6 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		}
 	}
 	var roleHosts []string
-	var unpin func()
 	var shield Project
 	if p.Role == "" {
 		if err := prepareWorkDir(p.Dir); err != nil {
@@ -661,16 +676,22 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		if shield.EmptyDir == "" {
 			return nil, fmt.Errorf("role %s: can't prepare the empty directory that covers /work/.rubi", clip(p.RoleName, 40))
 		}
-		role, release, err := m.pinRole(p)
+		m.mu.Lock()
+		p.starting = true // from here a put is pinned, so no version the runner may read is collected
+		m.mu.Unlock()
+		defer func() {
+			m.mu.Lock()
+			p.starting = false
+			if p.runner == nil {
+				m.unpinLocked(p) // the start failed
+			}
+			m.mu.Unlock()
+		}()
+		role, err := m.pinRole(p)
 		if err != nil {
 			return nil, err
 		}
-		roleHosts, unpin = role.Hosts, release
-		defer func() {
-			if unpin != nil {
-				unpin() // the start failed
-			}
-		}()
+		roleHosts = role.Hosts
 	}
 	// A VM start can take minutes (the image); it must not die with the request that asked for it.
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
@@ -763,10 +784,6 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	m.mu.Lock()
 	p.runner, p.proxy, p.gateway, p.hosts, p.proxyEnv = r, px, gw, hosts, penv
 	p.lastUse = m.opt.Now()
-	if unpin != nil {
-		p.pins = append(p.pins, unpin)
-		unpin = nil
-	}
 	m.mu.Unlock()
 	if p.Role != "" {
 		m.ensureLoop() // the loop stops an idle role VM

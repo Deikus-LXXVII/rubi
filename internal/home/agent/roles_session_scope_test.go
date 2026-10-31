@@ -2,8 +2,10 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,5 +169,63 @@ func TestRoleIsBoundToItsProjectDirectory(t *testing.T) {
 	}
 	if re.vm(a) != nil && re.vm(a).Starts() != 0 {
 		t.Fatal("a VM started for a role bound to another directory")
+	}
+}
+
+func TestRolePinsAreBoundedAndCoverTheBootWindow(t *testing.T) {
+	re := newRoleEnv(t, setLimits(2, 4))
+	id, v := re.put("pinned", nil)
+	put := func(base int, desc string) {
+		spec := map[string]any{"project": "my-project", "name": "pinned", "description": desc, "tools": []string{"Read"}}
+		if _, err := re.op("role.put", map[string]any{"id": id, "base_version": base, "spec": spec}); err != nil {
+			t.Error(err)
+		}
+	}
+	// A put while the VM boots (before its runner is up) is pinned.
+	re.setup = func(key string, _ *FakeRunner) {
+		if key == id {
+			put(v, "during boot")
+		}
+	}
+	re.startRole(id, "x")
+	eventually(t, "slot", func() bool { return re.running() == 1 })
+	re.setup = nil
+	pins := func() int {
+		re.m.mu.Lock()
+		defer re.m.mu.Unlock()
+		return len(re.m.projs[id].pins)
+	}
+	if n := pins(); n != 2 {
+		t.Fatalf("pins after a put in the boot window: %d, want 2 (the version read and the one put)", n)
+	}
+	for i := 0; i < 5; i++ {
+		put(v+1+i, "later "+strconv.Itoa(i))
+	}
+	if n := pins(); n != 7 {
+		t.Fatalf("pins: %d, want one per version (7)", n)
+	}
+	re.m.mu.Lock()
+	p := re.m.projs[id]
+	re.m.pinLocked(p, v) // a version already pinned is not pinned again
+	re.m.mu.Unlock()
+	if n := pins(); n != 7 {
+		t.Fatalf("a duplicate pin was added: %d", n)
+	}
+	re.m.shutdown(p)
+	if n := pins(); n != 0 {
+		t.Fatalf("pins after the VM stopped: %d", n)
+	}
+	// A start that fails leaves nothing pinned and the window closed.
+	id2, _ := re.put("failing", nil)
+	pf, _ := re.m.projectFor("my-project", id2)
+	re.vm(id2).StartErr = errors.New("boom")
+	if _, err := re.m.ensure(re.ctx, pf); err == nil {
+		t.Fatal("start succeeded")
+	}
+	re.m.mu.Lock()
+	n, st := len(pf.pins), pf.starting
+	re.m.mu.Unlock()
+	if n != 0 || st {
+		t.Fatalf("after a failed start: %d pins, starting=%v", n, st)
 	}
 }
