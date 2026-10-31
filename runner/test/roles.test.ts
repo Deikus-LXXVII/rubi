@@ -175,7 +175,7 @@ describe("role mode in the runner", () => {
     assert.ok(o.disallowedTools.includes("Edit(//rubi-claude/**)"));
     assert.ok(o.disallowedTools.includes("Read(//rubi-claude/**)"));
     assert.ok(o.disallowedTools.some((r) => r.startsWith("Edit(//") && r.endsWith("/.rubi/**)")), "the usual deny rules stay");
-    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true });
+    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true, disableSkillShellExecution: true });
     assert.equal(o.env.CLAUDE_CONFIG_DIR, "/rubi-claude");
     assert.equal(o.hooks.PreToolUse.length, 2, "the permission gate and the subagent gate stay");
     assert.equal(typeof o.canUseTool, "function");

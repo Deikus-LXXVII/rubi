@@ -481,7 +481,9 @@ export class Runner {
       // no apiKeyHelper (an empty string beats the project's value), no .mcp.json servers.
       // skipWebFetchPreflight: WebFetch would otherwise ask api.anthropic.com about the domain on its own, outside
       // the base URL (the auth gateway), fail at the proxy, which does not allow that host, and refuse the fetch.
-      settings: { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true },
+      // disableSkillShellExecution: a skill's !`cmd` and ```! blocks run in the CLI, outside our PreToolUse gate (and
+      // unprompted in bypassPermissions); role mode (skills written by a Bot) turns them off.
+      settings: { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true, ...(this.roleDir ? { disableSkillShellExecution: true } : {}) },
       strictMcpConfig: true,
       mcpServers: {},
       allowDangerouslySkipPermissions: true,

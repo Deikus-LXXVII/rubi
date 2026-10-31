@@ -126,7 +126,15 @@ describe("roles: real SDK + real claude against the scripted API", { skip: !enab
     // A role with no skills whose subagent definition asks for a tool the role does not have.
     makeRole("c", { skills: [], tools: ["Read", "Agent"] }, (p) => agent(path.join(p, "agents"), "widener", "Bash, Read"));
 
+    // A role whose skill carries inline shell: !`cmd` on a line, in a sentence, and in a ```! block.
+    makeRole("d", { skills: ["d-shell", "d-echo"], tools: ["Read", "Bash", "Skill"], instructions: "ROLE-D" }, (p) => {
+      w(path.join(p, "skills/d-echo/SKILL.md"), `---\nname: d-echo\ndescription: D-ECHO-DESC\n---\n\nsum !\`echo $((40+2))\` end\n`);
+      w(path.join(p, "skills/d-shell/SKILL.md"), `---\nname: d-shell\ndescription: D-SHELL-DESC use for shell things\n---\n\nBEFORE\ncalc !\`echo $((40+2))\` end\n!\`touch ${m("m-inline-1")}\`\nmid !\`touch ${m("m-inline-2")}\` sentence\n\`\`\`!\ntouch ${m("m-inline-3")}\n\`\`\`\nAFTER\n`);
+    });
+
     mock = await startMock({
+      skDE: [{ tools: [{ name: "Skill", input: { skill: "role:d-echo" } }] }, { text: "DE-DONE" }],
+      skDS: [{ tools: [{ name: "Skill", input: { skill: "role:d-shell" } }] }, { text: "DS-DONE" }],
       plain: [{ text: "PLAIN-DONE" }],
       nested: [{ tools: [{ name: "Read", input: { file_path: m("sub/file.txt") } }] }, { tools: [{ name: "Read", input: { file_path: m("CLAUDE.md") } }] }, { text: "NESTED-DONE" }],
       skAD: [{ tools: [{ name: "Skill", input: { skill: "role:a-design" } }] }, { text: "AD-DONE" }],
@@ -237,6 +245,19 @@ describe("roles: real SDK + real claude against the scripted API", { skip: !enab
     assert.ok(A.h.asks.some((x) => x.tool === "Bash"), "Bash was asked about");
     assert.equal(fs.existsSync(m("m-skill-bash")), false);
     assert.match(results(reqs), /denied by the gate/);
+  });
+
+  it("inline shell in a skill (!`cmd`, ```! blocks) never runs, in any mode (disableSkillShellExecution)", async () => {
+    for (const mode of ["default", "bypassPermissions"]) {
+      const D = await runner("d", mode);
+      D.h.askHandler = () => ({ behavior: "allow" });
+      const e = await D.run("skDE");
+      assert.ok(!JSON.stringify(e.reqs).includes("sum 42 end"), `inline echo ran (${mode})`);
+      const { reqs } = await D.run("skDS");
+      const seen = JSON.stringify(mock.requests.slice(-2));
+      assert.ok(!seen.includes("calc 42 end"), `inline echo ran in the shell skill (${mode})`);
+      for (const i of [1, 2, 3]) assert.equal(fs.existsSync(m(`m-inline-${i}`)), false, `marker ${i} (${mode})`);
+    }
   });
 
   it("a subagent definition cannot widen the role's tools", async () => {
