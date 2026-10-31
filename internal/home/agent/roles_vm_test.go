@@ -77,7 +77,7 @@ func (re *roleEnv) startRole(role, prompt string) map[string]any {
 }
 
 func TestRoleVMIsItsOwnAndLegacyIsUntouched(t *testing.T) {
-	re := newRoleEnv(t, setLimits(3, 4))
+	re := newRoleEnv(t, setLimits(1, 4))
 	a, _ := re.put("visual-design", nil)
 	b, _ := re.put("reviewer", nil)
 	if r := re.startRole(a, "x"); r["id"] != "sess-1" {
@@ -173,7 +173,7 @@ func TestArchivedRoleRefusesStarts(t *testing.T) {
 }
 
 func TestPerRoleProxyHostsAndApprovals(t *testing.T) {
-	re := newRoleEnv(t, setLimits(3, 4))
+	re := newRoleEnv(t, setLimits(1, 4))
 	a, _ := re.put("role-a", func(r *roles.Role) { r.Hosts = []string{"cdn.example.com"} })
 	b, _ := re.put("role-b", nil)
 	re.startRole(a, "x")
@@ -252,7 +252,7 @@ func TestRolePinKeepsVersionsOfARunningVM(t *testing.T) {
 }
 
 func TestIdleRoleVMStops(t *testing.T) {
-	re := newRoleEnv(t, setLimits(3, 4), func(o *Options) { o.RoleVMIdle = func() time.Duration { return 15 * time.Minute } })
+	re := newRoleEnv(t, setLimits(1, 4), func(o *Options) { o.RoleVMIdle = func() time.Duration { return 15 * time.Minute } })
 	a, _ := re.put("role-a", nil)
 	re.startRole(a, "x")
 	re.start("my-project", "legacy")
@@ -304,7 +304,7 @@ func TestQueuedItemKeepsRoleVMUp(t *testing.T) {
 }
 
 func TestStatusAndProjectsRowsHaveRoles(t *testing.T) {
-	re := newRoleEnv(t, setLimits(3, 4))
+	re := newRoleEnv(t, setLimits(1, 4))
 	a, _ := re.put("role-a", nil)
 	re.startRole(a, "x")
 	re.start("my-project", "legacy")

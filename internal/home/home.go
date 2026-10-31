@@ -87,8 +87,11 @@ type Config struct {
 	// user changes modes from the plugin's panel; a Bot can't.
 	AgentDefaultMode string            `json:"agent_default_mode,omitempty"`
 	AgentBotModes    map[string]string `json:"agent_bot_modes,omitempty"`
-	// AgentMaxSessionsPerProject is how many top-level agent sessions may run at once in one project
-	// (default 1, at least 1); more wait in the queue. Subagents and forks inside a session don't count.
+	// AgentMaxSessionsPerProfile is how many top-level agent sessions one role (a profile of a project; the
+	// project's legacy role is one) may run at once (default 1, at least 1); more wait in the queue. Subagents and
+	// forks inside a session don't count. AgentMaxSessionsPerProject is an optional extra cap on one project's
+	// roles together (unset or 0: none). The user changes both from the plugin's panel (claude-agent.limits).
+	AgentMaxSessionsPerProfile int `json:"agent_max_sessions_per_profile,omitempty"`
 	AgentMaxSessionsPerProject int `json:"agent_max_sessions_per_project,omitempty"`
 	// AgentMaxSessions caps top-level agent sessions running at once on the computer, whatever the Bots'
 	// modes allow (0 = no cap; default 4: a Bot on maximum is bounded only by this).
@@ -208,6 +211,9 @@ func (h *Helper) newAgent() *agent.Manager {
 		RoleVMIdle: func() time.Duration { return time.Duration(h.Fresh().AgentRoleVMIdleMinutes) * time.Minute },
 		Usage:      func() agent.UsageConfig { return h.Fresh().agentUsage() },
 		SetUsage:   func(ch agent.UsageChange) error { return h.Update(func(c *Config) { c.applyUsageChange(ch) }) },
+		SetLimits: func(ch agent.LimitsChange) error {
+			return h.Update(func(c *Config) { c.applyLimitsChange(ch) })
+		},
 		SeeBot: func(id string) {
 			_ = h.Update(func(c *Config) {
 				if _, ok := c.AgentBotModes[id]; !ok && len(c.AgentBotModes) < agent.MaxBots {
@@ -246,8 +252,22 @@ func (h *Helper) newSetup() *setup.Setup {
 }
 
 func (c Config) agentUsage() agent.UsageConfig {
-	return agent.UsageConfig{Default: c.AgentDefaultMode, Bots: c.AgentBotModes, MaxSessionsPerProject: c.AgentMaxSessionsPerProject,
+	return agent.UsageConfig{Default: c.AgentDefaultMode, Bots: c.AgentBotModes, MaxSessionsPerProfile: c.AgentMaxSessionsPerProfile, MaxSessionsPerProject: c.AgentMaxSessionsPerProject,
 		MaxSessions: c.AgentMaxSessions, MaxSubagents: c.AgentMaxSubagentsPerSession}
+}
+
+// applyLimitsChange sets the session limits that are given.
+func (c *Config) applyLimitsChange(ch agent.LimitsChange) {
+	if ch.PerProfile != nil {
+		c.AgentMaxSessionsPerProfile = *ch.PerProfile
+	}
+	if ch.PerProject != nil {
+		c.AgentMaxSessionsPerProject = *ch.PerProject
+	}
+	if ch.Total != nil {
+		t := *ch.Total
+		c.AgentMaxSessions = &t
+	}
 }
 
 func (c *Config) setBotMode(id, mode string) {
@@ -450,7 +470,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		return h.Claude.handle(ctx, env.Op, env.Args)
 	case "claude-agent.projects", "claude-agent.sessions", "claude-agent.messages", "claude-agent.start", "claude-agent.send",
 		"claude-agent.rename", "claude-agent.fork", "claude-agent.interrupt", "claude-agent.close", "claude-agent.mode",
-		"claude-agent.next", "claude-agent.decide", "claude-agent.status", "claude-agent.usage_mode",
+		"claude-agent.next", "claude-agent.decide", "claude-agent.status", "claude-agent.usage_mode", "claude-agent.limits",
 		"claude-agent.role.list", "claude-agent.role.get", "claude-agent.role.history", "claude-agent.role.diff", "claude-agent.role.put":
 		return h.Agent.Handle(ctx, env.Op, env.Args)
 	case "agent-setup.status", "agent-setup.run", "agent-setup.login.code", "agent-setup.login.open",

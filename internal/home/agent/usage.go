@@ -18,7 +18,7 @@ var UsageModes = []string{ModeMaximum, ModeMedium, ModeLight}
 
 // Defaults and bounds.
 const (
-	DefaultMaxSessionsPerProject = 1
+	DefaultMaxSessionsPerProfile = 1 // top-level sessions per role (a role is a profile of a project)
 	DefaultMaxSessions           = 4 // on the whole computer, whatever the modes allow (maximum is bounded only by this)
 	MaxBots                      = 256
 )
@@ -35,7 +35,8 @@ var presets = map[string]preset{
 type UsageConfig struct {
 	Default               string            // mode of a Bot not in Bots, and of the user's own sessions
 	Bots                  map[string]string // Bot id -> mode
-	MaxSessionsPerProject int               // < 1: 1
+	MaxSessionsPerProfile int               // per role; < 1: 1
+	MaxSessionsPerProject int               // an extra cap on a project (all its roles together); < 1: none
 	MaxSessions           *int              // on the computer; 0 = no cap, nil or negative: DefaultMaxSessions
 	MaxSubagents          *int              // per session, overrides every mode; 0 = no cap, nil or negative: the mode's
 }
@@ -43,7 +44,8 @@ type UsageConfig struct {
 // Limits are the limits of one Bot. Zero Sessions or Subagents means no cap.
 type Limits struct {
 	Mode       string
-	PerProject int
+	PerProfile int // top-level sessions one role may run at once
+	PerProject int // extra cap on one project's roles together; 0 = none
 	Sessions   int // top-level sessions this Bot may run at once
 	Subagents  int // per session
 	Custom     bool
@@ -64,10 +66,14 @@ func (c UsageConfig) ModeOf(bot string) string {
 func (c UsageConfig) For(bot string) Limits {
 	mode := c.ModeOf(bot)
 	pr := presets[mode]
-	l := Limits{Mode: mode, PerProject: DefaultMaxSessionsPerProject, Sessions: pr.sessions, Subagents: pr.subagents}
+	l := Limits{Mode: mode, PerProfile: DefaultMaxSessionsPerProfile, Sessions: pr.sessions, Subagents: pr.subagents}
+	if c.MaxSessionsPerProfile >= 1 {
+		l.PerProfile = c.MaxSessionsPerProfile
+		l.Custom = l.PerProfile != DefaultMaxSessionsPerProfile
+	}
 	if c.MaxSessionsPerProject >= 1 {
 		l.PerProject = c.MaxSessionsPerProject
-		l.Custom = l.PerProject != DefaultMaxSessionsPerProject
+		l.Custom = true
 	}
 	if c.MaxSubagents != nil && *c.MaxSubagents >= 0 {
 		l.Custom = l.Custom || *c.MaxSubagents != pr.subagents
@@ -85,6 +91,17 @@ func (c UsageConfig) Machine() int {
 }
 
 func validMode(s string) bool { _, ok := presets[s]; return ok }
+
+// LimitsChange is the user's change of the raw limits (claude-agent.limits); nil leaves a value as it is.
+// PerProfile is at least 1; PerProject and Total may be 0 (no cap).
+type LimitsChange struct {
+	PerProfile *int
+	PerProject *int
+	Total      *int
+}
+
+// MaxLimit bounds any session limit a change may set.
+const MaxLimit = 256
 
 // UsageChange is the user's change of a mode: one Bot's, the default's, or everyone's (all Bots known and
 // the default).

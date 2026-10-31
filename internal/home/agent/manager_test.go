@@ -243,7 +243,7 @@ func TestQueueExpiresAndCaps(t *testing.T) {
 		o.Now = func() time.Time { nmu.Lock(); defer nmu.Unlock(); return now }
 	})
 	e.m.mu.Lock()
-	e.m.slots = []*slotState{{project: "my-project", session: "x", turn: true}}
+	e.m.slots = []*slotState{{project: "my-project", role: "my-project", session: "x", turn: true}}
 	e.m.mu.Unlock()
 	if _, err := e.op("start", map[string]any{"project": "my-project", "prompt": "old"}); err != nil {
 		t.Fatal(err)

@@ -317,17 +317,40 @@ func TestAgentUsageConfig(t *testing.T) {
 		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-b", 1, 2, 1, 4, "light", false},
 		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "", 1, 2, 1, 4, "light", false}, // the user's own
 		{Config{AgentDefaultMode: "nonsense"}, "bot-a", 1, 4, 4, 4, "medium", false},
-		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, "bot-a", 2, 4, 4, 5, "medium", true},
-		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, "bot-a", 1, 4, 4, 0, "medium", false}, // 0 = no cap
+		{Config{AgentMaxSessionsPerProfile: 2, AgentMaxSessions: &five}, "bot-a", 2, 4, 4, 5, "medium", true},
+		{Config{AgentMaxSessionsPerProfile: -2, AgentMaxSessionsPerProject: -1, AgentMaxSessions: &zero}, "bot-a", 1, 4, 4, 0, "medium", false}, // 0 = no cap
 		{Config{AgentMaxSessions: &neg}, "bot-a", 1, 4, 4, 4, "medium", false},
 		{Config{AgentDefaultMode: "light", AgentMaxSubagentsPerSession: &five}, "bot-a", 1, 5, 1, 4, "light", true},
 		{Config{AgentMaxSubagentsPerSession: &zero}, "bot-a", 1, 0, 4, 4, "medium", true},
 	} {
 		u := c.cfg.agentUsage()
 		l := u.For(c.bot)
-		if l.PerProject != c.per || l.Subagents != c.subs || l.Sessions != c.sessions || u.Machine() != c.machine || l.Mode != c.mode || l.Custom != c.custom {
+		if l.PerProfile != c.per || l.Subagents != c.subs || l.Sessions != c.sessions || u.Machine() != c.machine || l.Mode != c.mode || l.Custom != c.custom {
 			t.Errorf("%+v (%q): got %+v machine %d", c.cfg, c.bot, l, u.Machine())
 		}
+	}
+}
+
+func TestAgentSessionLimitsConfig(t *testing.T) {
+	// The per-profile limit is the rule; the per-project cap is optional (unset, 0 or negative: none).
+	for _, c := range []struct {
+		cfg  Config
+		want [2]int
+	}{
+		{Config{}, [2]int{1, 0}}, {Config{AgentMaxSessionsPerProfile: 3}, [2]int{3, 0}},
+		{Config{AgentMaxSessionsPerProject: 2}, [2]int{1, 2}},
+		{Config{AgentMaxSessionsPerProfile: 2, AgentMaxSessionsPerProject: -4}, [2]int{2, 0}},
+	} {
+		if l := c.cfg.agentUsage().For(""); l.PerProfile != c.want[0] || l.PerProject != c.want[1] {
+			t.Errorf("%+v: %+v", c.cfg, l)
+		}
+	}
+	var c Config
+	two, zero, nine := 2, 0, 9
+	c.applyLimitsChange(agent.LimitsChange{PerProfile: &two, Total: &nine})
+	c.applyLimitsChange(agent.LimitsChange{PerProject: &zero})
+	if c.AgentMaxSessionsPerProfile != 2 || c.AgentMaxSessionsPerProject != 0 || c.AgentMaxSessions == nil || *c.AgentMaxSessions != 9 {
+		t.Fatalf("%+v", c)
 	}
 }
 

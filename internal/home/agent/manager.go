@@ -76,7 +76,9 @@ type Options struct {
 	// SeeBot records a Bot met for the first time with the default mode; nil means no change is possible.
 	Usage    func() UsageConfig
 	SetUsage func(UsageChange) error
-	SeeBot   func(id string)
+	// SetLimits saves a change of the session limits (claude-agent.limits, the user's choice from the panel).
+	SetLimits func(LimitsChange) error
+	SeeBot    func(id string)
 	// RoleVerifier checks the signatures of library skills in roles (nil: every library skill is refused until
 	// the library exists) and RoleMaxTotal is role_max_total (0: 50). The roles live in Dir/agent-roles.
 	RoleVerifier roles.Verifier
@@ -1075,12 +1077,13 @@ func botName(bot string) string {
 // wrong one.
 func (m *Manager) fullLocked(c UsageConfig, project, rk, bot string, start bool) string {
 	l := c.For(bot)
-	n, nb, pending := 0, 0, false
+	n, nr, nb, pending := 0, 0, 0, false
 	for _, s := range m.slots {
 		if s.project == project {
 			n++
 		}
 		if s.role == rk {
+			nr++
 			pending = pending || s.session == ""
 		}
 		if s.bot == bot {
@@ -1091,8 +1094,10 @@ func (m *Manager) fullLocked(c UsageConfig, project, rk, bot string, start bool)
 	case m.self != nil && m.self.project == project: // its questions are answered by the self-test, never by a user
 		return "waiting: project " + project + " is running its self-test"
 	case start && pending:
-		return "waiting: project " + project + " is still starting a session"
-	case n >= l.PerProject:
+		return fmt.Sprintf("waiting: role %s (%s) is still starting a session", m.roleName(project, rk), project)
+	case nr >= l.PerProfile:
+		return fmt.Sprintf("waiting: role %s (%s) already has %s", m.roleName(project, rk), project, sessions(nr))
+	case l.PerProject > 0 && n >= l.PerProject:
 		return "waiting: project " + project + " already has " + sessions(n)
 	case l.Sessions > 0 && nb >= l.Sessions:
 		return fmt.Sprintf("waiting: %s already has %s, the limit of its %s mode", botName(bot), sessions(nb), l.Mode)
@@ -1625,6 +1630,9 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 	var in struct {
 		Project     string          `json:"project"`
 		Role        string          `json:"role"` // a role id; missing = the project's legacy role
+		PerProfile  *int            `json:"per_profile"`
+		PerProject  *int            `json:"per_project"`
+		Total       *int            `json:"total"`
 		ID          string          `json:"id"`
 		Limit       int             `json:"limit"`
 		Prompt      string          `json:"prompt"`
@@ -1683,6 +1691,26 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 			return nil, errors.New("the usage mode can't be changed here")
 		}
 		if err := m.opt.SetUsage(ch); err != nil {
+			return nil, err
+		}
+		m.wake() // a raised limit may let the queue go
+		return m.opStatus(ctx, false), nil
+	case "limits":
+		// The user's switch, like usage_mode: the plugin offers it only on its panel, never as a Bot tool. Raising
+		// any cap is the user's decision. Each given value replaces the configured one.
+		ch := LimitsChange{PerProfile: in.PerProfile, PerProject: in.PerProject, Total: in.Total}
+		bad := func(v *int, min int) bool { return v != nil && (*v < min || *v > MaxLimit) }
+		switch {
+		case ch.PerProfile == nil && ch.PerProject == nil && ch.Total == nil:
+			return nil, errors.New("say which limit: per_profile, per_project or total")
+		case bad(ch.PerProfile, 1):
+			return nil, fmt.Errorf("per_profile is a number from 1 to %d", MaxLimit)
+		case bad(ch.PerProject, 0), bad(ch.Total, 0):
+			return nil, fmt.Errorf("per_project and total are numbers from 0 (no cap) to %d", MaxLimit)
+		case m.opt.SetLimits == nil:
+			return nil, errors.New("the limits can't be changed here")
+		}
+		if err := m.opt.SetLimits(ch); err != nil {
 			return nil, err
 		}
 		m.wake() // a raised limit may let the queue go
@@ -1839,7 +1867,7 @@ func (m *Manager) opProjects() any {
 			qroles[it.Project][it.Role] = true
 		}
 	}
-	per := m.usageNow().For("").PerProject // once, outside the lock
+	per := m.usageNow().For("").PerProfile // once, outside the lock
 	rows := []row{}
 	for _, p := range m.projects() {
 		// One row for the legacy role, then one for each isolated role that has a VM, a session or a queued item.
@@ -1923,7 +1951,7 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 		login = json.RawMessage("null")
 	}
 	return map[string]any{"login": login, "slot": slot, "slots": slots,
-		"limits":           map[string]any{"per_project": def.PerProject, "total": uc.Machine()},
+		"limits":           map[string]any{"per_profile": def.PerProfile, "per_project": def.PerProject, "total": uc.Machine()},
 		"usage":            map[string]any{"default": def.Mode, "modes": UsageModes, "bots": bots},
 		"sessions_running": len(slots), "queue": queue, "usage_today": usage}
 }
