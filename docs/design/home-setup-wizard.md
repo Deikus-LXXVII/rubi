@@ -168,8 +168,8 @@ in each project (skills, settings, history, MCP).
     headers, 10 s for the headers, 5 minutes for a request to arrive with its body, 64 MiB of body, a 60-second
     deadline for each chunk written back (a guest that stops reading is cut off and the upstream stream with it),
     a 2-minute wait for the upstream's headers and a 5-minute stall limit on the upstream's stream;
-  - passes on every `anthropic-beta` line (joined) plus the OAuth beta: whichever beta the agent asks for is
-    forwarded, by design; the gateway injects a credential, it is no policy on the API's features.
+  - checks the request body and the `anthropic-beta` header (server-side tools, the MCP connector and betas that
+    switch them on are refused or dropped; see "The model-API gateway" in `agent-roles.md`).
   The listener is a `netpipe.Listener`, not a socket, so there is no address to bind and nothing to refuse (the socket form,
   which tests use, still refuses a wildcard address or a name). The upstream is fixed to `https://api.anthropic.com` in code: the override used by
   tests is an unexported field, set only by the package's own tests or by the build-tagged hook of the live check
