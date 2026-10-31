@@ -182,9 +182,27 @@ Reasons:
   - **labels survive.** What a put leaves unchanged keeps `deny.by`, `added_by`, accepted flags and an MCP server's or
     plugin's `approval` from the previous version; what is new is labelled with the put's own `by`.
 
-  Home does not check that an approval id is real, pending or granted, or who the caller is: the plugin stays the tier
-  authority (like `perm.ask`). These checks stop a put from widening or relabelling without naming a fresh approval; they
-  do not replace the plugin's.
+  **Who vouches for an approval id.** Home does not check that an id is a real approval (it can't tell a plugin's
+  home.call from core's: both arrive through the same relay). Two gates sit in front of it, in core:
+
+  - **The capability is reserved.** `claude-agent` and `agent-setup` (run agents, register SSH targets, add MCP servers,
+    install software, create networks) can be declared only by the official plugin: id `claude-code` **and** the
+    Rubi-Project plugin publisher key (`plugins.OfficialPublisherKey`, the public half of the key the plugin release
+    is signed with). `plugins.Check` refuses any other manifest, at install, update, sideload and load, so a
+    third-party plugin cannot reach those ops or `library.get`. The pin is the signing key, not the catalog: a sideloaded
+    build is accepted only if it is signed by that key. Rotating the key means shipping a new core.
+  - **Core attests the approvals at the relay** (`core/homegate.go`, in `homeCall`, before anything is forwarded).
+    A `claude-agent.role.put` that names an approval id (an MCP server's or plugin's `approval`, `change.approval`)
+    is refused unless each id is an approval of **this plugin**, of a role kind (`claude-code.role_widen`,
+    `role_foreign`, `role_skill_accept`), that the user decided (executing or executed; pending, denied, expired and
+    unknown ids are refused). A `claude-agent.ssh.register` is refused unless an approval of kind
+    `claude-code.ssh_target` is being executed for the plugin right now and its payload is the same target (name, host,
+    port, user, host key fingerprint) the user confirmed. Spending an id once stays Home's job (`used.json`).
+
+  What is not bound: an id is not tied to a digest of the exact change it approved (the plugin's ticket does that, and
+  Home's spent-id rule limits an id to one version), and core does not know what a put adds (Home does). A bug in the
+  official plugin can therefore still reuse a genuine, unspent role approval for a different widening; a third party
+  cannot.
 
 ### 2.3 Home operations (capability `claude-agent`, new ops)
 

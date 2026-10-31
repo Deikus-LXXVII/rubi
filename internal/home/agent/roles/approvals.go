@@ -20,7 +20,10 @@ import (
 //     a deny rule's `by`, a skill's `added_by` and accepted flags), so a put can't relabel history. A new deny rule
 //     or skill is labelled with the put's own `by`.
 //
-// Home does not check that an id is a real, pending or granted approval: that is the plugin's (like perm.ask).
+// Home does not check that an id is a real, pending or granted approval, and can't tell a plugin from core. Core
+// does, at the relay, before it forwards a role.put (internal/core/homegate.go: the id must be this plugin's, of a
+// role kind, decided by the user), and only the official plugin may declare the capability that reaches here
+// (plugins.ReservedHomeCapability). Home's part is the spent-id rule above.
 
 // approvalUse records which version spent an approval id and what it authorized.
 type approvalUse struct {

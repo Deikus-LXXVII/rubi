@@ -595,6 +595,7 @@ func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json
 	req := approvals.Request{Integration: id, Kind: kind, Summary: in.Summary, Question: in.Question,
 		Preview: preview, Options: options, Items: items,
 		Execute: func(ctx context.Context, option string) (any, error) {
+			defer c.beginExec(id, kind, payload)()
 			var raw json.RawMessage
 			err := c.Runner.Call(ctx, id, "execute", rubiplugin.ExecuteParams{Kind: kind, Option: option, Payload: payload}, &raw)
 			if err != nil {
