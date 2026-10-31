@@ -166,3 +166,24 @@ func TestProjectRemove(t *testing.T) {
 	e.s.Cancel()
 	e.wait()
 }
+
+func TestSharedPlaces(t *testing.T) {
+	const home = "/Users/alice"
+	for path, refused := range map[string]bool{
+		"/Volumes/Backup":            true,
+		"/Volumes/Backup/my-project": false,
+		"/Volumes":                   false, // refused elsewhere (systemExact)
+		"/Users/Shared":              true,
+		"/Users/Shared/my-project":   true,
+		"/Users/bob":                 true,
+		"/Users/bob/my-project":      true,
+		"/Users/alice/my-project":    false,
+		"/Users/alice2/my-project":   true,
+		"/Users":                     false,
+		"/srv/my-project":            false,
+	} {
+		if got := sharedPlace(path, home) != ""; got != refused {
+			t.Errorf("%s: refused=%v, want %v", path, got, refused)
+		}
+	}
+}

@@ -45,6 +45,13 @@ func (s *Setup) refuseFolder(dir string, existing []string) (string, error) {
 	if slices.Contains(systemExact, real) {
 		return "", errors.New("that folder holds other people's or other disks' folders; choose a folder inside it")
 	}
+	home, _ := os.UserHomeDir()
+	if h, err := filepath.EvalSymlinks(home); err == nil {
+		home = h
+	}
+	if reason := sharedPlace(real, home); reason != "" {
+		return "", errors.New(reason)
+	}
 	helper := s.opt.Dir
 	if h, err := filepath.EvalSymlinks(helper); err == nil {
 		helper = h
@@ -144,4 +151,20 @@ func (s *Setup) RemoveProject(dir string) error {
 	delete(s.loginSeen, dir)
 	s.mu.Unlock()
 	return nil
+}
+
+// sharedPlace says why a path is no project because it belongs to someone or something else: the root of a
+// volume (/Volumes/<name>), /Users/Shared, or another user's home folder or anything in it.
+func sharedPlace(real, home string) string {
+	sep := string(filepath.Separator)
+	if rest, ok := strings.CutPrefix(real, "/Volumes"+sep); ok && !strings.Contains(rest, sep) {
+		return "the root of a disk can't be a project; choose a folder inside it"
+	}
+	if rest, ok := strings.CutPrefix(real, "/Users"+sep); ok {
+		name, _, _ := strings.Cut(rest, sep)
+		if "/Users"+sep+name != home {
+			return "another user's folder (or the shared folder) can't be a project"
+		}
+	}
+	return ""
 }
