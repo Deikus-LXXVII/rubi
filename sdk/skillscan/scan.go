@@ -11,7 +11,7 @@ import (
 )
 
 // ScannerVersion changes whenever a rule or a limit changes, so a stored result can be recognised as stale.
-const ScannerVersion = "skillscan/1"
+const ScannerVersion = "skillscan/2"
 
 // Limits (design section 7).
 const (
@@ -52,7 +52,7 @@ var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
 // ruleOrder fixes the order of hits within one line.
 var ruleOrder = []string{
 	"fmt.utf8", "fmt.control", "fmt.size", "fmt.lines", "fmt.name", "fmt.description", "fmt.frontmatter",
-	"hid.invisible", "hid.bidi", "hid.tag", "hid.ansi", "hid.comment", "hid.dataurl", "hid.hex", "hid.base64",
+	"hid.invisible", "hid.bidi", "hid.tag", "hid.ansi", "hid.comment", "hid.shell", "hid.dataurl", "hid.hex", "hid.base64",
 	"sec.anthropic", "sec.github", "sec.gitlab", "sec.slack", "sec.aws", "sec.google", "sec.npm", "sec.pem",
 	"sec.bearer", "sec.assign", "sec.entropy",
 	"exf.network", "exf.credential", "exf.url", "ovr.instruction", "wid.claim",
@@ -146,6 +146,8 @@ func Scan(name string, content []byte, allowedHosts []string) Result {
 			}
 		case "description":
 			desc, haveDesc = p.value, true
+			// The emitted text is the decoded value: every per-line rule runs over it too (the raw line is scanned below).
+			scanLine(s, p.line, p.value, allowedHosts)
 			if strings.TrimSpace(p.value) == "" || utf8.RuneCountInString(p.value) > MaxDescription {
 				s.add("fmt.description", p.line, lines[p.line-1], 0, nil)
 			}
@@ -166,13 +168,7 @@ func Scan(name string, content []byte, allowedHosts []string) Result {
 		scanLine(s, i+1, raw, allowedHosts)
 	}
 
-	sort.SliceStable(s.hits, func(i, j int) bool {
-		a, b := s.hits[i], s.hits[j]
-		if a.Line != b.Line {
-			return a.Line < b.Line
-		}
-		return ruleRank[a.ID] < ruleRank[b.ID]
-	})
+	s.sortHits()
 	res.Rules = append(res.Rules, s.hits...)
 	res.Verdict = Pass
 	for _, h := range res.Rules {
@@ -186,6 +182,41 @@ func Scan(name string, content []byte, allowedHosts []string) Result {
 		res.Normalized = buildNormalized(name, desc, lines[bodyStart:])
 	}
 	return res
+}
+
+func (s *scanner) sortHits() {
+	sort.SliceStable(s.hits, func(i, j int) bool {
+		a, b := s.hits[i], s.hits[j]
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		return ruleRank[a.ID] < ruleRank[b.ID]
+	})
+}
+
+// MaxText is how much of a free text ScanText looks at; the caller limits the size of what it accepts.
+const MaxText = 64 * 1024
+
+// ScanText applies the per-line rules (hidden text, secrets, exfiltration shapes, instruction overrides, widening
+// claims) to a free text that is not a skill: a role's instructions, a subagent's prompt, a description. There is
+// no frontmatter, size or name rule. The hits are in the same order as Scan's; fmt.* hits are never produced (the
+// caller checks the UTF-8 and the control characters itself), so every Reject hit is hid.* or sec.*.
+func ScanText(text string, allowedHosts []string) []Hit {
+	s := &scanner{seen: map[string]bool{}}
+	if len(text) > MaxText {
+		text = text[:MaxText]
+	}
+	for i, raw := range strings.Split(text, "\n") {
+		scanLine(s, i+1, strings.TrimSuffix(raw, "\r"), allowedHosts)
+	}
+	s.sortHits()
+	out := []Hit{}
+	for _, h := range s.hits {
+		if !strings.HasPrefix(h.ID, "fmt.") {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 func firstInvalid(s string) int {
@@ -232,6 +263,7 @@ var (
 	b64RunRe    = regexp.MustCompile(`[A-Za-z0-9+/]{200,}={0,2}`)
 	entropyTok  = regexp.MustCompile(`[A-Za-z0-9+/=_]{32,}`)
 	dataURLRe   = regexp.MustCompile(`(?i)\bdata:(?:[a-z0-9.+-]+/[a-z0-9.+-]+)?(?:;[^,\s]*)?,`)
+	shellRe     = regexp.MustCompile("!`|(?:`{3,}|~{3,})\\s*!")
 	ansiRe      = regexp.MustCompile(`(?i)(?:\x1b|\\x1b|\\033|\\e|\\u001b)\[`)
 	netToolRe   = regexp.MustCompile(`\b(?:curl|wget|nc|ncat|socat|scp|rsync|ssh|ftp|telnet)\b`)
 	dnsToolRe   = regexp.MustCompile(`\b(?:dig|nslookup)\b`)
@@ -239,11 +271,14 @@ var (
 	uploadRe    = regexp.MustCompile(`(?:^|\s)-[dTF](?:\s|=|\S)|--data[\w-]*|--upload-file|(?:^|\s)@[\w./~-]+`)
 	pipeIntoRe  = regexp.MustCompile(`\|\s*(?:sudo\s+)?(?:curl|wget|nc|ncat|socat|scp|rsync|ssh|ftp|telnet)\b`)
 	credentialR = regexp.MustCompile(`(?i)~/\.ssh|id_rsa|id_ed25519|\.netrc|\.git-credentials|/proc/[^/\s]*/environ|printenv|\benv\s*\||CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_|/rubi-claude|\.rubi/|keychain`)
-	urlRe       = regexp.MustCompile(`(?i)\b(?:https?|ftp|wss?)://[^\s"'<>)\]]+`)
-	overrideRe  = regexp.MustCompile(`(?i)ignore\s+(?:(?:all|previous|prior)\s+)+instructions|system\s+prompt|do\s+not\s+tell\s+the\s+user|without\s+asking|bypass|disable\s+(?:hooks|approvals|sandbox)|dangerously|passkey`)
-	approveRe   = regexp.MustCompile(`(?i)approve`)
-	rubiRe      = regexp.MustCompile(`(?i)rubi`)
-	wideningRe  = regexp.MustCompile(`(?i)allowed-tools|permissionMode|bypassPermissions|mcpServers|settings\.json|\.claude/|--plugin-dir|allow-list|agent_allowed_hosts|add\s+(?:this|the)\s+host`)
+	urlRe       = regexp.MustCompile(`(?i)\b(?:https?|ftp|sftp|wss?|git|ssh|s3|tcp|udp|rsync|smb)://[^\s"'<>)\]]+`)
+	curlWgetRe  = regexp.MustCompile(`\b(?:curl|wget)\b`)
+	// bareHostRe: a host with a path or port, or one with a common top-level domain (so out.txt is not a host).
+	bareHostRe = regexp.MustCompile(`(?i)^(?:(?:localhost|(?:[a-z0-9-]+\.)+[a-z0-9-]+|\[[0-9a-f:]+\])(?::[0-9]+)?/.*|(?:localhost|(?:[a-z0-9-]+\.)+[a-z0-9-]+|\[[0-9a-f:]+\]):[0-9]+|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|app|co|xyz|cloud|info|me|us|uk|de|ru|cn|tk|ml|ga|cf|gq|top|site|online|test|example|invalid|local|onion))$`)
+	overrideRe = regexp.MustCompile(`(?i)ignore\s+(?:(?:all|previous|prior)\s+)+instructions|system\s+prompt|do\s+not\s+tell\s+the\s+user|without\s+asking|bypass|disable\s+(?:hooks|approvals|sandbox)|dangerously|passkey`)
+	approveRe  = regexp.MustCompile(`(?i)approve`)
+	rubiRe     = regexp.MustCompile(`(?i)rubi`)
+	wideningRe = regexp.MustCompile(`(?i)allowed-tools|permissionMode|bypassPermissions|mcpServers|settings\.json|\.claude/|--plugin-dir|allow-list|agent_allowed_hosts|add\s+(?:this|the)\s+host`)
 )
 
 func scanLine(s *scanner, ln int, raw string, allowed []string) {
@@ -259,12 +294,12 @@ func scanLine(s *scanner, ln int, raw string, allowed []string) {
 			s.add("fmt.control", ln, raw, i, spans)
 		}
 		switch {
-		case r == 0xAD || (r >= 0x200B && r <= 0x200F) || (r >= 0x2060 && r <= 0x2064) || r == 0xFEFF:
-			s.add("hid.invisible", ln, raw, i, spans)
 		case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
 			s.add("hid.bidi", ln, raw, i, spans)
 		case r >= 0xE0000 && r <= 0xE007F:
 			s.add("hid.tag", ln, raw, i, spans)
+		case IsInvisible(r):
+			s.add("hid.invisible", ln, raw, i, spans)
 		}
 	}
 	if loc := ansiRe.FindStringIndex(raw); loc != nil {
@@ -272,6 +307,9 @@ func scanLine(s *scanner, ln int, raw string, allowed []string) {
 	}
 	if i := strings.Index(raw, "<!--"); i >= 0 {
 		s.add("hid.comment", ln, raw, i, spans)
+	}
+	if loc := shellRe.FindStringIndex(raw); loc != nil {
+		s.add("hid.shell", ln, raw, loc[0], spans)
 	}
 	if loc := dataURLRe.FindStringIndex(raw); loc != nil {
 		s.add("hid.dataurl", ln, raw, loc[0], spans)
@@ -314,6 +352,20 @@ func scanLine(s *scanner, ln int, raw string, allowed []string) {
 		}
 	}
 
+	// A curl or wget argument that is a host or host/path with no scheme.
+	if loc := curlWgetRe.FindStringIndex(raw); loc != nil {
+		for _, tok := range strings.Fields(raw[loc[1]:]) {
+			tok = strings.Trim(tok, "\"'`;|&()<>,")
+			if tok == "" || tok[0] == '-' || strings.Contains(tok, "://") || !bareHostRe.MatchString(tok) {
+				continue
+			}
+			if !hostAllowed("https://"+tok, allowed) {
+				s.add("exf.url", ln, raw, loc[0], spans)
+				break
+			}
+		}
+	}
+
 	// Instruction overrides and widening claims.
 	if loc := overrideRe.FindStringIndex(raw); loc != nil {
 		s.add("ovr.instruction", ln, raw, loc[0], spans)
@@ -323,6 +375,26 @@ func scanLine(s *scanner, ln int, raw string, allowed []string) {
 	if loc := wideningRe.FindStringIndex(raw); loc != nil {
 		s.add("wid.claim", ln, raw, loc[0], spans)
 	}
+}
+
+// IsInvisible says whether r can hide or reshape text without showing: the format (Cf), private-use (Co), surrogate
+// (Cs) and line/paragraph separator (Zl, Zp) categories, variation selectors, the combining grapheme joiner, the
+// Hangul fillers and other blank letters, the braille blank, the Mongolian vowel separator, and every space other
+// than U+0020. A zero-width joiner is refused too, even inside emoji.
+func IsInvisible(r rune) bool {
+	switch {
+	case r == ' ':
+		return false
+	case unicode.In(r, unicode.Cf, unicode.Co, unicode.Cs, unicode.Zl, unicode.Zp, unicode.Zs):
+		return true
+	case r >= 0xFE00 && r <= 0xFE0F, r >= 0xE0100 && r <= 0xE01EF:
+		return true
+	}
+	switch r {
+	case 0x034F, 0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800, 0x180E, 0x061C, 0xAD:
+		return true
+	}
+	return r >= 0xFFF9 && r <= 0xFFFB
 }
 
 func entropy(s string) float64 {

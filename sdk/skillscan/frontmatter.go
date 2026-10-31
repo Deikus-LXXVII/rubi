@@ -37,7 +37,7 @@ func parseFrontmatter(lines []string) (pairs []kv, bodyStart int, present bool, 
 			continue
 		}
 		k, v, ok := strings.Cut(l, ":")
-		if !ok || !fmKeyRe.MatchString(k) || (v != "" && v[0] != ' ' && v[0] != '\t') || seen[k] {
+		if !ok || !fmKeyRe.MatchString(k) || (v != "" && v[0] != ' ' && v[0] != '\t') || seen[k] || hasEscape(v) {
 			bad = append(bad, i+1)
 			continue
 		}
@@ -45,6 +45,13 @@ func parseFrontmatter(lines []string) (pairs []kv, bodyStart int, present bool, 
 		pairs = append(pairs, kv{key: k, value: unquote(strings.TrimSpace(v)), line: i + 1})
 	}
 	return pairs, end + 1, true, bad
+}
+
+// hasEscape says whether a double-quoted value holds a backslash: escapes would let the scanned text differ from
+// the decoded text that is emitted, so none is accepted.
+func hasEscape(v string) bool {
+	v = strings.TrimSpace(v)
+	return strings.HasPrefix(v, "\"") && strings.Contains(v, "\\")
 }
 
 func unquote(v string) string {
@@ -63,23 +70,21 @@ func unquote(v string) string {
 	return v
 }
 
-// buildNormalized rebuilds SKILL.md with a frontmatter of name and description only.
+// quoteYAML writes s as a single-quoted YAML scalar: nothing in it is an escape, so what is scanned is what is read
+// (and a name such as yes, null or 123 stays a string).
+func quoteYAML(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
+// QuoteYAML is quoteYAML for the code that writes the other markdown files of a role.
+func QuoteYAML(s string) string { return quoteYAML(s) }
+
+// buildNormalized rebuilds SKILL.md with a frontmatter of name and description only, both single-quoted.
 func buildNormalized(name, desc string, body []string) []byte {
-	d, _ := jsonString(desc)
 	var b strings.Builder
-	b.WriteString("---\nname: " + name + "\ndescription: " + d + "\n---\n")
+	b.WriteString("---\nname: " + quoteYAML(name) + "\ndescription: " + quoteYAML(desc) + "\n---\n")
 	b.WriteString(strings.Join(body, "\n"))
 	s := b.String()
 	if !strings.HasSuffix(s, "\n") {
 		s += "\n"
 	}
 	return []byte(s)
-}
-
-func jsonString(s string) (string, error) {
-	var sb strings.Builder
-	enc := json.NewEncoder(&sb)
-	enc.SetEscapeHTML(false)
-	err := enc.Encode(s)
-	return strings.TrimSuffix(sb.String(), "\n"), err
 }

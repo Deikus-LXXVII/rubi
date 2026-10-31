@@ -73,9 +73,8 @@ func PluginJSON(r *Role) []byte {
 // intersected with the role's tools by normalize; an empty list leaves the line out (the subagent has the role's
 // base set, which it can't exceed).
 func AgentMD(a Agent) []byte {
-	d := strings.TrimSuffix(string(marshal(a.Description, false)), "\n")
 	var b strings.Builder
-	b.WriteString("---\nname: " + a.Name + "\ndescription: " + d + "\n")
+	b.WriteString("---\nname: " + skillscan.QuoteYAML(a.Name) + "\ndescription: " + skillscan.QuoteYAML(a.Description) + "\n")
 	if len(a.Tools) > 0 {
 		b.WriteString("tools: " + strings.Join(a.Tools, ", ") + "\n")
 	}
@@ -103,7 +102,11 @@ func writeTree(root, rel string, data []byte) error {
 
 // materialize builds content/v<n> for r beside its final name and renames it into place. raw gives a skill's
 // stored text by hash. A directory that is already there (an orphan of a crash) is replaced.
-func (s *Store) materialize(r *Role, raw func(sha string) ([]byte, error)) error {
+//
+// A new version (strict) is refused when a skill is rejected by the scan; a version rebuilt from disk (not strict)
+// was accepted when it was stored, so a scanner that has since become stricter must not leave the role unusable:
+// the skill is logged and left out of the directory and of role.json, and a put or revert that removes it works.
+func (s *Store) materialize(r *Role, strict bool, raw func(sha string) ([]byte, error)) error {
 	content := filepath.Join(s.roleDir(r.ID), "content")
 	if err := os.MkdirAll(content, 0o755); err != nil {
 		return err
@@ -118,7 +121,30 @@ func (s *Store) materialize(r *Role, raw func(sha string) ([]byte, error)) error
 			os.RemoveAll(tmp)
 		}
 	}()
-	rj := RoleJSON(r)
+	// The skills first: which of them stay decides what role.json lists.
+	rr := *r
+	rr.Skills = append([]Skill(nil), r.Skills...)
+	texts := map[string][]byte{}
+	for i, sk := range rr.Skills {
+		if sk.State != StateActive {
+			continue
+		}
+		text, err := raw(sk.SHA256)
+		if err != nil {
+			return err
+		}
+		res := skillscan.Scan(sk.Name, text, nil)
+		if res.Verdict == skillscan.Reject {
+			if strict {
+				return fmt.Errorf("skill %q is rejected by the scan", sk.Name)
+			}
+			s.logf("role %s version %d: skill %q is rejected by %s and is left out", r.ID, r.Version, sk.Name, skillscan.ScannerVersion)
+			rr.Skills[i].State = StateHeld
+			continue
+		}
+		texts[sk.Name] = res.Normalized
+	}
+	rj := RoleJSON(&rr)
 	if len(rj) > MaxRoleJSON {
 		return fmt.Errorf("role.json would be %d bytes (the limit is %d)", len(rj), MaxRoleJSON)
 	}
@@ -134,20 +160,11 @@ func (s *Store) materialize(r *Role, raw func(sha string) ([]byte, error)) error
 			return err
 		}
 	}
-	for _, sk := range r.Skills {
-		if sk.State != StateActive {
-			continue
-		}
-		text, err := raw(sk.SHA256)
-		if err != nil {
-			return err
-		}
-		res := skillscan.Scan(sk.Name, text, nil)
-		if res.Verdict == skillscan.Reject {
-			return fmt.Errorf("skill %q is rejected by the scan", sk.Name)
-		}
-		if err := writeTree(tmp, "plugin/skills/"+sk.Name+"/SKILL.md", res.Normalized); err != nil {
-			return err
+	for _, sk := range rr.Skills {
+		if t, ok := texts[sk.Name]; ok {
+			if err := writeTree(tmp, "plugin/skills/"+sk.Name+"/SKILL.md", t); err != nil {
+				return err
+			}
 		}
 	}
 	for _, a := range r.Agents {

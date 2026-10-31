@@ -1,11 +1,12 @@
 // Role mode with the fake SDK: role.json validation, the option builder, legacy mode unchanged.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { Home } from "./harness.js";
-import { loadRole, instructionsBlock, parseRole, ROLE_JSON_MAX } from "../src/role.js";
+import { loadRole, instructionsBlock, parseRole, readPlain, ROLE_JSON_MAX } from "../src/role.js";
 
 const tmps: string[] = [];
 afterEach(() => {
@@ -155,6 +156,34 @@ describe("instructionsBlock", () => {
   });
 });
 
+describe("instructionsBlock: the repository is not trusted", () => {
+  const role = (over: object) => parseRole({ ...GOOD, ...over }, "/x");
+  it("does not follow a .claude directory that points outside the working directory", () => {
+    const cwd = tmp();
+    const out = tmp();
+    fs.writeFileSync(path.join(out, "CLAUDE.md"), "OUTSIDE-TEXT");
+    fs.symlinkSync(out, path.join(cwd, ".claude"));
+    assert.doesNotMatch(instructionsBlock(role({ project_instructions: true }), cwd), /OUTSIDE-TEXT/);
+  });
+  it("still reads a .claude symlink that stays inside", () => {
+    const cwd = tmp();
+    fs.mkdirSync(path.join(cwd, "cfg"));
+    fs.writeFileSync(path.join(cwd, "cfg/CLAUDE.md"), "INSIDE-TEXT");
+    fs.symlinkSync("cfg", path.join(cwd, ".claude"));
+    assert.match(instructionsBlock(role({ project_instructions: true }), cwd), /INSIDE-TEXT/);
+  });
+  it("does not block on a FIFO named CLAUDE.md", { timeout: 5000 }, () => {
+    const cwd = tmp();
+    execFileSync("mkfifo", [path.join(cwd, "CLAUDE.md")]);
+    assert.equal(instructionsBlock(role({ project_instructions: true }), cwd), "You are the designer.");
+  });
+  it("readPlain refuses a FIFO without blocking", { timeout: 5000 }, () => {
+    const d = tmp();
+    execFileSync("mkfifo", [path.join(d, "f")]);
+    assert.throws(() => readPlain(path.join(d, "f"), 100, "f"), /not a regular file/);
+  });
+});
+
 describe("role mode in the runner", () => {
   it("builds the query options of section 4.3", async () => {
     const h = await homeFor(makeRole());
@@ -175,7 +204,7 @@ describe("role mode in the runner", () => {
     assert.ok(o.disallowedTools.includes("Edit(//rubi-claude/**)"));
     assert.ok(o.disallowedTools.includes("Read(//rubi-claude/**)"));
     assert.ok(o.disallowedTools.some((r) => r.startsWith("Edit(//") && r.endsWith("/.rubi/**)")), "the usual deny rules stay");
-    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true });
+    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true, disableSkillShellExecution: true });
     assert.equal(o.env.CLAUDE_CONFIG_DIR, "/rubi-claude");
     assert.equal(o.hooks.PreToolUse.length, 2, "the permission gate and the subagent gate stay");
     assert.equal(typeof o.canUseTool, "function");

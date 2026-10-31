@@ -20,6 +20,19 @@
   `per_profile`. New user-only op `claude-agent.limits {per_profile?, per_project?, total?}` (like `usage_mode`: panel
   button only, never a Bot tool). The setup self-test still holds its whole project.
 
+- **Agent roles: security review fixes (R1-R3).** Role mode turns off inline shell in skills (`disableSkillShellExecution`):
+  with the real `claude`, ``!`cmd` `` and ```` ```! ```` blocks in a skill ran with no `perm.ask` (in `bypassPermissions`, and
+  read-only commands in `default` mode); the scanner now rejects the syntax too (`hid.shell`). `sdk/skillscan` (version
+  `skillscan/2`): a double-quoted frontmatter value with a backslash is refused and the decoded description is scanned
+  too; `name` and `description` are written back single-quoted; many more invisible characters are rejected; `exf.url`
+  covers `git`/`ssh`/`s3`/`tcp` URLs and schemeless `curl`/`wget` hosts; new `ScanText` for free text. Home refuses
+  instructions, subagent prompts and descriptions with hidden text, secrets, overrides, widening claims or foreign URLs,
+  and every text field with invisible characters. A version that adds an MCP server, plugin, host, tool outside the safe
+  set or an accepted flag needs an approval id per addition that was not used before (spent ids are kept in
+  `used.json`); unchanged entries keep their `deny.by`, `added_by`, accepted flags and approval. The store checks
+  `role.json` size before writing blobs, caps a role's skill text at 4 MiB, removes the blobs of a failed put and stray
+  `.tmp-*` files, and a stored version a stricter scanner rejects no longer bricks the role. The runner reads project
+  `CLAUDE.md` files through a non-blocking descriptor and refuses a `.claude` that resolves outside the working directory.
 - **Runner: role mode (agent roles, R1).** With `RUBI_ROLE_DIR` set, the runner loads a role written by Rubi Home
   (`current -> v<n>/{role.json,plugin/}` on a read-only mount) instead of the repository's `.claude`: `settingSources: []`,
   the role's skills and subagents as one SDK local plugin, a `skills` allowlist, a `tools` base set, the role's MCP servers
