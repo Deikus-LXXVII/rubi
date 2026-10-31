@@ -29,9 +29,11 @@ func TestHashDependsOnPathsAndContents(t *testing.T) {
 		t.Error("not stable")
 	}
 	for name, other := range map[string]fstest.MapFS{
-		"content": {"a": {Data: []byte("x")}, "b": {Data: []byte("z")}},
-		"path":    {"a": {Data: []byte("x")}, "c": {Data: []byte("y")}},
-		"joined":  {"a": {Data: []byte("xb")}, "": {Data: []byte("y")}},
+		"content":   {"a": {Data: []byte("x")}, "b": {Data: []byte("z")}},
+		"path":      {"a": {Data: []byte("x")}, "c": {Data: []byte("y")}},
+		"joined":    {"a": {Data: []byte("xb")}},
+		"extra dir": {"a": {Data: []byte("x")}, "b": {Data: []byte("y")}, "d": {Mode: fs.ModeDir}},
+		"symlink":   {"a": {Data: []byte("x")}, "b": {Data: []byte("y")}, "l": {Data: []byte("a"), Mode: fs.ModeSymlink}},
 	} {
 		if HashFS(a) == HashFS(other) {
 			t.Errorf("%s change not noticed", name)

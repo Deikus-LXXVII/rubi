@@ -74,17 +74,20 @@ func (a *AppleContainer) bin() string {
 	return ContainerBin()
 }
 
-// ContainerBin is the container CLI: "container" in PATH, else where Apple's installer puts it (a launchd
-// job's PATH doesn't have /usr/local/bin).
+// ContainerBin is the container CLI: where Apple's installer puts it, else "container" in PATH (a launchd
+// job's PATH doesn't have /usr/local/bin, and a PATH entry isn't trusted over the installed one).
 func ContainerBin() string {
+	if st, err := os.Stat(installedBin); err == nil && st.Mode().IsRegular() {
+		return installedBin
+	}
 	if p, err := exec.LookPath("container"); err == nil {
 		return p
 	}
-	if st, err := os.Stat("/usr/local/bin/container"); err == nil && st.Mode().IsRegular() {
-		return "/usr/local/bin/container"
-	}
 	return "container"
 }
+
+// installedBin is where Apple's installer puts the CLI; it is preferred to whatever PATH names.
+var installedBin = "/usr/local/bin/container"
 
 func (a *AppleContainer) image() string {
 	if a.Image != "" {
@@ -140,19 +143,32 @@ func (a *AppleContainer) BuildCommand() ([]string, error) {
 	return a.buildArgs(dir), nil
 }
 
-// ExtractRunner writes the runner bundle to dir (0700) unless dir already holds exactly that bundle.
+var extractMu sync.Mutex
+
+// ExtractRunner writes the runner bundle to dir (0700) unless dir already holds exactly that bundle (a
+// planted extra file, directory or symlink counts as a difference). It writes a private temporary directory
+// beside dir and renames it into place, so a half-written copy is never used.
 func ExtractRunner(dir string, bundle fs.FS) (string, error) {
-	if runner.HashFS(os.DirFS(dir)) == runner.HashFS(bundle) {
+	extractMu.Lock()
+	defer extractMu.Unlock()
+	want := runner.HashFS(bundle)
+	if st, err := os.Lstat(dir); err == nil && st.IsDir() && runner.HashFS(os.DirFS(dir)) == want {
 		return dir, nil
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return "", err
 	}
-	err := fs.WalkDir(bundle, ".", func(p string, d fs.DirEntry, err error) error {
+	tmp, err := os.MkdirTemp(parent, ".extract-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(tmp) // gone after the rename
+	err = fs.WalkDir(bundle, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		dst := filepath.Join(dir, filepath.FromSlash(p))
+		dst := filepath.Join(tmp, filepath.FromSlash(p))
 		if d.IsDir() {
 			return os.MkdirAll(dst, 0o700)
 		}
@@ -163,8 +179,13 @@ func ExtractRunner(dir string, bundle fs.FS) (string, error) {
 		return os.WriteFile(dst, b, 0o600)
 	})
 	if err != nil {
-		os.RemoveAll(dir)
 		return "", fmt.Errorf("writing the runner sources: %w", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, dir); err != nil {
+		return "", err
 	}
 	return dir, nil
 }

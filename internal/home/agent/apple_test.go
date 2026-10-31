@@ -7,7 +7,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"testing/fstest"
+
+	"github.com/Deikus-LXXVII/rubi/runner"
 )
 
 // Only the command lines are tested; no container is ever started.
@@ -265,5 +269,67 @@ func TestBuildCommandUsesTheBundledRunner(t *testing.T) {
 	}
 	if _, err := (&AppleContainer{}).BuildCommand(); err == nil {
 		t.Error("no directory to build in should fail")
+	}
+}
+
+func TestExtractRunnerRewritesAnythingPlanted(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "runner-build", "h")
+	bundle := fstest.MapFS{"package.json": {Data: []byte("{}")}, "src/main.ts": {Data: []byte("x")}}
+	if _, err := ExtractRunner(dir, bundle); err != nil {
+		t.Fatal(err)
+	}
+	for name, plant := range map[string]func(){
+		"file":    func() { os.WriteFile(filepath.Join(dir, "extra.js"), []byte("evil"), 0o600) },
+		"dir":     func() { os.Mkdir(filepath.Join(dir, "node_modules"), 0o700) },
+		"symlink": func() { os.Symlink("/etc/passwd", filepath.Join(dir, "link")) },
+		"changed": func() { os.WriteFile(filepath.Join(dir, "src", "main.ts"), []byte("evil"), 0o600) },
+	} {
+		plant()
+		if _, err := ExtractRunner(dir, bundle); err != nil {
+			t.Fatal(err)
+		}
+		if runner.HashFS(os.DirFS(dir)) != runner.HashFS(bundle) {
+			t.Errorf("%s was kept", name)
+		}
+	}
+	if ents, _ := os.ReadDir(filepath.Dir(dir)); len(ents) != 1 {
+		t.Errorf("temporary directories left: %v", ents)
+	}
+	// concurrent callers get the same finished directory
+	os.RemoveAll(dir)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := ExtractRunner(dir, bundle); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if runner.HashFS(os.DirFS(dir)) != runner.HashFS(bundle) {
+		t.Error("concurrent extraction left a wrong tree")
+	}
+}
+
+func TestContainerBinPrefersTheInstalledOne(t *testing.T) {
+	old := installedBin
+	defer func() { installedBin = old }()
+	dir := t.TempDir()
+	installedBin = filepath.Join(dir, "container")
+	if err := os.WriteFile(installedBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := t.TempDir()
+	os.WriteFile(filepath.Join(other, "container"), []byte("#!/bin/sh\n"), 0o755)
+	t.Setenv("PATH", other)
+	if got := ContainerBin(); got != installedBin {
+		t.Errorf("got %q", got)
+	}
+	installedBin = filepath.Join(dir, "missing")
+	if got := ContainerBin(); got != filepath.Join(other, "container") {
+		t.Errorf("fallback to PATH: %q", got)
 	}
 }

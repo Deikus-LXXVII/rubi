@@ -26,23 +26,36 @@ var (
 	hashHex  string
 )
 
-// Hash is the hex SHA-256 over the sorted paths and contents of FS (each length-prefixed, so no two
-// different bundles give the same input).
+// Hash is the hex SHA-256 over the sorted entries of FS: each file's path and contents, and each directory
+// and other kind of entry (a symlink, say) by path and kind, all length-prefixed, so no two different trees
+// give the same input and a planted extra entry changes the hash.
 func Hash() string {
 	hashOnce.Do(func() { hashHex = HashFS(files) })
 	return hashHex
 }
 
-// HashFS computes Hash for any file system.
+// HashFS computes Hash for any file system (it never follows a symlink).
 func HashFS(fsys fs.FS) string {
-	var paths []string
+	type entry struct {
+		path string
+		kind byte
+	}
+	var entries []entry
 	_ = fs.WalkDir(fsys, ".", func(p string, d fs.DirEntry, err error) error {
-		if err == nil && d.Type().IsRegular() {
-			paths = append(paths, p)
+		if err != nil || p == "." {
+			return nil
+		}
+		switch t := d.Type(); {
+		case t.IsRegular():
+			entries = append(entries, entry{p, 'f'})
+		case t.IsDir():
+			entries = append(entries, entry{p, 'd'})
+		default:
+			entries = append(entries, entry{p, 'o'})
 		}
 		return nil
 	})
-	sort.Strings(paths)
+	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 	h := sha256.New()
 	put := func(b []byte) {
 		var n [8]byte
@@ -50,13 +63,18 @@ func HashFS(fsys fs.FS) string {
 		h.Write(n[:])
 		h.Write(b)
 	}
-	for _, p := range paths {
-		b, err := fs.ReadFile(fsys, p)
-		if err != nil {
-			continue
+	for _, e := range entries {
+		var content []byte
+		if e.kind == 'f' {
+			b, err := fs.ReadFile(fsys, e.path)
+			if err != nil {
+				e.kind = 'x' // unreadable: counts as something else
+			}
+			content = b
 		}
-		put([]byte(p))
-		put(b)
+		put([]byte{e.kind})
+		put([]byte(e.path))
+		put(content)
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }
