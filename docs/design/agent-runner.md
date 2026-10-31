@@ -242,8 +242,9 @@ Runner -> Home request `ssh.open {target, command, session_id, tool_use_id?}` ->
 - Errors (JSON-RPC error, code -32000, message for the model): `this SSH target isn't available to this role` (not
   granted, unknown, or the default role: the three look the same), `this command isn't allowed on the target`,
   `this role has 4 SSH streams open already`, `Rubi: ...` (the user denied the `ssh.ask`, or no answer in time), `host key
-  changed: ...` (the target presented another host key than the pinned one; nothing was sent to it), or a reach/login
-  failure. The request can take as long as an approval (up to the ask timeout) plus the dial (15 s).
+  changed` (the target presented another host key than the pinned one; nothing was sent to it), `the target didn't
+  answer` or `login to the target failed`: fixed sentences, never an address (the detail is in Home's log). More than 30
+  `ssh.open` per minute per role are refused. The request can take as long as an approval (up to the ask timeout) plus the dial (15 s).
 - The answer is written before any notification about the stream, so the runner always knows the id first.
 
 Notifications, `stream` always the id from `ssh.open` (bytes are standard base64 in `b64`; `fd` 1 is stdout, 2 is stderr):
@@ -271,7 +272,7 @@ Notifications, `stream` always the id from `ssh.open` (bytes are standard base64
 - The runner ending, Home stopping, a `role.put` that removes the grant (or archives the role) and `ssh.remove` cut the
   streams; the runner gets `ssh.exit` when it is still there.
 - `ssh.ask` is a plugin item (`next`), not a runner message: `{type:"ssh.ask", ask_id, project, role, session_id,
-  tool_use_id, host, op:"ssh", input:{target, host, port, user, command}}` (command redacted, at most 1000 characters),
+  tool_use_id, host, op:"ssh", input:{target, host, port, user, command}}` (the command exactly as it will run, up to 8192 characters, unredacted: redaction is for the audit copy only; a command with control or format characters is refused instead of asked; at most 2 questions wait per role),
   answered with `decide`. It is sent only for targets registered with `ask_each_time`.
 
 ### In the VM: the `ssh` wrapper and the runner socket (R12)
@@ -315,10 +316,15 @@ Plugin operations (`claude-agent.*`, the plugin gates them; strict arguments, an
 | `ssh.register` | `{name, host, port?, user, fingerprint, allowed_commands?, ask_each_time?, reuse?}` | `{public_key_line}`; refused when the live host key's fingerprint is not `fingerprint`, or the name exists, or the name belongs to a removed target and `reuse` is not `true` (the plugin sends `reuse:true` only after a strong approval) |
 | `ssh.list` | `{}` | `{targets:[{name, host, port, user, fingerprint, key_type, allowed_commands, ask_each_time, created_at, host_key_changed?, roles:[{id, name, project}]}]}` |
 | `ssh.remove` | `{name}` | `{ok, closed_streams}`: deletes the key, forgets the target, cuts its streams, and keeps the name as a tombstone (`removed` in `targets.json`) so it can't be registered again without `reuse:true`: roles may still list it |
-| `ssh.audit` | `{target?, limit?}` | `{entries:[{stream?, role, project, bot?, target, command, start, end, exit?, bytes_in, bytes_out, result, reason?}]}`, newest first |
+| `ssh.audit` | `{target?, limit?, after_seq?}` | `{last_seq, entries:[{seq, count?, stream?, role, project, bot?, target, command, start, end, exit?, bytes_in, bytes_out, result, reason?}]}`, newest first; with `after_seq` the entries after that `seq`, oldest first (page forward from the last `seq` you got to copy the audit without loss). `seq` is monotonic across restarts and rotation. `count` on an entry means that many further identical refusals were collapsed into it |
 
-`allowed_commands` entries are exact commands, or prefixes when they end in `*` (the rest of the command may then hold only
-letters, digits and ` _./:=@%+,-`, so a prefix cannot be extended into a second command). With none, any command runs. The
+`allowed_commands` entries are exact commands, or prefixes when they end in `*`. `prefix *` (`ls *`; `ls*` reads the same, so
+it does not allow `lsof`) allows the prefix alone, or the prefix, a space and arguments of letters, digits and ` _./:=@%+,-`
+that hold no option (no word starting with `-`) and no `=`, so a prefix cannot be extended into a second command or into
+options. `prefix **` (`ls **`) allows options and `name=value` arguments too; the panel shows a warning for it
+(`option_patterns` in `ssh.list`). **A prefix pattern is not a safety boundary** for a program with options or arguments
+that run code or open files (`git -c core.sshCommand=...`, `tar --checkpoint-action=exec=...`, `rsync -e ...`, `find
+-exec`, `ssh -o ProxyCommand=...`): allow such programs only as exact commands. With none, any command runs. The
 public key line is `restrict[,command="..."] ssh-ed25519 AAAA... rubi-<name>`; `command=` is added only when exactly one
 exact command is allowed. The private key is in `<helper>/agent-ssh/keys/<name>` (0600, directory 0700) and is in no result,
 item, event, log line, error, audit entry or environment variable.

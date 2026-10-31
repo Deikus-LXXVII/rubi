@@ -599,8 +599,13 @@ seam to the Manager). The wire contract and the `ssh.scan/register/list/remove/a
 - Registration pins the key found at registration time; the call fails when its fingerprint is not the one the user gave.
   Dials offer only the pinned key's type as host key algorithm, so a server with several host keys is not a false alarm.
 - Output is paced by acknowledgements (`ssh.ack`), so the 8 MiB bound is real backpressure; input over the bound cuts the stream.
-- `allowed_commands` prefix patterns (`tail -n *`) accept only plain characters after the prefix; anything with shell
-  operators needs an exact entry.
+- `allowed_commands` prefix patterns (`tail -n *`) accept only plain characters after the prefix, break at a space (`ls*`
+  does not allow `lsof`), and refuse options (words starting with `-`) and `=` in the rest; `prefix **` allows them (the panel
+  warns). Prefix patterns are not a safety boundary for programs with code-executing options (`git -c`, `tar
+  --checkpoint-action`, `rsync -e`): use exact entries for those. Anything with shell operators needs an exact entry.
+- Floods: `ssh.open` is limited to 30 per minute per role, 2 `ssh.ask` questions wait per role, identical refusals
+  collapse into a counter, and refusals live in their own file (`audit-refused.jsonl`) so they can't push the streams out of
+  `audit.jsonl`. Entries carry a monotonic `seq`; `ssh.audit` takes `after_seq`.
 - The audit is `agent-ssh/audit.jsonl` (rotated at 1 MiB), including refusals (result `refused`, `denied`, `host key
   changed`). Plugin-side audit entries are the plugin's to add from `ssh.audit`.
 - Removing a target does not edit the role records that name it; a later target registered under the same name would be

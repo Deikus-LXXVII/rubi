@@ -22,6 +22,8 @@ const (
 	DefaultIdle       = 10 * time.Minute
 	DefaultBuffer     = 8 << 20
 	DefaultGrantCheck = 2 * time.Second
+	DefaultOpenPerMin = 30
+	DefaultAsks       = 2
 	chunk             = 32 << 10
 )
 
@@ -32,6 +34,8 @@ type Limits struct {
 	Idle       time.Duration // longest time without data in either direction
 	Buffer     int64         // bytes in flight per direction
 	GrantCheck time.Duration // how often a live stream re-reads its grant
+	OpenPerMin int           // ssh.open requests per role per minute (refused ones count)
+	Asks       int           // ssh.ask questions waiting at once per role
 }
 
 func (l Limits) withDefaults() Limits {
@@ -49,6 +53,12 @@ func (l Limits) withDefaults() Limits {
 	}
 	if l.GrantCheck <= 0 {
 		l.GrantCheck = DefaultGrantCheck
+	}
+	if l.OpenPerMin <= 0 {
+		l.OpenPerMin = DefaultOpenPerMin
+	}
+	if l.Asks <= 0 {
+		l.Asks = DefaultAsks
 	}
 	return l
 }
@@ -105,6 +115,10 @@ type Hub struct {
 	streams map[string]*Stream
 	perRole map[string]int
 	closed  bool
+	opens   map[string][]time.Time // recent ssh.open requests per role
+	asks    map[string]int         // ssh.ask questions waiting per role
+	now     func() time.Time
+	live    sync.WaitGroup // streams from Open to the end of their run (the audit line included)
 }
 
 // NewHub makes a hub.
@@ -112,7 +126,8 @@ func NewHub(cfg Config) *Hub {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	return &Hub{cfg: cfg, lim: cfg.Limits.withDefaults(), streams: map[string]*Stream{}, perRole: map[string]int{}}
+	return &Hub{cfg: cfg, lim: cfg.Limits.withDefaults(), streams: map[string]*Stream{}, perRole: map[string]int{},
+		opens: map[string][]time.Time{}, asks: map[string]int{}, now: time.Now}
 }
 
 // Store is the registry the hub dials from.
@@ -137,6 +152,45 @@ func (h *Hub) record(e Entry) {
 	if err := h.cfg.Audit.Add(e); err != nil {
 		h.cfg.Logf("ssh audit: %v", err)
 	}
+}
+
+// AllowOpen counts an ssh.open request of the role and says whether it is within the rate limit (a minute's
+// worth). Refused requests count too: that is the flood it limits.
+func (h *Hub) AllowOpen(role string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := h.now()
+	recent := h.opens[role][:0]
+	for _, t := range h.opens[role] {
+		if now.Sub(t) < time.Minute {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= h.lim.OpenPerMin {
+		h.opens[role] = recent
+		return false
+	}
+	h.opens[role] = append(recent, now)
+	return true
+}
+
+// BeginAsk reserves one of the role's slots for a question waiting for the user; ok is false when it has too
+// many waiting. Call end when the question is answered.
+func (h *Hub) BeginAsk(role string) (end func(), ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.asks[role] >= h.lim.Asks {
+		return nil, false
+	}
+	h.asks[role]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			h.asks[role]--
+			h.mu.Unlock()
+		})
+	}, true
 }
 
 // Open checks the target and the command, dials with the pinned host key, runs the command and returns the
@@ -223,6 +277,7 @@ func (h *Hub) Open(ctx context.Context, r OpenReq, notify Notifier) (*Stream, er
 		return nil, errors.New("Rubi Home is stopping")
 	}
 	h.streams[s.id] = s
+	h.live.Add(1)
 	h.mu.Unlock()
 	s.idle = time.AfterFunc(h.lim.Idle, func() { s.closeWith("idle timeout") })
 	s.age = time.AfterFunc(h.lim.MaxAge, func() { s.closeWith("time limit") })
@@ -359,11 +414,11 @@ func (h *Hub) CloseAll() {
 	for _, s := range all {
 		s.closeWith("Rubi Home stopped")
 	}
-	for _, s := range all {
-		select {
-		case <-s.done():
-		case <-time.After(5 * time.Second):
-		}
+	wait := make(chan struct{})
+	go func() { h.live.Wait(); close(wait) }()
+	select {
+	case <-wait:
+	case <-time.After(5 * time.Second):
 	}
 }
 
@@ -421,6 +476,7 @@ func (s *Stream) closeWith(reason string) {
 func (s *Stream) touch() { s.idle.Reset(s.h.lim.Idle) }
 
 func (s *Stream) run() {
+	defer s.h.live.Done()
 	defer close(s.fin)
 	go func() { // whatever ends the stream hangs up the connection, which ends the readers
 		<-s.ctx.Done()

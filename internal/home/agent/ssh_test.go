@@ -294,7 +294,7 @@ func TestSSHAskEachTimeWaitsForDecide(t *testing.T) {
 	ch := run("systemctl restart nginx --password=hunter2")
 	it := se.pl.wait(t, "ssh.ask")
 	if it.Op != "ssh" || it.Host != "web-1.example.com" || it.SessionID != "sess-1" || it.ToolUseID != "tu-1" || it.Role == "" ||
-		strings.Contains(string(it.Input), "hunter2") || !strings.Contains(string(it.Input), "systemctl restart nginx") {
+		!strings.Contains(string(it.Input), "systemctl restart nginx --password=hunter2") { // shown as it is
 		t.Fatalf("%+v %s", it, it.Input)
 	}
 	time.Sleep(150 * time.Millisecond)
@@ -611,5 +611,105 @@ func TestSSHPrivateKeyNeverAppearsAnywhere(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func askInputCommand(t *testing.T, it Item) string {
+	t.Helper()
+	var in struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(it.Input, &in); err != nil {
+		t.Fatal(err)
+	}
+	return in.Command
+}
+
+func TestSSHAskShowsTheExactCommandAndRefusesUndisplayableOnes(t *testing.T) {
+	se := newSSHEnv(t, sshtarget.Limits{})
+	se.register("web-1", nil, true)
+	_, fr := se.role("deployer", "web-1")
+	for _, cmd := range []string{"echo password=x;rm -rf /tmp/y", "ls${IFS}-la", "echo a   b"} {
+		ch := make(chan error, 1)
+		go func() { _, err := se.open(fr, "web-1", cmd); ch <- err }()
+		it := se.pl.wait(t, "ssh.ask")
+		if got := askInputCommand(t, it); got != cmd {
+			t.Fatalf("asked about %q, would run %q", got, cmd)
+		}
+		_, _ = se.op("decide", map[string]any{"ask_id": it.AskID, "behavior": "deny"})
+		<-ch
+	}
+	// Characters that can't be shown faithfully: no question at all.
+	for _, cmd := range []string{"ls \x1b[2K", "ls \u202e", "ls \u200b", "ls\tx"} {
+		if _, err := se.open(fr, "web-1", cmd); err == nil || !strings.Contains(err.Error(), "can't be shown") {
+			t.Fatalf("%q: %v", cmd, err)
+		}
+	}
+	if len(se.srv.Commands()) != 0 {
+		t.Fatal("ran")
+	}
+}
+
+func TestSSHPendingAsksAndOpenRateAreLimited(t *testing.T) {
+	se := newSSHEnv(t, sshtarget.Limits{Asks: 2, OpenPerMin: 6})
+	se.register("web-1", nil, true)
+	_, fr := se.role("deployer", "web-1")
+	done := make(chan error, 3)
+	for i := 0; i < 2; i++ {
+		go func() { _, err := se.open(fr, "web-1", fmt.Sprintf("uptime %d", i)); done <- err }()
+		se.pl.wait(t, "ssh.ask")
+	}
+	if _, err := se.open(fr, "web-1", "uptime 3"); err == nil || !strings.Contains(err.Error(), "waiting") {
+		t.Fatalf("%v", err)
+	}
+	// the rate limit counts refused requests too
+	var limited bool
+	for i := 0; i < 8 && !limited; i++ {
+		_, err := se.open(fr, "web-1", "uptime x")
+		limited = err != nil && strings.Contains(err.Error(), "too many SSH requests")
+	}
+	if !limited {
+		t.Fatal("no rate limit")
+	}
+}
+
+func TestSSHAuditSeqAfterAndCollapse(t *testing.T) {
+	se := newSSHEnv(t, sshtarget.Limits{})
+	se.register("web-1", []string{"uptime"}, false)
+	_, fr := se.role("deployer", "web-1")
+	if _, err := se.open(fr, "web-1", "uptime"); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "exit", func() bool { return len(exits(fr)) == 1 })
+	for i := 0; i < 5; i++ {
+		_, _ = se.open(fr, "web-1", "rm -rf /") // identical refusals
+	}
+	res, err := se.sshOp("ssh.audit", map[string]any{"after_seq": 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	es := res["entries"].([]any)
+	if len(es) != 3 { // the run, one refusal, and a counter for the other four
+		t.Fatalf("%v", es)
+	}
+	var prev float64
+	for _, e := range es {
+		sq := e.(map[string]any)["seq"].(float64)
+		if sq <= prev {
+			t.Fatalf("seq not increasing: %v", es)
+		}
+		prev = sq
+	}
+	last := es[2].(map[string]any)
+	if last["count"] != float64(4) || res["last_seq"] != prev {
+		t.Fatalf("%v", es)
+	}
+	res, _ = se.sshOp("ssh.audit", map[string]any{"after_seq": es[0].(map[string]any)["seq"]})
+	if len(res["entries"].([]any)) != 2 {
+		t.Fatalf("%v", res)
+	}
+	res, _ = se.sshOp("ssh.audit", map[string]any{"after_seq": prev})
+	if len(res["entries"].([]any)) != 0 {
+		t.Fatalf("%v", res)
 	}
 }
