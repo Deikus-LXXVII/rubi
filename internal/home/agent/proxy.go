@@ -3,13 +3,13 @@ package agent
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -46,8 +46,13 @@ func normalizeHost(h string) string {
 	return h
 }
 
+// ForgeHosts are the well-known code hosts allowed by default for package managers (SwiftPM, go, cargo
+// pull from them); config agent_no_default_forges drops them. Nothing is derived from the project's files.
+var ForgeHosts = []string{"github.com", "gitlab.com", "bitbucket.org"}
+
 // AllowList returns the sorted, de-duplicated hosts of the proxy for a project: the base hosts, the login
-// candidates, the configured git hosts and the extra hosts (SwiftPM). Refused hosts never get in.
+// candidates, the configured git hosts and the extra hosts (the owner's agent_allowed_hosts, the hosts the
+// owner approved for this project, the forges). Refused hosts never get in.
 func AllowList(gitHosts, extra []string) []string {
 	set := map[string]bool{}
 	for _, list := range [][]string{BaseHosts, LoginHosts, gitHosts, extra} {
@@ -65,78 +70,42 @@ func AllowList(gitHosts, extra []string) []string {
 	return out
 }
 
-const maxPackageResolved = 4 << 20
-
-// SwiftPMHosts reads the https hosts of the Swift packages a project depends on, from Package.resolved
-// (format 1 "repositoryURL", formats 2 and 3 "location"), at the project root and in Xcode's workspace
-// location. It is read on the Mac before the VM starts, once per start: the file is in /work, which the
-// agent can write, so a file changed during a run does not widen the list.
-func SwiftPMHosts(dir string) []string {
-	paths := []string{filepath.Join(dir, "Package.resolved")}
-	for _, pat := range []string{"*.xcworkspace/xcshareddata/swiftpm/Package.resolved", "*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"} {
-		m, _ := filepath.Glob(filepath.Join(dir, pat))
-		paths = append(paths, m...)
-	}
-	set := map[string]bool{}
-	for _, p := range paths {
-		f, err := os.Open(p)
-		if err != nil {
-			continue
-		}
-		b, _ := io.ReadAll(io.LimitReader(f, maxPackageResolved))
-		f.Close()
-		for _, h := range packageHosts(b) {
-			set[h] = true
-		}
-	}
-	out := make([]string, 0, len(set))
-	for h := range set {
-		out = append(out, h)
-	}
-	sort.Strings(out)
-	if len(out) > 100 {
-		out = out[:100]
-	}
-	return out
-}
-
-var pinURLRE = regexp.MustCompile(`"(?:location|repositoryURL)"\s*:\s*"([^"]+)"`)
-
-func packageHosts(b []byte) []string {
-	var out []string
-	for _, m := range pinURLRE.FindAllSubmatch(b, -1) {
-		u, err := url.Parse(string(m[1]))
-		if err != nil || u.Scheme != "https" {
-			continue // ssh and file URLs don't go through a CONNECT proxy
-		}
-		if h := normalizeHost(u.Hostname()); h != "" && !refusedHost(h) {
-			out = append(out, h)
-		}
-	}
-	return out
-}
-
 // ProxyConfig configures a Proxy.
 type ProxyConfig struct {
-	// Listen is the address to listen on ("127.0.0.1:0" when empty). A VM can't reach the Mac's
+	// Listen is the address to listen on ("127.0.0.1:0" when empty). A wildcard address (empty host,
+	// 0.0.0.0, ::) is refused: the proxy would be open to the whole network. A VM can't reach the Mac's
 	// 127.0.0.1: for a real VM set this to the address of the Mac on the VM's host-only network.
 	Listen string
+	// AuthToken is required from every client as the password of Proxy-Authorization: Basic (the user name
+	// is ignored); the VM gets it in HTTPS_PROXY. Without it any process that can reach the port would
+	// use the Mac's network access.
+	AuthToken string
 	// Hosts is the allow-list (see AllowList).
 	Hosts []string
-	// Dial connects to the upstream (net.Dialer when nil; a seam for tests).
-	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
+	// Exempt are hosts that may resolve to non-public addresses (the owner's own git servers).
+	Exempt []string
+	// Ask, when set, is asked about a valid host name that is not on the list (net.ask); true allows it
+	// from now on (the proxy adds it). It is never asked for refused hosts, other ports or non-names.
+	Ask func(ctx context.Context, host string) bool
+	// Resolve looks a name up (the system resolver when nil) and Dial connects to the resolved address
+	// (a guarded net.Dialer when nil); both are seams for tests.
+	Resolve func(ctx context.Context, host string) ([]net.IP, error)
+	Dial    func(ctx context.Context, network, addr string) (net.Conn, error)
+	// IdleTimeout ends a tunnel with no traffic for this long (10 minutes when zero).
+	IdleTimeout time.Duration
 	// Logf receives refusals (log.Printf-like); nil discards.
 	Logf func(format string, args ...any)
 }
 
 // Proxy is a running allow-list proxy.
 type Proxy struct {
-	cfg   ProxyConfig
-	allow map[string]bool
-	ln    net.Listener
-	slots chan struct{}
+	cfg    ProxyConfig
+	exempt map[string]bool
+	ln     net.Listener
+	slots  chan struct{}
 
 	mu      sync.Mutex
+	allow   map[string]bool
 	conns   map[net.Conn]struct{}
 	refused []string
 	allowed int
@@ -145,11 +114,13 @@ type Proxy struct {
 }
 
 const (
-	proxyMaxConns   = 128
-	proxyMaxHeader  = 16 << 10
-	proxyHeaderWait = 10 * time.Second
-	proxyDialWait   = 15 * time.Second
-	proxyMaxRefused = 100
+	proxyMaxConns    = 128
+	proxyMaxHeader   = 16 << 10
+	proxyHeaderWait  = 10 * time.Second
+	proxyDialWait    = 15 * time.Second
+	proxyAskWait     = 130 * time.Second
+	proxyMaxRefused  = 100
+	proxyIdleDefault = 10 * time.Minute
 )
 
 // StartProxy listens and serves in the background.
@@ -157,19 +128,48 @@ func StartProxy(cfg ProxyConfig) (*Proxy, error) {
 	if cfg.Listen == "" {
 		cfg.Listen = "127.0.0.1:0"
 	}
+	lh, _, err := net.SplitHostPort(cfg.Listen)
+	if err != nil {
+		return nil, fmt.Errorf("proxy listen address: %w", err)
+	}
+	if ip := net.ParseIP(strings.Trim(lh, "[]")); lh == "" || (ip != nil && ip.IsUnspecified()) {
+		return nil, errors.New("the proxy must not listen on a wildcard address; give the Mac's address on the VM network")
+	}
+	if len(cfg.AuthToken) < 16 {
+		return nil, errors.New("the proxy needs an authentication token")
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = proxyIdleDefault
+	}
+	if cfg.Resolve == nil {
+		cfg.Resolve = defaultResolve
+	}
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return nil, err
 	}
-	p := &Proxy{cfg: cfg, ln: ln, allow: map[string]bool{}, slots: make(chan struct{}, proxyMaxConns), conns: map[net.Conn]struct{}{}}
+	p := &Proxy{cfg: cfg, ln: ln, allow: map[string]bool{}, exempt: map[string]bool{}, slots: make(chan struct{}, proxyMaxConns),
+		conns: map[net.Conn]struct{}{}}
 	for _, h := range cfg.Hosts {
-		if n := normalizeHost(h); n != "" && !refusedHost(n) {
-			p.allow[n] = true
+		p.AddHost(h)
+	}
+	for _, h := range cfg.Exempt {
+		if n := normalizeHost(h); n != "" {
+			p.exempt[n] = true
 		}
 	}
 	p.wg.Add(1)
 	go p.serve()
 	return p, nil
+}
+
+// AddHost allows a host from now on (refused hosts and non-names are ignored).
+func (p *Proxy) AddHost(h string) {
+	if n := normalizeHost(h); n != "" && !refusedHost(n) {
+		p.mu.Lock()
+		p.allow[n] = true
+		p.mu.Unlock()
+	}
 }
 
 // Addr is the address the proxy listens on.
@@ -178,6 +178,8 @@ func (p *Proxy) Addr() string { return p.ln.Addr().String() }
 // Allowed reports whether a host may be reached.
 func (p *Proxy) Allowed(host string) bool {
 	h := normalizeHost(host)
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return h != "" && !refusedHost(h) && p.allow[h]
 }
 
@@ -212,7 +214,7 @@ func (p *Proxy) refuse(target, why string) {
 	if len(p.refused) >= proxyMaxRefused {
 		p.refused = p.refused[1:]
 	}
-	p.refused = append(p.refused, target)
+	p.refused = append(p.refused, clip(target, 120))
 	p.mu.Unlock()
 	p.logf("agent proxy: refused %q (%s)", clip(target, 120), why)
 }
@@ -275,8 +277,69 @@ func (p *Proxy) serve() {
 	}
 }
 
-func reply(c net.Conn, code int, text string) {
-	fmt.Fprintf(c, "HTTP/1.1 %d %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n", code, text)
+func reply(c net.Conn, code int, text string, extra ...string) {
+	fmt.Fprintf(c, "HTTP/1.1 %d %s\r\n%sConnection: close\r\nContent-Length: 0\r\n\r\n", code, text, strings.Join(extra, ""))
+}
+
+// authorized checks Proxy-Authorization: Basic with the per-start token as the password.
+func (p *Proxy) authorized(h http.Header) bool {
+	v := h.Get("Proxy-Authorization")
+	if len(v) < 7 || !strings.EqualFold(v[:6], "Basic ") {
+		return false
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(v[6:]))
+	if err != nil {
+		return false
+	}
+	_, pass, ok := strings.Cut(string(raw), ":")
+	return ok && subtle.ConstantTimeCompare([]byte(pass), []byte(p.cfg.AuthToken)) == 1
+}
+
+// idleConn pushes the deadline forward on every read and write, so an idle tunnel ends.
+type idleConn struct {
+	net.Conn
+	d time.Duration
+}
+
+func (c idleConn) Read(b []byte) (int, error) {
+	_ = c.Conn.SetDeadline(time.Now().Add(c.d))
+	return c.Conn.Read(b)
+}
+
+func (c idleConn) Write(b []byte) (int, error) {
+	_ = c.Conn.SetDeadline(time.Now().Add(c.d))
+	return c.Conn.Write(b)
+}
+
+// upstream resolves host and connects to the first address that works. Unless the host is exempt, any
+// address that isn't public stops it (all of them are checked: a name with one private address is refused).
+func (p *Proxy) upstream(ctx context.Context, host string) (net.Conn, error) {
+	exempt := p.exempt[host]
+	ips, err := p.cfg.Resolve(ctx, host)
+	if err != nil || len(ips) == 0 {
+		return nil, errors.New("no address")
+	}
+	if !exempt {
+		for _, ip := range ips {
+			if blockedIP(ip) {
+				p.refuse(host, "resolves to "+ip.String())
+				return nil, errBlockedAddr
+			}
+		}
+	}
+	dial := p.cfg.Dial
+	if dial == nil {
+		dial = defaultDial(!exempt)
+	}
+	var last error
+	for _, ip := range ips {
+		c, err := dial(ctx, "tcp", net.JoinHostPort(ip.String(), "443"))
+		if err == nil {
+			return c, nil
+		}
+		last = err
+	}
+	return nil, last
 }
 
 func (p *Proxy) handle(c net.Conn) {
@@ -284,8 +347,11 @@ func (p *Proxy) handle(c net.Conn) {
 	br := bufio.NewReader(io.LimitReader(c, proxyMaxHeader))
 	req, err := http.ReadRequest(br)
 	if err != nil {
-		p.refuse("(unreadable request)", err.Error())
 		reply(c, 400, "Bad Request")
+		return
+	}
+	if !p.authorized(req.Header) {
+		reply(c, 407, "Proxy Authentication Required", "Proxy-Authenticate: Basic realm=\"rubi\"\r\n")
 		return
 	}
 	if req.Method != http.MethodConnect {
@@ -304,20 +370,36 @@ func (p *Proxy) handle(c net.Conn) {
 		reply(c, 403, "Forbidden")
 		return
 	}
-	if !p.Allowed(host) {
-		p.refuse(req.Host, "host not on the list")
+	host = normalizeHost(host)
+	if host == "" || refusedHost(host) {
+		p.refuse(req.Host, "host not allowed")
 		reply(c, 403, "Forbidden")
 		return
 	}
+	_ = c.SetReadDeadline(time.Time{})
+	if !p.Allowed(host) {
+		ok := false
+		if p.cfg.Ask != nil {
+			actx, cancel := context.WithTimeout(context.Background(), proxyAskWait)
+			ok = p.cfg.Ask(actx, host)
+			cancel()
+		}
+		if !ok {
+			p.refuse(req.Host, "host not on the list")
+			reply(c, 403, "Forbidden")
+			return
+		}
+		p.AddHost(host)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), proxyDialWait)
 	defer cancel()
-	dial := p.cfg.Dial
-	if dial == nil {
-		dial = (&net.Dialer{}).DialContext
-	}
-	up, err := dial(ctx, "tcp", net.JoinHostPort(normalizeHost(host), "443"))
+	up, err := p.upstream(ctx, host)
 	if err != nil {
-		reply(c, 502, "Bad Gateway")
+		if errors.Is(err, errBlockedAddr) {
+			reply(c, 403, "Forbidden")
+		} else {
+			reply(c, 502, "Bad Gateway")
+		}
 		return
 	}
 	if !p.track(up) {
@@ -329,7 +411,6 @@ func (p *Proxy) handle(c net.Conn) {
 	p.mu.Lock()
 	p.allowed++
 	p.mu.Unlock()
-	_ = c.SetReadDeadline(time.Time{})
 	if _, err := io.WriteString(c, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
 		return
 	}
@@ -340,9 +421,10 @@ func (p *Proxy) handle(c net.Conn) {
 			return
 		}
 	}
+	ci, ui := idleConn{c, p.cfg.IdleTimeout}, idleConn{up, p.cfg.IdleTimeout}
 	errc := make(chan error, 2)
-	go func() { _, err := io.Copy(up, c); closeWrite(up); errc <- err }()
-	go func() { _, err := io.Copy(c, up); closeWrite(c); errc <- err }()
+	go func() { _, err := io.Copy(ui, ci); closeWrite(up); errc <- err }()
+	go func() { _, err := io.Copy(ci, ui); closeWrite(c); errc <- err }()
 	<-errc
 	<-errc
 }

@@ -1,8 +1,12 @@
 package agent
 
 import (
+	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -620,7 +624,117 @@ func TestEnvAndProxyGivenToRunner(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.ProxyVMHost = "gateway.example.com" })
 	e.op("sessions", map[string]any{"project": "my-project"})
 	env := e.fake.Env()
-	if !strings.HasPrefix(env["HTTPS_PROXY"], "http://gateway.example.com:") || len(env["RUBI_RUN_TOKEN"]) != 64 {
+	if !strings.HasPrefix(env["HTTPS_PROXY"], "http://rubi:") || !strings.Contains(env["HTTPS_PROXY"], "@gateway.example.com:") ||
+		len(env["RUBI_RUN_TOKEN"]) != 64 || strings.Contains(env["HTTPS_PROXY"], env["RUBI_RUN_TOKEN"]) {
 		t.Fatalf("env: %v", env)
+	}
+}
+
+func projHosts(e *env) map[string]bool {
+	e.m.mu.Lock()
+	defer e.m.mu.Unlock()
+	out := map[string]bool{}
+	for _, h := range e.m.projs["my-project"].hosts {
+		out[h] = true
+	}
+	return out
+}
+
+// Hosts come from the owner's configuration, never from files in the project.
+func TestProjectFilesDoNotWidenAllowList(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.AllowedHosts = func() []string { return []string{"packages.example.net"} } })
+	os.WriteFile(filepath.Join(e.proj, "Package.resolved"), []byte(`{"pins":[{"location":"https://evil.example.org/z.git"}]}`), 0o600)
+	os.WriteFile(filepath.Join(e.proj, ".gitmodules"), []byte("[submodule \"x\"]\n\turl = https://evil.example.org/x\n"), 0o600)
+	os.MkdirAll(filepath.Join(e.proj, ".git"), 0o700)
+	os.WriteFile(filepath.Join(e.proj, ".git", "config"), []byte("[remote \"origin\"]\n\turl = https://evil.example.org/x\n"), 0o600)
+	e.op("sessions", map[string]any{"project": "my-project"})
+	h := projHosts(e)
+	for _, want := range []string{"api.anthropic.com", "git.example.com", "packages.example.net", "github.com", "gitlab.com", "bitbucket.org"} {
+		if !h[want] {
+			t.Errorf("missing %s: %v", want, h)
+		}
+	}
+	if h["evil.example.org"] {
+		t.Fatalf("a project file widened the list: %v", h)
+	}
+	e2 := newEnv(t, func(o *Options) { o.NoDefaultForges = func() bool { return true } })
+	e2.op("sessions", map[string]any{"project": "my-project"})
+	if h := projHosts(e2); h["github.com"] || !h["api.anthropic.com"] {
+		t.Fatalf("forges not dropped: %v", h)
+	}
+}
+
+func TestNetAskApprovalIsRecordedPerProject(t *testing.T) {
+	up := newUpstream(t)
+	mod := func(o *Options) { o.Resolve = publicResolve; o.Dial = up.dial }
+	e := newEnv(t, mod)
+	pl := startPoller(t, e.m)
+	e.op("sessions", map[string]any{"project": "my-project"})
+	u := strings.TrimPrefix(e.fake.Env()["HTTPS_PROXY"], "http://")
+	cred, addr, _ := strings.Cut(u, "@")
+	token := strings.TrimPrefix(cred, "rubi:")
+	conn := func(host string) string {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.SetDeadline(time.Now().Add(10 * time.Second))
+		fmt.Fprintf(c, "CONNECT %s:443 HTTP/1.1\r\nHost: %s:443\r\nProxy-Authorization: Basic %s\r\n\r\n", host, host, base64.StdEncoding.EncodeToString([]byte("rubi:"+token)))
+		st, _ := bufio.NewReader(c).ReadString('\n')
+		return strings.TrimSpace(st)
+	}
+	res := make(chan string, 1)
+	go func() { res <- conn("packages.example.net") }()
+	it := pl.wait(t, "net.ask")
+	if it.Host != "packages.example.net" || it.Project != "my-project" {
+		t.Fatalf("net.ask item %+v", it)
+	}
+	if err := e.m.Decide(it.AskID, "allow", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if st := <-res; !strings.Contains(st, "200") {
+		t.Fatalf("approved connect: %s", st)
+	}
+	st, err := os.Stat(filepath.Join(e.dir, NetFile))
+	if err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("net file: %v %v", st, err)
+	}
+	// A denial is remembered for a while: no second question.
+	go func() { res <- conn("denied.example.net") }()
+	it = pl.wait(t, "net.ask")
+	e.m.Decide(it.AskID, "deny", "no", nil)
+	if st := <-res; !strings.Contains(st, "403") {
+		t.Fatalf("denied connect: %s", st)
+	}
+	if st := conn("denied.example.net"); !strings.Contains(st, "403") {
+		t.Fatalf("second connect: %s", st)
+	}
+	select {
+	case x := <-pl.items:
+		if x.Type == "net.ask" {
+			t.Fatal("asked again after a denial")
+		}
+	case <-time.After(200 * time.Millisecond):
+	}
+	// After a restart the approved host is on the list from the start; the denied one is not.
+	e.m.Close()
+	e.fake = &Fake{}
+	e.m = New(e.opt)
+	t.Cleanup(e.m.Close)
+	e.op("sessions", map[string]any{"project": "my-project"})
+	h := projHosts(e)
+	if !h["packages.example.net"] || h["denied.example.net"] {
+		t.Fatalf("hosts after restart: %v", h)
+	}
+}
+
+func TestNetAskLockedDenies(t *testing.T) {
+	up := newUpstream(t)
+	e := newEnv(t, func(o *Options) { o.Resolve = publicResolve; o.Dial = up.dial })
+	e.op("sessions", map[string]any{"project": "my-project"})
+	p := e.m.projs["my-project"]
+	if e.m.askHost(e.ctx, p, "packages.example.net") {
+		t.Fatal("host approved with nobody polling")
 	}
 }

@@ -55,20 +55,28 @@ type Options struct {
 	NewVM func(Project) VM
 	// Cred is the credential source (nil: git credentials are refused).
 	Cred CredSource
+	// AllowedHosts are extra hosts the proxy allows for every project (config agent_allowed_hosts); the
+	// well-known forges are added unless NoDefaultForges (agent_no_default_forges). Hosts are never read
+	// from a project's files. AllowBypass (agent_allow_bypass, true when nil) says whether sessions may run
+	// in bypassPermissions or dontAsk.
+	AllowedHosts    func() []string
+	NoDefaultForges func() bool
+	AllowBypass     func() bool
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
 	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it
 	// (the listen host when empty).
 	ProxyListen string
 	ProxyVMHost string
-	// Dial is the proxy's upstream dialer (a seam for tests).
-	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
-	Now  func() time.Time
+	// Resolve and Dial are the proxy's name lookup and upstream dialer (seams for tests).
+	Resolve func(ctx context.Context, host string) ([]net.IP, error)
+	Dial    func(ctx context.Context, network, addr string) (net.Conn, error)
+	Now     func() time.Time
 }
 
 // Item is one thing for the plugin in claude-agent.next.
 type Item struct {
-	Type      string          `json:"type"` // perm.ask, cred.ask, event, queue
+	Type      string          `json:"type"` // perm.ask, cred.ask, net.ask, event, queue
 	AskID     string          `json:"ask_id,omitempty"`
 	Project   string          `json:"project,omitempty"`
 	SessionID string          `json:"session_id,omitempty"`
@@ -113,10 +121,24 @@ type projState struct {
 	hosts   []string
 }
 
+// extraHosts are the hosts besides the base and git hosts: the owner's list, the forges, and what the
+// owner approved for this project.
+func (m *Manager) extraHosts(p *projState) []string {
+	var out []string
+	if m.opt.AllowedHosts != nil {
+		out = append(out, m.opt.AllowedHosts()...)
+	}
+	if m.opt.NoDefaultForges == nil || !m.opt.NoDefaultForges() {
+		out = append(out, ForgeHosts...)
+	}
+	return append(out, m.net.hosts(p.Dir)...)
+}
+
 // Manager is the Mac side of the agent: projects, the slot, the queue, asks.
 type Manager struct {
 	opt Options
 	q   *diskQueue
+	net *netState
 
 	mu       sync.Mutex
 	projs    map[string]*projState
@@ -130,6 +152,9 @@ type Manager struct {
 	usage    usageDay
 	lastCost map[string]float64
 	closed   bool
+
+	netFlights map[string]*netFlight
+	netDenied  map[string]time.Time
 
 	kick     chan struct{}
 	stop     chan struct{}
@@ -166,6 +191,7 @@ func New(opt Options) *Manager {
 		m.q.path = filepath.Join(opt.Dir, QueueFile)
 	}
 	m.q.load()
+	m.net = newNetState(opt.Dir)
 	return m
 }
 
@@ -328,9 +354,14 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	hosts := AllowList(m.opt.GitHosts(), SwiftPMHosts(p.Dir))
-	px, err := StartProxy(ProxyConfig{Listen: m.opt.ProxyListen, Hosts: hosts, Dial: m.opt.Dial,
-		Logf: log.Printf})
+	proxyToken, err := NewToken()
+	if err != nil {
+		return nil, err
+	}
+	hosts := AllowList(m.opt.GitHosts(), m.extraHosts(p))
+	px, err := StartProxy(ProxyConfig{Listen: m.opt.ProxyListen, AuthToken: proxyToken, Hosts: hosts, Exempt: m.opt.GitHosts(),
+		Resolve: m.opt.Resolve, Dial: m.opt.Dial, Logf: log.Printf,
+		Ask: func(ctx context.Context, host string) bool { return m.askHost(ctx, p, host) }})
 	if err != nil {
 		return nil, fmt.Errorf("proxy: %w", err)
 	}
@@ -339,7 +370,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	if host == "" {
 		host, _, _ = net.SplitHostPort(px.Addr())
 	}
-	proxyURL := "http://" + net.JoinHostPort(host, port)
+	proxyURL := "http://rubi:" + proxyToken + "@" + net.JoinHostPort(host, port)
 	env := map[string]string{"RUBI_RUN_TOKEN": token, "HTTPS_PROXY": proxyURL, "https_proxy": proxyURL,
 		"GIT_TERMINAL_PROMPT": "0"}
 	conn, err := p.vm.Start(sctx, StartSpec{Project: p.Project, Env: env})
@@ -1078,4 +1109,50 @@ func (m *Manager) probe(ctx context.Context) {
 		m.login = res
 		m.mu.Unlock()
 	}
+}
+
+// netDenyFor is how long a refused net.ask is remembered, so a program that retries doesn't prompt again.
+var netDenyFor = 5 * time.Minute
+
+type netFlight struct {
+	done chan struct{}
+	ok   bool
+}
+
+// askHost is the proxy's question about a host that isn't on the list: a net.ask item the plugin
+// answers with decide. An allow is recorded for the project (agent-net.json) and the proxy adds it. One
+// question per host at a time; a denial is remembered for a few minutes.
+func (m *Manager) askHost(ctx context.Context, p *projState, host string) bool {
+	key := p.ID + "|" + host
+	m.mu.Lock()
+	if t, ok := m.netDenied[key]; ok && m.opt.Now().Sub(t) < netDenyFor {
+		m.mu.Unlock()
+		return false
+	}
+	if f := m.netFlights[key]; f != nil {
+		m.mu.Unlock()
+		select {
+		case <-f.done:
+			return f.ok
+		case <-ctx.Done():
+			return false
+		}
+	}
+	f := &netFlight{done: make(chan struct{})}
+	if m.netFlights == nil {
+		m.netFlights = map[string]*netFlight{}
+		m.netDenied = map[string]time.Time{}
+	}
+	m.netFlights[key] = f
+	m.mu.Unlock()
+	r := m.waitDecision(ctx, p.ID, Item{Type: "net.ask", Project: p.ID, Host: host, Op: "connect"})
+	f.ok = r.Behavior == "allow" && m.net.add(p.Dir, host)
+	m.mu.Lock()
+	delete(m.netFlights, key)
+	if !f.ok && len(m.netDenied) < 1024 {
+		m.netDenied[key] = m.opt.Now()
+	}
+	m.mu.Unlock()
+	close(f.done)
+	return f.ok
 }
