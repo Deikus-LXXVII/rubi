@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"testing"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -18,8 +19,12 @@ type kdfCache struct {
 }
 
 // MemoizeKDFForTests makes the password KDF remember its results for the rest of the process. Call it from
-// a test's TestMain; it must never be called by the product.
-func MemoizeKDFForTests() { kdfMemo.CompareAndSwap(nil, &kdfCache{keys: map[string][]byte{}}) }
+// a test's TestMain. It does nothing outside a test binary, so the product can't use it.
+func MemoizeKDFForTests() {
+	if testing.Testing() {
+		kdfMemo.CompareAndSwap(nil, &kdfCache{keys: map[string][]byte{}})
+	}
+}
 
 func (c *kdfCache) derive(password string, salt []byte, k PasswordKDF) ([]byte, error) {
 	id := fmt.Sprintf("%d|%d|%d|%x|%s", k.Time, k.MemoryKiB, k.Threads, salt, password)

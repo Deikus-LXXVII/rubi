@@ -496,7 +496,8 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 	case "claude-agent.projects", "claude-agent.sessions", "claude-agent.messages", "claude-agent.start", "claude-agent.send",
 		"claude-agent.rename", "claude-agent.fork", "claude-agent.interrupt", "claude-agent.close", "claude-agent.mode",
 		"claude-agent.next", "claude-agent.decide", "claude-agent.status", "claude-agent.usage_mode", "claude-agent.limits",
-		"claude-agent.role.list", "claude-agent.role.get", "claude-agent.role.history", "claude-agent.role.diff", "claude-agent.role.put":
+		"claude-agent.role.list", "claude-agent.role.get", "claude-agent.role.history", "claude-agent.role.diff", "claude-agent.role.put",
+		"claude-agent.ssh.scan", "claude-agent.ssh.register", "claude-agent.ssh.list", "claude-agent.ssh.remove", "claude-agent.ssh.audit":
 		return h.Agent.Handle(ctx, env.Op, env.Args)
 	case "agent-setup.status", "agent-setup.run", "agent-setup.login.code", "agent-setup.login.open",
 		"agent-setup.project.add", "agent-setup.project.remove", "agent-setup.cancel":

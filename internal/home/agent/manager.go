@@ -416,17 +416,33 @@ func badMountPath(dir string) bool {
 }
 
 // Within says whether p is root or inside it. The comparison ignores case: the default macOS file system
-// does, so /users/ALICE is /Users/alice there. (On a case-sensitive system this only ever denies more.)
+// does, so /users/ALICE is /Users/alice there. (On a case-sensitive system this only ever denies more.) The
+// file system may equate more than case folding does (APFS: Unicode normalization forms, the Kelvin sign), so when
+// the folded text doesn't match, p and its parents that exist are compared with root as files (os.SameFile).
 func Within(p, root string) bool {
 	if root == "" {
 		return false
 	}
 	sep := string(filepath.Separator)
 	root = strings.TrimSuffix(root, sep)
-	if len(p) < len(root) || !strings.EqualFold(p[:len(root)], root) {
+	if len(p) >= len(root) && strings.EqualFold(p[:len(root)], root) &&
+		(len(p) == len(root) || p[len(root)] == filepath.Separator) {
+		return true
+	}
+	rs, err := os.Stat(root)
+	if err != nil {
 		return false
 	}
-	return len(p) == len(root) || p[len(root)] == filepath.Separator
+	for d := p; ; {
+		if st, err := os.Stat(d); err == nil && os.SameFile(st, rs) {
+			return true
+		}
+		up := filepath.Dir(d)
+		if up == d {
+			return false
+		}
+		d = up
+	}
 }
 
 func (m *Manager) protected(dir string) bool {

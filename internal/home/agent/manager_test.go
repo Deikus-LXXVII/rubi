@@ -994,6 +994,24 @@ func TestWithinIgnoresCase(t *testing.T) {
 	}
 }
 
+// The file system may equate names that case folding doesn't: APFS ignores the Unicode normalization form.
+func TestWithinFileSystemEquivalence(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "caf\u00e9") // NFC
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nfd := filepath.Join(filepath.Dir(root), "cafe\u0301")
+	if _, err := os.Stat(nfd); err != nil {
+		t.Skip("this file system tells the two spellings apart, so there is nothing to equate")
+	}
+	if !Within(filepath.Join(nfd, "sub"), root) || !Within(nfd, root) {
+		t.Error("another normalization form of the same directory is outside it")
+	}
+	if Within(filepath.Join(filepath.Dir(root), "other", "sub"), root) {
+		t.Error("an unrelated path is inside")
+	}
+}
+
 func TestProtectedDirCaseAndLinks(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
