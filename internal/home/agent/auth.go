@@ -2,11 +2,11 @@ package agent
 
 // The sign-in shared by all projects. Claude's credential is one long-lived token (`claude setup-token`,
 // subscription, scope user:inference). It lives in a directory of Rubi Home on the Mac, <helper dir>/agent-auth
-// (0700, token in agent-auth/token/), bind-mounted read-only at /rubi-auth in every project VM (outside /work)
-// and read-write only in the short-lived sign-in container. (An Apple container volume is a block device and
-// can't be attached to two running VMs; a bind mount can.) The runner reads the token at each query start into
-// the SDK child's environment. Only the token is shared: each project keeps its own CLAUDE_CONFIG_DIR.
-// Home never reads the token: the status only stats the file (size > 0) and reads the non-secret metadata file.
+// (0700, token in agent-auth/token/, file 0600). Only two things touch it: the short-lived sign-in container,
+// which mounts the directory read-write at /rubi-auth and writes the token there (and is destroyed after), and
+// Home's auth gateway (gateway.go), which reads it to add it to requests for api.anthropic.com. A project VM never
+// mounts the directory and never holds the token. The status only stats the file (size > 0) and reads the
+// non-secret metadata file.
 
 import (
 	"context"

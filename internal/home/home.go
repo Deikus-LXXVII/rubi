@@ -67,8 +67,8 @@ type Config struct {
 	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
 	// AgentAuthDir is the directory that holds the sign-in shared by all projects (<helper dir>/agent-auth by
-	// default, 0700, made by Home). It is bind-mounted read-only at /rubi-auth in every project VM; Home never
-	// reads the token in it. No project may be, contain or sit inside it.
+	// default, 0700, made by Home). The token in it is used only by Home's auth gateway; a project VM never
+	// mounts it or holds the token. No project may be, contain or sit inside it.
 	AgentAuthDir string `json:"agent_auth_dir,omitempty"`
 	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
 	AgentRunnerDir string `json:"agent_runner_dir,omitempty"`
