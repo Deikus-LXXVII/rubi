@@ -1425,6 +1425,11 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 		m.mu.Unlock()
 		return map[string]any{"id": res.ID}, nil
 	default:
+		if slot != nil { // not a session this role is already running: it must be one of its own
+			if err := m.ownsSession(ctx, r, p, it.Session, slot); err != nil {
+				return nil, err
+			}
+		}
 		var res json.RawMessage
 		err := r.Call(ctx, "session.send", map[string]any{"id": it.Session, "text": it.Text, "from": it.From, "steer": it.Steer,
 			"max_subagents": m.usageNow().For(it.Bot).Subagents}, &res)
@@ -1717,12 +1722,12 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		m.wake() // a raised limit may let the queue go
 		return m.opStatus(ctx, false), nil
 	case "sessions":
-		return m.forward(ctx, in.Project, in.Role, "session.list", map[string]any{})
+		return m.forwardAs(ctx, fwdRead, in.Project, in.Role, "session.list", map[string]any{})
 	case "messages":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		return m.forward(ctx, in.Project, in.Role, "session.messages", map[string]any{"id": in.ID, "limit": min(max(in.Limit, 0), 500)})
+		return m.forwardAs(ctx, fwdRead, in.Project, in.Role, "session.messages", map[string]any{"id": in.ID, "limit": min(max(in.Limit, 0), 500)})
 	case "start":
 		if strings.TrimSpace(in.Prompt) == "" {
 			return nil, errors.New("the prompt is empty")
@@ -1773,12 +1778,12 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		return m.forward(ctx, in.Project, in.Role, "session.interrupt", map[string]any{"id": in.ID})
+		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.interrupt", map[string]any{"id": in.ID})
 	case "close":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		res, err := m.forward(ctx, in.Project, in.Role, "session.close", map[string]any{"id": in.ID})
+		res, err := m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.close", map[string]any{"id": in.ID})
 		if err == nil {
 			m.mu.Lock()
 			if sl := m.exactLocked(m.roleKey(in.Project, in.Role), in.ID); sl != nil {
@@ -1792,7 +1797,7 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if err != nil || !okID(in.ID) || in.Mode == "" {
 			return nil, errors.New("a session id and a valid mode are needed")
 		}
-		return m.forward(ctx, in.Project, in.Role, "session.mode", map[string]any{"id": in.ID, "mode": mode})
+		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.mode", map[string]any{"id": in.ID, "mode": mode})
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
 }
@@ -1825,14 +1830,96 @@ func archivedErr(name string, err error) error {
 	return fmt.Errorf("role %s is archived; it can't start sessions", clip(name, 40))
 }
 
+// How a forwarded call treats a role's VM: fwdRead only looks (a stopped VM answers empty and is not started, a
+// running one is not kept up by it), fwdLive acts on a running VM only, and fwdBoot starts the VM if needed.
+const (
+	fwdBoot = iota
+	fwdRead
+	fwdLive
+)
+
 func (m *Manager) forward(ctx context.Context, project, role, method string, params any) (any, error) {
+	return m.forwardAs(ctx, fwdBoot, project, role, method, params)
+}
+
+// runningRunner is the project's runner if it is up now (no start, no touch).
+func (m *Manager) runningRunner(p *projState) *Runner {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r := p.runner; r != nil {
+		select {
+		case <-r.Done():
+		default:
+			return r
+		}
+	}
+	return nil
+}
+
+// stoppedAnswer is what a read or a live-only call gets from a role whose VM is stopped.
+func stoppedAnswer(method string, name string) (any, error) {
+	switch method {
+	case "session.list":
+		return map[string]any{"sessions": []any{}, "vm_state": string(StateStopped)}, nil
+	case "session.messages":
+		return map[string]any{"messages": []any{}, "vm_state": string(StateStopped)}, nil
+	case "session.close":
+		return map[string]any{"ok": true, "vm_state": string(StateStopped)}, nil
+	}
+	return nil, fmt.Errorf("role %s has no running VM; nothing to do", clip(name, 40))
+}
+
+// ownsSession refuses a session id that isn't one of the role's own: neither one of its slots nor in its runner's
+// session list. An isolated role never touches a transcript that lives elsewhere. The legacy role has no sibling
+// to confuse it with.
+func (m *Manager) ownsSession(ctx context.Context, r *Runner, p *projState, id string, self *slotState) error {
+	if p.Role == "" || id == "" {
+		return nil
+	}
+	m.mu.Lock()
+	sl := m.exactLocked(p.key(), id)
+	known := sl != nil && sl != self // self is the slot a send just booked for this very id
+	m.mu.Unlock()
+	if known {
+		return nil
+	}
+	var res struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := r.Call(cctx, "session.list", map[string]any{}, &res); err != nil {
+		return fmt.Errorf("role %s: can't check that session %s is its own: %w", clip(p.RoleName, 40), clip(id, 40), err)
+	}
+	for _, s := range res.Sessions {
+		if s.ID == id {
+			return nil
+		}
+	}
+	return fmt.Errorf("session %s doesn't belong to role %s", clip(id, 40), clip(p.RoleName, 40))
+}
+
+func (m *Manager) forwardAs(ctx context.Context, how int, project, role, method string, params any) (any, error) {
 	p, err := m.projectFor(project, role)
 	if err != nil {
 		return nil, err
 	}
-	r, err := m.ensure(ctx, p)
-	if err != nil {
+	var r *Runner
+	if p.Role != "" && how != fwdBoot {
+		if r = m.runningRunner(p); r == nil {
+			return stoppedAnswer(method, p.RoleName)
+		}
+	} else if r, err = m.ensure(ctx, p); err != nil {
 		return nil, err
+	}
+	if pm, ok := params.(map[string]any); ok {
+		if id, _ := pm["id"].(string); id != "" {
+			if err := m.ownsSession(ctx, r, p, id, nil); err != nil {
+				return nil, err
+			}
+		}
 	}
 	var res json.RawMessage
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)

@@ -19,6 +19,8 @@ type roleEnv struct {
 	vms   map[string]*Fake // role key -> fake
 	projs map[string]Project
 	clock time.Time
+	// setup, when set before a start, configures each role runner (key is the role id, or the project id).
+	setup func(key string, fr *FakeRunner)
 }
 
 func newRoleEnv(t *testing.T, mods ...func(*Options)) *roleEnv {
@@ -32,7 +34,11 @@ func newRoleEnv(t *testing.T, mods ...func(*Options)) *roleEnv {
 			if p.Role != "" {
 				k = p.Role
 			}
-			f := &Fake{}
+			f := &Fake{Setup: func(fr *FakeRunner) {
+				if re.setup != nil {
+					re.setup(k, fr)
+				}
+			}}
 			re.vms[k], re.projs[k] = f, p
 			return f
 		}
