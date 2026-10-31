@@ -125,22 +125,21 @@ export class FakeQuery implements SdkQuery {
       parent_tool_use_id: o.agentId ? "toolu_parent" : null,
       message: { content: [{ type: "tool_use", id, name, input }] },
     });
-    const hook = this.options.hooks.PreToolUse[0]!.hooks[0]!;
+    // As the SDK does: every PreToolUse entry whose matcher matches the tool name runs, together; a deny wins.
+    const hookInput = {
+      hook_event_name: "PreToolUse" as const,
+      session_id: this.sessionId,
+      cwd: this.options.cwd,
+      permission_mode: this.options.permissionMode,
+      tool_name: name,
+      tool_input: input,
+      tool_use_id: id,
+      ...(o.agentId ? { agent_id: o.agentId, agent_type: o.agentType ?? "general-purpose" } : {}),
+    };
     const ac = new AbortController();
-    const hookP = hook(
-      {
-        hook_event_name: "PreToolUse",
-        session_id: this.sessionId,
-        cwd: this.options.cwd,
-        permission_mode: this.options.permissionMode,
-        tool_name: name,
-        tool_input: input,
-        tool_use_id: id,
-        ...(o.agentId ? { agent_id: o.agentId, agent_type: o.agentType ?? "general-purpose" } : {}),
-      },
-      id,
-      { signal: ac.signal },
-    );
+    const hookP = Promise.all(
+      this.options.hooks.PreToolUse.filter((e) => !e.matcher || new RegExp(e.matcher).test(name)).flatMap((e) => e.hooks.map((h) => h(hookInput, id, { signal: ac.signal }))),
+    ).then((outs) => outs.find((r) => (r.hookSpecificOutput as { permissionDecision?: string } | undefined)?.permissionDecision === "deny") ?? outs.find((r) => Object.keys(r).length > 0) ?? {});
     let timedOut = false;
     let out: Record<string, unknown>;
     if (o.hookTimeoutMs !== undefined) {

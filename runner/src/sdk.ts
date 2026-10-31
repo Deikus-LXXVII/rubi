@@ -59,7 +59,7 @@ export interface QueryOptions {
   env: Record<string, string>;
   disallowedTools: string[];
   abortController: AbortController;
-  hooks: { PreToolUse: { timeout: number; hooks: HookFn[] }[] };
+  hooks: { PreToolUse: { matcher?: string; timeout: number; hooks: HookFn[] }[] };
   canUseTool: CanUseToolFn;
   stderr?: (data: string) => void;
 }

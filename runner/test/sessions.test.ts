@@ -114,7 +114,7 @@ describe("perm.ask from the PreToolUse hook", () => {
     await h.waitEvent("result");
     assert.equal(outcome.timedOut, true);
     assert.equal(outcome.allowed, false);
-    assert.equal(h.sdk.last.options.hooks.PreToolUse[0]!.timeout, 300 + 6 * 3600);
+    assert.equal(h.sdk.last.options.hooks.PreToolUse[0]!.timeout, 300);
   });
 
   it("denies a call that was asked when Home goes away", async () => {

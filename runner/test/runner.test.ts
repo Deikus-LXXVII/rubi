@@ -163,7 +163,7 @@ describe("protocol robustness", () => {
 });
 
 describe("options of every query", () => {
-  it("sets cwd, project settings, bypass allowed, the mode from Home, env, disallowed tools, hook timeout 300 + the longest subagent wait", async () => {
+  it("sets cwd, project settings, bypass allowed, the mode from Home, env, disallowed tools, hook timeout 300", async () => {
     const h = await new Home().up();
     const { id } = await h.ok("session.start", { prompt: "hi", mode: "acceptEdits" });
     const o = h.sdk.last.options;
@@ -180,7 +180,7 @@ describe("options of every query", () => {
     assert.equal(o.env.CLAUDE_CONFIG_DIR, "/work/.rubi/claude");
     assert.equal(o.env.HTTPS_PROXY, "http://proxy.invalid:3128");
     assert.equal(o.env.DISABLE_TELEMETRY, "1");
-    assert.equal(o.hooks.PreToolUse[0]!.timeout, 300 + 6 * 3600);
+    assert.equal(o.hooks.PreToolUse[0]!.timeout, 300);
     assert.deepEqual(o.disallowedTools, disallowedEditTools("/work"));
     for (const r of ["Edit(//work/.rubi/**)", "Edit(//work/.claude/**)", "Edit(//work/.mcp.json)", "Read(//work/.rubi/**)"]) assert.ok(o.disallowedTools.includes(r), r);
     assert.equal(typeof o.canUseTool, "function");

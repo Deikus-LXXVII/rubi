@@ -112,6 +112,9 @@ describe("real SDK + real claude against the scripted API", { skip: !enabled }, 
       sub: [{ tools: [{ name: "$AGENT", input: { subagent_type: "general-purpose", description: "sub work", prompt: "MOCKSCRIPT:subwork do it" } }] }, { text: "SUB-LAUNCHED" }],
       subwork: [{ tools: [{ name: "Bash", input: { command: "echo sub > marker3.txt", description: "sub" } }] }, { text: "SUB-DONE" }],
       ask: [{ tools: [{ name: "AskUserQuestion", input: { questions: [{ question: "Which one?", header: "Pick", multiSelect: false, options: [{ label: "A", description: "a" }, { label: "B", description: "b" }] }] } }] }, { text: "ASKED-DONE" }],
+      par: [{ tools: [{ name: "$AGENT", input: { subagent_type: "general-purpose", description: "w1", prompt: "MOCKSCRIPT:subwork do it" } }, { name: "$AGENT", input: { subagent_type: "general-purpose", description: "w2", prompt: "MOCKSCRIPT:subwork do it" } }, { name: "$AGENT", input: { subagent_type: "general-purpose", description: "w3", prompt: "MOCKSCRIPT:subwork do it" } }] }, { text: "PAR-DONE" }],
+      nest: [{ tools: [{ name: "$AGENT", input: { subagent_type: "general-purpose", description: "outer", prompt: "MOCKSCRIPT:nestchild go" } }] }, { text: "NEST-DONE" }],
+      nestchild: [{ tools: [{ name: "$AGENT", input: { subagent_type: "general-purpose", description: "inner", prompt: "MOCKSCRIPT:subwork do it" } }] }, { text: "CHILD-DONE" }],
       two: [{ text: "TWO-DONE" }],
       one: [{ text: "ONE-DONE" }],
     });
@@ -235,7 +238,35 @@ describe("real SDK + real claude against the scripted API", { skip: !enabled }, 
     await child.result(f.id, 1);
   });
 
+  it("subagent cap: parallel Agent calls wait for a place instead of failing, and every tool is still asked about", async () => {
+    child.askHandler = () => ({ behavior: "allow" });
+    const { id } = await child.call("session.start", { prompt: "MOCKSCRIPT:par go", mode: "bypassPermissions", max_subagents: 1 });
+    await child.result(id, 1);
+    // Three calls, one place: the others waited (announced), then went on when a subagent ended.
+    assert.ok(child.events("waiting", id).some((e) => !e.done), "a waiting event");
+    assert.equal(child.events("waiting", id).filter((e) => e.done).length, child.events("waiting", id).filter((e) => !e.done && !e.still).length);
+    await child.waitFor(() => child.events("subagents", id).at(-1)?.count === 0);
+    const asked = child.asks.filter((x) => x.session_id === id);
+    assert.equal(asked.filter((x) => x.tool === "Agent").length, 3, "the matcher split asks about the subagent tool too");
+    assert.equal(asked.filter((x) => x.tool === "Bash" && x.agent_id).length, 3, "and about the subagents' own tools");
+    assert.equal(fs.existsSync(path.join(work, "marker3.txt")), true);
+  });
+
+  it("subagent cap: a subagent starting its own is not held back by the place it holds", async () => {
+    child.askHandler = () => ({ behavior: "allow" });
+    const { id } = await child.call("session.start", { prompt: "MOCKSCRIPT:nest go", mode: "bypassPermissions", max_subagents: 1 });
+    await child.result(id, 1);
+    await child.waitFor(() => child.events("subagents", id).at(-1)?.count === 0);
+    assert.equal(child.events("waiting", id).length, 0);
+    assert.ok(child.asks.some((x) => x.session_id === id && x.tool === "Bash" && x.agent_id), "the inner subagent ran and was asked about");
+  });
+
   it("usage.probe answers without a model call", async () => {
+    // Earlier tests may still have a late model call in flight (a subagent's hand-back wakes its session): let them settle.
+    for (let last = -1; last !== mock.requests.length; ) {
+      last = mock.requests.length;
+      await new Promise((r) => setTimeout(r, 700));
+    }
     const before = mock.requests.length;
     const r = await child.call("usage.probe", {});
     assert.equal(typeof r.logged_in, "boolean");
