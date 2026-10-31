@@ -385,6 +385,7 @@ func (s *Store) reserve(r *Role) (release func(), err error) {
 func (s *Store) Put(in PutArgs) (*PutResult, error) {
 	id := in.ID
 	var cur *Role
+	spent := newUsed()
 	if id != "" {
 		if !IsID(id) {
 			return nil, errors.New("bad role id")
@@ -409,6 +410,7 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 		if cur.Version >= MaxVersions {
 			return nil, fmt.Errorf("role refused: %d versions is the most a role keeps", MaxVersions)
 		}
+		spent = s.loadUsed(id, cur.Version)
 	} else if in.BaseVersion != 0 {
 		return nil, errors.New("a new role has base_version 0")
 	}
@@ -417,6 +419,13 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 	}
 
 	r, p := s.normalize(in.Spec, cur)
+	carry(r, cur, in.By)
+	if c := in.Change; c != nil {
+		r.Change = &Change{Op: clipText(c.Op, 64), Tier: min(max(c.Tier, 0), 2), Summary: clipText(c.Summary, 200)}
+		if approvalRE.MatchString(c.Approval) {
+			r.Change.Approval = c.Approval
+		}
+	}
 
 	// The content of every skill: the blobs sent (re-hashed here) and the ones already stored.
 	content := map[string][]byte{}
@@ -455,6 +464,7 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 		}
 	}
 	s.checkSkills(r, content, &p)
+	checkApprovals(r, cur, spent, &p)
 	if len(p) > 0 {
 		return nil, &ValidationError{Reasons: p}
 	}
@@ -484,12 +494,6 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 		r.CreatedBy, r.CreatedAt = cur.CreatedBy, cur.CreatedAt
 	}
 	r.ChangedBy, r.ChangedAt = in.By, now
-	if c := in.Change; c != nil {
-		r.Change = &Change{Op: clipText(c.Op, 64), Tier: min(max(c.Tier, 0), 2), Summary: clipText(c.Summary, 200)}
-		if approvalRE.MatchString(c.Approval) {
-			r.Change.Approval = c.Approval
-		}
-	}
 
 	release, err := s.reserve(r)
 	if err != nil {
@@ -501,6 +505,8 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 		return nil, err
 	}
 	ok = true
+	spent.addVersion(cur, r, func(sha string) int { return len(content[sha]) })
+	_ = s.saveUsed(id, spent) // a missing or stale used.json is rebuilt from the versions
 	s.gc(id, r.Version)
 	res := &PutResult{ID: id, Version: r.Version, Skills: []SkillState{}}
 	for _, sk := range r.Skills {
