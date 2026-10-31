@@ -66,11 +66,35 @@ func (p *problems) text(field, s string, max int, multi bool) {
 		return
 	}
 	for _, r := range s {
-		if r == 0x7f || (r < 0x20 && !(multi && (r == '\n' || r == '\t' || r == '\r'))) {
+		if r == 0x7f || (r >= 0x80 && r < 0xa0) || (r < 0x20 && !(multi && (r == '\n' || r == '\t' || r == '\r'))) {
 			p.addf("%s has a control character", field)
 			return
 		}
+		if skillscan.IsInvisible(r) {
+			p.addf("%s has an invisible character (U+%04X)", field, r)
+			return
+		}
 	}
+}
+
+// scanText refuses a free text that the skill scanner would reject or flag. A skill with a flag can be held until
+// someone accepts the flag; instructions, prompts and descriptions have no such state, so any hit refuses them (the
+// way out is to reword, or to add the host to the role's hosts, which is a widening that needs its own approval).
+func (p *problems) scanText(field, s string, hosts []string) {
+	if s == "" || !utf8.ValidString(s) {
+		return
+	}
+	hits := skillscan.ScanText(s, hosts)
+	if len(hits) == 0 {
+		return
+	}
+	var ids []string
+	for _, h := range hits {
+		if len(ids) < 4 {
+			ids = append(ids, fmt.Sprintf("%s (line %d)", h.ID, h.Line))
+		}
+	}
+	p.addf("%s refused by the text scan: %s", field, strings.Join(ids, ", "))
 }
 
 func inList(list []string, s string) bool {
@@ -333,6 +357,16 @@ func (s *Store) normalize(spec *Role, cur *Role) (*Role, problems) {
 		r.Agents = append(r.Agents, a)
 	}
 	sort.Slice(r.Agents, func(i, j int) bool { return r.Agents[i].Name < r.Agents[j].Name })
+
+	// The free texts: hidden text, secrets, exfiltration shapes and override or widening claims are refused.
+	scanHosts := append(append([]string{}, r.Hosts...), s.baseHosts()...)
+	p.scanText("description", r.Description, scanHosts)
+	p.scanText("instructions", r.Instructions, scanHosts)
+	for _, a := range r.Agents {
+		n := clipText(a.Name, 48)
+		p.scanText("agent "+n+" description", a.Description, scanHosts)
+		p.scanText("agent "+n+" prompt", a.Prompt, scanHosts)
+	}
 
 	// Skills: the shape here; the content, scan and signature in checkSkills.
 	r.Skills = []Skill{}
