@@ -11,7 +11,7 @@ import (
 )
 
 // ScannerVersion changes whenever a rule or a limit changes, so a stored result can be recognised as stale.
-const ScannerVersion = "skillscan/1"
+const ScannerVersion = "skillscan/2"
 
 // Limits (design section 7).
 const (
@@ -52,7 +52,7 @@ var nameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`)
 // ruleOrder fixes the order of hits within one line.
 var ruleOrder = []string{
 	"fmt.utf8", "fmt.control", "fmt.size", "fmt.lines", "fmt.name", "fmt.description", "fmt.frontmatter",
-	"hid.invisible", "hid.bidi", "hid.tag", "hid.ansi", "hid.comment", "hid.dataurl", "hid.hex", "hid.base64",
+	"hid.invisible", "hid.bidi", "hid.tag", "hid.ansi", "hid.comment", "hid.shell", "hid.dataurl", "hid.hex", "hid.base64",
 	"sec.anthropic", "sec.github", "sec.gitlab", "sec.slack", "sec.aws", "sec.google", "sec.npm", "sec.pem",
 	"sec.bearer", "sec.assign", "sec.entropy",
 	"exf.network", "exf.credential", "exf.url", "ovr.instruction", "wid.claim",
@@ -146,6 +146,8 @@ func Scan(name string, content []byte, allowedHosts []string) Result {
 			}
 		case "description":
 			desc, haveDesc = p.value, true
+			// The emitted text is the decoded value: every per-line rule runs over it too (the raw line is scanned below).
+			scanLine(s, p.line, p.value, allowedHosts)
 			if strings.TrimSpace(p.value) == "" || utf8.RuneCountInString(p.value) > MaxDescription {
 				s.add("fmt.description", p.line, lines[p.line-1], 0, nil)
 			}
@@ -232,6 +234,7 @@ var (
 	b64RunRe    = regexp.MustCompile(`[A-Za-z0-9+/]{200,}={0,2}`)
 	entropyTok  = regexp.MustCompile(`[A-Za-z0-9+/=_]{32,}`)
 	dataURLRe   = regexp.MustCompile(`(?i)\bdata:(?:[a-z0-9.+-]+/[a-z0-9.+-]+)?(?:;[^,\s]*)?,`)
+	shellRe     = regexp.MustCompile("!`|(?:`{3,}|~{3,})\\s*!")
 	ansiRe      = regexp.MustCompile(`(?i)(?:\x1b|\\x1b|\\033|\\e|\\u001b)\[`)
 	netToolRe   = regexp.MustCompile(`\b(?:curl|wget|nc|ncat|socat|scp|rsync|ssh|ftp|telnet)\b`)
 	dnsToolRe   = regexp.MustCompile(`\b(?:dig|nslookup)\b`)
@@ -272,6 +275,9 @@ func scanLine(s *scanner, ln int, raw string, allowed []string) {
 	}
 	if i := strings.Index(raw, "<!--"); i >= 0 {
 		s.add("hid.comment", ln, raw, i, spans)
+	}
+	if loc := shellRe.FindStringIndex(raw); loc != nil {
+		s.add("hid.shell", ln, raw, loc[0], spans)
 	}
 	if loc := dataURLRe.FindStringIndex(raw); loc != nil {
 		s.add("hid.dataurl", ln, raw, loc[0], spans)

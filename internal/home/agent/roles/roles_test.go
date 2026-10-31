@@ -87,11 +87,11 @@ func TestMaterializedLayoutByteExact(t *testing.T) {
 		t.Fatalf("plugin.json: %q", got)
 	}
 	// Frontmatter keeps only name and description; the body is unchanged.
-	if got, want := read("v1/plugin/skills/layout-notes/SKILL.md"), "---\nname: layout-notes\ndescription: \"Notes on the layout\"\n---\n# Layout\n\nUse a grid.\n"; got != want {
+	if got, want := read("v1/plugin/skills/layout-notes/SKILL.md"), "---\nname: 'layout-notes'\ndescription: 'Notes on the layout'\n---\n# Layout\n\nUse a grid.\n"; got != want {
 		t.Fatalf("SKILL.md: %q", got)
 	}
 	// The subagent's Bash is dropped (the role has no Bash); the markdown is rebuilt from fields.
-	if got, want := read("v1/plugin/agents/reviewer.md"), "---\nname: reviewer\ndescription: \"Reviews <diffs>\"\ntools: Read, Grep\nmodel: haiku\n---\nReview the change.\n"; got != want {
+	if got, want := read("v1/plugin/agents/reviewer.md"), "---\nname: 'reviewer'\ndescription: 'Reviews <diffs>'\ntools: Read, Grep\nmodel: haiku\n---\nReview the change.\n"; got != want {
 		t.Fatalf("agent: %q", got)
 	}
 	if g, _ := s.Get(res.ID, 0); strings.Join(g.Skills[0].Scan.Stripped, ",") != "version,model" {

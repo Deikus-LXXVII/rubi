@@ -73,9 +73,8 @@ func PluginJSON(r *Role) []byte {
 // intersected with the role's tools by normalize; an empty list leaves the line out (the subagent has the role's
 // base set, which it can't exceed).
 func AgentMD(a Agent) []byte {
-	d := strings.TrimSuffix(string(marshal(a.Description, false)), "\n")
 	var b strings.Builder
-	b.WriteString("---\nname: " + a.Name + "\ndescription: " + d + "\n")
+	b.WriteString("---\nname: " + skillscan.QuoteYAML(a.Name) + "\ndescription: " + skillscan.QuoteYAML(a.Description) + "\n")
 	if len(a.Tools) > 0 {
 		b.WriteString("tools: " + strings.Join(a.Tools, ", ") + "\n")
 	}
