@@ -184,3 +184,39 @@ func TestUsageModeOpSavesTheConfig(t *testing.T) {
 		t.Fatalf("saved: %+v", c)
 	}
 }
+
+func TestLimitsOpSavesTheConfig(t *testing.T) {
+	h, _, _ := agentHelper(t)
+	h.Agent.Close()
+	h.Agent = h.newAgent()
+	t.Cleanup(h.Agent.Close)
+	two, zero := 2, 0
+	if _, err := handle(t, h, "wrong", "claude-agent.limits", map[string]any{"per_profile": two}); err == nil {
+		t.Fatal("an unpaired caller changed the limits")
+	}
+	if _, err := handle(t, h, "tok", "claude-agent.limits", map[string]any{}); err == nil {
+		t.Fatal("an empty change")
+	}
+	for _, bad := range []map[string]any{{"per_profile": 0}, {"per_profile": 1000}, {"per_project": -1}, {"total": -1}} {
+		if _, err := handle(t, h, "tok", "claude-agent.limits", bad); err == nil {
+			t.Errorf("accepted %v", bad)
+		}
+	}
+	st, err := handle(t, h, "tok", "claude-agent.limits", map[string]any{"per_profile": two, "per_project": 3, "total": zero})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lim := st["limits"].(map[string]any)
+	c := h.Fresh()
+	if c.AgentMaxSessionsPerProfile != 2 || c.AgentMaxSessionsPerProject != 3 || c.AgentMaxSessions == nil || *c.AgentMaxSessions != 0 ||
+		lim["per_profile"] != float64(2) || lim["per_project"] != float64(3) || lim["total"] != float64(0) {
+		t.Fatalf("saved %+v, status %v", c, lim)
+	}
+	// The cap can be taken off again (0), and a value not given stays.
+	if _, err := handle(t, h, "tok", "claude-agent.limits", map[string]any{"per_project": 0}); err != nil {
+		t.Fatal(err)
+	}
+	if c := h.Fresh(); c.AgentMaxSessionsPerProject != 0 || c.AgentMaxSessionsPerProfile != 2 {
+		t.Fatalf("saved %+v", c)
+	}
+}

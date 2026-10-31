@@ -69,11 +69,11 @@ func (mu *multi) startAs(bot, project, prompt string) map[string]any {
 
 func TestPresetLimits(t *testing.T) {
 	for mode, want := range map[string]Limits{
-		"maximum":  {Mode: "maximum", PerProject: 1, Sessions: 0, Subagents: 0},
-		"medium":   {Mode: "medium", PerProject: 1, Sessions: 4, Subagents: 4},
-		"light":    {Mode: "light", PerProject: 1, Sessions: 1, Subagents: 2},
-		"":         {Mode: "medium", PerProject: 1, Sessions: 4, Subagents: 4},
-		"nonsense": {Mode: "medium", PerProject: 1, Sessions: 4, Subagents: 4},
+		"maximum":  {Mode: "maximum", PerProfile: 1, Sessions: 0, Subagents: 0},
+		"medium":   {Mode: "medium", PerProfile: 1, Sessions: 4, Subagents: 4},
+		"light":    {Mode: "light", PerProfile: 1, Sessions: 1, Subagents: 2},
+		"":         {Mode: "medium", PerProfile: 1, Sessions: 4, Subagents: 4},
+		"nonsense": {Mode: "medium", PerProfile: 1, Sessions: 4, Subagents: 4},
 	} {
 		if got := (UsageConfig{Default: mode}).For("bot-a"); got != want {
 			t.Errorf("%q: %+v, want %+v", mode, got, want)
@@ -85,7 +85,7 @@ func TestPresetLimits(t *testing.T) {
 	if l.Subagents != 5 || !l.Custom || l.Sessions != 1 {
 		t.Errorf("override: %+v", l)
 	}
-	if l := (UsageConfig{Default: "medium", MaxSubagents: &zero, MaxSessionsPerProject: 2}).For(""); l.Subagents != 0 || l.PerProject != 2 || !l.Custom {
+	if l := (UsageConfig{Default: "medium", MaxSubagents: &zero, MaxSessionsPerProfile: 2}).For(""); l.Subagents != 0 || l.PerProfile != 2 || !l.Custom {
 		t.Errorf("no cap: %+v", l)
 	}
 	if l := (UsageConfig{Default: "medium", MaxSubagents: new(int)}).For(""); l.Subagents != 0 {
@@ -412,7 +412,7 @@ func TestIdleTTLSparesOnlyTheSlotWithAnOpenAsk(t *testing.T) {
 	}
 	// A start still being handed over (no session id yet) gets the delivery time on top.
 	mu.m.mu.Lock()
-	mu.m.slots = append(mu.m.slots, &slotState{project: "web-app", turn: true, last: now.Add(-SlotIdleTTL - time.Minute)})
+	mu.m.slots = append(mu.m.slots, &slotState{project: "web-app", role: "web-app", turn: true, last: now.Add(-SlotIdleTTL - time.Minute)})
 	mu.m.mu.Unlock()
 	mu.m.checkSlot()
 	if mu.running() != 2 {

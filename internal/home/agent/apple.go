@@ -113,8 +113,12 @@ var nameUnsafe = regexp.MustCompile(`[^a-z0-9-]+`)
 // containerName is the container's id for a project: stable, so a leftover from a crash is found and
 // removed by the next start.
 func containerName(p Project) string {
-	sum := sha256.Sum256([]byte(p.Dir))
-	slug := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(p.ID), "-"), "-")
+	key, name := p.Dir, p.ID
+	if p.Role != "" { // one VM per role: the name carries the role's slug and a hash of dir|role
+		key, name = p.Dir+"|"+p.Role, p.RoleName
+	}
+	sum := sha256.Sum256([]byte(key))
+	slug := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(name), "-"), "-")
 	if len(slug) > 24 {
 		slug = slug[:24]
 	}
@@ -216,8 +220,16 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 	args := []string{a.bin(), "run", "-d", "--name", containerName(p), "--init",
 		"--network", a.network(), "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
 		"--tmpfs", "/tmp",
-		"--mount", "type=bind,source=" + p.Dir + ",target=/work",
-		"--workdir", "/work"}
+		"--mount", "type=bind,source=" + p.Dir + ",target=/work"}
+	if p.Role != "" {
+		// A role VM sees its own content (read-only) and its own config directory, nothing of any other role, no
+		// sign-in (the auth gateway holds it) and never the user's SSH agent (no --ssh).
+		args = append(args,
+			"--mount", "type=bind,source="+p.RoleDir+",target="+RoleMountDir+",readonly",
+			"--mount", "type=bind,source="+p.ClaudeDir+",target="+RoleClaudeDir,
+			"--env", "RUBI_ROLE_DIR="+RoleMountDir, "--env", "RUBI_CLAUDE_DIR="+RoleClaudeDir)
+	}
+	args = append(args, "--workdir", "/work")
 	if a.CPUs != "" {
 		args = append(args, "--cpus", a.CPUs)
 	}
@@ -375,8 +387,11 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 		a.setState(StateFailed)
 		return nil, err
 	}
-	if badMountPath(spec.Project.Dir) {
+	if badMountPath(spec.Project.Dir) || badMountPath(spec.Project.RoleDir) || badMountPath(spec.Project.ClaudeDir) {
 		return fail(errors.New("the project path can't be mounted (a comma or control character in it)"))
+	}
+	if r := spec.Project.Role; r != "" && (spec.Project.RoleDir == "" || spec.Project.ClaudeDir == "") {
+		return fail(fmt.Errorf("role %s has no directories to mount", r))
 	}
 	if _, err := exec.LookPath(a.bin()); err != nil && a.run == nil {
 		return fail(errors.New("the container tool isn't installed (https://github.com/apple/container)"))
@@ -402,6 +417,9 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	a.proj = spec.Project
 	a.mu.Unlock()
 	env, err := prepareEnv(ctx, spec, gateway)
+	if err == nil && spec.Project.Role != "" { // the exec doesn't depend on the container's own environment
+		env = withRoleEnv(env)
+	}
 	if err != nil {
 		_ = a.Stop(context.Background())
 		return fail(err)
@@ -413,6 +431,15 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	}
 	a.setState(StateRunning)
 	return c, nil
+}
+
+func withRoleEnv(env map[string]string) map[string]string {
+	out := make(map[string]string, len(env)+2)
+	for k, v := range env {
+		out[k] = v
+	}
+	out["RUBI_ROLE_DIR"], out["RUBI_CLAUDE_DIR"] = RoleMountDir, RoleClaudeDir
+	return out
 }
 
 // Exec implements VM.

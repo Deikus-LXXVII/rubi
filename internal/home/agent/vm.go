@@ -23,7 +23,21 @@ const (
 type Project struct {
 	ID  string
 	Dir string
+	// Role, when set, makes this the VM of one isolated role of the project (agent-roles.md section 3): Role is the
+	// role's id, RoleName its name (for the container's name), RoleDir the host directory mounted read-only at
+	// /rubi-role (agent-roles/<id>/content) and ClaudeDir the one mounted read-write at /rubi-claude
+	// (agent-roles/<id>/claude). All empty is the project's legacy role: today's VM, mounts and environment.
+	Role      string
+	RoleName  string
+	RoleDir   string
+	ClaudeDir string
 }
+
+// RoleMountDir and RoleClaudeDir are where a role VM sees its content and its config directory.
+const (
+	RoleMountDir  = "/rubi-role"
+	RoleClaudeDir = "/rubi-claude"
+)
 
 // StartSpec is what a VM needs to boot a project's runner. Env is handed to the runner through the exec
 // channel (never on a command line): RUBI_RUN_TOKEN, HTTPS_PROXY and so on.

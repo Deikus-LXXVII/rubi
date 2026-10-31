@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,7 +74,7 @@ func (mu *multi) startsOf(project string) int {
 func setLimits(per, total int) func(*Options) {
 	return func(o *Options) {
 		o.Usage = func() UsageConfig {
-			return UsageConfig{Default: ModeMaximum, MaxSessionsPerProject: per, MaxSessions: &total}
+			return UsageConfig{Default: ModeMaximum, MaxSessionsPerProfile: per, MaxSessions: &total}
 		}
 	}
 }
@@ -88,7 +90,7 @@ func TestTwoProjectsRunConcurrently(t *testing.T) {
 	eventually(t, "two slots", func() bool { return mu.running() == 2 })
 	st, _ := mu.op("status", nil)
 	slots := st["slots"].([]any)
-	if len(slots) != 2 || st["limits"].(map[string]any)["per_project"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(4) {
+	if len(slots) != 2 || st["limits"].(map[string]any)["per_profile"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(4) {
 		t.Fatalf("status: %v", st)
 	}
 	first := slots[0].(map[string]any)
@@ -126,7 +128,7 @@ func TestSecondSessionInProjectWaitsThenStarts(t *testing.T) {
 	mu := newMulti(t, []string{"my-project"})
 	mu.start("my-project", "first")
 	r := mu.start("my-project", "second")
-	want := "waiting: project my-project already has 1 session"
+	want := "waiting: role default (my-project) already has 1 session"
 	if r["queued"] != true || r["reason"] != want {
 		t.Fatalf("second: %v", r)
 	}
@@ -154,7 +156,7 @@ func TestQueuedItemCarriesTheReason(t *testing.T) {
 	mu.start("my-project", "first")
 	mu.start("my-project", "second")
 	it := pl.wait(t, "queue")
-	if it.Action != "queued" || it.Reason != "waiting: project my-project already has 1 session" {
+	if it.Action != "queued" || it.Reason != "waiting: role default (my-project) already has 1 session" {
 		t.Fatalf("queue item: %+v", it)
 	}
 }
@@ -165,7 +167,7 @@ func TestSeveralSessionsPerProject(t *testing.T) {
 	if a["id"] != "sess-1" || b["id"] != "sess-2" {
 		t.Fatalf("starts: %v %v", a, b)
 	}
-	if c := mu.start("my-project", "c"); c["queued"] != true || c["reason"] != "waiting: project my-project already has 2 sessions" {
+	if c := mu.start("my-project", "c"); c["queued"] != true || c["reason"] != "waiting: role default (my-project) already has 2 sessions" {
 		t.Fatalf("third: %v", c)
 	}
 	fr := mu.fakes["my-project"].Runner()
@@ -207,12 +209,12 @@ func TestZeroMeansNoGlobalCapAndDefaults(t *testing.T) {
 	}
 	// The defaults: medium for everyone (4 sessions per Bot), 16 on the computer, 1 per project.
 	c := UsageConfig{}
-	if l := c.For("bot-a"); l.PerProject != 1 || l.Sessions != 4 || l.Subagents != 4 || c.Machine() != 4 {
+	if l := c.For("bot-a"); l.PerProfile != 1 || l.Sessions != 4 || l.Subagents != 4 || c.Machine() != 4 {
 		t.Fatalf("defaults %+v %d", l, c.Machine())
 	}
 	neg := -3
 	c = UsageConfig{MaxSessions: &neg, MaxSubagents: &neg}
-	if l := c.For(""); l.PerProject != 1 || l.Subagents != 4 || c.Machine() != 4 {
+	if l := c.For(""); l.PerProfile != 1 || l.Subagents != 4 || c.Machine() != 4 {
 		t.Fatalf("out of range %+v %d", l, c.Machine())
 	}
 	// The default mode (medium) lets a Bot run 4 sessions.
@@ -316,5 +318,157 @@ func TestSendToANewSessionTakesASlotAndAnOwnersSendDoesNot(t *testing.T) {
 	}
 	if r, _ := mu.op("send", map[string]any{"project": "my-project", "id": "older", "text": "wake"}); r["delivered"] != false || r["queued"] != true {
 		t.Fatalf("third session over the limit: %v", r)
+	}
+}
+
+// ---- slots per profile (roles) ----
+
+// setRoleLimits sets the per-profile limit, the optional per-project cap (0: none) and the computer's cap.
+func setRoleLimits(profile, project, total int) func(*Options) {
+	return func(o *Options) {
+		o.Usage = func() UsageConfig {
+			return UsageConfig{Default: ModeMaximum, MaxSessionsPerProfile: profile, MaxSessionsPerProject: project, MaxSessions: &total}
+		}
+	}
+}
+
+func TestTwoRolesOnOneProjectRunTogether(t *testing.T) {
+	re := newRoleEnv(t, setRoleLimits(1, 0, 4))
+	a, _ := re.put("visual-design", nil)
+	b, _ := re.put("reviewer", nil)
+	re.start("my-project", "legacy")
+	if r := re.startRole(a, "x"); r["queued"] == true {
+		t.Fatalf("role a waited: %v", r)
+	}
+	if r := re.startRole(b, "y"); r["queued"] == true {
+		t.Fatalf("role b waited: %v", r)
+	}
+	eventually(t, "three slots", func() bool { return re.running() == 3 })
+	// A second session of one role waits, with the role's name and project in the reason.
+	r := re.startRole(a, "again")
+	want := "waiting: role visual-design (my-project) already has 1 session"
+	if r["queued"] != true || r["reason"] != want {
+		t.Fatalf("second of a: %v", r)
+	}
+	st, _ := re.op("status", nil)
+	q := st["queue"].([]any)
+	if len(q) != 1 || q[0].(map[string]any)["reason"] != want || q[0].(map[string]any)["role"] != a || q[0].(map[string]any)["role_name"] != "visual-design" {
+		t.Fatalf("queue %v", q)
+	}
+	// It starts when that role's session ends, in that role's VM.
+	re.vm(a).Runner().Emit(statusEv("sess-1", "idle"))
+	eventually(t, "second of a started", func() bool { return len(re.vm(a).Runner().CallsOf("session.start")) == 2 })
+	if n := len(re.vm(b).Runner().CallsOf("session.start")); n != 1 {
+		t.Fatalf("b started %d", n)
+	}
+}
+
+func TestRoleSlotsKeepTheComputerCap(t *testing.T) {
+	re := newRoleEnv(t, setRoleLimits(1, 0, 2))
+	a, _ := re.put("role-a", nil)
+	b, _ := re.put("role-b", nil)
+	re.startRole(a, "x")
+	re.startRole(b, "y")
+	r := re.start("my-project", "legacy")
+	if r["queued"] != true || r["reason"] != "waiting: the computer's session limit is reached" {
+		t.Fatalf("legacy over the computer cap: %v", r)
+	}
+	if re.running() != 2 {
+		t.Fatalf("%d running", re.running())
+	}
+}
+
+func TestExplicitProjectCapAppliesAcrossRoles(t *testing.T) {
+	re := newRoleEnv(t, setRoleLimits(2, 2, 8))
+	a, _ := re.put("role-a", nil)
+	b, _ := re.put("role-b", nil)
+	re.startRole(a, "1")
+	re.startRole(a, "2") // two in one role: the profile limit is 2
+	r := re.startRole(b, "3")
+	if r["queued"] != true || r["reason"] != "waiting: project my-project already has 2 sessions" {
+		t.Fatalf("over the project cap: %v", r)
+	}
+	// Without the cap the other role runs.
+	re2 := newRoleEnv(t, setRoleLimits(2, 0, 8))
+	a2, _ := re2.put("role-a", nil)
+	b2, _ := re2.put("role-b", nil)
+	re2.startRole(a2, "1")
+	re2.startRole(a2, "2")
+	if r := re2.startRole(b2, "3"); r["queued"] == true {
+		t.Fatalf("no cap: %v", r)
+	}
+}
+
+func TestQueueKeepsOrderPerRoleAndBot(t *testing.T) {
+	re := newRoleEnv(t, setRoleLimits(1, 0, 8))
+	a, _ := re.put("role-a", nil)
+	b, _ := re.put("role-b", nil)
+	re.startRole(a, "running")
+	for _, p := range []string{"first", "second", "third"} {
+		if r := re.startRole(a, p); r["queued"] != true {
+			t.Fatalf("%s: %v", p, r)
+		}
+	}
+	// An item of another role is not held up by a's queue.
+	if r := re.startRole(b, "other"); r["queued"] == true {
+		t.Fatalf("role b waited behind role a: %v", r)
+	}
+	for _, it := range re.m.q.list() {
+		if it.Role != a {
+			t.Fatalf("queued item %+v", it)
+		}
+	}
+	pl := startPoller(t, re.m)
+	_ = pl
+	for i, want := range []string{"first", "second", "third"} {
+		re.vm(a).Runner().Emit(statusEv("sess-"+strconv.Itoa(i+1), "idle"))
+		eventually(t, want, func() bool { return len(re.vm(a).Runner().CallsOf("session.start")) == i+2 })
+		calls := re.vm(a).Runner().CallsOf("session.start")
+		if got := string(calls[i+1].Params); !strings.Contains(got, `"`+want+`"`) {
+			t.Fatalf("start %d: %s", i+2, got)
+		}
+	}
+}
+
+func TestSelfTestHoldsTheWholeProject(t *testing.T) {
+	re := newRoleEnv(t, setRoleLimits(1, 0, 8))
+	a, _ := re.put("role-a", nil)
+	st, err := re.m.BeginSelfTest("my-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := re.startRole(a, "x")
+	if r["queued"] != true || !strings.Contains(r["reason"].(string), "self-test") {
+		t.Fatalf("a role started during the self-test: %v", r)
+	}
+	st.End()
+	// A role's running session keeps the self-test from beginning.
+	re.vm(a) // (the queued start is delivered once the self-test ends)
+	eventually(t, "queued start delivered", func() bool { return re.running() == 1 })
+	if _, err := re.m.BeginSelfTest("my-project"); err == nil {
+		t.Fatal("a self-test began while a role ran a session")
+	}
+}
+
+func TestLimitsOpValidatesAndWakesTheQueue(t *testing.T) {
+	var cur LimitsChange
+	re := newRoleEnv(t, setRoleLimits(1, 0, 4), func(o *Options) {
+		o.SetLimits = func(ch LimitsChange) error { cur = ch; return nil }
+	})
+	for _, bad := range []map[string]any{{}, {"per_profile": 0}, {"per_profile": MaxLimit + 1}, {"per_project": -1}, {"total": -2}} {
+		if _, err := re.op("limits", bad); err == nil {
+			t.Errorf("accepted %v", bad)
+		}
+	}
+	if _, err := re.op("limits", map[string]any{"per_profile": 3, "per_project": 0}); err != nil {
+		t.Fatal(err)
+	}
+	if cur.PerProfile == nil || *cur.PerProfile != 3 || cur.PerProject == nil || *cur.PerProject != 0 || cur.Total != nil {
+		t.Fatalf("change %+v", cur)
+	}
+	// Without a way to save, the op refuses.
+	re2 := newRoleEnv(t)
+	if _, err := re2.op("limits", map[string]any{"total": 3}); err == nil {
+		t.Fatal("limits changed with no saver")
 	}
 }

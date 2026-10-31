@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Rubi Home: one VM per role (agent roles, R4).** `claude-agent.start/send/sessions/messages/rename/fork/interrupt/close/mode`
+  take an optional `role` (a role id; missing means the project's legacy role, which keeps its VM, mounts and environment
+  exactly). An isolated role runs in its own container (`rubi-agent-<role>-<hash of dir|role>`) with the project at `/work`,
+  its content read-only at `/rubi-role`, its own config directory at `/rubi-claude`, `RUBI_ROLE_DIR`/`RUBI_CLAUDE_DIR`, no
+  sign-in mount and never `--ssh`. The role's `hosts` extend its own proxy allow-list only, and `net.ask` approvals are
+  kept per role (`agent-net.json`, new `roles` section). The role versions a running VM may read are pinned in the store
+  until it stops. A role VM with no session and nothing queued for `agent_role_vm_idle_minutes` (default 15) is stopped.
+  An archived role refuses starts. `status` slot and queue rows and `projects` rows gain `role` and `role_name` (the
+  legacy role: the project id and `default`); `projects` has one row per (project, role) for roles with a VM, session or
+  queued item; event and queue items to the plugin carry `role`.
+- **Rubi Home: session slots per profile (agent roles, R5).** New `agent_max_sessions_per_profile` (default 1, at least 1)
+  limits top-level sessions per role; `agent_max_sessions_per_project` is now an optional extra cap on a project's roles
+  together (unset or 0 = none; anyone who raised it before should also set the new value). The computer cap
+  (`agent_max_sessions`, 4) and the per-Bot modes are unchanged. Queue reasons name the role ("waiting: role
+  visual-design (my-project) already has 1 session"; the legacy role is "default"), and `status.limits` gains
+  `per_profile`. New user-only op `claude-agent.limits {per_profile?, per_project?, total?}` (like `usage_mode`: panel
+  button only, never a Bot tool). The setup self-test still holds its whole project.
+
 - **Runner: role mode (agent roles, R1).** With `RUBI_ROLE_DIR` set, the runner loads a role written by Rubi Home
   (`current -> v<n>/{role.json,plugin/}` on a read-only mount) instead of the repository's `.claude`: `settingSources: []`,
   the role's skills and subagents as one SDK local plugin, a `skills` allowlist, a `tools` base set, the role's MCP servers
