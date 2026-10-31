@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -310,4 +313,258 @@ func liveRedact(out string) string {
 		keep = append(keep, l)
 	}
 	return strings.Join(keep, "\n")
+}
+
+// liveListeners lists the TCP listeners of this process (lsof, read only); nil when lsof can't say.
+func liveListeners(t *testing.T) []string {
+	t.Helper()
+	out, err := exec.Command("lsof", "-nP", "-a", "-p", strconv.Itoa(os.Getpid()), "-iTCP", "-sTCP:LISTEN", "-Fn").Output()
+	if ee, ok := err.(*exec.ExitError); err != nil && !(ok && ee.ExitCode() == 1) { // 1 is "nothing matched"
+		return nil
+	}
+	l := []string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "n") {
+			l = append(l, line[1:])
+		}
+	}
+	return l
+}
+
+// liveNetpipePIDs are the `container exec ... rubi-netpipe` processes this test process started (its own children).
+func liveNetpipePIDs(t *testing.T) []int {
+	t.Helper()
+	out, _ := exec.Command("pgrep", "-P", strconv.Itoa(os.Getpid())).Output()
+	var pids []int
+	for _, f := range strings.Fields(string(out)) {
+		pid, _ := strconv.Atoi(f)
+		cmd, _ := exec.Command("ps", "-o", "command=", "-p", f).Output()
+		if pid > 0 && strings.Contains(string(cmd), "rubi-netpipe") {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// TestLiveNetless starts a role VM with no network and checks, from inside it, that it has no route and no
+// interface besides loopback, that every direct connection fails with ENETUNREACH (a public address, the gateway of
+// the container tool's NAT network, and a port that is open on every address of this Mac), that names don't
+// resolve, that the CONNECT proxy works through the pipe (a real TLS request to an allowed host; an unlisted host is
+// refused), that the auth gateway answers (401 to a wrong secret), that Rubi Home opened no listener for the VM,
+// and that the pipe comes back after its exec process dies. No model call is made. It needs the runner image (built
+// on first use), the container tool and the Internet. Skipped unless RUBI_AGENT_LIVE=1 RUBI_AGENT_LIVE_RUN=netless.
+func TestLiveNetless(t *testing.T) {
+	if os.Getenv("RUBI_AGENT_LIVE") != "1" || os.Getenv("RUBI_AGENT_LIVE_RUN") != "netless" {
+		t.Skip("set RUBI_AGENT_LIVE=1 RUBI_AGENT_LIVE_RUN=netless")
+	}
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cfg := h.Fresh()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(base, "live-netless")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mgr := agent.New(agent.Options{
+		Dir: h.Dir, Projects: func() []string { return []string{proj} }, Wait: time.Minute,
+		NewVM: func(agent.Project) agent.VM {
+			return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, EnvDir: h.Dir}
+		},
+	})
+	defer mgr.Close()
+	skill := "---\nname: net-skill\ndescription: tiny\n---\nSay hi.\n"
+	sum := sha256.Sum256([]byte(skill))
+	sha := hex.EncodeToString(sum[:])
+	args, _ := json.Marshal(map[string]any{"base_version": 0, "by": "live-test", "blobs": map[string]string{sha: skill},
+		"spec": map[string]any{"project": "live-netless", "name": "live-netless", "description": "live netless", "tools": []string{"Read"},
+			"skills": []map[string]any{{"name": "net-skill", "source": "adhoc", "sha256": sha}}}})
+	res, err := mgr.Handle(ctx, "claude-agent.role.put", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(res)
+	var role struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(b, &role)
+
+	before := liveListeners(t)
+	sb, err := mgr.SandboxRole(ctx, "live-netless", role.ID)
+	if err != nil {
+		t.Fatalf("starting the VM: %v", err)
+	}
+	// Rubi Home opened no listener for the VM (the proxy and the gateway are on pipe streams).
+	after := liveListeners(t)
+	if before == nil {
+		t.Log("lsof unavailable: listeners not compared")
+	} else if len(after) != len(before) {
+		t.Errorf("listeners before %v, after the VM started %v", before, after)
+	}
+	run := func(argv ...string) string {
+		t.Helper()
+		c, err := sb.Exec(ctx, argv, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.CloseWrite()
+		out, _ := io.ReadAll(io.LimitReader(c, 1<<20))
+		_ = c.Close()
+		return string(out)
+	}
+	node := func(script string) map[string]any {
+		t.Helper()
+		out := run("node", "-e", script)
+		var m map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &m); err != nil {
+			t.Fatalf("probe output %q: %v", liveRedact(out), err)
+		}
+		return m
+	}
+
+	// A port open on every address of this Mac, and the gateway of the NAT network: both must be unreachable.
+	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	_, lport, _ := net.SplitHostPort(ln.Addr().String())
+	hosts := []string{"1.1.1.1", "192.168.64.1", "192.168.128.1", "192.168.0.1"}
+	if out, err := exec.Command("container", "network", "inspect", "default").Output(); err == nil {
+		var nets []struct {
+			Status struct {
+				Gateway string `json:"ipv4Gateway"`
+			} `json:"status"`
+		}
+		if json.Unmarshal(out, &nets) == nil && len(nets) == 1 && nets[0].Status.Gateway != "" {
+			hosts = append(hosts, nets[0].Status.Gateway)
+		}
+	}
+	hj, _ := json.Marshal(hosts)
+
+	r := node(`const fs = require("fs"), net = require("net"), dns = require("dns");
+const out = {};
+const rd = f => { try { return fs.readFileSync(f, "utf8").split("\n").filter(Boolean); } catch (e) { return ["unreadable"]; } };
+out.route = rd("/proc/net/route");
+out.ipv6 = rd("/proc/net/ipv6_route").filter(l => l.trim().split(/\s+/).pop() !== "lo");
+out.ifaces = fs.readdirSync("/sys/class/net");
+out.proxy = process.env.HTTPS_PROXY ? new URL(process.env.HTTPS_PROXY).host : null;
+out.base = process.env.ANTHROPIC_BASE_URL; out.no_proxy = process.env.NO_PROXY;
+const tcp = (host, port) => new Promise(r => { const s = net.connect({host, port, timeout: 5000});
+  s.on("connect", () => { s.destroy(); r("connected"); }); s.on("timeout", () => { s.destroy(); r("timeout"); }); s.on("error", e => r(e.code)); });
+(async () => {
+  out.dns = await new Promise(r => dns.lookup("registry.npmjs.org", (e, a) => r(e ? e.code : a)));
+  out.direct = {};
+  for (const h of ` + string(hj) + `) { out.direct[h + ":443"] = await tcp(h, 443); out.direct[h + ":` + lport + `"] = await tcp(h, ` + lport + `); }
+  console.log(JSON.stringify(out));
+})();`)
+	t.Logf("isolation: %v", r)
+	if rt, _ := r["route"].([]any); len(rt) != 1 { // only the header line
+		t.Errorf("routes: %v", r["route"])
+	}
+	if v6, _ := r["ipv6"].([]any); len(v6) != 0 {
+		t.Errorf("ipv6 routes: %v", r["ipv6"])
+	}
+	if ifs, _ := r["ifaces"].([]any); len(ifs) != 1 || ifs[0] != "lo" {
+		t.Errorf("interfaces: %v", r["ifaces"])
+	}
+	if r["proxy"] != "127.0.0.1:3128" || r["base"] != "http://127.0.0.1:3129" || r["no_proxy"] != "127.0.0.1" {
+		t.Errorf("environment: proxy=%v base=%v no_proxy=%v", r["proxy"], r["base"], r["no_proxy"])
+	}
+	if d, _ := r["dns"].(string); d == "" || net.ParseIP(d) != nil {
+		t.Errorf("dns: %v", r["dns"])
+	}
+	direct, _ := r["direct"].(map[string]any)
+	if len(direct) == 0 {
+		t.Error("no direct connection was tried")
+	}
+	for k, v := range direct {
+		if v != "ENETUNREACH" {
+			t.Errorf("direct connection to %s: %v, want ENETUNREACH", k, v)
+		}
+	}
+
+	proxyProbe := `const net = require("net"), tls = require("tls");
+const u = new URL(process.env.HTTPS_PROXY);
+const auth = "Basic " + Buffer.from(decodeURIComponent(u.username) + ":" + decodeURIComponent(u.password)).toString("base64");
+const connect = (host, withAuth) => new Promise(res => { const s = net.connect({host: u.hostname, port: +u.port, timeout: 20000});
+  s.on("connect", () => s.write("CONNECT " + host + ":443 HTTP/1.1\r\nHost: " + host + ":443\r\n" + (withAuth ? "Proxy-Authorization: " + auth + "\r\n" : "") + "\r\n"));
+  let buf = ""; s.on("data", d => { buf += d; if (buf.includes("\r\n\r\n")) { s.removeAllListeners("data"); res({s, status: buf.split("\r\n")[0]}); } });
+  s.on("timeout", () => res({status: "timeout"})); s.on("error", e => res({status: e.code})); });
+(async () => {
+  const out = {};
+  out.unlisted = (await connect("example.org", true)).status;
+  out.noauth = (await connect("registry.npmjs.org", false)).status;
+  const ok = await connect("registry.npmjs.org", true);
+  out.allowed = ok.status;
+  if (ok.s) {
+    const t = tls.connect({socket: ok.s, servername: "registry.npmjs.org"});
+    out.tls = await new Promise(res => { t.on("secureConnect", () => t.write("GET / HTTP/1.1\r\nHost: registry.npmjs.org\r\nConnection: close\r\n\r\n"));
+      let b = ""; t.on("data", d => { b += d; }); t.on("end", () => res(b.split("\r\n")[0] + " bytes=" + b.length)); t.on("error", e => res(e.code)); });
+  }
+  const http = require("http"), g = new URL(process.env.ANTHROPIC_BASE_URL);
+  out.gateway = await new Promise(res => { const r = http.request({host: g.hostname, port: g.port, path: "/v1/messages", method: "POST", headers: {authorization: "Bearer wrong"}},
+    x => { x.resume(); x.on("end", () => res(x.statusCode)); }); r.on("error", e => res(e.code)); r.end("{}"); });
+  console.log(JSON.stringify(out));
+})();`
+	p := node(proxyProbe)
+	t.Logf("proxy and gateway through the pipe: %v", p)
+	if !strings.Contains(p["allowed"].(string), " 200") {
+		t.Errorf("an allowed host through the pipe: %v", p["allowed"])
+	}
+	if s, _ := p["tls"].(string); !strings.HasPrefix(s, "HTTP/1.1 ") {
+		t.Errorf("a TLS request through the tunnel: %v", p["tls"])
+	}
+	if strings.Contains(p["unlisted"].(string), " 200") || !strings.Contains(p["unlisted"].(string), " 403") {
+		t.Errorf("an unlisted host: %v", p["unlisted"])
+	}
+	if !strings.Contains(p["noauth"].(string), " 407") {
+		t.Errorf("no proxy credentials: %v", p["noauth"])
+	}
+	if p["gateway"] != float64(401) {
+		t.Errorf("the gateway with a wrong secret: %v", p["gateway"])
+	}
+
+	// The pipe's exec process dies: Home starts it again and the proxy path works once more.
+	pids := liveNetpipePIDs(t)
+	if len(pids) != 1 {
+		t.Fatalf("expected one rubi-netpipe exec process of this test, found %v", pids)
+	}
+	if err := syscallKill(pids[0]); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(60 * time.Second)
+	var again map[string]any
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		if n := liveNetpipePIDs(t); len(n) == 1 && n[0] != pids[0] {
+			again = node(proxyProbe)
+			if s, _ := again["allowed"].(string); strings.Contains(s, " 200") {
+				break
+			}
+		}
+	}
+	if s, _ := again["allowed"].(string); !strings.Contains(s, " 200") {
+		t.Errorf("after the pipe's process was killed: %v", again)
+	} else {
+		t.Logf("pipe restarted: new exec process %v", liveNetpipePIDs(t))
+	}
+	if out := run("sh", "-c", "for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f; echo; done 2>/dev/null | grep -c '[r]ubi-netpipe'"); strings.TrimSpace(out) != "1" {
+		t.Errorf("rubi-netpipe processes in the VM after the restart: %q (the old one should be gone)", strings.TrimSpace(out))
+	}
+}
+
+// syscallKill ends a process this test started (never a name pattern, only the PID).
+func syscallKill(pid int) error {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return err
+	}
+	return p.Kill()
 }
