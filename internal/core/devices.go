@@ -140,7 +140,7 @@ func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				_ = c.pinLibraryKey(ctx, dev)
+				_ = c.syncLibraryHome(ctx, dev, true)
 			}()
 		})
 }

@@ -210,8 +210,12 @@ func TestSeveralAgents(t *testing.T) {
 	if h := waitHit(t, mainCh, "rubi.agent.suspicious"); h.data["agent"] != "Main" {
 		t.Fatalf("warning: %v", h)
 	}
-	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": mainCode}); e["tool_error"] == nil {
-		t.Fatalf("a blocked name still reads: %v", e)
+	// Strangers' wrong codes must not lock the real Bot out: its own code still works, wrong ones stay refused.
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": mainCode}); e["tool_error"] != nil {
+		t.Fatalf("a stranger's wrong codes locked the real Bot out: %v", e)
+	}
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": "guess3"}); e["tool_error"] == nil {
+		t.Fatalf("a wrong code was accepted while blocked: %v", e)
 	}
 
 	// The mail Bot subscribes itself to the plugin's events (no approval needed: it only routes among

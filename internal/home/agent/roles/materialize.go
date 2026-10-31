@@ -3,10 +3,13 @@ package roles
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/sdk/skillscan"
 )
@@ -129,6 +132,11 @@ func (s *Store) materialize(r *Role, strict bool, raw func(sha string) ([]byte, 
 		if sk.State != StateActive {
 			continue
 		}
+		if s.revoked(sk) { // withdrawn from the library: never in a role that is built from now on
+			s.logf("role %s version %d: library skill %q (%s@%s) was withdrawn and is left out", r.ID, r.Version, sk.Name, sk.LibraryID, sk.Resolved)
+			rr.Skills[i].State = StateHeld
+			continue
+		}
 		text, err := raw(sk.SHA256)
 		if err != nil {
 			return err
@@ -197,4 +205,94 @@ func syncTree(root string) error {
 		}
 		return nil
 	})
+}
+
+// revoked says whether a skill is a library version that was withdrawn.
+func (s *Store) revoked(sk Skill) bool {
+	r, ok := s.opt.Verifier.(Revoker)
+	return ok && sk.Source == SourceLibrary && r.Revoked(sk.LibraryID, sk.Resolved)
+}
+
+// Left is a skill that EnforceRevocations took out of a built role version.
+type Left struct {
+	Role    string `json:"role"`
+	Version int    `json:"version"`
+	Skill   string `json:"skill"`
+	Library string `json:"library"` // id@version
+}
+
+// EnforceRevocations rebuilds, without the library versions that were withdrawn, every materialized version of
+// the role that still carries one, and records each skill taken out in revocations.jsonl. Call it when a VM starts
+// and when a new revocation list arrives.
+func (s *Store) EnforceRevocations(id string) ([]Left, error) {
+	if !IsID(id) {
+		return nil, errors.New("bad role id")
+	}
+	if _, ok := s.opt.Verifier.(Revoker); !ok {
+		return nil, nil
+	}
+	unlock := s.lockRole(id)
+	defer unlock()
+	ents, err := os.ReadDir(filepath.Join(s.roleDir(id), "content"))
+	if err != nil {
+		return nil, nil
+	}
+	var left []Left
+	var firstErr error
+	for _, e := range ents {
+		m := contentDirRE.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[1])
+		r, err := s.readVersion(id, n)
+		if err != nil {
+			continue
+		}
+		var hit []Left
+		for _, sk := range r.Skills {
+			if sk.State == StateActive && s.revoked(sk) && s.builtWith(id, n, sk.Name) {
+				hit = append(hit, Left{Role: id, Version: n, Skill: sk.Name, Library: sk.LibraryID + "@" + sk.Resolved})
+			}
+		}
+		if len(hit) == 0 {
+			continue
+		}
+		if err := s.materialize(r, false, func(sha string) ([]byte, error) { return s.blob(id, sha) }); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		left = append(left, hit...)
+	}
+	s.auditRevocations(left)
+	return left, firstErr
+}
+
+// builtWith says whether content/v<n> still has the skill (a rebuilt version no longer has it, so it isn't counted twice).
+func (s *Store) builtWith(id string, n int, skill string) bool {
+	_, err := os.Stat(filepath.Join(s.roleDir(id), "content", fmt.Sprintf("v%d", n), "plugin", "skills", skill, "SKILL.md"))
+	return err == nil
+}
+
+func (s *Store) auditRevocations(left []Left) {
+	if len(left) == 0 {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(s.opt.Dir, "revocations.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		s.logf("revocations.jsonl: %v", err)
+		return
+	}
+	defer f.Close()
+	at := s.opt.Now().UTC().Format(time.RFC3339)
+	for _, l := range left {
+		b, _ := json.Marshal(struct {
+			At string `json:"at"`
+			Left
+		}{at, l})
+		_, _ = f.Write(append(b, '\n'))
+		s.logf("role %s version %d: library skill %q (%s) was withdrawn and taken out", l.Role, l.Version, l.Skill, l.Library)
+	}
 }

@@ -132,7 +132,7 @@ func TestFlagsMustBeAcknowledged(t *testing.T) {
 		t.Fatalf("admit: %+v %v", res, err)
 	}
 	in, _ := r.l.GetAdmitted("fetcher", 0)
-	if c, err := libsig.Verify(r.pub, in.ID, "1", in.SHA256, in.Signature); err != nil || c.ScanVerdict != "flag" {
+	if c, err := libsig.Verify(r.pub, in.ID, "1", in.SHA256, in.Signature); err != nil || c.ScanVerdict != "flag" || len(c.Acked) != 1 || c.Acked[0] != "exf.url" {
 		t.Fatalf("flag verdict is signed: %+v %v", c, err)
 	}
 }
@@ -240,6 +240,7 @@ func TestListFilters(t *testing.T) {
 
 func TestLimits(t *testing.T) {
 	r := newRig(t)
+	r.l.opt.MaxOpenPerBot = 100000 // this test is about the other limits
 	big := "---\nname: big\ndescription: d\n---\n" + strings.Repeat("a b c d e f g h i j k l m n o p q r s t u v w x y z\n", 800)
 	if p, err := r.l.Submit(Submission{ID: "big", Description: "d", Content: big, Author: "a"}); err != nil || p.State != Rejected {
 		t.Fatalf("over 32 KiB must be a scan reject: %+v %v", p, err)
@@ -247,23 +248,24 @@ func TestLimits(t *testing.T) {
 	if _, err := r.l.Submit(Submission{ID: "huge", Description: "d", Content: strings.Repeat("x", 70000), Author: "a"}); err == nil {
 		t.Fatal("a huge skill was taken at all")
 	}
-	// 20 versions per entry.
-	for i := 1; i <= MaxVersionsPerItem-1; i++ { // "big" already holds version 1
+	// 20 live versions per entry; "big" holds a rejected version 1, which doesn't count.
+	for i := 1; i <= MaxVersionsPerItem; i++ {
 		if _, err := r.l.Submit(Submission{ID: "big", Description: "d", Content: skillNamed("big") + fmt.Sprint(i), Author: "a"}); err != nil {
 			t.Fatalf("version %d: %v", i+1, err)
 		}
 	}
-	if _, err := r.l.Submit(Submission{ID: "big", Description: "d", Content: skillNamed("big") + "z", Author: "a"}); err == nil || !strings.Contains(err.Error(), "20 versions") {
+	if _, err := r.l.Submit(Submission{ID: "big", Description: "d", Content: skillNamed("big") + "z", Author: "a"}); err == nil || !strings.Contains(err.Error(), "20 live versions") {
 		t.Fatalf("21st version: %v", err)
 	}
-	// 500 entries.
-	for i := 0; i < MaxEntries-1; i++ {
+	// 500 entries (a smaller limit here: each submission reads every entry).
+	r.l.opt.MaxEntries = 40
+	for i := 0; i < r.l.opt.MaxEntries-1; i++ {
 		id := fmt.Sprintf("s%d", i)
 		if _, err := r.l.Submit(Submission{ID: id, Description: "d", Content: skillNamed(id), Author: "a"}); err != nil {
 			t.Fatalf("entry %d: %v", i, err)
 		}
 	}
-	if _, err := r.l.Submit(Submission{ID: "one-more", Description: "d", Content: skillNamed("one-more"), Author: "a"}); err == nil || !strings.Contains(err.Error(), "500") {
+	if _, err := r.l.Submit(Submission{ID: "one-more", Description: "d", Content: skillNamed("one-more"), Author: "a"}); err == nil || !strings.Contains(err.Error(), "40") {
 		t.Fatalf("501st entry: %v", err)
 	}
 	if _, err := r.l.Submit(Submission{ID: "s1", Description: "d", Content: skillNamed("s1") + "v2", Author: "a"}); err != nil {
@@ -309,20 +311,22 @@ func TestEncryptedAtRest(t *testing.T) {
 		t.Fatal(err)
 	}
 	files, _ := os.ReadDir(r.dir)
-	if len(files) != 1 {
+	if len(files) != 2 { // the entry and the index of counters
 		t.Fatalf("files: %v", files)
 	}
-	raw, err := os.ReadFile(filepath.Join(r.dir, files[0].Name()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, s := range []string{"purple-giraffe", "layout-notes", "bot-a", "curator", "Use short headings"} {
-		if strings.Contains(string(raw), s) {
-			t.Fatalf("%q is readable on disk", s)
+	for _, f := range files {
+		raw, err := os.ReadFile(filepath.Join(r.dir, f.Name()))
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if st, _ := os.Stat(filepath.Join(r.dir, files[0].Name())); st.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %v", st.Mode())
+		for _, s := range []string{"purple-giraffe", "layout-notes", "bot-a", "curator", "Use short headings"} {
+			if strings.Contains(string(raw), s) {
+				t.Fatalf("%q is readable on disk in %s", s, f.Name())
+			}
+		}
+		if st, _ := os.Stat(filepath.Join(r.dir, f.Name())); st.Mode().Perm() != 0o600 {
+			t.Fatalf("mode %v", st.Mode())
+		}
 	}
 	// Locked: nothing can be read, listed or signed.
 	*r.lock = true
@@ -336,6 +340,10 @@ func TestEncryptedAtRest(t *testing.T) {
 		t.Fatal("wrote while locked")
 	}
 	*r.lock = false
+	raw, err := os.ReadFile(filepath.Join(r.dir, "layout-notes.enc"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// A file moved to another id, or edited, is detected.
 	if err := os.WriteFile(filepath.Join(r.dir, "other.enc"), raw, 0o600); err != nil {
 		t.Fatal(err)
@@ -344,7 +352,7 @@ func TestEncryptedAtRest(t *testing.T) {
 		t.Fatalf("renamed entry: %v", err)
 	}
 	raw[len(raw)-3] ^= 1
-	_ = os.WriteFile(filepath.Join(r.dir, files[0].Name()), raw, 0o600)
+	_ = os.WriteFile(filepath.Join(r.dir, "layout-notes.enc"), raw, 0o600)
 	if _, err := r.l.GetAdmitted("layout-notes", 0); err == nil {
 		t.Fatal("an edited file was accepted")
 	}
@@ -387,7 +395,151 @@ func TestSignatureTokenChecks(t *testing.T) {
 		t.Fatal("a reject verdict verified")
 	}
 	if got := string(libsig.Message(libsig.Claims{ID: "a", Version: 1, SHA256: "h", AdmittedBy: "<b>", AdmittedAt: "t", ScanVerdict: "pass", ScannerVersion: "s"})); got !=
-		"rubi-skill-library-v1\n"+`{"id":"a","version":1,"sha256":"h","admitted_by":"<b>","admitted_at":"t","scan_verdict":"pass","scanner_version":"s","self_admitted":false}` {
+		"rubi-skill-library-v2\n"+`{"id":"a","version":1,"sha256":"h","admitted_by":"<b>","admitted_at":"t","scan_verdict":"pass","scanner_version":"s","self_admitted":false,"acked":[]}` {
 		t.Fatalf("message: %q", got)
+	}
+}
+
+// tooBig is a skill the scan rejects for its size.
+func tooBig(name string) string {
+	return skillNamed(name) + strings.Repeat("a b c d e f g h i j k l m n o p q r s t u v w x y z\n", 640)
+}
+
+func TestOpenProposalsPerBotAndAdmittedIDs(t *testing.T) {
+	r := newRig(t)
+	for i := 0; i < MaxOpenPerBot; i++ {
+		id := fmt.Sprintf("s%d", i)
+		if _, err := r.l.Submit(Submission{ID: id, Description: "d", Content: skillNamed(id), Author: "Bot-A"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.l.Submit(Submission{ID: "extra", Description: "d", Content: skillNamed("extra"), Author: "bot-a"}); err == nil || !strings.Contains(err.Error(), "waiting") {
+		t.Fatalf("a sixth open proposal: %v", err)
+	}
+	if _, err := r.l.Submit(Submission{ID: "extra", Description: "d", Content: skillNamed("extra"), Author: "bot-b"}); err != nil {
+		t.Fatalf("another Bot has its own quota: %v", err)
+	}
+	// Admitting frees a slot.
+	if _, err := r.l.Admit("s0@1", "curator", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.l.Submit(Submission{ID: "extra2", Description: "d", Content: skillNamed("extra2"), Author: "bot-a"}); err != nil {
+		t.Fatal(err)
+	}
+	// A skill with an admitted version takes new versions from the curator only.
+	if _, err := r.l.Submit(Submission{ID: "s0", Description: "d", Content: skillNamed("s0") + "evil", Author: "bot-b"}); err == nil || !strings.Contains(err.Error(), "only the curator") {
+		t.Fatalf("%v", err)
+	}
+	if _, _, err := r.l.Publish(Submission{ID: "s0", Description: "d", Content: skillNamed("s0") + "better", Author: "curator"}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOnlyLiveVersionsAndEntriesCount(t *testing.T) {
+	r := newRig(t)
+	r.l.opt.MaxOpenPerBot = 100000
+	// Withdrawn and rejected versions don't use up the 20 live slots, and entries made only of them don't use up
+	// the entry limit.
+	retire := func(id, content string) {
+		t.Helper()
+		p, err := r.l.Submit(Submission{ID: id, Description: "d", Content: content, Author: "a", Curator: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.l.Admit(p.ProposalID, "curator", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.l.SetState(id, p.Version, Withdrawn, "curator"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < MaxVersionsPerItem+3; i++ {
+		retire("old", skillNamed("old")+fmt.Sprint(i))
+	}
+	if p, err := r.l.Submit(Submission{ID: "old", Description: "d", Content: tooBig("old"), Author: "a", Curator: true}); err != nil || p.State != Rejected {
+		t.Fatalf("%+v %v", p, err)
+	}
+	r.l.opt.MaxEntries = 4
+	for i := 0; i < 3*r.l.opt.MaxEntries; i++ { // more than the limit, none of them live
+		id := fmt.Sprintf("r%d", i)
+		retire(id, skillNamed(id))
+	}
+	if list, _ := r.l.List("", "", true); len(list) != 3*r.l.opt.MaxEntries+1 {
+		t.Fatalf("%d", len(list))
+	}
+	if _, err := r.l.Submit(Submission{ID: "good", Description: "d", Content: skillNamed("good"), Author: "a"}); err != nil {
+		t.Fatalf("retired entries used up the live ones: %v", err)
+	}
+}
+
+func TestPurge(t *testing.T) {
+	r := newRig(t)
+	bad := tooBig("layout-notes")
+	p1 := submit(t, r.l, "bot-a", skill)
+	p2 := submit(t, r.l, "bot-a", skill+"two\n")
+	if _, err := r.l.Submit(Submission{ID: "layout-notes", Description: "d", Content: bad, Author: "bot-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.l.Admit(p1.ProposalID, "curator", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.l.Purge("layout-notes", 1, "curator"); err == nil {
+		t.Fatal("purged an admitted version")
+	}
+	got, err := r.l.Purge("layout-notes", 0, "curator")
+	if err != nil || len(got) != 2 { // the proposal and the reject
+		t.Fatalf("%v %v", got, err)
+	}
+	// A withdrawn version loses its content but keeps its number and its revocation.
+	if _, err := r.l.SetState("layout-notes", 1, Withdrawn, "curator"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.l.Purge("layout-notes", 1, "curator"); err != nil || len(got) != 1 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if rev, _ := r.l.Revoked(); len(rev) != 1 || rev[0] != "layout-notes@1" {
+		t.Fatalf("%v", rev)
+	}
+	if _, err := r.l.Admit("layout-notes@1", "curator", nil); err == nil {
+		t.Fatal("admitted a purged version")
+	}
+	_ = p2
+	np := submit(t, r.l, "bot-a", skill+"three\n")
+	if np.Version <= 3 {
+		t.Fatalf("a purged number came back: %d", np.Version)
+	}
+	// An entry with nothing left is removed, and numbering goes on.
+	if _, err := r.l.Purge("layout-notes", np.Version, "curator"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOlderFileIsRefusedAndOneBadFileDoesNotBreakList(t *testing.T) {
+	r := newRig(t)
+	a := submit(t, r.l, "bot-a", skill)
+	submit(t, r.l, "bot-a", skillNamed("other"))
+	old, _ := os.ReadFile(filepath.Join(r.dir, "layout-notes.enc"))
+	if _, err := r.l.Admit(a.ProposalID, "curator", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.l.SetState("layout-notes", 1, Withdrawn, "curator"); err != nil {
+		t.Fatal(err)
+	}
+	// Put the older (proposed) file back over the withdrawn one: refused.
+	if err := os.WriteFile(filepath.Join(r.dir, "layout-notes.enc"), old, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r2 := Open(Options{Dir: r.dir, Instance: r.l.opt.Instance, DEK: r.l.opt.DEK, Signer: r.l.opt.Signer})
+	if _, err := r2.Get("layout-notes", 1, true); err == nil || !strings.Contains(err.Error(), "older copy") {
+		t.Fatalf("%v", err)
+	}
+	var logged []string
+	r2.opt.Logf = func(f string, a ...any) { logged = append(logged, fmt.Sprintf(f, a...)) }
+	list, err := r2.List("", "", true)
+	if err != nil || len(list) != 1 || list[0].ID != "other" || len(logged) != 1 {
+		t.Fatalf("%+v %v %v", list, err, logged)
+	}
+	if _, err := r2.Queue(); err != nil {
+		t.Fatal(err)
 	}
 }

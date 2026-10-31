@@ -152,7 +152,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		plans:       map[string]pendingPlan{},
 		seen:        map[string]bool{},
 	}
-	c.Library = library.Open(library.Options{Dir: layout.Library(), Instance: id.InstanceID, DEK: c.Vault.Key, Signer: c.libraryKey})
+	c.Library = library.Open(library.Options{Dir: layout.Library(), Instance: id.InstanceID, DEK: c.Vault.Key, Signer: c.libraryKey, Logf: log.Printf})
 	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
 		Handler: c.pluginHandler, Launched: c.pluginLaunched, Crashed: c.pluginCrashed, Logf: log.Printf}}
 	_, keysErr := os.Stat(layout.Keys())

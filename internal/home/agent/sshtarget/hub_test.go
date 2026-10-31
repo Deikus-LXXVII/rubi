@@ -566,3 +566,165 @@ func TestRemovedNameNeedsReuse(t *testing.T) {
 		t.Fatal("tombstone not cleared by reuse")
 	}
 }
+
+// A pump parked on a full window (no acknowledgements) must wake when the stream is cut, so the slot is released
+// and the exit is delivered.
+func TestCutStreamWithFullWindowReleasesItsSlot(t *testing.T) {
+	for _, how := range []string{"idle", "revoke"} {
+		t.Run(how, func(t *testing.T) {
+			lim := Limits{Buffer: 4096}
+			if how == "idle" {
+				lim.Idle = 300 * time.Millisecond
+			}
+			r := newRig(t, lim)
+			r.srv.Handler = func(cmd string, in io.Reader, out, _ io.Writer) int {
+				blk := make([]byte, 1024)
+				for i := 0; i < 256; i++ {
+					if _, err := out.Write(blk); err != nil {
+						return 1
+					}
+				}
+				return 0
+			}
+			r.register("web-1", nil, false)
+			if _, err := r.open("yes"); err != nil {
+				t.Fatal(err)
+			}
+			eventually(t, "window full", func() bool { return len(r.notes.output(1)) == 4096 })
+			if how == "revoke" {
+				r.hub.CloseWhere(func(string, string) bool { return true }, "revoked")
+			}
+			eventually(t, "exit", func() bool { return len(r.notes.of("ssh.exit")) == 1 })
+			eventually(t, "slot", func() bool { return r.hub.Streams("role-a") == 0 && r.hub.Streams("") == 0 })
+		})
+	}
+}
+
+func TestGrantIsCheckedAfterTheDial(t *testing.T) {
+	r := newRig(t, Limits{})
+	r.register("web-1", nil, false)
+	// revoke as soon as the target is dialed: the dial itself flips the grant
+	r.store.dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		r.granted.Store(false)
+		return (&net.Dialer{}).DialContext(ctx, network, r.srv.Addr())
+	}
+	_, err := r.open("uptime")
+	if err == nil {
+		t.Fatal("opened for a revoked role")
+	}
+	if len(r.srv.Commands()) != 0 {
+		t.Fatalf("ran %v", r.srv.Commands())
+	}
+	if r.hub.Streams("role-a") != 0 {
+		t.Fatal("slot leaked")
+	}
+}
+
+func TestDialErrorsRevealNothingAboutTheAddress(t *testing.T) {
+	r := newRig(t, Limits{})
+	if _, err := r.store.Register(context.Background(), RegisterArgs{Name: "web-1", Host: "web-1.example.com", User: "deploy",
+		Fingerprint: r.srv.Fingerprint()}); err != nil { // never authorized on the server
+		t.Fatal(err)
+	}
+	r.store.dial = func(context.Context, string, string) (net.Conn, error) {
+		return nil, fmt.Errorf("dial tcp 10.9.8.7:22: connect: connection refused")
+	}
+	_, err := r.open("uptime")
+	if err == nil || err.Error() != "the target didn't answer" {
+		t.Fatalf("%v", err)
+	}
+	for _, e := range r.hub.Audit().Recent("", 10) {
+		if e.Reason != "the target didn't answer" {
+			t.Fatalf("%+v", e)
+		}
+	}
+	// a login the target rejects
+	r.store.dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, r.srv.Addr())
+	}
+	_, err = r.open("uptime") // key not authorized on the server
+	if err == nil || err.Error() != "login to the target failed" {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestRedactBearer(t *testing.T) {
+	for in, want := range map[string]string{
+		"curl -H 'Authorization: Bearer abc123' x": "curl -H 'Authorization: Bearer [redacted]' x",
+		"curl -H Authorization:Bearer abc":         "curl -H Authorization:Bearer [redacted]",
+		"x --token abc y":                          "x --token [redacted] y",
+	} {
+		if got := redact(in); strings.Contains(got, "abc") {
+			t.Errorf("%q -> %q", in, got)
+		} else if got != want {
+			t.Logf("%q -> %q", in, got)
+		}
+	}
+}
+
+func TestAllowsPrefixPatternsStopAtOptions(t *testing.T) {
+	star := Target{AllowedCommands: []string{"ls *", "git log *", "tar tf *", "rsync *", "ps*"}}
+	for cmd, want := range map[string]bool{
+		"ls": true, "ls /var/log": true, "ls -la": false, "lsof": false, "lsof -i": false,
+		"git log": true, "git log main": true, "git -c core.sshCommand=id log": false, "git log -c core.sshCommand=id": false,
+		"git log --output=/tmp/x": false, "tar tf a.tar": true, "tar tf a.tar --checkpoint-action=exec=id": false,
+		"tar --checkpoint-action=exec=id tf a.tar": false, "rsync -e id a b": false, "rsync a b": true, "rsync a b;id": false,
+		"ps": true, "ps aux": true, "psql": false, "ls x=y": false,
+	} {
+		if got := star.Allows(cmd); got != want {
+			t.Errorf("%q: got %v", cmd, got)
+		}
+	}
+	opts := Target{AllowedCommands: []string{"ls **"}}
+	for cmd, want := range map[string]bool{"ls -la /var": true, "ls": true, "lsof": false, "ls -la; id": false, "ls $(id)": false} {
+		if got := opts.Allows(cmd); got != want {
+			t.Errorf("** %q: got %v", cmd, got)
+		}
+	}
+	if !OptionPattern("ls **") || OptionPattern("ls *") {
+		t.Error("option pattern detection")
+	}
+}
+
+func TestDisplayable(t *testing.T) {
+	for s, want := range map[string]bool{"ls -la": true, "echo é": true, "a\tb": false, "a\x1b[2Jb": false, "a\u202eb": false,
+		"a\u200bb": false, "a${IFS}b": true, "a\u2028b": false} {
+		if Displayable(s) != want {
+			t.Errorf("%q", s)
+		}
+	}
+}
+
+func TestRefusalFloodDoesNotPushOutTheStreams(t *testing.T) {
+	a := NewAudit(t.TempDir())
+	if err := a.Add(Entry{Role: "r", Target: "t", Command: "uptime", Result: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3000; i++ {
+		_ = a.Add(Entry{Role: "r", Target: "t", Command: fmt.Sprintf("rm -rf /%d %s", i, strings.Repeat("x", 100)), Result: "refused", Reason: "command not allowed"})
+	}
+	es, last := a.After("", 0, 500)
+	if len(es) == 0 || es[0].Result != "ok" || es[0].Seq != 1 || last != 3001 {
+		t.Fatalf("%d entries, first %+v, last %d", len(es), es[0], last)
+	}
+	// the sequence survives a restart
+	b := NewAudit(a.dir)
+	_ = b.Add(Entry{Role: "r", Target: "t", Result: "ok"})
+	if _, l := b.After("", 0, 1); l != 3002 {
+		t.Fatalf("%d", l)
+	}
+}
+
+func TestRefusedReuseLeavesNoKeyFile(t *testing.T) {
+	r := newRig(t, Limits{})
+	r.register("web-1", nil, false)
+	if err := r.store.Remove("web-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.Register(context.Background(), RegisterArgs{Name: "web-1", Host: "web-1.example.com", User: "deploy", Fingerprint: r.srv.Fingerprint()}); err == nil {
+		t.Fatal("registered")
+	}
+	if es, _ := os.ReadDir(filepath.Join(r.dir, keysDir)); len(es) != 0 {
+		t.Fatalf("%d orphan key files", len(es))
+	}
+}

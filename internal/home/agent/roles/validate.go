@@ -37,7 +37,7 @@ var (
 	itemRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`) // skills, subagents, library ids
 	shaRE      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	numRE      = regexp.MustCompile(`^[0-9]{1,6}$`)
-	sigRE      = regexp.MustCompile(`^[A-Za-z0-9+/=_-]{1,600}$`)
+	sigRE      = regexp.MustCompile(`^[A-Za-z0-9+/=_-]+$`) // and at most 2000 characters (libsig.MaxToken)
 	approvalRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	whoRE      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$`)
 	ruleRE     = regexp.MustCompile(`^[a-z]{3}\.[a-z0-9]{1,16}$`)
@@ -435,7 +435,7 @@ func (s *Store) normalize(spec *Role, cur *Role) (*Role, problems) {
 			if !itemRE.MatchString(sk.LibraryID) || !numRE.MatchString(sk.Resolved) || (sk.Pin != "" && !numRE.MatchString(sk.Pin)) {
 				p.addf("skill %q: a library skill needs a valid library_id and resolved version", n)
 			}
-			if !sigRE.MatchString(sk.Sig) {
+			if len(sk.Sig) > 2000 || !sigRE.MatchString(sk.Sig) {
 				p.addf("skill %q: a library skill needs a signature", n)
 			}
 			out.LibraryID, out.Pin, out.Resolved, out.Sig = sk.LibraryID, sk.Pin, sk.Resolved, sk.Sig
@@ -463,8 +463,10 @@ func (s *Store) checkSkills(r *Role, content map[string][]byte, p *problems) {
 			p.addf("skill %q: its content (sha256 %.12s) wasn't sent and isn't stored", n, sk.SHA256)
 			continue
 		}
+		var facts LibraryFacts
 		if sk.Source == SourceLibrary {
-			err := s.opt.Verifier.VerifyLibrary(LibrarySkill{ID: sk.LibraryID, Resolved: sk.Resolved, SHA256: sk.SHA256, Sig: sk.Sig})
+			var err error
+			facts, err = s.opt.Verifier.VerifyLibrary(LibrarySkill{ID: sk.LibraryID, Resolved: sk.Resolved, SHA256: sk.SHA256, Sig: sk.Sig})
 			if err != nil {
 				p.addf("skill %q: library signature refused: %s", n, clipText(err.Error(), 120))
 				continue
@@ -484,7 +486,11 @@ func (s *Store) checkSkills(r *Role, content map[string][]byte, p *problems) {
 		case skillscan.Flag:
 			sk.State = StateHeld
 			if sk.Source == SourceLibrary {
-				sk.State = StateActive // the curator acknowledged the flags at admission
+				// The curator acknowledged these flags at admission (signed). A flag Home sees that isn't among them
+				// (a stricter scanner, a changed context) holds the skill like an ad-hoc one.
+				if acceptedAll(res, facts.Acked) {
+					sk.State = StateActive
+				}
 			} else if acceptedAll(res, sk.Accepted) {
 				sk.State = StateActive
 			}

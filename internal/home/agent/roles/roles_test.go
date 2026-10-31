@@ -262,12 +262,12 @@ func TestLibrarySkillsRefusedByStub(t *testing.T) {
 
 type okVerifier struct{ seen []LibrarySkill }
 
-func (v *okVerifier) VerifyLibrary(l LibrarySkill) error {
+func (v *okVerifier) VerifyLibrary(l LibrarySkill) (LibraryFacts, error) {
 	v.seen = append(v.seen, l)
 	if l.Sig != "c2ln" {
-		return errors.New("bad signature")
+		return LibraryFacts{}, errors.New("bad signature")
 	}
-	return nil
+	return LibraryFacts{}, nil
 }
 
 func TestLibrarySkillsVerified(t *testing.T) {

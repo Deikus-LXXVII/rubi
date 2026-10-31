@@ -114,8 +114,34 @@ func TestPanelLibrary(t *testing.T) {
 		t.Fatal("same curator accepted")
 	}
 
-	// No write path: these ops don't exist.
-	for _, op := range []string{"library.admit", "library.submit", "library.withdraw", "library.deprecate", "library.put"} {
+	// The user can pull a version, but only by a strong approval.
+	if err := sc.Call("library.withdraw", map[string]any{"id": "design-tokens", "version": 9}, &res); err == nil {
+		t.Fatal("withdrew a version that doesn't exist")
+	}
+	if err := sc.Call("library.withdraw", map[string]any{"id": "design-tokens", "version": 1}, &res); err != nil || res.ApprovalID == "" || res.Ticket == "" {
+		t.Fatalf("withdraw: %+v %v", res, err)
+	}
+	if v, _ := c.Library.GetAdmitted("design-tokens", 1); v.State != library.Admitted {
+		t.Fatal("withdrawn before approval")
+	}
+	snap, err = c.Approvals.Get(res.ApprovalID)
+	if err != nil || snap.Kind != "rubi.library.withdraw" || snap.Level != approvals.Strong {
+		t.Fatalf("approval: %+v %v", snap, err)
+	}
+	for _, pc := range []*panelclient.Client{&viewOnly, client(t, c, "agent:Main")} {
+		if err := pc.Call("library.withdraw", map[string]any{"id": "design-tokens", "version": 1}, &res); err == nil {
+			t.Fatal("a non-settings link asked for a withdrawal")
+		}
+	}
+	if _, err := c.Approvals.DecidePanel(context.Background(), snap.ID, "apply", true, approvals.Verified); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Library.GetAdmitted("design-tokens", 1); err == nil {
+		t.Fatal("still served after the user's withdrawal")
+	}
+
+	// No other write path: these ops don't exist.
+	for _, op := range []string{"library.admit", "library.submit", "library.deprecate", "library.put"} {
 		if err := sc.Call(op, map[string]string{"id": "fetcher"}, &list); err == nil {
 			t.Fatalf("%s exists", op)
 		}

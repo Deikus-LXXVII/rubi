@@ -135,4 +135,16 @@ func (s *Server) registerLibraryTools() {
 				return nil, out{"id": in.ID, "state": to, "versions": changed}, nil
 			})
 	}
+	addCore(s, &mcp.Tool{Name: "rubi_library_purge",
+		Description: "Drop versions nobody uses: rejected, unadmitted (proposed) and withdrawn ones (a withdrawn version keeps a stub, so its number and its revocation stay). Frees room under the library's limits. version 0 or none: every such version of the skill." + curator},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in libraryStateIn) (*mcp.CallToolResult, out, error) {
+			if locked := s.lockedResponse(); locked != nil {
+				return nil, locked, nil
+			}
+			purged, err := s.core.LibraryPurge(in.Agent, in.Code, in.ID, in.Version)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, out{"id": in.ID, "purged": purged}, nil
+		})
 }

@@ -24,6 +24,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/library/libsig"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
 )
@@ -430,5 +431,55 @@ func TestLibraryKeyPinning(t *testing.T) {
 		if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: op, Token: token}); err == nil {
 			t.Fatalf("%s", op)
 		}
+	}
+}
+
+// The revocation list is signed with the pinned library key; only a newer list replaces the one in force.
+func TestLibraryRevocationList(t *testing.T) {
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := homeproto.RandomToken()
+	_ = h.Update(func(c *Config) { c.Paired = []Pairing{{TokenHash: tokenHash(token)}} })
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	send := func(tok string, at int64, list []string, key ed25519.PrivateKey) error {
+		sig, _ := libsig.SignRevocations(key, at, list)
+		a, _ := json.Marshal(map[string]any{"issued_at": at, "revoked": list, "sig": sig})
+		_, err := h.Handle(context.Background(), homeproto.Envelope{Op: "library.revoked", Token: tok, Args: a})
+		return err
+	}
+	if err := send(token, 10, []string{"evil@1"}, priv); err == nil {
+		t.Fatal("a list was taken with no library key pinned")
+	}
+	pk, _ := json.Marshal(map[string]string{"public_key": base64.StdEncoding.EncodeToString(pub)})
+	if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "library.key", Token: token, Args: pk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := send(homeproto.RandomToken(), 10, []string{"evil@1"}, priv); err == nil {
+		t.Fatal("an unpaired token pushed a list")
+	}
+	if err := send(token, 10, []string{"evil@1"}, other); err == nil {
+		t.Fatal("a list signed by another key was taken")
+	}
+	if err := send(token, 10, []string{"Evil@1"}, priv); err == nil {
+		t.Fatal("a malformed id was taken")
+	}
+	if err := send(token, 10, []string{"evil@1", "bad@2"}, priv); err != nil {
+		t.Fatal(err)
+	}
+	if !h.libraryRevoked("evil", "1") || !h.libraryRevoked("bad", "2") || h.libraryRevoked("evil", "2") {
+		t.Fatal("the list isn't in force")
+	}
+	if err := send(token, 5, nil, priv); err == nil || !h.libraryRevoked("evil", "1") {
+		t.Fatal("an older (replayed) list replaced the newer one")
+	}
+	if err := send(token, 20, []string{"bad@2"}, priv); err != nil || h.libraryRevoked("evil", "1") || !h.libraryRevoked("bad", "2") {
+		t.Fatalf("a newer list should replace: %v", err)
+	}
+	h2, _ := Open(h.Dir)
+	if !h2.libraryRevoked("bad", "2") {
+		t.Fatal("lost on reopen")
 	}
 }

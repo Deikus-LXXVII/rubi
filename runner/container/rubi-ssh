@@ -10,6 +10,7 @@
 const net = process.getBuiltinModule("node:net");
 
 const OPEN = 1, STDIN = 2, EOF = 3, ACK = 4, ERR = 0x11, STDOUT = 0x12, STDERR = 0x13, EXIT = 0x14;
+const MAX_FRAME = 128 * 1024; // as the runner (runner/src/ssh.ts): a longer frame is not from a sane runner
 const TARGET_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 const USAGE = "usage: ssh <target> <command...>\n" +
@@ -96,6 +97,10 @@ function main() {
     buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
     while (buf.length >= 5) {
       const len = buf.readUInt32BE(1);
+      if (len > MAX_FRAME) {
+        sock.destroy();
+        die("the relay sent a frame that is too long", 255);
+      }
       if (buf.length < 5 + len) break;
       const type = buf[0];
       const p = buf.subarray(5, 5 + len);

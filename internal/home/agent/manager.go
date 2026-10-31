@@ -636,6 +636,9 @@ func (m *Manager) pinRole(p *projState) (*roles.Role, error) {
 	if err := m.roleBoundTo(r, p.ID); err != nil {
 		return nil, err
 	}
+	if _, err := m.roles.EnforceRevocations(p.Role); err != nil { // withdrawn library skills never reach a starting VM
+		log.Printf("library revocations: role %s: %v", clip(p.Role, 64), err)
+	}
 	if roles.DirHash(p.Dir) != r.DirHash { // the VM about to mount p.Dir
 		return nil, fmt.Errorf("role %s was made for another directory than the one this VM would mount", clip(r.Name, 40))
 	}

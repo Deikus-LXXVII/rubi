@@ -43,7 +43,7 @@ const (
 var (
 	nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`) // as roles.sshRE
 	hostRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$`)
-	userRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,31}$`)
+	userRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]{0,31}$`) // as the plugin: no leading digit
 	fpRE   = regexp.MustCompile(`^SHA256:[A-Za-z0-9+/]{43}$`)
 )
 
@@ -78,6 +78,8 @@ type View struct {
 	AllowedCommands []string `json:"allowed_commands"`
 	AskEachTime     bool     `json:"ask_each_time"`
 	CreatedAt       string   `json:"created_at"`
+	// OptionPatterns are the allowed commands of the "prefix **" form (options allowed): the panel shows a warning.
+	OptionPatterns []string `json:"option_patterns"`
 	// HostKeyChanged is set from the last dial that found a different host key ("" = none since Home started
 	// or since the last good dial).
 	HostKeyChanged string `json:"host_key_changed,omitempty"`
@@ -219,6 +221,12 @@ func (s *Store) List() []View {
 		v := View{Name: t.Name, Host: t.Host, Port: t.Port, User: t.User, Fingerprint: t.Fingerprint,
 			AllowedCommands: append([]string{}, t.AllowedCommands...), AskEachTime: t.AskEachTime,
 			CreatedAt: t.CreatedAt, HostKeyChanged: s.changed[t.Name]}
+		v.OptionPatterns = []string{}
+		for _, p := range t.AllowedCommands {
+			if OptionPattern(p) {
+				v.OptionPatterns = append(v.OptionPatterns, p)
+			}
+		}
 		if pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(t.HostKey)); err == nil {
 			v.KeyType = pk.Type()
 		}
@@ -345,13 +353,14 @@ func (s *Store) Register(ctx context.Context, a RegisterArgs) (string, error) {
 	if _, ok := s.targets[a.Name]; ok {
 		return "", fmt.Errorf("a target named %q exists; remove it first", a.Name)
 	}
+	wasRemoved := s.removed[a.Name]
+	if wasRemoved && !a.Reuse { // before the key file: a refusal leaves no key behind
+		return "", fmt.Errorf("the name %q was used by a removed target and roles may still list it; choose another name", a.Name)
+	}
 	kp := s.keyPath(a.Name)
 	if err := writeFileAtomic(kp, pemBytes(blk), 0o600); err != nil {
+		_ = os.Remove(kp)
 		return "", err
-	}
-	wasRemoved := s.removed[a.Name]
-	if wasRemoved && !a.Reuse {
-		return "", fmt.Errorf("the name %q was used by a removed target and roles may still list it; choose another name", a.Name)
 	}
 	s.targets[a.Name] = t
 	delete(s.removed, a.Name)

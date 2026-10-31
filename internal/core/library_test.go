@@ -6,10 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
@@ -328,7 +332,7 @@ func TestLibrarySubmitIsRateLimited(t *testing.T) {
 	c := libCore(t)
 	var failed error
 	for i := 0; i < librarySubmitsPerMin+2 && failed == nil; i++ {
-		_, failed = c.LibrarySubmit("Mail", code(c, "Mail"), library.Submission{ID: "a" + string(rune('a'+i)), Description: "d",
+		_, failed = c.LibrarySubmit("Main", code(c, "Main"), library.Submission{ID: "a" + string(rune('a'+i)), Description: "d",
 			Content: strings.Replace(libSkill, "layout-notes", "a"+string(rune('a'+i)), 1)})
 	}
 	if failed == nil || !strings.Contains(failed.Error(), "slow down") {
@@ -475,5 +479,150 @@ func TestPluginCannotCallTheLibraryKeyOp(t *testing.T) {
 	_, err := c.pluginHandler("agent-plugin")(context.Background(), "home.call", json.RawMessage(`{"op":"library.key","args":{"public_key":"x"}}`))
 	if err == nil || !strings.Contains(err.Error(), "doesn't allow") {
 		t.Fatalf("home.call library.key: %v", err)
+	}
+}
+
+func TestLibraryPurgeAndAdmittedIDsAreTheCuratorsOnly(t *testing.T) {
+	c := libCore(t)
+	p := submitAs(t, c, "Main", libSkill)
+	if _, err := c.LibraryAdmit("Main", code(c, "Main"), p.ProposalID, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Another Bot can't add a version to an admitted skill; the curator's own submit still can.
+	if _, err := c.LibrarySubmit("Mail", code(c, "Mail"), library.Submission{Description: "d", Content: libSkill + "x\n"}); err == nil ||
+		!strings.Contains(err.Error(), "only the curator") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := c.LibrarySubmit("Main", code(c, "Main"), library.Submission{Description: "d", Content: libSkill + "y\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.LibraryPurge("Mail", code(c, "Mail"), "layout-notes", 0); err == nil {
+		t.Fatal("a non-curator purged")
+	}
+	got, err := c.LibraryPurge("Main", code(c, "Main"), "layout-notes", 0)
+	if err != nil || len(got) != 1 || got[0] != 2 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if len(auditFor(t, c, "library.purged")) != 1 {
+		t.Fatal("not audited")
+	}
+}
+
+type homeCalls struct {
+	mu    sync.Mutex
+	calls []string
+	args  []map[string]any
+	fail  atomic.Bool
+	slow  chan struct{}
+}
+
+func (h *homeCalls) call(ctx context.Context, dev *vault.Device, op string, args any) error {
+	if h.slow != nil {
+		select {
+		case <-h.slow:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if h.fail.Load() {
+		return errors.New("offline")
+	}
+	b, _ := json.Marshal(args)
+	var m map[string]any
+	_ = json.Unmarshal(b, &m)
+	h.mu.Lock()
+	h.calls = append(h.calls, dev.ID+" "+op)
+	h.args = append(h.args, m)
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *homeCalls) count(op string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, c := range h.calls {
+		if strings.HasSuffix(c, " "+op) {
+			n++
+		}
+	}
+	return n
+}
+
+func withDevice(t *testing.T, c *Core, id string) {
+	t.Helper()
+	if err := c.Vault.Update(func(d *vault.Data) error {
+		d.Devices = append(d.Devices, &vault.Device{ID: id, Name: id})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitFor(t *testing.T, what string, f func() bool) {
+	t.Helper()
+	for i := 0; i < 300; i++ {
+		if f() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out: " + what)
+}
+
+// A withdrawal reaches every Home as a signed list; a Home that is down doesn't make library.get wait.
+func TestLibraryWithdrawalIsPushedSignedAndAnOfflineHomeDoesNotStallGet(t *testing.T) {
+	c := libCore(t)
+	h := &homeCalls{}
+	c.libPins.call = h.call
+	withDevice(t, c, "dev-1")
+	withDevice(t, c, "dev-2")
+	p := submitAs(t, c, "Mail", libSkill)
+	if _, err := c.LibraryAdmit("Main", code(c, "Main"), p.ProposalID, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the push after admitting", func() bool { return h.count("library.revoked") == 2 })
+	if _, err := c.LibrarySetState("Main", code(c, "Main"), "layout-notes", 1, library.Withdrawn); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the push after withdrawing", func() bool { return h.count("library.revoked") == 4 })
+	h.mu.Lock()
+	last := h.args[len(h.args)-1]
+	h.mu.Unlock()
+	pub, _ := c.LibraryPublicKey()
+	list := []string{}
+	for _, x := range last["revoked"].([]any) {
+		list = append(list, x.(string))
+	}
+	if len(list) != 1 || list[0] != "layout-notes@1" {
+		t.Fatalf("%v", last)
+	}
+	if err := libsig.VerifyRevocations(pub, int64(last["issued_at"].(float64)), list, last["sig"].(string)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Offline Homes: library.get returns at once, and a Home that just failed isn't tried again for a while.
+	c2 := libCore(t)
+	off := &homeCalls{slow: make(chan struct{})}
+	c2.libPins.call = off.call
+	withDevice(t, c2, "dev-1")
+	withDevice(t, c2, "dev-2")
+	start := time.Now()
+	c2.pinLibraryKeys(context.Background())
+	if d := time.Since(start); d > libraryPinWait+time.Second {
+		t.Fatalf("library.get waited %v for offline Homes", d)
+	}
+	close(off.slow)
+	off.fail.Store(true)
+	waitFor(t, "failures noted", func() bool {
+		c2.libPins.mu.Lock()
+		defer c2.libPins.mu.Unlock()
+		return len(c2.libPins.failed) == 2
+	})
+	off.fail.Store(false)
+	start = time.Now()
+	c2.pinLibraryKeys(context.Background())
+	if time.Since(start) > 200*time.Millisecond || off.count("library.key") != 0 {
+		t.Fatal("an offline Home was tried again at once")
 	}
 }

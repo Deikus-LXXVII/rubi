@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
+	"github.com/Deikus-LXXVII/rubi/internal/library/libsig"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
@@ -106,6 +108,11 @@ type Config struct {
 	// Rubi presents it (op library.key, which only Rubi's core sends; a plugin's home.call can't reach it). A
 	// different key is refused, and a new pairing forgets it.
 	LibraryKey string `json:"library_key,omitempty"`
+	// LibraryRevoked is the newest signed list of withdrawn library versions ("id@version") Rubi's core pushed (op
+	// library.revoked, core only, signed with the library key), and LibraryRevokedAt when it was issued. Home
+	// builds no role with these and takes them out of the ones it has built.
+	LibraryRevoked   []string `json:"library_revoked,omitempty"`
+	LibraryRevokedAt int64    `json:"library_revoked_at,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -225,7 +232,7 @@ func (h *Helper) newAgent() *agent.Manager {
 				}
 			})
 		},
-		RoleVerifier: roles.Pinned{Key: h.libraryKey},
+		RoleVerifier: roles.Pinned{Key: h.libraryKey, IsRevoked: h.libraryRevoked},
 		Cred:         agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
 		ProxyListen:  h.Fresh().AgentProxyListen,
 		ProxyVMHost:  h.Fresh().AgentProxyVMHost,
@@ -435,6 +442,8 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		return h.hello(), nil
 	case "library.key":
 		return h.pinLibraryKey(env.Args)
+	case "library.revoked":
+		return h.setLibraryRevoked(env.Args)
 	case "unpair":
 		want := tokenHash(env.Token)
 		return nil, h.Update(func(c *Config) {
@@ -526,6 +535,64 @@ func (h *Helper) pinLibraryKey(args json.RawMessage) (any, error) {
 	return map[string]any{"pinned": true}, nil
 }
 
+// libraryRevoked says whether the signed list from Rubi's core names this library version.
+func (h *Helper) libraryRevoked(id, version string) bool {
+	want := id + "@" + version
+	for _, r := range h.Fresh().LibraryRevoked {
+		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+var revokedRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}@[1-9][0-9]{0,5}$`)
+
+const maxRevoked = 5000
+
+// setLibraryRevoked takes the list of withdrawn library versions Rubi's core signed with the library key. Only the
+// newest list counts (an older one is refused, so an old list can't be replayed to bring a skill back), and the
+// roles already built are rebuilt without the skills on it. Rubi sends the list when a version is withdrawn and
+// again when it presents the library key, so a computer that was off catches up the next time Rubi reaches it.
+func (h *Helper) setLibraryRevoked(args json.RawMessage) (any, error) {
+	var in struct {
+		IssuedAt int64    `json:"issued_at"`
+		Revoked  []string `json:"revoked"`
+		Sig      string   `json:"sig"`
+	}
+	if json.Unmarshal(args, &in) != nil || in.IssuedAt <= 0 || len(in.Revoked) > maxRevoked {
+		return nil, errors.New("bad arguments")
+	}
+	for _, r := range in.Revoked {
+		if !revokedRE.MatchString(r) {
+			return nil, errors.New("bad arguments")
+		}
+	}
+	if err := libsig.VerifyRevocations(h.libraryKey(), in.IssuedAt, in.Revoked, in.Sig); err != nil {
+		return nil, err
+	}
+	var stale bool
+	list := append([]string{}, in.Revoked...)
+	sort.Strings(list)
+	if err := h.Update(func(c *Config) {
+		if in.IssuedAt < c.LibraryRevokedAt {
+			stale = true
+			return
+		}
+		c.LibraryRevoked, c.LibraryRevokedAt = list, in.IssuedAt
+	}); err != nil {
+		return nil, err
+	}
+	if stale {
+		return nil, errors.New("a newer revocation list is already in force")
+	}
+	n := 0
+	if h.Agent != nil {
+		n = h.Agent.EnforceLibraryRevocations()
+	}
+	return map[string]any{"applied": true, "revoked": len(list), "skills_taken_out": n}, nil
+}
+
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
@@ -559,6 +626,7 @@ func (h *Helper) pair(args json.RawMessage) (any, error) {
 		// A new pairing replaces every earlier one. Codes are made on this computer by its owner, so a new
 		// one means "this Rubi, from now on": a pairing someone got from an earlier code ends here.
 		c.LibraryKey = "" // the library key is pinned again by the new Rubi
+		c.LibraryRevoked, c.LibraryRevokedAt = nil, 0
 		c.Paired = []Pairing{{TokenHash: tokenHash(in.Token), Label: in.Label, At: time.Now().UTC()}}
 	})
 	if uerr != nil {

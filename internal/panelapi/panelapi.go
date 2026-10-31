@@ -329,7 +329,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"plugin.config.get", "plugin.config.set",
 		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel",
 		"approval.list", "approval.open",
-		"library.list", "library.entry", "library.version", "library.queue", "library.curator.set":
+		"library.list", "library.entry", "library.version", "library.queue", "library.curator.set", "library.withdraw":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -800,6 +800,16 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return s.core.LibraryPanelVersion(args.ID, args.Version)
 	case "library.queue":
 		return s.core.LibraryPanelQueue()
+	case "library.withdraw":
+		res, err := s.core.RequestLibraryWithdraw(ctx, args.ID, args.Version)
+		if err != nil {
+			return nil, err
+		}
+		id, ok := res["approval_id"].(string)
+		if !ok {
+			return res, nil
+		}
+		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
 	case "library.curator.set":
 		res, err := s.core.RequestLibraryCurator(ctx, args.Name)
 		if err != nil {

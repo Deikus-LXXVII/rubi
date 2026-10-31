@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"regexp"
 	"slices"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
@@ -26,6 +27,8 @@ type SSHOpenParams struct {
 	SessionID string `json:"session_id"`
 	ToolUseID string `json:"tool_use_id,omitempty"`
 }
+
+var sshIDRE = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 
 // SSHOpened is the answer to ssh.open. The output starts to flow after this answer is sent.
 type SSHOpened struct {
@@ -147,13 +150,19 @@ func (m *Manager) sshOp(ctx context.Context, op string, args json.RawMessage) (a
 		return map[string]any{"ok": true, "closed_streams": n}, nil
 	case "ssh.audit":
 		var in struct {
-			Target string `json:"target"`
-			Limit  int    `json:"limit"`
+			Target   string  `json:"target"`
+			Limit    int     `json:"limit"`
+			AfterSeq *uint64 `json:"after_seq"`
 		}
 		if err := decodeStrict(args, &in); err != nil {
 			return nil, err
 		}
-		return map[string]any{"entries": m.ssh.Audit().Recent(in.Target, in.Limit)}, nil
+		if in.AfterSeq != nil { // paging forward: oldest first, from the entry after after_seq
+			es, last := m.ssh.Audit().After(in.Target, *in.AfterSeq, in.Limit)
+			return map[string]any{"entries": es, "last_seq": last}, nil
+		}
+		_, last := m.ssh.Audit().After("", ^uint64(0), 1)
+		return map[string]any{"entries": m.ssh.Audit().Recent(in.Target, in.Limit), "last_seq": last}, nil
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
 }
@@ -168,6 +177,9 @@ func (h *handler) SSHOpen(ctx context.Context, p SSHOpenParams, notify func(stri
 	if m.ssh == nil {
 		return nil, errors.New("SSH targets aren't available here")
 	}
+	if !sshIDRE.MatchString(p.ToolUseID) { // goes into items and the audit: a short plain token or nothing
+		p.ToolUseID = ""
+	}
 	req := sshtarget.OpenReq{Role: h.p.key(), Project: h.p.ID, Target: clip(p.Target, 64), Command: p.Command}
 	m.mu.Lock()
 	if sl := m.ownerLocked(h.p, p.SessionID); sl != nil {
@@ -180,7 +192,11 @@ func (h *handler) SSHOpen(ctx context.Context, p SSHOpenParams, notify func(stri
 		m.ssh.Refused(req, "refused", reason)
 		return nil, &RPCError{Code: -32000, Message: msg}
 	}
+	if !m.ssh.AllowOpen(req.Role) {
+		return refuse("too many requests", "too many SSH requests; wait a minute")
+	}
 	if p.SessionID != "" && !okID(p.SessionID) {
+		req.Bot = ""
 		return refuse("bad session id", "bad session id")
 	}
 	if p.Command == "" || len(p.Command) > sshtarget.MaxCommandLen {
@@ -200,8 +216,17 @@ func (h *handler) SSHOpen(ctx context.Context, p SSHOpenParams, notify func(stri
 		return refuse("command not allowed", "this command isn't allowed on the target")
 	}
 	if tg.AskEachTime {
-		in, _ := json.Marshal(map[string]any{"target": tg.Name, "host": tg.Host, "port": tg.Port, "user": tg.User,
-			"command": sshtarget.ClipCommand(p.Command, 1000, func(s string) string { return string(RedactCredentials([]byte(s))) })})
+		// The user approves exactly what will run: the command is shown as it is (redaction is for the audit copy
+		// only). A command with characters that can't be shown faithfully is refused instead of being asked about.
+		if !sshtarget.Displayable(p.Command) {
+			return refuse("command has control or format characters", "this command has characters that can't be shown for approval")
+		}
+		end, ok := m.ssh.BeginAsk(req.Role)
+		if !ok {
+			return refuse("too many questions waiting", "this role has SSH questions waiting for the user already; wait for them")
+		}
+		defer end()
+		in, _ := json.Marshal(map[string]any{"target": tg.Name, "host": tg.Host, "port": tg.Port, "user": tg.User, "command": p.Command})
 		it := Item{Type: "ssh.ask", Project: h.p.ID, Role: h.p.key(), SessionID: p.SessionID, ToolUseID: p.ToolUseID,
 			Host: tg.Host, Op: "ssh", Input: in}
 		if r := m.waitDecision(ctx, h.p.ID, it); r.Behavior != "allow" {

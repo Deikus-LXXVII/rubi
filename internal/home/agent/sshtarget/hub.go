@@ -22,6 +22,8 @@ const (
 	DefaultIdle       = 10 * time.Minute
 	DefaultBuffer     = 8 << 20
 	DefaultGrantCheck = 2 * time.Second
+	DefaultOpenPerMin = 30
+	DefaultAsks       = 2
 	chunk             = 32 << 10
 )
 
@@ -32,6 +34,8 @@ type Limits struct {
 	Idle       time.Duration // longest time without data in either direction
 	Buffer     int64         // bytes in flight per direction
 	GrantCheck time.Duration // how often a live stream re-reads its grant
+	OpenPerMin int           // ssh.open requests per role per minute (refused ones count)
+	Asks       int           // ssh.ask questions waiting at once per role
 }
 
 func (l Limits) withDefaults() Limits {
@@ -50,8 +54,32 @@ func (l Limits) withDefaults() Limits {
 	if l.GrantCheck <= 0 {
 		l.GrantCheck = DefaultGrantCheck
 	}
+	if l.OpenPerMin <= 0 {
+		l.OpenPerMin = DefaultOpenPerMin
+	}
+	if l.Asks <= 0 {
+		l.Asks = DefaultAsks
+	}
 	return l
 }
+
+// DialError is a failure to reach or log in to a target. Its text is a fixed sentence that is safe to give to the
+// VM (no address, no library error); the detail is for Home's log.
+type DialError struct {
+	msg   string
+	cause error
+}
+
+func (e *DialError) Error() string { return e.msg }
+func (e *DialError) Unwrap() error { return e.cause }
+
+// The fixed sentences a runner may learn about a failed dial.
+const (
+	msgNoAnswer     = "the target didn't answer"
+	msgLoginFailed  = "login to the target failed"
+	msgUnusable     = "the target can't be used right now; ask the user to check it"
+	msgHostKeyShown = "host key changed"
+)
 
 // ErrHostKeyChanged: the target presented a host key other than the pinned one; nothing was sent to it.
 var ErrHostKeyChanged = errors.New("host key changed")
@@ -87,6 +115,10 @@ type Hub struct {
 	streams map[string]*Stream
 	perRole map[string]int
 	closed  bool
+	opens   map[string][]time.Time // recent ssh.open requests per role
+	asks    map[string]int         // ssh.ask questions waiting per role
+	now     func() time.Time
+	live    sync.WaitGroup // streams from Open to the end of their run (the audit line included)
 }
 
 // NewHub makes a hub.
@@ -94,7 +126,8 @@ func NewHub(cfg Config) *Hub {
 	if cfg.Logf == nil {
 		cfg.Logf = func(string, ...any) {}
 	}
-	return &Hub{cfg: cfg, lim: cfg.Limits.withDefaults(), streams: map[string]*Stream{}, perRole: map[string]int{}}
+	return &Hub{cfg: cfg, lim: cfg.Limits.withDefaults(), streams: map[string]*Stream{}, perRole: map[string]int{},
+		opens: map[string][]time.Time{}, asks: map[string]int{}, now: time.Now}
 }
 
 // Store is the registry the hub dials from.
@@ -109,7 +142,7 @@ func (h *Hub) clip(cmd string, n int) string { return ClipCommand(cmd, n, h.cfg.
 func (h *Hub) Refused(r OpenReq, result, reason string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	h.record(Entry{Role: r.Role, Project: r.Project, Bot: r.Bot, Target: r.Target, Command: h.clip(r.Command, CommandClip),
-		Start: now, End: now, Result: result, Reason: reason})
+		Start: now, End: now, Result: result, Reason: h.clip(reason, 200)})
 }
 
 func (h *Hub) record(e Entry) {
@@ -119,6 +152,45 @@ func (h *Hub) record(e Entry) {
 	if err := h.cfg.Audit.Add(e); err != nil {
 		h.cfg.Logf("ssh audit: %v", err)
 	}
+}
+
+// AllowOpen counts an ssh.open request of the role and says whether it is within the rate limit (a minute's
+// worth). Refused requests count too: that is the flood it limits.
+func (h *Hub) AllowOpen(role string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := h.now()
+	recent := h.opens[role][:0]
+	for _, t := range h.opens[role] {
+		if now.Sub(t) < time.Minute {
+			recent = append(recent, t)
+		}
+	}
+	if len(recent) >= h.lim.OpenPerMin {
+		h.opens[role] = recent
+		return false
+	}
+	h.opens[role] = append(recent, now)
+	return true
+}
+
+// BeginAsk reserves one of the role's slots for a question waiting for the user; ok is false when it has too
+// many waiting. Call end when the question is answered.
+func (h *Hub) BeginAsk(role string) (end func(), ok bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.asks[role] >= h.lim.Asks {
+		return nil, false
+	}
+	h.asks[role]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			h.mu.Lock()
+			h.asks[role]--
+			h.mu.Unlock()
+		})
+	}, true
 }
 
 // Open checks the target and the command, dials with the pinned host key, runs the command and returns the
@@ -155,10 +227,14 @@ func (h *Hub) Open(ctx context.Context, r OpenReq, notify Notifier) (*Stream, er
 	client, err := h.dial(ctx, t)
 	if err != nil {
 		release()
+		var de *DialError
+		if errors.As(err, &de) {
+			h.cfg.Logf("ssh target %s: %v", t.Name, de.cause)
+		}
 		if errors.Is(err, ErrHostKeyChanged) {
 			h.Refused(r, "host key changed", "the target presented another host key; nothing was sent")
 		} else {
-			h.Refused(r, "error", clipText(err.Error(), 200))
+			h.Refused(r, "error", err.Error())
 		}
 		return nil, err
 	}
@@ -172,14 +248,21 @@ func (h *Hub) Open(ctx context.Context, r OpenReq, notify Notifier) (*Stream, er
 			}
 		}
 	}
+	if err == nil && h.cfg.Granted != nil && !h.cfg.Granted(r.Role, r.Target) { // revoked while dialing
+		client.Close()
+		release()
+		h.Refused(r, "refused", "revoked while connecting")
+		return nil, errors.New("this SSH target isn't available to this role")
+	}
 	if err == nil {
 		err = sess.Start(r.Command)
 	}
 	if err != nil {
 		client.Close()
 		release()
-		h.Refused(r, "error", clipText(err.Error(), 200))
-		return nil, fmt.Errorf("can't run the command on the target: %s", clipText(err.Error(), 200))
+		h.cfg.Logf("ssh target %s: can't start the command: %v", t.Name, err)
+		h.Refused(r, "error", "the command couldn't be started on the target")
+		return nil, errors.New("the command couldn't be started on the target")
 	}
 	sctx, cancel := context.WithCancel(ctx)
 	s := &Stream{h: h, id: "ss_" + rand.Text(), req: r, ctx: sctx, cancel: cancel, client: client, sess: sess, stdin: stdin,
@@ -194,6 +277,7 @@ func (h *Hub) Open(ctx context.Context, r OpenReq, notify Notifier) (*Stream, er
 		return nil, errors.New("Rubi Home is stopping")
 	}
 	h.streams[s.id] = s
+	h.live.Add(1)
 	h.mu.Unlock()
 	s.idle = time.AfterFunc(h.lim.Idle, func() { s.closeWith("idle timeout") })
 	s.age = time.AfterFunc(h.lim.MaxAge, func() { s.closeWith("time limit") })
@@ -212,11 +296,11 @@ func hostKeyAlgos(k ssh.PublicKey) []string {
 func (h *Hub) dial(ctx context.Context, t Target) (*ssh.Client, error) {
 	pinned, _, _, _, err := ssh.ParseAuthorizedKey([]byte(t.HostKey))
 	if err != nil || ssh.FingerprintSHA256(pinned) != t.Fingerprint {
-		return nil, errors.New("the target's pinned host key is damaged; register it again")
+		return nil, &DialError{msgUnusable, errors.New("the target's pinned host key is damaged; register it again")}
 	}
 	signer, err := h.cfg.Store.signer(t.Name)
 	if err != nil {
-		return nil, err
+		return nil, &DialError{msgUnusable, err}
 	}
 	changed := false
 	fixed := ssh.FixedHostKey(pinned)
@@ -235,7 +319,7 @@ func (h *Hub) dial(ctx context.Context, t Target) (*ssh.Client, error) {
 	defer cancel()
 	conn, err := h.cfg.Store.dial(dctx, "tcp", t.Addr())
 	if err != nil {
-		return nil, fmt.Errorf("can't reach the target: %w", errText(err))
+		return nil, &DialError{msgNoAnswer, fmt.Errorf("can't reach the target: %w", errText(err))}
 	}
 	_ = conn.SetDeadline(time.Now().Add(2 * dialTimeout))
 	stop := context.AfterFunc(dctx, func() { conn.Close() })
@@ -245,9 +329,9 @@ func (h *Hub) dial(ctx context.Context, t Target) (*ssh.Client, error) {
 		conn.Close()
 		if changed {
 			h.cfg.Store.markChanged(t.Name, true)
-			return nil, fmt.Errorf("%w: %s presented another host key than the pinned one; refused", ErrHostKeyChanged, t.Name)
+			return nil, &DialError{msgHostKeyShown, fmt.Errorf("%w: %s presented another host key than the pinned one; refused", ErrHostKeyChanged, t.Name)}
 		}
-		return nil, fmt.Errorf("can't log in to the target: %w", errText(err))
+		return nil, &DialError{msgLoginFailed, fmt.Errorf("can't log in to the target: %w", errText(err))}
 	}
 	_ = conn.SetDeadline(time.Time{})
 	h.cfg.Store.markChanged(t.Name, false)
@@ -330,11 +414,11 @@ func (h *Hub) CloseAll() {
 	for _, s := range all {
 		s.closeWith("Rubi Home stopped")
 	}
-	for _, s := range all {
-		select {
-		case <-s.done():
-		case <-time.After(5 * time.Second):
-		}
+	wait := make(chan struct{})
+	go func() { h.live.Wait(); close(wait) }()
+	select {
+	case <-wait:
+	case <-time.After(5 * time.Second):
 	}
 }
 
@@ -392,9 +476,13 @@ func (s *Stream) closeWith(reason string) {
 func (s *Stream) touch() { s.idle.Reset(s.h.lim.Idle) }
 
 func (s *Stream) run() {
+	defer s.h.live.Done()
 	defer close(s.fin)
 	go func() { // whatever ends the stream hangs up the connection, which ends the readers
 		<-s.ctx.Done()
+		s.mu.Lock() // wake the pumps waiting for acknowledgements; they check ctx under this lock
+		s.cond.Broadcast()
+		s.mu.Unlock()
 		_ = s.sess.Close()
 		_ = s.client.Close()
 	}()

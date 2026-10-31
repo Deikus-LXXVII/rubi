@@ -2525,6 +2525,13 @@ async function libraryEntryScreen(ctx, id, back) {
       }).catch((x) => showError(err, x));
     } }, "Show the skill");
     if (v.state === "rejected") show.hidden = true; // a rejected version keeps no content
+    // The user can always pull a version, whatever the curator does; it takes a passkey like the curator choice.
+    const pull = ["admitted", "deprecated", "proposed"].includes(v.state)
+      ? h("button", { class: "danger small", type: "button", onclick: async (e) => {
+        await busy(e.currentTarget, async () => confirmChange(ctx, await ctx.client.call("library.withdraw", { id, version: n }), mine, "Back to the skill"))
+          .catch((x) => showError(err, x));
+      } }, "Withdraw this version")
+      : null;
     return h("article", { class: "pcard" },
       h("header", { class: "pcard-head" },
         h("div", { class: "pcard-title" }, h("strong", {}, `v${n}`),
@@ -2543,7 +2550,7 @@ async function libraryEntryScreen(ctx, id, back) {
           : "No rule matched."),
         stripped.length ? field("Removed by the scan", stripped.map((x) => clip(x, 100)).join(", ")) : null,
         hist.length ? field("Curator actions", h("ul", { class: "lib-hits" }, hist.map((x) => h("li", {}, libText(x, 200))))) : null),
-      show, shown);
+      show, shown, pull);
   };
   screen(
     { cls: "wide", focus: false },
