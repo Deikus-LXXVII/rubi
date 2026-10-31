@@ -19,6 +19,8 @@ export interface ToolOpts {
   agentType?: string;
   /** Simulates the SDK's own hook timeout: if the hook has not answered by then the call is blocked. */
   hookTimeoutMs?: number;
+  /** The tool keeps running (no result yet) until this resolves; a foreground subagent, for instance. */
+  holdResult?: Promise<void>;
 }
 export interface ToolOutcome {
   id?: string;
@@ -159,6 +161,7 @@ export class FakeQuery implements SdkQuery {
       this.userResult(id, true, `PreToolUse:${name} hook error: ${hso.permissionDecisionReason}`);
       return { id, allowed: false, reason: hso.permissionDecisionReason ?? "" };
     }
+    if (o.holdResult) await o.holdResult;
     this.userResult(id, false, "ok");
     return { id, allowed: true };
   }
