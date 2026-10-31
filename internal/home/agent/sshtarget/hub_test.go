@@ -539,3 +539,30 @@ func TestPrivateKeyNeverLeaves(t *testing.T) {
 		}
 	}
 }
+
+func TestRemovedNameNeedsReuse(t *testing.T) {
+	r := newRig(t, Limits{})
+	r.register("web-1", nil, false)
+	if err := r.store.Remove("web-1"); err != nil {
+		t.Fatal(err)
+	}
+	args := RegisterArgs{Name: "web-1", Host: "web-1.example.com", User: "deploy", Fingerprint: r.srv.Fingerprint()}
+	if _, err := r.store.Register(context.Background(), args); err == nil {
+		t.Fatal("a removed name was registered again without reuse")
+	}
+	// The tombstone survives a restart.
+	s2, err := Open(r.dir, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s2.removed["web-1"] {
+		t.Fatal("tombstone lost on restart")
+	}
+	args.Reuse = true
+	if _, err := r.store.Register(context.Background(), args); err != nil {
+		t.Fatalf("reuse refused: %v", err)
+	}
+	if r.store.removed["web-1"] {
+		t.Fatal("tombstone not cleared by reuse")
+	}
+}

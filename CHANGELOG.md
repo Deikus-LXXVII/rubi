@@ -9,6 +9,11 @@
   clipped, marked text. The panel reads only; admitting, deprecating and withdrawing stay the curator Bot's. New panel ops
   `library.list`, `library.entry`, `library.version`, `library.queue`, `library.curator.set` (full settings ticket only).
   The demo has the screen (`#demo=library`).
+- **SSH from a role's VM (agent roles, R12 runner and image).** The VM image has an `ssh <target> <command>` wrapper
+  (`rubi-ssh`, first in `PATH`): no options, no `user@host`, no TTY; it talks to the runner over a unix socket and the
+  runner relays the stream to Rubi Home, which is the SSH client (input with end of input, output, exit status,
+  8 MiB flow control each way, close on interrupt or exit). Git over ssh is off. A removed SSH target's name can't be
+  registered again unless the call says `reuse`, since roles may still list it.
 - **Agent roles: security review fixes (R4-R7).** Session operations of a role are refused for a session that isn't the
   role's own (not in its slots, not in its runner's list), and the runner resumes from disk only sessions its config
   directory lists. Reads of a role whose VM is stopped answer empty (`vm_state: "stopped"`) instead of starting it, and no

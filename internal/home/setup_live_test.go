@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/sshtarget/sshtest"
 )
 
 // TestLiveSetupStatus probes this computer through a fresh Rubi Home directory and prints the setup page's
@@ -163,4 +164,150 @@ func TestLiveRoles(t *testing.T) {
 			t.Errorf("a sign-in is mounted in role %s's VM", me)
 		}
 	}
+}
+
+// TestLiveSSH runs `ssh <target> <command>` inside a role's VM end to end: the wrapper, the runner's socket, Rubi
+// Home's ssh.open and an in-process SSH server on this computer's loopback (Home dials it; the VM never does). A
+// role with a grant runs "echo hi" and gets "hi" with status 0; a registered target the role isn't granted, an
+// unknown one and the forbidden forms are refused. It needs the runner image (built on first use) and the container
+// tool; no model call is made. Skipped unless RUBI_AGENT_LIVE=1 RUBI_AGENT_LIVE_RUN=ssh.
+func TestLiveSSH(t *testing.T) {
+	if os.Getenv("RUBI_AGENT_LIVE") != "1" || os.Getenv("RUBI_AGENT_LIVE_RUN") != "ssh" {
+		t.Skip("set RUBI_AGENT_LIVE=1 RUBI_AGENT_LIVE_RUN=ssh")
+	}
+	srv, err := sshtest.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	srv.Handler = func(cmd string, stdin io.Reader, stdout, stderr io.Writer) int {
+		switch {
+		case cmd == "echo hi":
+			_, _ = io.WriteString(stdout, "hi\n")
+			return 0
+		case cmd == "cat":
+			_, _ = io.Copy(stdout, stdin)
+			return 0
+		case cmd == "exit 7":
+			_, _ = io.WriteString(stderr, "bye\n")
+			return 7
+		}
+		_, _ = io.WriteString(stderr, "unexpected command\n")
+		return 1
+	}
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	cfg := h.Fresh()
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	proj := filepath.Join(base, "live-ssh")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mgr := agent.New(agent.Options{
+		Dir: h.Dir, Projects: func() []string { return []string{proj} }, Wait: time.Minute,
+		NewVM: func(agent.Project) agent.VM {
+			return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, Network: cfg.AgentNetwork, EnvDir: h.Dir}
+		},
+	})
+	defer mgr.Close()
+	call := func(op string, args any) any {
+		t.Helper()
+		b, _ := json.Marshal(args)
+		res, err := mgr.Handle(ctx, "claude-agent."+op, b)
+		if err != nil {
+			t.Fatalf("%s: %v", op, err)
+		}
+		return res
+	}
+	for _, name := range []string{"test-target", "other-target"} {
+		res := call("ssh.register", map[string]any{"name": name, "host": "127.0.0.1", "port": srv.Port, "user": "deploy", "fingerprint": srv.Fingerprint()})
+		b, _ := json.Marshal(res)
+		var out struct {
+			Line string `json:"public_key_line"`
+		}
+		_ = json.Unmarshal(b, &out)
+		if err := srv.Authorize(out.Line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skill := "---\nname: ssh-skill\ndescription: tiny\n---\nSay hi.\n"
+	sum := sha256.Sum256([]byte(skill))
+	sha := hex.EncodeToString(sum[:])
+	res := call("role.put", map[string]any{"base_version": 0, "by": "live-test", "blobs": map[string]string{sha: skill},
+		"spec": map[string]any{"project": "live-ssh", "name": "live-ssh", "description": "live ssh", "tools": []string{"Read"},
+			"ssh": []string{"test-target"}, "skills": []map[string]any{{"name": "ssh-skill", "source": "adhoc", "sha256": sha}}}})
+	b, _ := json.Marshal(res)
+	var role struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(b, &role)
+	sb, err := mgr.SandboxRole(ctx, "live-ssh", role.ID)
+	if err != nil {
+		t.Fatalf("starting the VM: %v", err)
+	}
+	run := func(script, stdin string) string {
+		t.Helper()
+		c, err := sb.Exec(ctx, []string{"sh", "-c", script + "; echo rc=$?"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stdin != "" {
+			_, _ = io.WriteString(c, stdin)
+		}
+		_ = c.CloseWrite()
+		out, _ := io.ReadAll(io.LimitReader(c, 1<<20))
+		_ = c.Close()
+		t.Logf("%s -> %q", script, liveRedact(string(out)))
+		return string(out)
+	}
+	if out := run("command -v ssh; command -v rubi-ssh", ""); !strings.Contains(out, "rubi/bin/ssh") || !strings.Contains(out, "/rubi-ssh") {
+		t.Errorf("ssh isn't the wrapper in PATH: %q", out)
+	}
+	if out := run("ssh test-target echo hi 2>&1", ""); !strings.HasPrefix(out, "hi\n") || !strings.Contains(out, "rc=0") {
+		t.Errorf("echo hi: %q", out)
+	}
+	if out := run("ssh test-target exit 7 2>&1", ""); !strings.Contains(out, "bye") || !strings.Contains(out, "rc=7") {
+		t.Errorf("exit 7: %q", out)
+	}
+	if out := run("ssh test-target cat 2>&1", "line one\nline two\n"); !strings.HasPrefix(out, "line one\nline two\n") || !strings.Contains(out, "rc=0") {
+		t.Errorf("stdin: %q", out)
+	}
+	for _, c := range []string{"ssh other-target echo hi", "ssh no-such-target echo hi"} {
+		out := run(c+" 2>&1", "")
+		if strings.Contains(out, "hi\n") || strings.Contains(out, "rc=0") || !strings.Contains(out, "isn't available to this role") {
+			t.Errorf("%s wasn't refused: %q", c, out)
+		}
+	}
+	for _, c := range []string{"ssh -o StrictHostKeyChecking=no test-target echo hi", "ssh deploy@test-target echo hi", "ssh test-target", "ssh -i /tmp/k test-target ls"} {
+		if out := run(c+" 2>&1", ""); strings.Contains(out, "hi\n") || !strings.Contains(out, "rc=2") {
+			t.Errorf("%s wasn't refused by the wrapper: %q", c, out)
+		}
+	}
+	// The VM holds no key and no host: nothing of the target in the VM's files or environment.
+	// Names only: the environment holds the per-start proxy and gateway secrets, which must not reach the log.
+	if out := run("env | cut -d= -f1; ls -la /tmp", ""); strings.Contains(out, "id_") || strings.Contains(out, "agent-ssh") {
+		t.Errorf("key material in the VM: %q", out)
+	}
+	if got := len(srv.Commands()); got != 3 {
+		t.Errorf("the server ran %d commands, want 3 (echo hi, exit 7, cat): %v", got, srv.Commands())
+	}
+}
+
+// liveRedact drops the lines of a VM's output that look like secrets (the per-start proxy or gateway secrets).
+func liveRedact(out string) string {
+	var keep []string
+	for _, l := range strings.Split(out, "\n") {
+		if agent.LooksSecret(l) {
+			l = "[line dropped: looks like a secret]"
+		}
+		keep = append(keep, l)
+	}
+	return strings.Join(keep, "\n")
 }

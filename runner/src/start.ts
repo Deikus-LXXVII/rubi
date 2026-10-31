@@ -20,6 +20,7 @@ const runner = new Runner(process.stdin, process.stdout, {
   configDir,
   ...(roleDir ? { roleDir } : {}),
   credSock: process.env.RUBI_CRED_SOCK || "/tmp/rubi-cred.sock",
+  sshSock: process.env.RUBI_SSH_SOCK || "/tmp/rubi-ssh.sock",
   settingSources: process.env.RUBI_SETTING_SOURCES === "none" ? [] : ["project"],
   log: (m) => process.stderr.write(`[runner] ${m}\n`),
   exit: (code) => setImmediate(() => process.exit(code)),

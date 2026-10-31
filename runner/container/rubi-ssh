@@ -1,0 +1,122 @@
+#!/usr/bin/env node
+// `ssh <target> [command...]` inside the runner VM (installed as rubi-ssh, and as `ssh` early in PATH).
+// There is no ssh client in the VM: this talks to the runner over a unix socket (RUBI_SSH_SOCK), the runner asks
+// Rubi Home, and Home is the SSH client. Only a registered target name and a command exist: no options, no
+// user@host, no key, no port, no forwarding, no TTY. Exit status is the remote command's.
+// Framing: 1 byte type, 4 bytes big-endian length, payload (runner/src/ssh.ts).
+"use strict";
+// getBuiltinModule works whether node reads this extensionless file as CommonJS (the image) or as ESM (a
+// package.json with "type": "module" above it, as in a checkout).
+const net = process.getBuiltinModule("node:net");
+
+const OPEN = 1, STDIN = 2, EOF = 3, ACK = 4, ERR = 0x11, STDOUT = 0x12, STDERR = 0x13, EXIT = 0x14;
+const TARGET_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+const USAGE = "usage: ssh <target> <command...>\n" +
+  "Only a target name that Rubi lists for this role, followed by a command, is supported:\n" +
+  "no options (-o -i -p -L -R -D -A -W -J ...), no user@host, no interactive shell. Git over ssh is not supported either; use https remotes.\n";
+
+function die(msg, code) {
+  process.stderr.write("ssh: " + msg + "\n");
+  process.exit(code);
+}
+
+// Returns {target, command} or throws Error(message). Everything before the target must be the target.
+function parseArgs(args) {
+  if (args.length === 0) throw new Error(USAGE.trimEnd());
+  const target = args[0];
+  if (target.startsWith("-")) throw new Error("options are not supported (" + target.slice(0, 2) + ")\n" + USAGE.trimEnd());
+  if (target.includes("@")) throw new Error("user@host is not supported; give a target name from Rubi\n" + USAGE.trimEnd());
+  if (!TARGET_RE.test(target)) throw new Error("not a target name (lowercase letters, digits and dashes, up to 32)\n" + USAGE.trimEnd());
+  const command = args.slice(1).join(" ");
+  if (command.trim() === "") throw new Error("a command is required; there is no interactive shell\n" + USAGE.trimEnd());
+  if (Buffer.byteLength(command) > 8192) throw new Error("the command is longer than 8192 bytes");
+  return { target, command };
+}
+
+function frame(type, payload) {
+  const p = payload === undefined ? Buffer.alloc(0) : Buffer.isBuffer(payload) ? payload : Buffer.from(payload);
+  const h = Buffer.alloc(5);
+  h[0] = type;
+  h.writeUInt32BE(p.length, 1);
+  return Buffer.concat([h, p]);
+}
+
+function main() {
+  let parsed;
+  try {
+    parsed = parseArgs(process.argv.slice(2));
+  } catch (e) {
+    die(e.message, 2);
+  }
+  const sockPath = process.env.RUBI_SSH_SOCK || "/tmp/rubi-ssh.sock";
+  const sock = net.connect(sockPath);
+  let buf = Buffer.alloc(0);
+  let exited = false;
+  const done = (code) => {
+    if (exited) return;
+    exited = true;
+    // let what was written to stdout and stderr go out before exiting
+    process.stdout.write("", () => process.stderr.write("", () => process.exit(code)));
+  };
+  sock.on("error", (e) => {
+    if (exited) return;
+    die(e.code === "ENOENT" || e.code === "ECONNREFUSED" ? "Rubi's SSH relay isn't available in this VM" : "connection to Rubi failed", 255);
+  });
+  sock.on("close", () => {
+    if (!exited) die("the connection to Rubi ended before the command did", 255);
+  });
+  sock.on("connect", () => {
+    const sid = process.env.RUBI_SESSION_ID;
+    sock.write(frame(OPEN, JSON.stringify({ target: parsed.target, command: parsed.command, ...(sid ? { session_id: sid } : {}) })));
+    process.stdin.on("data", (d) => {
+      if (!sock.write(frame(STDIN, d))) {
+        process.stdin.pause();
+        sock.once("drain", () => process.stdin.resume());
+      }
+    });
+    process.stdin.on("end", () => sock.write(frame(EOF)));
+    process.stdin.on("error", () => sock.write(frame(EOF)));
+  });
+  const out = (stream, data) => {
+    stream.write(data, () => {
+      const n = Buffer.alloc(4);
+      n.writeUInt32BE(data.length, 0);
+      if (!sock.destroyed) sock.write(frame(ACK, n));
+    });
+  };
+  for (const s of [process.stdout, process.stderr]) {
+    s.on("error", () => {
+      // the reader went away (`ssh x cmd | head`): hang up, the runner closes the stream
+      sock.destroy();
+      process.exit(141);
+    });
+  }
+  sock.on("data", (chunk) => {
+    buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
+    while (buf.length >= 5) {
+      const len = buf.readUInt32BE(1);
+      if (buf.length < 5 + len) break;
+      const type = buf[0];
+      const p = buf.subarray(5, 5 + len);
+      buf = buf.subarray(5 + len);
+      if (type === STDOUT) out(process.stdout, p);
+      else if (type === STDERR) out(process.stderr, p);
+      else if (type === ERR) {
+        process.stderr.write("ssh: " + p.toString("utf8") + "\n");
+        done(255);
+      } else if (type === EXIT) {
+        let x = {};
+        try {
+          x = JSON.parse(p.toString("utf8"));
+        } catch {
+          // treated as 255 below
+        }
+        if (x.reason) process.stderr.write("ssh: " + x.reason + "\n");
+        done(Number.isInteger(x.code) && x.code >= 0 && x.code <= 255 ? x.code : 255);
+      }
+    }
+  });
+}
+
+main();

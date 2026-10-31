@@ -34,9 +34,18 @@ COPY container/git-credential-rubi /usr/local/bin/git-credential-rubi
 # The sign-in helper of the setup wizard (it runs `claude setup-token` under `script`, from util-linux); it is
 # run in the short-lived auth container, never by the runner.
 COPY container/rubi-claude-token /usr/local/bin/rubi-claude-token
-RUN chmod 0755 /usr/local/bin/git-credential-rubi /usr/local/bin/rubi-claude-token \
+# `ssh <target> <command>`: no ssh client is installed; this wrapper speaks to the runner's socket (RUBI_SSH_SOCK) and Rubi
+# Home is the SSH client (docs/design/agent-roles.md section 9). It is also found as `ssh`, first in PATH. Git over
+# ssh is therefore not supported (git would call the wrapper, which refuses options); remotes are https, with the
+# credential helper above.
+COPY container/rubi-ssh /usr/local/bin/rubi-ssh
+RUN chmod 0755 /usr/local/bin/git-credential-rubi /usr/local/bin/rubi-claude-token /usr/local/bin/rubi-ssh \
+ && mkdir -p /usr/local/rubi/bin \
+ && ln -s /usr/local/bin/rubi-ssh /usr/local/rubi/bin/ssh \
  && git config --system credential.helper /usr/local/bin/git-credential-rubi \
- && git config --system credential.useHttpPath true
+ && git config --system credential.useHttpPath true \
+ && git config --system protocol.ssh.allow never
+ENV PATH=/usr/local/rubi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Telemetry stays off; the proxy and the run token come from the supervisor's environment at exec time.
 ENV DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
