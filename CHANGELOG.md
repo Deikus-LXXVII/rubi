@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Rubi Home: the role store and `claude-agent.role.*` ops (agent roles, R3).** Home keeps agent roles per computer
+  in `<helper dir>/agent-roles/<id>/`: immutable numbered versions (0600), content-addressed ad-hoc skill blobs
+  (re-hashed by Home), and for each version a materialized directory (`role.json`, a plugin named `role` with
+  `skills/<name>/SKILL.md` normalized by `sdk/skillscan` and `agents/<name>.md` rebuilt from fields) behind an
+  atomically swapped relative `current` symlink. `role.put` validates the whole spec (sizes, names, tool names from a
+  known list, MCP servers and plugins only with an approval id, library skills only with a valid signature, which the
+  stub verifier refuses until the library exists), scans every skill (reject refuses the put, a flag holds the skill
+  until its rule ids are accepted), refuses a stale `base_version`, and commits in a crash-safe order that opening the
+  store repairs. `role.list` (with each project's implicit legacy role `default`), `role.get`, `role.history` and
+  `role.diff` (structured changes and clipped unified text diffs) read it. GC keeps the newest 5 materialized
+  versions and any version marked in use. No VM, mount or slot changes yet.
 - **SDK: `sdk/skillscan`, a deterministic skill scanner (agent roles, R2).** `skillscan.Scan(name, content, allowedHosts)`
   checks a `SKILL.md` and returns a verdict (pass, flag, reject), the rule hits (id, line, an excerpt of at most 80
   characters with secrets masked), the frontmatter keys it stripped, the scanner version and a normalized file whose
