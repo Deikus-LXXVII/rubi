@@ -56,6 +56,71 @@ func TestAppleContainerArgs(t *testing.T) {
 	}
 }
 
+// A role VM mounts the project read-write, its own content read-only and its own config directory read-write; no
+// sign-in, never --ssh; each role has its own container; the legacy role is as it always was.
+func TestAppleContainerRoleArgs(t *testing.T) {
+	a := &AppleContainer{Bin: "container", CPUs: "2", Memory: "2G", AuthDir: "/home/alice/rubi-home/agent-auth"}
+	legacy := Project{ID: "my-project", Dir: "/home/alice/my-project"}
+	mk := func(id, name string) Project {
+		return Project{ID: "my-project", Dir: legacy.Dir, Role: id, RoleName: name,
+			RoleDir: "/home/alice/rubi-home/agent-roles/" + id + "/content", ClaudeDir: "/home/alice/rubi-home/agent-roles/" + id + "/claude"}
+	}
+	r1, r2 := mk("r_aaaaaaaa", "visual-design"), mk("r_bbbbbbbb", "reviewer")
+	n1, n2 := containerName(r1), containerName(r2)
+	if !strings.HasPrefix(n1, "rubi-agent-visual-design-") || !strings.HasPrefix(n2, "rubi-agent-reviewer-") || n1 == n2 || n1 == containerName(legacy) {
+		t.Fatalf("names %q %q %q", n1, n2, containerName(legacy))
+	}
+	// Same role, another directory: another container.
+	other := r1
+	other.Dir = "/home/alice/other"
+	if containerName(other) == n1 {
+		t.Fatal("the name ignores the directory")
+	}
+	run := a.RunArgs(r1)
+	joined := strings.Join(run, " ")
+	want := []string{"container", "run", "-d", "--name", n1, "--init", "--network", DefaultNetwork, "--user", "10001",
+		"--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp",
+		"--mount", "type=bind,source=/home/alice/my-project,target=/work",
+		"--mount", "type=bind,source=/home/alice/rubi-home/agent-roles/r_aaaaaaaa/content,target=/rubi-role,readonly",
+		"--mount", "type=bind,source=/home/alice/rubi-home/agent-roles/r_aaaaaaaa/claude,target=/rubi-claude",
+		"--env", "RUBI_ROLE_DIR=/rubi-role", "--env", "RUBI_CLAUDE_DIR=/rubi-claude",
+		"--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
+	if !reflect.DeepEqual(run, want) {
+		t.Fatalf("run\n got %v\nwant %v", run, want)
+	}
+	for _, bad := range []string{"--ssh", "--publish", "-p", "--privileged", "--cap-add", "--virtualization"} {
+		for _, x := range run {
+			if x == bad {
+				t.Errorf("role run has %s", bad)
+			}
+		}
+	}
+	for _, bad := range []string{"rubi-auth", "agent-auth", "r_bbbbbbbb", "/work/.rubi"} {
+		if strings.Contains(joined, bad) {
+			t.Errorf("role run mentions %s", bad)
+		}
+	}
+	// The other role's mounts are its own.
+	if j2 := strings.Join(a.RunArgs(r2), " "); strings.Contains(j2, "r_aaaaaaaa") || !strings.Contains(j2, "agent-roles/r_bbbbbbbb/content,target=/rubi-role,readonly") {
+		t.Fatalf("second role: %s", j2)
+	}
+	// The legacy role: no role mounts, no role environment.
+	lj := strings.Join(a.RunArgs(legacy), " ")
+	for _, bad := range []string{"rubi-role", "rubi-claude", "RUBI_ROLE_DIR", "--env"} {
+		if strings.Contains(lj, bad) {
+			t.Errorf("legacy run has %s", bad)
+		}
+	}
+	// Stop and delete name the role's own container.
+	if got := a.stopArgs(r1); got[len(got)-1] != n1 {
+		t.Fatalf("stop %v", got)
+	}
+	// The runner is told it is in role mode through the exec's environment.
+	if env := withRoleEnv(map[string]string{"A": "1"}); env["RUBI_ROLE_DIR"] != "/rubi-role" || env["RUBI_CLAUDE_DIR"] != "/rubi-claude" || env["A"] != "1" {
+		t.Fatalf("env %v", env)
+	}
+}
+
 func TestEnvFile(t *testing.T) {
 	b, err := EnvFile(map[string]string{"RUBI_RUN_TOKEN": "abc", "A": "1"})
 	if err != nil || string(b) != "A=1\nRUBI_RUN_TOKEN=abc\n" {
