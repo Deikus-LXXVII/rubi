@@ -13,6 +13,7 @@
 const fs = process.getBuiltinModule("fs");
 const path = process.getBuiltinModule("path");
 const cp = process.getBuiltinModule("child_process");
+const crypto = process.getBuiltinModule("crypto");
 
 const AUTH = process.env.RUBI_AUTH_DIR || "/rubi-auth";
 const CLAUDE = process.env.RUBI_CLAUDE_BIN || "/opt/rubi-runner/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude";
@@ -54,20 +55,30 @@ const ESC = /\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b
 const OSC8_BLOCK = /\x1b\]8;[^;\x07\x1b]*;[^\x07\x1b]*(?:\x07|\x1b\\)[\s\S]*?\x1b\]8;;(?:\x07|\x1b\\)/g;
 const OSC8 = /\x1b\]8;[^;\x07\x1b]*;(https:\/\/[^\x07\x1b]+)(?:\x07|\x1b\\)/;
 
+// The temporary file has a random name, is created exclusively and is removed again on any error.
 function writeAtomic(file, data) {
-  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
-  fs.writeFileSync(tmp, data, { mode: 0o600, flag: "wx" });
-  fs.renameSync(tmp, file);
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${crypto.randomBytes(8).toString("hex")}.tmp`);
+  try {
+    fs.writeFileSync(tmp, data, { mode: 0o600, flag: "wx" });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+    throw e;
+  }
 }
 
 function save(token) {
   process.umask(0o077);
   const dir = path.join(AUTH, "token");
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeAtomic(path.join(dir, "oauth-token"), token + "\n");
+  // The metadata goes first: if the token's rename then fails nothing is stored, and a live token is never
+  // reported as failed.
   const now = Date.now();
   const meta = { created: new Date(now).toISOString(), expires: new Date(now + VALID_DAYS * 86400e3).toISOString(), method: "setup-token" };
   writeAtomic(path.join(dir, "oauth-token.meta"), JSON.stringify(meta) + "\n");
+  writeAtomic(path.join(dir, "oauth-token"), token + "\n");
 }
 
 function main() {
@@ -104,7 +115,8 @@ function main() {
       const m = OSC8.exec(raw) || /(https:\/\/[^\s\x1b]+)/.exec(text);
       const url = m && m[1].replace(/[.,;:)]+$/, "");
       if (url) {
-        if (!allowed(url)) return finish("FAILED unexpected sign-in link", 1);
+        // a link that would be dropped by the output filter can't be shown: fail rather than wait for nothing
+        if (!allowed(url) || /sk-ant/i.test(url)) return finish("FAILED unexpected sign-in link", 1);
         urlSent = true;
         emit("URL " + url);
       }
@@ -122,7 +134,9 @@ function main() {
   // The code (a line) goes to claude as Enter-terminated input; a terminal's Enter is \r.
   process.stdin.on("data", (d) => {
     if (finished) return;
-    child.stdin.write(d.toString("utf8").replace(/\r?\n/g, "\r"));
+    const text = d.toString("utf8");
+    if (/[^\x21-\x7e\r\n]/.test(text)) return; // a code is visible ASCII, nothing else goes to claude
+    child.stdin.write(text.replace(/\r?\n/g, "\r"));
     promptShown = false; // the prompt may come back after a wrong code
     raw = ""; // what was drawn before the code is not looked at again
   });

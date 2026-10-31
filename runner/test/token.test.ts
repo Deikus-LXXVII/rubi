@@ -2,7 +2,7 @@
 // a made-up token).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -138,14 +138,49 @@ describe("rubi-claude-token", () => {
     }
   });
 
-  it("drops any line that would carry a token", async () => {
-    // a fake whose link carries something token-shaped: the helper refuses to print it
+  it("a link the output filter would drop fails instead of hanging, and nothing of it is printed", async () => {
     const r = run({ FAKE_LINK: "https://claude.com/x?t=sk-ant-oat01-LEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAKLEAK" });
     try {
-      await r.waitLine((l) => l === "CODE?");
-      assert.equal(r.stdout.includes("LEAK"), false);
-      r.write("x\n");
       await r.done;
+      assert.equal(r.code, 1);
+      assert.deepEqual(r.lines, ["FAILED unexpected sign-in link"]);
+      assert.equal(r.stdout.includes("LEAK"), false);
+      assert.equal(existsSync(join(r.authDir, "token", "oauth-token")), false);
+    } finally {
+      clean(r);
+    }
+  });
+
+  it("input that isn't a visible-ASCII code never reaches claude", async () => {
+    const r = run({ FAKE_BAD_CODE: "1" });
+    try {
+      await r.waitLine((l) => l === "CODE?");
+      r.write("bad code with spaces\n");
+      r.write("tab\there\n");
+      r.write("caf\u00e9\n");
+      await new Promise((res) => setTimeout(res, 300));
+      assert.equal(r.lines.filter((l) => l === "CODE?").length, 1, "the prompt was answered: " + JSON.stringify(r.lines));
+      r.write("good\n");
+      await r.done;
+      assert.equal(r.lines.at(-1), "SAVED");
+    } finally {
+      clean(r);
+    }
+  });
+
+  it("a failed save leaves no temporary file, and no live token is reported as failed", async () => {
+    const r = run();
+    try {
+      await r.waitLine((l) => l === "CODE?");
+      // make the token's rename fail: a directory is where the token file goes
+      mkdirSync(join(r.authDir, "token", "oauth-token"), { recursive: true });
+      r.write("code\n");
+      await r.done;
+      assert.equal(r.code, 1);
+      assert.equal(r.lines.at(-1), "FAILED could not save the credential");
+      const left = readdirSync(join(r.authDir, "token")).filter((f) => f.endsWith(".tmp"));
+      assert.deepEqual(left, []);
+      assert.equal(statSync(join(r.authDir, "token", "oauth-token")).isDirectory(), true); // nothing was replaced
     } finally {
       clean(r);
     }
