@@ -40,6 +40,7 @@ const (
 	DenyNoAnswer = "Rubi: no answer in time, so the call was denied."
 	DenyBusy     = "Rubi: too many calls are already waiting for approval; denied."
 	DenyGone     = "Rubi: the request was cancelled."
+	DenySelfTest = "Rubi: this is the setup self-test; every call is denied."
 )
 
 // Options configures a Manager.
@@ -124,6 +125,9 @@ type projState struct {
 	runner  *Runner // guarded by Manager.mu
 	proxy   *Proxy
 	hosts   []string
+	// proxyEnv is the proxy variables the runner was started with (the proxy password is in them: never
+	// logged); guarded by Manager.mu like runner.
+	proxyEnv map[string]string
 }
 
 // extraHosts are the hosts besides the base and git hosts: the owner's list, the forges, and what the
@@ -157,6 +161,7 @@ type Manager struct {
 	usage    usageDay
 	lastCost map[string]float64
 	closed   bool
+	self     *selfTest // the self-test that holds the slot, if any (setup.go)
 
 	cancels    map[string]context.CancelFunc
 	netFlights map[string]*netFlight
@@ -395,6 +400,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	// The proxy starts once the VM is up: the Mac's address on a host-only network (its gateway) exists only
 	// while a VM is attached to it.
 	var px *Proxy
+	var penv map[string]string
 	prepare := func(ctx context.Context, gateway string) (map[string]string, error) {
 		listen := m.opt.ProxyListen
 		if listen == "" && gateway != "" {
@@ -413,7 +419,8 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			host, _, _ = net.SplitHostPort(px.Addr())
 		}
 		proxyURL := "http://rubi:" + proxyToken + "@" + net.JoinHostPort(host, port)
-		return map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL}, nil
+		penv = map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL}
+		return penv, nil
 	}
 	env := map[string]string{"RUBI_RUN_TOKEN": token, "GIT_TERMINAL_PROMPT": "0"}
 	conn, err := p.vm.Start(sctx, StartSpec{Project: p.Project, Env: env, Prepare: prepare})
@@ -430,7 +437,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		return nil, err
 	}
 	m.mu.Lock()
-	p.runner, p.proxy, p.hosts = r, px, hosts
+	p.runner, p.proxy, p.hosts, p.proxyEnv = r, px, hosts, penv
 	m.mu.Unlock()
 	go func() {
 		<-r.Done()
@@ -497,6 +504,15 @@ func deny(msg string) AskResult { return AskResult{Behavior: "deny", Message: ms
 // waitDecision queues the ask item and waits; anything but a decision from the plugin is a denial.
 func (m *Manager) waitDecision(ctx context.Context, project string, it Item) AskResult {
 	m.mu.Lock()
+	if st := m.self; st != nil && st.project == project {
+		// A self-test (setup.go) denies everything itself: the question never reaches the plugin, so no
+		// decision of the plugin's can answer it.
+		if it.Type == "perm.ask" {
+			st.denied = append(st.denied, it.Tool)
+		}
+		m.mu.Unlock()
+		return deny(DenySelfTest)
+	}
 	if !m.connectedLocked() {
 		m.mu.Unlock()
 		return deny(DenyLocked)
@@ -751,6 +767,8 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 		Tasks  *[]struct {
 			ID string `json:"task_id"`
 		} `json:"tasks"`
+		Result    string  `json:"result"`
+		IsError   bool    `json:"is_error"`
 		TotalCost float64 `json:"total_cost_usd"`
 		Usage     struct {
 			In  int64 `json:"input_tokens"`
@@ -763,6 +781,10 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if st := m.self; st != nil && st.project == p.ID {
+		st.event(ev, f.Result, f.IsError, f.Status) // the self-test's own events stay with it
+		return
+	}
 	if m.ownerLocked(p, ev.SessionID) {
 		m.slot.last = m.opt.Now()
 	}
