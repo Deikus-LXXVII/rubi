@@ -207,8 +207,10 @@ func (m *Manager) extraHosts(p *projState, roleHosts []string) []string {
 // Manager is the Mac side of the agent: projects, the slots, the queue, asks.
 type Manager struct {
 	opt Options
-	q   *diskQueue
-	net *netState
+	// shieldLock is held by the daemon that swept the role snapshots (SweepShields), for its whole life.
+	shieldLock *os.File
+	q          *diskQueue
+	net        *netState
 	// roles is the role store (Dir/agent-roles); nil with rolesErr when it couldn't be opened.
 	roles    *roles.Store
 	rolesErr error
@@ -310,7 +312,25 @@ func (m *Manager) Resume() {
 
 // SweepShields removes the role snapshots an earlier Home run left. Only the daemon's start calls it (never New:
 // every command that opens the helper makes a Manager, and a running Home's VMs mount these directories).
-func (m *Manager) SweepShields() { sweepShields(m.opt.Dir) }
+func (m *Manager) SweepShields() {
+	if m.opt.Dir == "" {
+		return
+	}
+	// The lock is held for the life of the process, so a second daemon on the same directory never removes the
+	// snapshots of the first one's running VMs.
+	f, err := os.OpenFile(filepath.Join(m.opt.Dir, RoleShieldDir+".lock"), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		log.Printf("agent: role snapshots not swept: %v", err)
+		return
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		log.Printf("agent: role snapshots not swept: another Rubi Home holds them")
+		return
+	}
+	m.shieldLock = f
+	sweepShields(m.opt.Dir)
+}
 
 // Close stops the manager's work and every VM; the queue stays on disk.
 func (m *Manager) Close() {

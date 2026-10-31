@@ -212,3 +212,25 @@ func TestFailedStartRemovesSnapshots(t *testing.T) {
 		t.Fatalf("snapshots left: %v", ents)
 	}
 }
+
+func TestSecondDaemonDoesNotSweepShields(t *testing.T) {
+	dir := t.TempDir()
+	a := &Manager{opt: Options{Dir: dir}}
+	a.SweepShields()
+	if a.shieldLock == nil {
+		t.Fatal("the first daemon holds no lock")
+	}
+	defer a.shieldLock.Close()
+	snap := filepath.Join(dir, RoleShieldDir, "p-r")
+	if err := os.MkdirAll(snap, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	b := &Manager{opt: Options{Dir: dir}}
+	b.SweepShields()
+	if b.shieldLock != nil {
+		t.Fatal("a second daemon took the lock")
+	}
+	if _, err := os.Stat(snap); err != nil {
+		t.Fatalf("a second daemon swept the first one's snapshots: %v", err)
+	}
+}
