@@ -381,16 +381,16 @@ func filepathWalkNoSeed(t *testing.T, dir string, seed []byte) {
 
 // ---- the plugin host method and the pinning op ----
 
-const claudeAgentPlugin = `{"schema":1,"id":"agent-plugin","name":"Agent","version":"v1.0.0","api":1,
-	"entry":"agent-plugin","publisher":{"name":"x","key":"MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="},
+const claudeAgentPlugin = `{"schema":1,"id":"claude-code","name":"Agent","version":"v1.0.0","api":1,
+	"entry":"claude-code","publisher":{"name":"x","key":"MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="},
 	"home":["claude-agent"]}`
 
 func TestLibraryHostMethod(t *testing.T) {
 	c := libCore(t)
 	installManifest(t, c, claudeAgentPlugin)
-	installManifest(t, c, strings.NewReplacer("agent-plugin", "other-plugin", `["claude-agent"]`, `["hue"]`).Replace(claudeAgentPlugin))
+	installManifest(t, c, strings.NewReplacer("claude-code", "other-plugin", `["claude-agent"]`, `["hue"]`).Replace(claudeAgentPlugin))
 	_ = c.Vault.Update(func(d *vault.Data) error {
-		d.Integrations["agent-plugin"] = &vault.Integration{Enabled: true}
+		d.Integrations["claude-code"] = &vault.Integration{Enabled: true}
 		d.Integrations["other-plugin"] = &vault.Integration{Enabled: true}
 		return nil
 	})
@@ -406,14 +406,14 @@ func TestLibraryHostMethod(t *testing.T) {
 	}
 	p := submitAs(t, c, "Mail", libSkill)
 	for _, params := range []string{`{"id":"layout-notes"}`, `{"id":"layout-notes","version":1}`} {
-		if _, err := call("agent-plugin", params); err == nil {
+		if _, err := call("claude-code", params); err == nil {
 			t.Fatalf("a proposal was served to a plugin: %s", params)
 		}
 	}
 	if _, err := c.LibraryAdmit("Main", code(c, "Main"), p.ProposalID, nil); err != nil {
 		t.Fatal(err)
 	}
-	got, err := call("agent-plugin", `{"id":"layout-notes","version":1}`)
+	got, err := call("claude-code", `{"id":"layout-notes","version":1}`)
 	if err != nil || got["content"] != libSkill || got["signature"] == "" || got["state"] != "admitted" || got["admitted_by"] != "Main" {
 		t.Fatalf("%v %v", got, err)
 	}
@@ -421,28 +421,28 @@ func TestLibraryHostMethod(t *testing.T) {
 	if _, err := libsig.Verify(pub, "layout-notes", "1", got["sha256"].(string), got["signature"].(string)); err != nil {
 		t.Fatal(err)
 	}
-	if latest, err := call("agent-plugin", `{"id":"layout-notes"}`); err != nil || latest["version"] != float64(1) {
+	if latest, err := call("claude-code", `{"id":"layout-notes"}`); err != nil || latest["version"] != float64(1) {
 		t.Fatalf("%v %v", latest, err)
 	}
 	if _, err := call("other-plugin", `{"id":"layout-notes"}`); err == nil || !strings.Contains(err.Error(), "claude-agent") {
 		t.Fatalf("a plugin without the capability: %v", err)
 	}
-	if _, err := call("agent-plugin", `{"id":"nope"}`); err == nil {
+	if _, err := call("claude-code", `{"id":"nope"}`); err == nil {
 		t.Fatal("missing skill")
 	}
-	if _, err := call("agent-plugin", `{"id":"../x"}`); err == nil {
+	if _, err := call("claude-code", `{"id":"../x"}`); err == nil {
 		t.Fatal("odd id")
 	}
 	// Withdrawn: gone for plugins too.
 	if _, err := c.LibrarySetState("Main", code(c, "Main"), "layout-notes", 0, library.Withdrawn); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := call("agent-plugin", `{"id":"layout-notes","version":1}`); err == nil {
+	if _, err := call("claude-code", `{"id":"layout-notes","version":1}`); err == nil {
 		t.Fatal("withdrawn skill served to a plugin")
 	}
 	// There is no host method that writes.
 	for _, m := range []string{"library.put", "library.admit", "library.submit", "library.key"} {
-		if _, err := c.pluginHandler("agent-plugin")(context.Background(), m, json.RawMessage(`{}`)); err == nil {
+		if _, err := c.pluginHandler("claude-code")(context.Background(), m, json.RawMessage(`{}`)); err == nil {
 			t.Fatalf("host method %s exists", m)
 		}
 	}
@@ -473,10 +473,10 @@ func TestPluginCannotCallTheLibraryKeyOp(t *testing.T) {
 	// Through the host method a plugin with every capability is refused too.
 	installManifest(t, c, strings.Replace(claudeAgentPlugin, `["claude-agent"]`, `["hue","shortcuts","claude","claude-sessions","claude-start","claude-agent","agent-setup"]`, 1))
 	_ = c.Vault.Update(func(d *vault.Data) error {
-		d.Integrations["agent-plugin"] = &vault.Integration{Enabled: true}
+		d.Integrations["claude-code"] = &vault.Integration{Enabled: true}
 		return nil
 	})
-	_, err := c.pluginHandler("agent-plugin")(context.Background(), "home.call", json.RawMessage(`{"op":"library.key","args":{"public_key":"x"}}`))
+	_, err := c.pluginHandler("claude-code")(context.Background(), "home.call", json.RawMessage(`{"op":"library.key","args":{"public_key":"x"}}`))
 	if err == nil || !strings.Contains(err.Error(), "doesn't allow") {
 		t.Fatalf("home.call library.key: %v", err)
 	}
