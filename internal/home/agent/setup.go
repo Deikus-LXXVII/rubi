@@ -42,7 +42,12 @@ type Sandbox struct {
 
 // Sandbox starts the project's VM, runner and proxy as a session start would, if they aren't running.
 func (m *Manager) Sandbox(ctx context.Context, id string) (*Sandbox, error) {
-	p, err := m.project(id)
+	return m.SandboxRole(ctx, id, "")
+}
+
+// SandboxRole is Sandbox for one role's VM of the project ("" or the project's id: the legacy role).
+func (m *Manager) SandboxRole(ctx context.Context, id, role string) (*Sandbox, error) {
+	p, err := m.projectFor(id, role)
 	if err != nil {
 		return nil, err
 	}
