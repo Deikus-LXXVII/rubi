@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **SDK: `sdk/skillscan`, a deterministic skill scanner (agent roles, R2).** `skillscan.Scan(name, content, allowedHosts)`
+  checks a `SKILL.md` and returns a verdict (pass, flag, reject), the rule hits (id, line, an excerpt of at most 80
+  characters with secrets masked), the frontmatter keys it stripped, the scanner version and a normalized file whose
+  frontmatter keeps only `name` and `description`. Rejects: format limits, hidden text (zero-width, bidi, tag
+  characters, ANSI, HTML comments, `data:` URLs, long base64 or hex runs) and secrets; flags: exfiltration shapes,
+  instruction overrides, widening claims, URLs outside the allow-list. No network, no model. It lives under `sdk/` so a
+  plugin can import it like `sdk/rubiplugin`.
 - **Agents: one Claude sign-in for all projects (shared token, nothing else shared).** The setup's sign-in step is
   now one for the computer: the image's `rubi-claude-token` helper runs `claude setup-token` under a terminal in a
   short-lived sign-in container (no project mounted; a proxy allows only the sign-in hosts) and stores a one-year,
