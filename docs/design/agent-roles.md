@@ -86,7 +86,13 @@ does today. "Model saw" means the string appeared in some request body sent to t
 5. Skill `allowed-tools` **does** widen the SDK's own permission check (#12). It does not get past our `PreToolUse` gate,
    which asks `perm.ask` for every call and never returns `allow`. Defence in depth: Home strips every frontmatter key
    except `name` and `description` when it materializes a role (§6.2).
-6. CLAUDE.md goes through `systemPrompt.append` (#8). Loss: `@imports` and subdirectory `CLAUDE.md` files are not
+6. **Inline shell in skills runs outside the gate (observed, real `claude`).** A skill body with ``!`cmd` `` (or a
+   fenced ```` ```! ```` block) is expanded by the CLI itself when the skill is invoked: no `PreToolUse` hook, no
+   `perm.ask`. In `bypassPermissions` the commands ran (marker files created); in `default` mode read-only commands
+   ran and a command needing a prompt failed the whole skill, still with no ask. The runner therefore passes
+   `disableSkillShellExecution: true` in role mode (the commands are replaced by a placeholder), the scanner rejects
+   the syntax (`hid.shell`), and the integration suite asserts none of the forms runs in either mode.
+7. CLAUDE.md goes through `systemPrompt.append` (#8). Loss: `@imports` and subdirectory `CLAUDE.md` files are not
    followed (§4.4).
 
 ### 1.3 Not verified (flagged)
@@ -159,8 +165,19 @@ Reasons:
 - The library must be in core so that "admitted" can be signed by a key no plugin holds (§8).
 - Home already trusts the paired plugin's decisions for `perm.ask`. It cannot tell a Bot tool from a panel button, so
   the tiers are enforced in the plugin, as they are for `usage_mode` today. Home enforces the **structural invariants**
-  whatever the plugin says: schema, sizes, the stripped frontmatter, tool names from a known list, MCP entries only
-  with an `approval` id, library skills only with a valid signature.
+  whatever the plugin says: schema, sizes, the stripped frontmatter, tool names from a known list, library skills only
+  with a valid signature, hidden text, secrets and override or widening claims in every free text (§7), and:
+  - **approvals, compared with the previous version.** A version that adds an MCP server (or changes one), a plugin, a
+    host, a tool outside `SafeTools` or an accepted skill flag needs a non-empty approval id for each addition: the
+    entry's own `approval` for an MCP server or plugin, `change.approval` for the rest. An id is **spent** by the
+    version that commits with it (kept in `used.json`, rebuilt from the version files) and cannot authorize another
+    version, a changed entry or another entry; a revert that re-adds something needs a fresh id.
+  - **labels survive.** What a put leaves unchanged keeps `deny.by`, `added_by`, accepted flags and an MCP server's or
+    plugin's `approval` from the previous version; what is new is labelled with the put's own `by`.
+
+  Home does not check that an approval id is real, pending or granted, or who the caller is: the plugin stays the tier
+  authority (like `perm.ask`). These checks stop a put from widening or relabelling without naming a fresh approval; they
+  do not replace the plugin's.
 
 ### 2.3 Home operations (capability `claude-agent`, new ops)
 
@@ -365,9 +382,15 @@ Each check gives one of three results:
 - Format: not UTF-8, NUL or control characters other than `\n` and `\t`, more than 32 KiB, more than 800 lines, a name
   not matching `^[a-z0-9][a-z0-9-]{0,47}$`, a description missing or over 300 characters, frontmatter that is not a
   simple `key: value` block.
-- Hidden text: zero-width and invisible characters (U+200B-U+200F, U+2060-U+2064, U+FEFF, U+00AD), bidi controls
-  (U+202A-U+202E, U+2066-U+2069), Unicode tag characters (U+E0000-U+E007F), ANSI escapes, HTML comments, `data:`
-  URLs, base64 or hex runs of 200 characters or more.
+- Hidden text: invisible characters (any format, private-use, surrogate, line/paragraph-separator category, every space
+  other than U+0020, variation selectors U+FE00-U+FE0F and U+E0100-U+E01EF, U+034F, the Hangul fillers U+115F, U+1160,
+  U+3164, U+FFA0, U+FFF9-U+FFFB, U+2800, U+180E, U+061C, U+00AD; a zero-width joiner too, even inside emoji), bidi
+  controls (U+202A-U+202E, U+2066-U+2069), Unicode tag characters (U+E0000-U+E007F), ANSI escapes, HTML comments,
+  inline shell (``!`cmd` `` and ```` ```! ```` blocks, `hid.shell`), `data:` URLs, base64 or hex runs of 200
+  characters or more.
+- The frontmatter is read as written: a double-quoted value with a backslash escape is refused, so what is scanned is
+  what is emitted. Every per-line rule also runs over the decoded description. `name` and `description` are written back
+  single-quoted (so `name: yes` stays a string), and so are the names and descriptions of subagent files.
 - Secrets: `sk-ant-`, `ghp_`/`gho_`/`github_pat_`, `glpat-`, `xox[abposr]-`, `AKIA[0-9A-Z]{16}`, `AIza[0-9A-Za-z_-]{35}`,
   `npm_[A-Za-z0-9]{36}`, PEM private-key headers, `Bearer <20+ token characters>`, `password|secret|token\s*[:=]\s*\S{8,}`,
   and generic strings of 32+ characters with entropy above 4.0 bits per character. These reuse the
@@ -381,11 +404,23 @@ Each check gives one of three results:
   - credential and auth paths and names (`~/.ssh`, `id_rsa`, `id_ed25519`, `.netrc`, `.git-credentials`,
     `/proc/*/environ`, `printenv`, `env |`, `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_`, `/rubi-claude`, `.rubi/`,
     keychain);
-  - any URL whose host is not in the role's allow-list or the base list.
+  - any URL (`http`, `ftp`, `ws`, `git`, `ssh`, `s3`, `tcp`, `udp`, `sftp`, `rsync`, `smb`) whose host is not in the
+    role's allow-list or the base list, and a schemeless `host/path`, `host:port` or common-TLD host argument of `curl`
+    or `wget` (a heuristic: `out.txt` is not a host).
 - Instruction overrides: "ignore (all|previous|prior) instructions", "system prompt", "do not tell the user", "without
   asking", "bypass", "disable (hooks|approvals|sandbox)", "dangerously", "approve" next to "Rubi", "passkey".
 - Widening claims: `allowed-tools`, `permissionMode`, `bypassPermissions`, `mcpServers`, `settings.json`, `.claude/`,
   `--plugin-dir`, "allow-list", `agent_allowed_hosts`, "add (this|the) host".
+
+**Free texts.** A role's instructions, a subagent's prompt and the role and subagent descriptions go through
+`skillscan.ScanText` (the same per-line rules, no frontmatter or size rules). They have no held state, so Home refuses
+the put on **any** hit, reject or flag; a URL passes once its host is in the role's hosts (a widening that has its own
+approval), anything else is reworded. All text fields also refuse invisible characters and C1 controls.
+
+**Limits that keep the store bounded:** `role.json` over 64 KiB is refused before any blob is written; a role keeps at
+most 4 MiB of skill text (every version's skills count, they stay as history). A stored version that the scanner would
+now reject (a later scanner version) is rebuilt without that skill and logged, so the role is never unusable and a put
+or revert that removes the skill works.
 
 **Stripped (recorded, not rejected):** frontmatter keys other than `name` and `description`.
 
