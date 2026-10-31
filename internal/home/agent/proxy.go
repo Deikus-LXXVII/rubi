@@ -107,7 +107,7 @@ type Proxy struct {
 
 	mu      sync.Mutex
 	allow   map[string]bool
-	conns   map[net.Conn]struct{}
+	conns   map[net.Conn]string // open upstream tunnels -> their host
 	refused []string
 	allowed int
 	closed  bool
@@ -146,7 +146,7 @@ func StartProxy(cfg ProxyConfig) (*Proxy, error) {
 		return nil, err
 	}
 	p := &Proxy{cfg: cfg, ln: ln, allow: map[string]bool{}, exempt: map[string]bool{}, slots: make(chan struct{}, proxyMaxConns),
-		conns: map[net.Conn]struct{}{}}
+		conns: map[net.Conn]string{}}
 	for _, h := range cfg.Hosts {
 		p.AddHost(h)
 	}
@@ -166,6 +166,29 @@ func (p *Proxy) AddHost(h string) {
 		p.mu.Lock()
 		p.allow[n] = true
 		p.mu.Unlock()
+	}
+}
+
+// SetHosts replaces the allow-list (as AllowList builds it): a host that is no longer on it is refused from now on
+// and its open tunnels are closed.
+func (p *Proxy) SetHosts(hosts []string) {
+	allow := map[string]bool{}
+	for _, h := range hosts {
+		if n := normalizeHost(h); n != "" && !refusedHost(n) {
+			allow[n] = true
+		}
+	}
+	p.mu.Lock()
+	p.allow = allow
+	var drop []net.Conn
+	for c, h := range p.conns {
+		if h != "" && !allow[h] {
+			drop = append(drop, c)
+		}
+	}
+	p.mu.Unlock()
+	for _, c := range drop {
+		c.Close()
 	}
 }
 
@@ -232,13 +255,13 @@ func clip(s string, n int) string {
 	return s
 }
 
-func (p *Proxy) track(c net.Conn) bool {
+func (p *Proxy) track(c net.Conn, host string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return false
 	}
-	p.conns[c] = struct{}{}
+	p.conns[c] = host
 	return true
 }
 
@@ -255,7 +278,7 @@ func (p *Proxy) serve() {
 		if err != nil {
 			return
 		}
-		if !p.track(c) {
+		if !p.track(c, "") { // a client connection: no host
 			c.Close()
 			return
 		}
@@ -402,7 +425,7 @@ func (p *Proxy) handle(c net.Conn) {
 		}
 		return
 	}
-	if !p.track(up) {
+	if !p.track(up, host) {
 		up.Close()
 		return
 	}

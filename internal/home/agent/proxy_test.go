@@ -339,3 +339,38 @@ func TestProxyIdleTunnelEnds(t *testing.T) {
 		t.Fatal("idle tunnel stayed open")
 	}
 }
+
+func TestProxySetHostsRevokes(t *testing.T) {
+	up := newUpstream(t)
+	px, err := StartProxy(ProxyConfig{AuthToken: testToken, Hosts: []string{"a.example.com", "b.example.com"}, Resolve: publicResolve, Dial: up.dial})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { px.Close() })
+	ca, bra, status := connect(t, px.Addr(), "a.example.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("a: %s", status)
+	}
+	cb, brb, status := connect(t, px.Addr(), "b.example.com:443")
+	if !strings.Contains(status, "200") {
+		t.Fatalf("b: %s", status)
+	}
+	bra.ReadString('\n') // the blank line that ends the reply
+	brb.ReadString('\n')
+	px.SetHosts([]string{"b.example.com", "c.example.com"})
+	if px.Allowed("a.example.com") || !px.Allowed("b.example.com") || !px.Allowed("c.example.com") {
+		t.Fatal("the list wasn't replaced")
+	}
+	// a's tunnel is closed, b's stays up.
+	fmt.Fprintf(ca, "x\n")
+	if _, err := bra.ReadString('\n'); err == nil {
+		t.Error("a revoked host's tunnel still works")
+	}
+	fmt.Fprintf(cb, "y\n")
+	if line, err := brb.ReadString('\n'); err != nil || line != "echo:y\n" {
+		t.Errorf("b's tunnel: %q %v", line, err)
+	}
+	if _, _, status := connect(t, px.Addr(), "a.example.com:443"); !strings.Contains(status, "403") {
+		t.Errorf("a again: %s", status)
+	}
+}

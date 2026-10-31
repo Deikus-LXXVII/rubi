@@ -229,3 +229,70 @@ func TestRolePinsAreBoundedAndCoverTheBootWindow(t *testing.T) {
 		t.Fatalf("after a failed start: %d pins, starting=%v", n, st)
 	}
 }
+
+func TestRoleRevocationReachesARunningVM(t *testing.T) {
+	re := newRoleEnv(t, setLimits(2, 4))
+	a, v := re.put("role-a", func(r *roles.Role) { r.Hosts = []string{"cdn.example.com", "keep.example.com"} })
+	re.startRole(a, "x")
+	eventually(t, "slot", func() bool { return re.running() == 1 })
+	re.m.mu.Lock()
+	px := re.m.projs[a].proxy
+	re.m.mu.Unlock()
+	if !px.Allowed("cdn.example.com") {
+		t.Fatal("host not allowed to begin with")
+	}
+	spec := &roles.Role{Project: "my-project", Name: "role-a", Description: "d", Tools: []string{"Read"}, Hosts: []string{"keep.example.com"}}
+	res, err := re.m.roles.Put(roles.PutArgs{ID: a, BaseVersion: v, Spec: spec, By: "user", Change: &roles.Change{Approval: "ap-test-2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	re.m.rolePut(res)
+	if px.Allowed("cdn.example.com") || !px.Allowed("keep.example.com") {
+		t.Fatal("the proxy still has the removed host")
+	}
+	re.m.mu.Lock()
+	hosts := re.m.projs[a].hosts
+	re.m.mu.Unlock()
+	if !contains(hosts, "keep.example.com") || contains(hosts, "cdn.example.com") {
+		t.Fatalf("hosts %v", hosts)
+	}
+}
+
+func contains(l []string, s string) bool {
+	for _, x := range l {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func TestArchivingStopsAnIdleVMAndBlocksSends(t *testing.T) {
+	re := newRoleEnv(t, setLimits(2, 4))
+	a, v := re.put("role-a", nil)
+	b, vb := re.put("role-b", nil)
+	re.startRole(a, "x")
+	re.startRole(b, "y")
+	eventually(t, "slots", func() bool { return re.running() == 2 })
+	archive := func(id string, ver int, name string) {
+		spec := map[string]any{"project": "my-project", "name": name, "description": "d", "tools": []string{"Read"}, "status": "archived"}
+		if _, err := re.op("role.put", map[string]any{"id": id, "base_version": ver, "spec": spec}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// With a session running the VM stays (the turn continues); a send is refused.
+	archive(a, v, "role-a")
+	if re.vm(a).State() != StateRunning {
+		t.Fatal("archiving stopped a VM with a session running")
+	}
+	if _, err := re.op("send", map[string]any{"project": "my-project", "role": a, "id": "sess-1", "text": "more"}); err == nil || !strings.Contains(err.Error(), "archived") {
+		t.Fatalf("send to an archived role: %v", err)
+	}
+	// With nothing running the VM goes at once.
+	re.vm(b).Runner().Emit(statusEv("sess-1", "idle"))
+	eventually(t, "slot freed", func() bool { return re.running() == 1 })
+	archive(b, vb, "role-b")
+	if re.vm(b).State() != StateStopped {
+		t.Fatalf("an archived role's idle VM: %s", re.vm(b).State())
+	}
+}

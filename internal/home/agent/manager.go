@@ -631,9 +631,40 @@ func (m *Manager) rolePut(res any) {
 	delete(m.names, pr.ID)
 	m.nameMu.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if p := m.projs[pr.ID]; p != nil && (p.runner != nil || p.starting) {
+	p := m.projs[pr.ID]
+	var px *Proxy
+	if p != nil && (p.runner != nil || p.starting) {
 		m.pinLocked(p, pr.Version)
+		px = p.proxy
+	}
+	m.mu.Unlock()
+	if p == nil {
+		return
+	}
+	r, err := m.roles.Get(pr.ID, pr.Version)
+	if err != nil {
+		return
+	}
+	// Revocation: what the new version no longer lists is refused at once (its open tunnels are closed), and an
+	// archived role with nothing running loses its VM. A turn that is running continues; archived roles take no
+	// new start or send.
+	if px != nil {
+		hosts := AllowList(m.opt.GitHosts(), m.extraHosts(p, r.Hosts))
+		px.SetHosts(hosts)
+		m.mu.Lock()
+		if p.proxy == px {
+			p.hosts = hosts
+		}
+		m.mu.Unlock()
+	}
+	if r.Status == "archived" {
+		m.mu.Lock()
+		idle := p.runner != nil && !m.roleBusyLocked(p.key())
+		m.mu.Unlock()
+		if idle {
+			log.Printf("agent: role %q (project %q) was archived with nothing running; stopping its VM", clip(r.Name, 40), clip(p.ID, 64))
+			m.shutdown(p)
+		}
 	}
 }
 
@@ -1455,7 +1486,7 @@ func (m *Manager) takeSlotLocked(it QueueItem) *slotState {
 
 // deliver hands the item to the runner; slot is the slot a start booked (nil for a send to a running session).
 func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot *slotState) (map[string]any, error) {
-	if it.Op == "start" && p.Role != "" {
+	if p.Role != "" { // an archived role takes no new start or send; a turn that is running continues
 		if sel, err := m.selectRole(p.ID, p.Role); err != nil || sel.archived {
 			return nil, archivedErr(p.RoleName, err)
 		}
@@ -1819,6 +1850,9 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if err != nil {
 			return nil, err
 		}
+		if sel.archived {
+			return nil, archivedErr(sel.name, nil)
+		}
 		m.seeBot(in.Bot)
 		return m.submit(ctx, QueueItem{Op: "send", Bot: in.Bot, Project: in.Project, Role: sel.id, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
 	case "rename":
@@ -1884,7 +1918,7 @@ func archivedErr(name string, err error) error {
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("role %s is archived; it can't start sessions", clip(name, 40))
+	return fmt.Errorf("role %s is archived; it takes no new sessions or messages", clip(name, 40))
 }
 
 // How a forwarded call treats a role's VM: fwdRead only looks (a stopped VM answers empty and is not started, a
