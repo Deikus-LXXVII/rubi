@@ -407,9 +407,9 @@ decide | status | role.list | role.get | role.history | role.diff | role.put`; a
 - **Handshake.** Per start Home makes a random `run_token`; the runner's first line must be `hello` with it
   (constant-time compare), else stdin is closed and the process killed; no hello in 10 s ends it too.
 - **Slots.** A slot is one running top-level session (subagents and forks inside it don't count against the slot
-  limits; the subagent cap below handles them). Three limits apply to a new session: its project has
-  `agent_max_sessions_per_project` (default 1, at least 1; a project is one directory in `agent_projects`, with its
-  own VM and volume), the Bot that started it has its mode's session limit, and the computer has
+  limits; the subagent cap below handles them). Three limits apply to a new session: its role (a profile of a project; the project's legacy role is one, and a project is one directory in `agent_projects`) has
+  `agent_max_sessions_per_profile` (default 1, at least 1; see "VM per role" below), optionally its project has
+  `agent_max_sessions_per_project` (an extra cap on the project's roles together; unset or 0 = none), the Bot that started it has its mode's session limit, and the computer has
   `agent_max_sessions` (default 4, 0 = no cap, so the machine stays bounded whatever the modes say; a Bot on maximum is bounded only by it). Events decide
   each slot: `status busy` takes one, `status idle` frees it
   only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
@@ -422,13 +422,35 @@ decide | status | role.list | role.get | role.history | role.diff | role.put`; a
   it: the first item that can run now goes, so a project with a free slot is never stuck behind another project's
   waiting item. Items of one project and Bot keep their order (they wait on the same limits; items of different Bots in one project can pass each other when one Bot is at its limit), and when only the computer's cap is reached nothing runs, so
   the oldest waiting item takes the next slot freed. A new item doesn't jump ahead of a queued one that could run.
-  Each queued item says why it waits in plain words (`reason`: "waiting: project my-project already has 1
-  session", "waiting: bot bot-a already has 1 session, the limit of its light mode", "waiting: the computer's
+  Items of one role and Bot keep their order. Each queued item says why it waits in plain words (`reason`: "waiting: role visual-design (my-project) already has 1
+  session" (the legacy role is "default"), "waiting: project my-project already has 2 sessions" (the optional project cap), "waiting: bot bot-a already has 1 session, the limit of its light mode", "waiting: the computer's
   session limit is reached"). The plugin sees `queue` items (`queued` with the reason, `delivered`,
-  `failed`, `expired`) in `next`. `status` has `slots: [{project, session, bot, busy, background, subagents}]`,
-  `limits: {per_project, total}` (total = the computer's cap), `sessions_running`, `usage` (below); `slot` (the first
-  busy slot, or an empty one) stays for older plugins; `projects` rows have `slot_busy` (the project's slots are
-  full) and `sessions_running`.
+  `failed`, `expired`) in `next`. `status` has `slots: [{project, role, role_name, session, bot, busy, background, subagents}]`,
+  `limits: {per_profile, per_project, total}` (`per_project` 0 = no cap; total = the computer's cap), `queue` rows with `role` and `role_name`, `sessions_running`, `usage` (below); `slot` (the first
+  busy slot, or an empty one) stays for older plugins; `projects` rows have `role`, `role_name`, `slot_busy` (the role's slots are
+  full) and `sessions_running`. A `role` is the role's id; the legacy role's id is its project id and its name `default`.
+- **VM per role (agent roles R4).** `start`, `send`, `sessions`, `messages`, `rename`, `fork`, `interrupt`, `close` and
+  `mode` take an optional `role` (a role id from `role.list`; missing, or the project's id, is the legacy role, so older
+  plugins keep working). Each isolated role has its own VM (container `rubi-agent-<role name>-<hash of dir|role id>`):
+  the project at `/work` (rw), `<helper dir>/agent-roles/<id>/content` at `/rubi-role` (read-only; the runner follows
+  `current` per query), `<helper dir>/agent-roles/<id>/claude` at `/rubi-claude` (rw, the config directory and sessions),
+  `RUBI_ROLE_DIR=/rubi-role` and `RUBI_CLAUDE_DIR=/rubi-claude`, no sign-in mount, never `--ssh`. Home never reads or
+  deletes inside `claude/` (the VM writes there). The legacy role's VM, mounts and environment are unchanged. A role's
+  proxy list is the common list plus that role's `hosts`, and its `net.ask` approvals are kept per role in
+  `agent-net.json` (`roles` section; the legacy role keeps its per-directory `projects` section), so a role never gets
+  another role's hosts; both apply when the role's VM starts. While a role's VM runs, every role version it may read
+  (the one current at its start and each one put since) is pinned in the store so GC keeps it. A role VM with no slot
+  and no queued item for `agent_role_vm_idle_minutes` (default 15) is stopped and starts again on the next use; the
+  legacy VM isn't. An archived role refuses `start` (also a queued one at delivery). `projects` rows: one for the
+  legacy role of each project, then one for each isolated role that has a VM, a session or a queued item (same `id`,
+  own `role`).
+- **Session limits, `claude-agent.limits`.** `agent_max_sessions_per_profile` (default 1) is the rule counted per role;
+  `agent_max_sessions_per_project` (optional extra cap on one project's roles together) and `agent_max_sessions`
+  (the computer, default 4) are as before. Someone who raised `agent_max_sessions_per_project` before must now also set
+  `agent_max_sessions_per_profile`. `claude-agent.limits` with any of `per_profile` (1..256), `per_project` (0..256, 0 = no
+  cap) and `total` (0..256, 0 = no cap) saves them and returns the new status; a value not given stays. Like
+  `usage_mode` it is for the plugin's panel only (raising a cap is the user's decision), never a Bot tool. The setup
+  self-test holds its whole project (all roles) while it runs.
 - **Usage modes, per Bot.** Each Bot has a mode that says how much it may run at once; its limits apply to the
   sessions it started and their subagents only, so a Bot on light never caps another on medium. `maximum`: no cap on
   sessions or subagents. `medium` (the default, "Recommended"): 4 sessions, 4 subagents per session. `light`: 1

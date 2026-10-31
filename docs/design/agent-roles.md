@@ -1,6 +1,11 @@
 # Agent roles (profiles) for the Agent SDK path
 
-Status: DRAFT for review, 2026-10-31. Nothing here is implemented yet.
+Status: DRAFT for review, 2026-10-31. Implemented so far in the core repo: runner role mode (R1), the role store
+(R3), the VM per role with per-role hosts and approvals, version pins, idle stop and the `role` argument of the ops
+(R4), and slots per profile with `claude-agent.limits` (R5). See rubi-home.md ("VM per role", "Session limits").
+Deviations noted in implementation: the container's name uses the role's name (not its id) as the slug; role versions put
+while a VM runs stay pinned until it stops; `projects` rows are one per (project, role); `net.ask` approvals of a role are
+kept in `agent-net.json` under `roles`.
 Covers the owner's addenda on roles (A2), Bots curating roles (A3), the shared skill library (A4) and SSH targets
 plus the VM-to-Mac gateway (A8). Builds on agent-runner.md, rubi-home.md ("Agents in a VM"), home-setup-wizard.md
 and plugins.md §5-§8.
