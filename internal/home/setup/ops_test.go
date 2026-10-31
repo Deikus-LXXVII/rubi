@@ -375,6 +375,7 @@ func TestFilter(t *testing.T) {
 		"Authorization: Bearer abc", "x-api-key sk-ant-api03-xyz", "refresh_token=zzz", "Refresh the cache", "GET /cb?code=abc&state=1",
 		"my TOKEN is here", strings.Repeat("A1b2", 12), "key aGVsbG8gd29ybGQgdGhpcyBpcyBsb25nIGVub3VnaCB0byBiZSBhIGtleQ==",
 		"https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=y", "   ", "",
+		"paste: AbCdEfGh.IjKlMnOp_QrStUvWx-YzAbCdEf#1234567", "see abcdefgh~ijklmnop+qrstuvwx/yz0123456789==",
 	} {
 		if got, ok := clean(bad); ok {
 			t.Errorf("%q kept as %q", bad, got)

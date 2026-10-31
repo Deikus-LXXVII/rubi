@@ -1,21 +1,16 @@
 package setup
 
 import (
-	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
 
 const (
 	maxProgress = 20  // lines kept of the running job
 	maxLineLen  = 200 // characters per line
 )
-
-// secretMarkers: a line with one of these (any case) is dropped, never shown or kept.
-var secretMarkers = []string{"sk-ant", "bearer", "token", "code=", "refresh"}
-
-// longWord: a base64-like word long enough to be a key or a credential.
-var longWord = regexp.MustCompile(`[A-Za-z0-9+/=_-]{40,}`)
 
 // clean makes a line fit for the progress list: control characters become spaces and it is cut to 200
 // characters. ok is false for a line that looks like it holds a secret (see the design, "Secrets"): that
@@ -30,13 +25,7 @@ func clean(line string) (string, bool) {
 	if line == "" {
 		return "", false
 	}
-	low := strings.ToLower(line)
-	for _, m := range secretMarkers {
-		if strings.Contains(low, m) {
-			return "", false
-		}
-	}
-	if longWord.MatchString(line) {
+	if agent.LooksSecret(line) {
 		return "", false
 	}
 	if r := []rune(line); len(r) > maxLineLen {

@@ -376,7 +376,7 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 		_ = a.Stop(context.Background())
 		return fail(err)
 	}
-	c, err := a.execConn(ctx, spec.Project, env, []string{"node", runnerMain})
+	c, err := a.execConn(ctx, spec.Project, env, []string{"node", runnerMain}, true)
 	if err != nil {
 		_ = a.Stop(context.Background())
 		return fail(err)
@@ -393,7 +393,7 @@ func (a *AppleContainer) Exec(ctx context.Context, argv []string, env map[string
 	if !running || len(argv) == 0 {
 		return nil, errors.New("the VM isn't running")
 	}
-	return a.execConn(ctx, a.project(), env, argv)
+	return a.execConn(ctx, a.project(), env, argv, false) // its stderr is dropped: a sign-in may print secrets
 }
 
 func (a *AppleContainer) project() Project {
@@ -402,7 +402,9 @@ func (a *AppleContainer) project() Project {
 	return a.proj
 }
 
-func (a *AppleContainer) execConn(ctx context.Context, p Project, env map[string]string, argv []string) (Conn, error) {
+// execConn starts argv in the container. logStderr sends the process's stderr to the log (the runner's, line
+// by line and without lines that look secret); otherwise it is discarded.
+func (a *AppleContainer) execConn(ctx context.Context, p Project, env map[string]string, argv []string, logStderr bool) (Conn, error) {
 	a.mu.Lock()
 	a.proj = p
 	a.mu.Unlock()
@@ -428,7 +430,7 @@ func (a *AppleContainer) execConn(ctx context.Context, p Project, env map[string
 	if a.spawn != nil {
 		c, err = a.spawn(ctx, args)
 	} else {
-		c, err = spawnProcess(args)
+		c, err = spawnProcess(args, logStderr)
 	}
 	if err != nil {
 		removeEnv(envFile)
@@ -480,7 +482,7 @@ type procConn struct {
 	done  chan struct{}
 }
 
-func spawnProcess(argv []string) (Conn, error) {
+func spawnProcess(argv []string, logStderr bool) (Conn, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -497,11 +499,17 @@ func spawnProcess(argv []string) (Conn, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	go func() { // the runner's stderr goes to the log, line by line and bounded
+	go func() { // the runner's stderr goes to the log, line by line and bounded; other processes' is dropped
+		if !logStderr {
+			_, _ = io.Copy(io.Discard, errPipe)
+			return
+		}
 		sc := bufio.NewScanner(errPipe)
 		sc.Buffer(make([]byte, 0, 4096), 16<<10)
 		for sc.Scan() {
-			log.Printf("agent runner: %s", sc.Text())
+			if !LooksSecret(sc.Text()) {
+				log.Printf("agent runner: %s", sc.Text())
+			}
 		}
 	}()
 	c := &procConn{cmd: cmd, stdin: in, out: out, done: make(chan struct{})}
