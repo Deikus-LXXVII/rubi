@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,7 +31,8 @@ type AppleContainer struct {
 	// build it from when the image is missing; "" means it must exist already.
 	Image     string
 	RunnerDir string
-	// Network is the host-only network the container joins (created on first use).
+	// Network is the host-only network the container joins (created with --internal on first use;
+	// DefaultNetwork when empty). Home refuses to start a VM on a network that isn't host-only.
 	Network string
 	// CPUs and Memory limit the VM ("" = the CLI's defaults).
 	CPUs   string
@@ -207,47 +209,55 @@ func (a *AppleContainer) EnsureImage(ctx context.Context) error {
 	return err
 }
 
-// verifyInternal inspects the network and refuses to go on unless it says it is internal (host-only). The
-// inspect output is JSON; any object with a boolean "internal" (any case) that is true counts. Output that
-// doesn't say so is a refusal too.
-func (a *AppleContainer) verifyInternal(ctx context.Context) error {
-	out, err := a.do(ctx, []string{a.bin(), "network", "inspect", a.network()})
-	if err != nil {
-		return fmt.Errorf("can't inspect network %s: %w", a.network(), err)
-	}
-	var v any
-	if json.Unmarshal(out, &v) != nil {
-		return fmt.Errorf("network %s: the inspect output isn't JSON, so it can't be shown to be internal", a.network())
-	}
-	if !findInternal(v) {
-		return fmt.Errorf("network %s is not internal (host-only); refusing to start a VM on it", a.network())
-	}
-	return nil
+// networkInfo is one entry of `container network inspect` (container 1.6.x): an array of these.
+type networkInfo struct {
+	ID            string `json:"id"`
+	Configuration struct {
+		Name string `json:"name"`
+		Mode string `json:"mode"`
+	} `json:"configuration"`
+	Status struct {
+		IPv4Gateway string `json:"ipv4Gateway"`
+		IPv4Subnet  string `json:"ipv4Subnet"`
+	} `json:"status"`
 }
 
-func findInternal(v any) bool {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, val := range x {
-			if strings.EqualFold(k, "internal") {
-				if b, ok := val.(bool); ok {
-					return b
-				}
-			}
-		}
-		for _, val := range x {
-			if findInternal(val) {
-				return true
-			}
-		}
-	case []any:
-		for _, val := range x {
-			if findInternal(val) {
-				return true
-			}
-		}
+// hostOnlyMode is the mode `container network create --internal` gives a network; the default network is
+// "nat", which reaches the Internet.
+const hostOnlyMode = "hostOnly"
+
+// verifyInternal inspects the network and refuses to go on unless it is host-only. It returns the network's
+// gateway, the Mac's address on it. Anything else in the output (another mode, a missing or unknown field,
+// more than one network, a gateway outside the subnet) is a refusal.
+func (a *AppleContainer) verifyInternal(ctx context.Context) (string, error) {
+	out, err := a.do(ctx, []string{a.bin(), "network", "inspect", a.network()})
+	if err != nil {
+		return "", fmt.Errorf("can't inspect network %s: %w", a.network(), err)
 	}
-	return false
+	return checkHostOnly(out, a.network())
+}
+
+func checkHostOnly(out []byte, name string) (string, error) {
+	var nets []networkInfo
+	if json.Unmarshal(out, &nets) != nil || len(nets) != 1 {
+		return "", fmt.Errorf("network %s: the inspect output isn't one network, so it can't be shown to be host-only", name)
+	}
+	n := nets[0]
+	if n.ID != name || n.Configuration.Name != name {
+		return "", fmt.Errorf("network %s: the inspect output describes another network", name)
+	}
+	if n.Configuration.Mode != hostOnlyMode {
+		return "", fmt.Errorf("network %s is not host-only (mode %q); refusing to start a VM on it "+
+			"(create it with `container network create --internal %s`)", name, n.Configuration.Mode, name)
+	}
+	gw, err := netip.ParseAddr(n.Status.IPv4Gateway)
+	if err != nil || !gw.Is4() || !gw.IsPrivate() {
+		return "", fmt.Errorf("network %s: no usable gateway address", name)
+	}
+	if pfx, err := netip.ParsePrefix(n.Status.IPv4Subnet); err != nil || !pfx.Contains(gw) {
+		return "", fmt.Errorf("network %s: the gateway isn't in the network's subnet", name)
+	}
+	return gw.String(), nil
 }
 
 // Start implements VM: image, network, container, then the runner by exec.
@@ -271,7 +281,8 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 			return fail(err)
 		}
 	}
-	if err := a.verifyInternal(ctx); err != nil {
+	gateway, err := a.verifyInternal(ctx)
+	if err != nil {
 		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
 	}
 	_, _ = a.do(ctx, a.deleteArgs(spec.Project)) // a leftover of a crash
@@ -282,7 +293,12 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	a.name = containerName(spec.Project)
 	a.proj = spec.Project
 	a.mu.Unlock()
-	c, err := a.execConn(ctx, spec.Project, spec.Env, []string{"node", runnerMain})
+	env, err := prepareEnv(ctx, spec, gateway)
+	if err != nil {
+		_ = a.Stop(context.Background())
+		return fail(err)
+	}
+	c, err := a.execConn(ctx, spec.Project, env, []string{"node", runnerMain})
 	if err != nil {
 		_ = a.Stop(context.Background())
 		return fail(err)

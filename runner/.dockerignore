@@ -1,0 +1,6 @@
+# The image build context is runner/; only package*.json, dist/ and container/ are copied.
+node_modules
+dist-test
+src
+test
+testdata

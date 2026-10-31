@@ -30,6 +30,29 @@ type Project struct {
 type StartSpec struct {
 	Project Project
 	Env     map[string]string
+	// Prepare, when set, is called once the VM is up and before the runner starts, with the Mac's address
+	// on the VM's network ("" when the VM has none to report). The variables it returns are added to Env.
+	// An error stops the VM.
+	Prepare func(ctx context.Context, gateway string) (map[string]string, error)
+}
+
+// prepareEnv runs spec.Prepare and returns the runner's environment.
+func prepareEnv(ctx context.Context, spec StartSpec, gateway string) (map[string]string, error) {
+	if spec.Prepare == nil {
+		return spec.Env, nil
+	}
+	extra, err := spec.Prepare(ctx, gateway)
+	if err != nil {
+		return nil, err
+	}
+	env := make(map[string]string, len(spec.Env)+len(extra))
+	for k, v := range spec.Env {
+		env[k] = v
+	}
+	for k, v := range extra {
+		env[k] = v
+	}
+	return env, nil
 }
 
 // Conn is a process in the VM seen from the Mac: stdin, stdout, and an end.

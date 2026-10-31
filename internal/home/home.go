@@ -55,9 +55,14 @@ type Config struct {
 	// AgentGitHosts are the git hosts the agent's proxy allows and the credential helper serves, for
 	// example "git.example.com".
 	AgentGitHosts []string `json:"agent_git_hosts,omitempty"`
-	// AgentProxyListen is where the agent proxy listens ("127.0.0.1:0" by default) and AgentProxyVMHost
-	// the host name the VM uses to reach it (the listen host by default). A VM can't reach the Mac's
-	// 127.0.0.1: set both to the Mac's address on the VM's network.
+	// AgentNetwork is the host-only network of Apple's container tool the VMs join ("rubi-agent" by
+	// default). Home creates it with --internal when it is missing and refuses to start a VM on a network
+	// whose mode isn't hostOnly.
+	AgentNetwork string `json:"agent_network,omitempty"`
+	// AgentProxyListen is where the agent proxy listens and AgentProxyVMHost the host name the VM uses to
+	// reach it. By default the proxy listens on the Mac's address on AgentNetwork (its gateway, read from
+	// the network when a VM starts, port chosen by the system) and the VM is told that address; set them only
+	// to pin a port or to use another address.
 	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
 	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
@@ -157,7 +162,7 @@ func (h *Helper) newAgent() *agent.Manager {
 		Projects:  func() []string { return h.Fresh().AgentProjects },
 		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
 		NewVM: func(p agent.Project) agent.VM {
-			return &agent.AppleContainer{RunnerDir: h.Fresh().AgentRunnerDir, EnvDir: h.Dir}
+			return &agent.AppleContainer{RunnerDir: h.Fresh().AgentRunnerDir, Network: h.Fresh().AgentNetwork, EnvDir: h.Dir}
 		},
 		AllowedHosts:    func() []string { return h.Fresh().AgentAllowedHosts },
 		NoDefaultForges: func() bool { return h.Fresh().AgentNoDefaultForges },

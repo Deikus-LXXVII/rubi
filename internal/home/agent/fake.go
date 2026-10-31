@@ -22,6 +22,8 @@ type Fake struct {
 	Setup func(*FakeRunner)
 	// StartErr, when set, makes Start fail.
 	StartErr error
+	// Gateway is the address handed to StartSpec.Prepare ("" by default, as a VM with none to report).
+	Gateway string
 
 	mu      sync.Mutex
 	state   State
@@ -71,9 +73,18 @@ func (f *Fake) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 		return nil, err
 	}
 	f.starts++
-	f.lastEnv = spec.Env
+	f.mu.Unlock()
+	env, err := prepareEnv(ctx, spec, f.Gateway)
+	f.mu.Lock()
+	if err != nil {
+		f.state = StateFailed
+		f.mu.Unlock()
+		return nil, err
+	}
+	f.lastEnv = env
 	f.state = StateRunning
 	f.mu.Unlock()
+	spec.Env = env
 
 	hostToRunnerR, hostToRunnerW := io.Pipe()
 	runnerToHostR, runnerToHostW := io.Pipe()

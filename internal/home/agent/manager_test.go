@@ -673,6 +673,23 @@ func TestEnvAndProxyGivenToRunner(t *testing.T) {
 	}
 }
 
+// With no agent_proxy_listen the proxy listens on the gateway the VM reports, once the VM is up.
+func TestProxyListensOnVMGateway(t *testing.T) {
+	e := newEnv(t)
+	e.fake.Gateway = "127.0.0.1"
+	e.op("sessions", map[string]any{"project": "my-project"})
+	if env := e.fake.Env(); !strings.Contains(env["HTTPS_PROXY"], "@127.0.0.1:") {
+		t.Fatalf("env: %v", env)
+	}
+
+	// A gateway the Mac can't listen on fails the start; no runner talks to the plugin.
+	e2 := newEnv(t)
+	e2.fake.Gateway = "192.0.2.1" // TEST-NET-1, not an address of this machine
+	if _, err := e2.op("sessions", map[string]any{"project": "my-project"}); err == nil || e2.fake.Runner() != nil {
+		t.Fatalf("started with an unusable gateway: %v", err)
+	}
+}
+
 func projHosts(e *env) map[string]bool {
 	e.m.mu.Lock()
 	defer e.m.mu.Unlock()

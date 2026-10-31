@@ -65,8 +65,9 @@ type Options struct {
 	AllowBypass     func() bool
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
-	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it
-	// (the listen host when empty).
+	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it. An
+	// empty ProxyListen means the Mac's address on the VM's network (the gateway the VM reports), or
+	// 127.0.0.1:0 when the VM reports none; an empty ProxyVMHost means the listen host.
 	ProxyListen string
 	ProxyVMHost string
 	// Resolve and Dial are the proxy's name lookup and upstream dialer (seams for tests).
@@ -391,23 +392,35 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		return nil, err
 	}
 	hosts := AllowList(m.opt.GitHosts(), m.extraHosts(p))
-	px, err := StartProxy(ProxyConfig{Listen: m.opt.ProxyListen, AuthToken: proxyToken, Hosts: hosts, Exempt: m.opt.GitHosts(),
-		Resolve: m.opt.Resolve, Dial: m.opt.Dial, Logf: log.Printf,
-		Ask: func(ctx context.Context, host string) bool { return m.askHost(ctx, p, host) }})
-	if err != nil {
-		return nil, fmt.Errorf("proxy: %w", err)
+	// The proxy starts once the VM is up: the Mac's address on a host-only network (its gateway) exists only
+	// while a VM is attached to it.
+	var px *Proxy
+	prepare := func(ctx context.Context, gateway string) (map[string]string, error) {
+		listen := m.opt.ProxyListen
+		if listen == "" && gateway != "" {
+			listen = net.JoinHostPort(gateway, "0")
+		}
+		var err error
+		px, err = StartProxy(ProxyConfig{Listen: listen, AuthToken: proxyToken, Hosts: hosts, Exempt: m.opt.GitHosts(),
+			Resolve: m.opt.Resolve, Dial: m.opt.Dial, Logf: log.Printf,
+			Ask: func(ctx context.Context, host string) bool { return m.askHost(ctx, p, host) }})
+		if err != nil {
+			return nil, fmt.Errorf("proxy: %w", err)
+		}
+		_, port, _ := net.SplitHostPort(px.Addr())
+		host := m.opt.ProxyVMHost
+		if host == "" {
+			host, _, _ = net.SplitHostPort(px.Addr())
+		}
+		proxyURL := "http://rubi:" + proxyToken + "@" + net.JoinHostPort(host, port)
+		return map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL}, nil
 	}
-	_, port, _ := net.SplitHostPort(px.Addr())
-	host := m.opt.ProxyVMHost
-	if host == "" {
-		host, _, _ = net.SplitHostPort(px.Addr())
-	}
-	proxyURL := "http://rubi:" + proxyToken + "@" + net.JoinHostPort(host, port)
-	env := map[string]string{"RUBI_RUN_TOKEN": token, "HTTPS_PROXY": proxyURL, "https_proxy": proxyURL,
-		"GIT_TERMINAL_PROMPT": "0"}
-	conn, err := p.vm.Start(sctx, StartSpec{Project: p.Project, Env: env})
+	env := map[string]string{"RUBI_RUN_TOKEN": token, "GIT_TERMINAL_PROMPT": "0"}
+	conn, err := p.vm.Start(sctx, StartSpec{Project: p.Project, Env: env, Prepare: prepare})
 	if err != nil {
-		px.Close()
+		if px != nil {
+			px.Close()
+		}
 		return nil, fmt.Errorf("starting the VM: %w", err)
 	}
 	r, err = Connect(sctx, conn, token, &handler{m: m, p: p})

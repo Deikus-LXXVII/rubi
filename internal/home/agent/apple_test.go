@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"reflect"
 	"strings"
@@ -78,7 +79,7 @@ func TestAppleContainerStartSequence(t *testing.T) {
 			netMade = true
 		}
 		if len(argv) > 2 && argv[1] == "network" && argv[2] == "inspect" {
-			return []byte(`[{"id":"rubi-agent","config":{"Internal":true}}]`), nil
+			return os.ReadFile("testdata/container-1.6.1-network-internal.json")
 		}
 		return nil, nil
 	}
@@ -90,7 +91,7 @@ func TestAppleContainerStartSequence(t *testing.T) {
 			}
 		}
 		b, err := os.ReadFile(envPath)
-		if err != nil || !strings.Contains(string(b), "RUBI_RUN_TOKEN=tok123") {
+		if err != nil || !strings.Contains(string(b), "RUBI_RUN_TOKEN=tok123") || !strings.Contains(string(b), "HTTPS_PROXY=http://192.168.128.1:3128") {
 			t.Errorf("env file at exec time: %q %v", b, err)
 		}
 		if st, _ := os.Stat(envPath); st.Mode().Perm() != 0o600 {
@@ -100,7 +101,16 @@ func TestAppleContainerStartSequence(t *testing.T) {
 	}
 	// LookPath is skipped because run is set.
 	c, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "my-project", Dir: "/home/alice/my-project"},
-		Env: map[string]string{"RUBI_RUN_TOKEN": "tok123", "HTTPS_PROXY": "http://192.0.2.1:3128"}})
+		Env: map[string]string{"RUBI_RUN_TOKEN": "tok123"},
+		Prepare: func(ctx context.Context, gateway string) (map[string]string, error) {
+			if last := cmds[len(cmds)-1]; last[1] != "run" {
+				t.Errorf("prepared before the container ran: %v", last)
+			}
+			if gateway != "192.168.128.1" {
+				t.Errorf("gateway %q", gateway)
+			}
+			return map[string]string{"HTTPS_PROXY": "http://" + gateway + ":3128"}, nil
+		}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +157,26 @@ func (nopConn) Close() error                { return nil }
 func (nopConn) Done() <-chan struct{}       { return make(chan struct{}) }
 
 func TestAppleContainerFailsClosedOnNetwork(t *testing.T) {
-	for name, out := range map[string]string{"not internal": `[{"id":"x","internal":false}]`, "no field": `[{"id":"x"}]`, "not json": `oops`, "": ``} {
+	nat, err := os.ReadFile("testdata/container-1.6.1-network-default.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	internal, err := os.ReadFile("testdata/container-1.6.1-network-internal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := "[" + strings.Trim(strings.TrimSpace(string(internal)), "[]") + "," + strings.Trim(strings.TrimSpace(string(internal)), "[]") + "]"
+	for name, out := range map[string]string{
+		"nat (real default network)": strings.ReplaceAll(string(nat), `"default"`, `"rubi-agent"`),
+		"another network":            strings.ReplaceAll(string(internal), `"rubi-agent"`, `"other"`),
+		"two networks":               two,
+		"no mode":                    strings.ReplaceAll(string(internal), `"mode"`, `"kind"`),
+		"gateway outside subnet":     strings.ReplaceAll(string(internal), `"192.168.128.1"`, `"192.168.129.1"`),
+		"public gateway":             strings.ReplaceAll(strings.ReplaceAll(string(internal), `192.168.128.1"`, `203.0.113.1"`), `192.168.128.0/24`, `203.0.113.0/24`),
+		"old guess":                  `[{"id":"rubi-agent","internal":true}]`,
+		"not json":                   `oops`,
+		"":                           ``,
+	} {
 		a := &AppleContainer{Image: "img"}
 		var ran []string
 		a.run = func(ctx context.Context, argv []string) ([]byte, error) {
@@ -170,7 +199,29 @@ func TestAppleContainerFailsClosedOnNetwork(t *testing.T) {
 			}
 		}
 	}
-	if !findInternal(map[string]any{"a": []any{map[string]any{"Config": map[string]any{"INTERNAL": true}}}}) {
-		t.Error("nested internal not found")
+	if gw, err := checkHostOnly(internal, "rubi-agent"); err != nil || gw != "192.168.128.1" {
+		t.Errorf("real host-only network refused: %q %v", gw, err)
+	}
+}
+
+// A failing Prepare stops the container and starts no runner.
+func TestAppleContainerPrepareFails(t *testing.T) {
+	a := &AppleContainer{Image: "img"}
+	var ran []string
+	a.run = func(ctx context.Context, argv []string) ([]byte, error) {
+		ran = append(ran, strings.Join(argv[1:min(len(argv), 3)], " "))
+		if argv[1] == "network" && argv[2] == "inspect" {
+			return os.ReadFile("testdata/container-1.6.1-network-internal.json")
+		}
+		return nil, nil
+	}
+	a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
+		t.Error("runner started")
+		return nopConn{}, nil
+	}
+	_, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "p", Dir: "/x"},
+		Prepare: func(context.Context, string) (map[string]string, error) { return nil, errors.New("no proxy") }})
+	if err == nil || a.State() != StateFailed || ran[len(ran)-1] != "delete --force" {
+		t.Fatalf("%v %s %v", err, a.State(), ran)
 	}
 }
