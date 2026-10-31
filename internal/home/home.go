@@ -91,7 +91,7 @@ type Config struct {
 	// (default 1, at least 1); more wait in the queue. Subagents and forks inside a session don't count.
 	AgentMaxSessionsPerProject int `json:"agent_max_sessions_per_project,omitempty"`
 	// AgentMaxSessions caps top-level agent sessions running at once on the computer, whatever the Bots'
-	// modes allow (0 = no cap; default 16).
+	// modes allow (0 = no cap; default 4: a Bot on maximum is bounded only by this).
 	AgentMaxSessions *int `json:"agent_max_sessions,omitempty"`
 	// AgentMaxSubagentsPerSession caps subagents running at once in one session for every Bot (0 = no cap;
 	// unset: each Bot's mode decides). A session over it waits; nothing is denied.
