@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
+import type net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, before, after } from "node:test";
@@ -79,6 +81,8 @@ class Child {
 
 describe("real SDK + real claude against the scripted API", { skip: !enabled }, () => {
   let mock: { url: string; requests: any[]; close: () => void };
+  let proxy: http.Server;
+  let connects: string[];
   let work: string, home: string, child: Child;
   const marker = () => path.join(work, "marker.txt");
 
@@ -115,10 +119,22 @@ describe("real SDK + real claude against the scripted API", { skip: !enabled }, 
       par: [{ tools: [{ name: "$AGENT", input: { subagent_type: "general-purpose", description: "w1", prompt: "MOCKSCRIPT:subwork do it" } }, { name: "$AGENT", input: { subagent_type: "general-purpose", description: "w2", prompt: "MOCKSCRIPT:subwork do it" } }, { name: "$AGENT", input: { subagent_type: "general-purpose", description: "w3", prompt: "MOCKSCRIPT:subwork do it" } }] }, { text: "PAR-DONE" }],
       nest: [{ tools: [{ name: "$AGENT", input: { subagent_type: "general-purpose", description: "outer", prompt: "MOCKSCRIPT:nestchild go" } }] }, { text: "NEST-DONE" }],
       nestchild: [{ tools: [{ name: "$AGENT", input: { subagent_type: "general-purpose", description: "inner", prompt: "MOCKSCRIPT:subwork do it" } }] }, { text: "CHILD-DONE" }],
+      wf: [{ tools: [{ name: "WebFetch", input: { url: "https://example.com/page", prompt: "what is on the page" } }] }, { text: "WF-DONE" }],
       two: [{ text: "TWO-DONE" }],
       one: [{ text: "ONE-DONE" }],
     });
-    const env = { PATH: process.env.PATH ?? "", HOME: home, RUBI_RUN_TOKEN: TOKEN, RUBI_WORK_DIR: work, ANTHROPIC_BASE_URL: mock.url, ANTHROPIC_API_KEY: "mock-placeholder-not-a-real-key" };
+    // A recording CONNECT proxy that refuses everything, as the one in a VM refuses api.anthropic.com: it shows
+    // every connection claude makes outside its base URL (NO_PROXY keeps the base URL, the mock, off the proxy).
+    connects = [];
+    proxy = http.createServer((_q, s) => s.writeHead(403).end());
+    proxy.on("connect", (req, sock) => {
+      connects.push(req.url ?? "");
+      sock.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as net.AddressInfo).port}`;
+    const env = { PATH: process.env.PATH ?? "", HOME: home, HTTPS_PROXY: proxyUrl, https_proxy: proxyUrl, NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1",
+      DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", RUBI_RUN_TOKEN: TOKEN, RUBI_WORK_DIR: work, ANTHROPIC_BASE_URL: mock.url, ANTHROPIC_API_KEY: "mock-placeholder-not-a-real-key" };
     child = new Child(spawn(process.execPath, [path.join(here, "../src/main.js")], { env, stdio: "pipe" }));
     await child.waitFor((m) => m.method === "hello");
   });
@@ -127,6 +143,7 @@ describe("real SDK + real claude against the scripted API", { skip: !enabled }, 
     child?.kill();
     for (let i = 0; i < 50 && child && child.exitCode === null; i++) await new Promise((r) => setTimeout(r, 100));
     mock?.close();
+    proxy?.close();
     for (const d of [work, home]) if (d) fs.rmSync(d, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   });
 
@@ -141,6 +158,18 @@ describe("real SDK + real claude against the scripted API", { skip: !enabled }, 
     assert.equal(a.cwd, work);
     assert.equal(fs.existsSync(marker()), true);
     assert.ok(child.events("tool", id).some((e) => e.name === "Bash"));
+  });
+
+  it("WebFetch makes no request to api.anthropic.com or any Anthropic host outside the base URL", async () => {
+    connects.length = 0;
+    child.askHandler = () => ({ behavior: "allow" });
+    const { id } = await child.call("session.start", { prompt: "MOCKSCRIPT:wf fetch it", mode: "bypassPermissions" });
+    const r = await child.result(id, 1);
+    assert.equal(r.is_error, false);
+    assert.ok(child.asks.some((x) => x.session_id === id && x.tool === "WebFetch"), "the fetch was asked about");
+    const anthropic = connects.filter((c) => /(^|\.)(anthropic\.com|claude\.ai|claude\.com)(:|$)/.test(c));
+    assert.deepEqual(anthropic, [], `connections outside the base URL: ${connects.join(", ")}`);
+    assert.ok(connects.includes("example.com:443"), `the fetch itself goes through the proxy: ${connects.join(", ")}`);
   });
 
   it("deny: the call does not run, in bypass mode", async () => {

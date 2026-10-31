@@ -98,7 +98,7 @@ func TestProxyAllowDenyLog(t *testing.T) {
 	if !strings.HasPrefix(px.Addr(), "127.0.0.1:") {
 		t.Fatalf("addr %s", px.Addr())
 	}
-	for _, h := range []string{"api.anthropic.com", "API.Anthropic.com", "claude.ai", "console.anthropic.com", "platform.claude.com",
+	for _, h := range []string{"Registry.NPMJS.org", "claude.ai", "console.anthropic.com", "platform.claude.com",
 		"registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "git.example.com", "github.com"} {
 		c, br, st := connect(t, px.Addr(), h+":443")
 		if !strings.Contains(st, "200") {
@@ -110,7 +110,7 @@ func TestProxyAllowDenyLog(t *testing.T) {
 			t.Fatalf("%s: tunnel: %q", h, line)
 		}
 	}
-	if d := up.dialed(); len(d) != 10 || d[0] != "203.0.113.7:443" {
+	if d := up.dialed(); len(d) != 9 || d[0] != "203.0.113.7:443" {
 		t.Fatalf("dialed %v", d)
 	}
 	before := len(up.dialed())
@@ -134,7 +134,7 @@ func TestProxyAllowDenyLog(t *testing.T) {
 		t.Fatalf("a refused request reached upstream: %v", up.dialed()[before:])
 	}
 	refused, opened := px.Refused()
-	if opened != 10 || len(refused) != 13 {
+	if opened != 9 || len(refused) != 13 {
 		t.Fatalf("refused %v opened %d", refused, opened)
 	}
 	lmu.Lock()
@@ -161,9 +161,18 @@ func TestProxyUpstreamFailureAndClose(t *testing.T) {
 	}
 }
 
+// The model API isn't reachable through the CONNECT proxy: the runner talks to it through the auth gateway.
+func TestTheModelAPIIsNotOnTheProxyList(t *testing.T) {
+	for _, h := range AllowList([]string{"git.example.com"}, ForgeHosts) {
+		if h == "api.anthropic.com" {
+			t.Fatal("api.anthropic.com is on the project allow-list")
+		}
+	}
+}
+
 func TestAllowListNeverHasRefusedHosts(t *testing.T) {
 	l := AllowList([]string{"Git.Example.com.", "downloads.claude.ai", "x.datadoghq.eu", "10.0.0.1", "bad host", ""}, nil)
-	want := []string{"api.anthropic.com", "claude.ai", "console.anthropic.com", "files.pythonhosted.org", "git.example.com",
+	want := []string{"claude.ai", "console.anthropic.com", "files.pythonhosted.org", "git.example.com",
 		"platform.claude.com", "pypi.org", "registry.npmjs.org"}
 	if !reflect.DeepEqual(l, want) {
 		t.Fatalf("%v", l)
@@ -201,7 +210,7 @@ func TestProxyRequiresAuthAndRefusesWildcard(t *testing.T) {
 func TestProxyRefusesNonPublicAddresses(t *testing.T) {
 	up := newUpstream(t)
 	answers := map[string][]string{
-		"api.anthropic.com":      {"203.0.113.7"},
+		"api.anthropic.com":      {"203.0.113.7"}, // not on the list any more: refused before it is resolved
 		"claude.ai":              {"127.0.0.1"},
 		"pypi.org":               {"10.1.2.3"},
 		"registry.npmjs.org":     {"169.254.169.254"},
@@ -229,7 +238,7 @@ func TestProxyRefusesNonPublicAddresses(t *testing.T) {
 	for h, a := range answers {
 		_, _, st := connect(t, px.Addr(), h+":443")
 		want := "403"
-		if h == "api.anthropic.com" || h == "git.example.com" {
+		if h == "git.example.com" {
 			want = "200"
 		}
 		if !strings.Contains(st, want) {
@@ -238,7 +247,7 @@ func TestProxyRefusesNonPublicAddresses(t *testing.T) {
 	}
 	d := up.dialed()
 	sort.Strings(d)
-	if !reflect.DeepEqual(d, []string{"10.0.0.8:443", "203.0.113.7:443"}) {
+	if !reflect.DeepEqual(d, []string{"10.0.0.8:443"}) {
 		t.Fatalf("dialed %v", d)
 	}
 }

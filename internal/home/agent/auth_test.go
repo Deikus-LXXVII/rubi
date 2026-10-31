@@ -73,35 +73,31 @@ func TestAuthDirIsPrivateAndCreatedByHome(t *testing.T) {
 	}
 }
 
-// Every project's VM mounts the directory read-only at /rubi-auth, outside /work; nothing of the sign-in is in
-// the arguments, and the per-project config directory is still the image's /work one.
-func TestProjectVMsMountTheAuthDirReadOnly(t *testing.T) {
+// A project VM never has the sign-in directory, the token or anything of it: it talks to the auth gateway.
+func TestProjectVMsNeverMountTheAuthDir(t *testing.T) {
 	a := &AppleContainer{Bin: "container", AuthDir: "/home/alice/Rubi Home/agent-auth"}
 	for _, p := range []Project{{ID: "alpha", Dir: "/home/alice/alpha"}, {ID: "beta", Dir: "/home/alice/beta"}} {
 		args := strings.Join(a.RunArgs(p), " ")
-		if !strings.Contains(args, "--mount type=bind,source=/home/alice/Rubi Home/agent-auth,target=/rubi-auth,readonly") {
-			t.Errorf("%s: no read-only auth mount: %s", p.ID, args)
-		}
-		if !strings.Contains(args, "source="+p.Dir+",target=/work") {
-			t.Errorf("%s: %s", p.ID, args)
-		}
-		for _, bad := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "sk-ant", "CLAUDE_CONFIG_DIR", "volume"} {
+		for _, bad := range []string{"agent-auth", "rubi-auth", "CLAUDE_CODE_OAUTH_TOKEN", "sk-ant", "oauth", "volume", "readonly"} {
 			if strings.Contains(args, bad) {
-				t.Errorf("%s: %q in the run arguments", p.ID, bad)
+				t.Errorf("%s: %q in the run arguments: %s", p.ID, bad, args)
 			}
+		}
+		if !strings.Contains(args, "source="+p.Dir+",target=/work") || strings.Count(args, "--mount") != 1 {
+			t.Errorf("%s: %s", p.ID, args)
 		}
 	}
 }
 
-func TestStartMakesTheAuthDirBeforeTheVM(t *testing.T) {
+func TestStartLeavesTheAuthDirAlone(t *testing.T) {
 	f := &authFake{}
 	a, dir := newAuthVM(t, f)
 	a.spawn = func(ctx context.Context, argv []string) (Conn, error) { return nopConn{}, nil }
 	if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "my-project", Dir: "/home/alice/my-project"}}); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := os.Stat(filepath.Join(dir, "token")); err != nil || st.Mode().Perm() != 0o700 {
-		t.Errorf("token dir: %v %v", st, err)
+	if _, err := os.Stat(dir); err == nil {
+		t.Error("starting a project VM created the sign-in directory")
 	}
 	if f.find("volume") != nil {
 		t.Error("a volume command ran")

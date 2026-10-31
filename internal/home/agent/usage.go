@@ -19,7 +19,7 @@ var UsageModes = []string{ModeMaximum, ModeMedium, ModeLight}
 // Defaults and bounds.
 const (
 	DefaultMaxSessionsPerProject = 1
-	DefaultMaxSessions           = 16 // on the whole computer, whatever the modes allow
+	DefaultMaxSessions           = 4 // on the whole computer, whatever the modes allow (maximum is bounded only by this)
 	MaxBots                      = 256
 )
 

@@ -311,17 +311,17 @@ func TestAgentUsageConfig(t *testing.T) {
 		mode      string
 		custom    bool
 	}{
-		{Config{}, "bot-a", 1, 4, 4, 16, "medium", false}, // the defaults
-		{Config{AgentDefaultMode: "light"}, "bot-a", 1, 2, 1, 16, "light", false},
-		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-a", 1, 0, 0, 16, "maximum", false},
-		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-b", 1, 2, 1, 16, "light", false},
-		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "", 1, 2, 1, 16, "light", false}, // the user's own
-		{Config{AgentDefaultMode: "nonsense"}, "bot-a", 1, 4, 4, 16, "medium", false},
+		{Config{}, "bot-a", 1, 4, 4, 4, "medium", false}, // the defaults
+		{Config{AgentDefaultMode: "light"}, "bot-a", 1, 2, 1, 4, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-a", 1, 0, 0, 4, "maximum", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-b", 1, 2, 1, 4, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "", 1, 2, 1, 4, "light", false}, // the user's own
+		{Config{AgentDefaultMode: "nonsense"}, "bot-a", 1, 4, 4, 4, "medium", false},
 		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, "bot-a", 2, 4, 4, 5, "medium", true},
 		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, "bot-a", 1, 4, 4, 0, "medium", false}, // 0 = no cap
-		{Config{AgentMaxSessions: &neg}, "bot-a", 1, 4, 4, 16, "medium", false},
-		{Config{AgentDefaultMode: "light", AgentMaxSubagentsPerSession: &five}, "bot-a", 1, 5, 1, 16, "light", true},
-		{Config{AgentMaxSubagentsPerSession: &zero}, "bot-a", 1, 0, 4, 16, "medium", true},
+		{Config{AgentMaxSessions: &neg}, "bot-a", 1, 4, 4, 4, "medium", false},
+		{Config{AgentDefaultMode: "light", AgentMaxSubagentsPerSession: &five}, "bot-a", 1, 5, 1, 4, "light", true},
+		{Config{AgentMaxSubagentsPerSession: &zero}, "bot-a", 1, 0, 4, 4, "medium", true},
 	} {
 		u := c.cfg.agentUsage()
 		l := u.For(c.bot)

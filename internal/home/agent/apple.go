@@ -41,8 +41,8 @@ type AppleContainer struct {
 	// CPUs and Memory limit the VM ("" = the CLI's defaults).
 	CPUs   string
 	Memory string
-	// AuthDir is the host directory holding the sign-in shared by all projects (EnvDir/agent-auth when empty);
-	// it is bind-mounted read-only at /rubi-auth in each VM (auth.go).
+	// AuthDir is the host directory holding the sign-in shared by all projects (EnvDir/agent-auth when empty).
+	// Only the sign-in container mounts it; a project VM never does (auth.go, gateway.go).
 	AuthDir string
 	// EnvDir is where the exec's environment file is written (0600, in a 0700 directory of its own).
 	EnvDir string
@@ -218,10 +218,6 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 		"--tmpfs", "/tmp",
 		"--mount", "type=bind,source=" + p.Dir + ",target=/work",
 		"--workdir", "/work"}
-	// The shared sign-in's directory, read-only and outside /work: only its token is shared (auth.go).
-	if m := a.authMount(true); m != "" {
-		args = append(args[:len(args)-2], "--mount", m, "--workdir", "/work")
-	}
 	if a.CPUs != "" {
 		args = append(args, "--cpus", a.CPUs)
 	}
@@ -396,9 +392,6 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	gateway, err := a.verifyInternal(ctx)
 	if err != nil {
 		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
-	}
-	if err := a.EnsureAuthDir(); err != nil {
-		return fail(err)
 	}
 	_, _ = a.do(ctx, a.deleteArgs(spec.Project)) // a leftover of a crash
 	if _, err := a.do(ctx, a.RunArgs(spec.Project)); err != nil {

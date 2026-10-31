@@ -33,7 +33,7 @@ func TestAppleContainerArgs(t *testing.T) {
 	run := a.RunArgs(p)
 	want := []string{"container", "run", "-d", "--name", name, "--init", "--network", DefaultNetwork, "--user", "10001",
 		"--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp", "--mount", "type=bind,source=/home/alice/my-project,target=/work",
-		"--mount", "type=bind,source=/home/alice/rubi-home/agent-auth,target=/rubi-auth,readonly", "--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
+		"--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
 	if !reflect.DeepEqual(run, want) {
 		t.Fatalf("run\n got %v\nwant %v", run, want)
 	}

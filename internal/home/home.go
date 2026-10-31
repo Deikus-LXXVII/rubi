@@ -67,8 +67,8 @@ type Config struct {
 	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
 	// AgentAuthDir is the directory that holds the sign-in shared by all projects (<helper dir>/agent-auth by
-	// default, 0700, made by Home). It is bind-mounted read-only at /rubi-auth in every project VM; Home never
-	// reads the token in it. No project may be, contain or sit inside it.
+	// default, 0700, made by Home). The token in it is used only by Home's auth gateway; a project VM never
+	// mounts it or holds the token. No project may be, contain or sit inside it.
 	AgentAuthDir string `json:"agent_auth_dir,omitempty"`
 	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
 	AgentRunnerDir string `json:"agent_runner_dir,omitempty"`
@@ -91,7 +91,7 @@ type Config struct {
 	// (default 1, at least 1); more wait in the queue. Subagents and forks inside a session don't count.
 	AgentMaxSessionsPerProject int `json:"agent_max_sessions_per_project,omitempty"`
 	// AgentMaxSessions caps top-level agent sessions running at once on the computer, whatever the Bots'
-	// modes allow (0 = no cap; default 16).
+	// modes allow (0 = no cap; default 4: a Bot on maximum is bounded only by this).
 	AgentMaxSessions *int `json:"agent_max_sessions,omitempty"`
 	// AgentMaxSubagentsPerSession caps subagents running at once in one session for every Bot (0 = no cap;
 	// unset: each Bot's mode decides). A session over it waits; nothing is denied.

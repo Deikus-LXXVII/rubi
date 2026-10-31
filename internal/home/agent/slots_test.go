@@ -88,7 +88,7 @@ func TestTwoProjectsRunConcurrently(t *testing.T) {
 	eventually(t, "two slots", func() bool { return mu.running() == 2 })
 	st, _ := mu.op("status", nil)
 	slots := st["slots"].([]any)
-	if len(slots) != 2 || st["limits"].(map[string]any)["per_project"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(16) {
+	if len(slots) != 2 || st["limits"].(map[string]any)["per_project"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(4) {
 		t.Fatalf("status: %v", st)
 	}
 	first := slots[0].(map[string]any)
@@ -207,12 +207,12 @@ func TestZeroMeansNoGlobalCapAndDefaults(t *testing.T) {
 	}
 	// The defaults: medium for everyone (4 sessions per Bot), 16 on the computer, 1 per project.
 	c := UsageConfig{}
-	if l := c.For("bot-a"); l.PerProject != 1 || l.Sessions != 4 || l.Subagents != 4 || c.Machine() != 16 {
+	if l := c.For("bot-a"); l.PerProject != 1 || l.Sessions != 4 || l.Subagents != 4 || c.Machine() != 4 {
 		t.Fatalf("defaults %+v %d", l, c.Machine())
 	}
 	neg := -3
 	c = UsageConfig{MaxSessions: &neg, MaxSubagents: &neg}
-	if l := c.For(""); l.PerProject != 1 || l.Subagents != 4 || c.Machine() != 16 {
+	if l := c.For(""); l.PerProject != 1 || l.Subagents != 4 || c.Machine() != 4 {
 		t.Fatalf("out of range %+v %d", l, c.Machine())
 	}
 	// The default mode (medium) lets a Bot run 4 sessions.

@@ -172,7 +172,7 @@ describe("options of every query", () => {
     assert.equal(o.resume, undefined);
     assert.deepEqual(o.settingSources, ["project"]);
     // the project's own settings must not run code outside our gate
-    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "" });
+    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true });
     assert.equal(o.strictMcpConfig, true);
     assert.deepEqual(o.mcpServers, {});
     assert.equal(o.allowDangerouslySkipPermissions, true);
@@ -181,7 +181,7 @@ describe("options of every query", () => {
     assert.equal(o.env.HTTPS_PROXY, "http://proxy.invalid:3128");
     assert.equal(o.env.DISABLE_TELEMETRY, "1");
     assert.equal(o.hooks.PreToolUse[0]!.timeout, 300);
-    assert.deepEqual(o.disallowedTools, disallowedEditTools("/work", "/rubi-auth"));
+    assert.deepEqual(o.disallowedTools, disallowedEditTools("/work"));
     for (const r of ["Edit(//work/.rubi/**)", "Edit(//work/.claude/**)", "Edit(//work/.mcp.json)", "Read(//work/.rubi/**)"]) assert.ok(o.disallowedTools.includes(r), r);
     assert.equal(typeof o.canUseTool, "function");
   });

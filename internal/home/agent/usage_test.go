@@ -247,7 +247,7 @@ func TestStatusReportsBotsModesAndCounters(t *testing.T) {
 		return st["slots"].([]any)[0].(map[string]any)["subagents"] == float64(2)
 	})
 	st, _ := mu.op("status", nil)
-	if st["slots"].([]any)[0].(map[string]any)["bot"] != "bot-a" || st["sessions_running"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(16) {
+	if st["slots"].([]any)[0].(map[string]any)["bot"] != "bot-a" || st["sessions_running"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(4) {
 		t.Fatalf("status: %v", st)
 	}
 	u := st["usage"].(map[string]any)
