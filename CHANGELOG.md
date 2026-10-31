@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Skill library in the panel (agent roles, R10).** Settings has a "Skills" tab: search and tag filter, each skill's
+  versions with state, scan rules (line and excerpt), author Bot, who admitted it ("self-admitted by curator" when the
+  curator admitted its own), hash and dates, the skill's text in a text-only box, and the queue of proposals waiting for
+  the curator. The curator can be changed there (a Bot name, then a strong approval). Everything a Bot wrote is shown as
+  clipped, marked text. The panel reads only; admitting, deprecating and withdrawing stay the curator Bot's. New panel ops
+  `library.list`, `library.entry`, `library.version`, `library.queue`, `library.curator.set` (full settings ticket only).
+  The demo has the screen (`#demo=library`).
 - **Agent roles: security review fixes (R4-R7).** Session operations of a role are refused for a session that isn't the
   role's own (not in its slots, not in its runner's list), and the runner resumes from disk only sessions its config
   directory lists. Reads of a role whose VM is stopped answer empty (`vm_state: "stopped"`) instead of starting it, and no

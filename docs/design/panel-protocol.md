@@ -129,6 +129,11 @@ that integration) and an unlocked Rubi. Reads return data; every change returns
 | `webhook.test` | `name`, `wait?` | send a test event. With `wait: true` it waits up to 20 s for the first delivery and returns `{event_id, delivered, pending?, problem?}`; `problem` says what to fix (wrong key, routine switched off, wrong address) and never contains the address or key |
 | `approval.list` | — | the requests waiting in the panel (`tap`/`strong`, pending, oldest first): `approval_id`, `integration`, `kind`, `level`, `summary`, `expires_at`. No preview, options or items. Needs a full `settings` ticket (not `settings:view`) |
 | `approval.open` | `approval_id` | `{"approval_id", "ticket"}`: a fresh ticket for `approve:<id>` while that request is pending; the panel then uses `approval.get` / `approval.decide`. Full `settings` ticket only, since that ticket can decline without proof |
+| `library.list` | `query?`, `tag?` | the skill library for the owner: `skills[]` (`id`, `description`, `tags`, `latest_admitted`, `versions[]` of `{version, state}`; every state is listed) and `curator` (`""` = none). Full `settings` ticket only |
+| `library.entry` | `id` | every version of one skill, without content: state, `author_bot`, `admitted_by`, `self_admitted`, `sha256`, dates, `scan_verdict`, `scan_hits[]` (`id`, `line`, `severity`, `excerpt`), `scan_stripped[]`, curator `history[]`. Full `settings` ticket only |
+| `library.version` | `id`, `version?` (0 = latest admitted) | one version with its `content` (text, at most 32 KiB; the panel draws it in a `<pre>`, clipped). Full `settings` ticket only |
+| `library.queue` | — | the proposals waiting for the curator, with their scan results, no content. Full `settings` ticket only |
+| `library.curator.set` | `name` (`""` removes it) | `{"approval_id", "ticket"}` for the strong approval `rubi.library.curator` (old and new curator shown); applied only if the curator is still the one the user saw. The name must be a connected Bot. The panel has no op that admits, publishes, deprecates, withdraws or edits a skill: those are the curator Bot's |
 
 ### Approval proofs
 

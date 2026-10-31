@@ -505,7 +505,7 @@ function demoScreen(ctx, which) {
       ctx.hello = { ...DEMO_HELLO, state: "locked" };
       return unlockFlow(ctx, "Unlock Rubi", "Rubi restarted and locked itself. Unlock it to let your agent continue.",
         () => { ctx.hello = { ...DEMO_HELLO }; statusScreen(ctx, "Unlocked. You can go back to your agent."); });
-    case "send": case "install": case "reveal": case "door": case "botpaste":
+    case "send": case "install": case "reveal": case "door": case "botpaste": case "curator":
       return approveScreen(ctx, which, { onDone: back, doneLabel: "Back to the demo" });
     case "settings":
       return settingsScreen(ctx, "plugins");
@@ -523,6 +523,8 @@ function demoScreen(ctx, which) {
       return homeDeviceScreen(ctx, back);
     case "bots":
       return grokBotScreen(ctx);
+    case "library":
+      return libraryScreen(ctx, () => settingsScreen(ctx, "library"));
     case "connect":
       return agentScreen(ctx, "Mail Bot");
     case "updates":
@@ -1613,6 +1615,7 @@ const SETTINGS_TABS = [
   ["plugins", "Plugins", "plug"],
   ["updates", "Updates", "download"],
   ["bots", "Grok Bot", "bot"],
+  ["library", "Skills", "sparkle"],
   ["home", "Rubi Home", "home"],
   ["approvals", "Approvals", "shield"],
   ["security", "Security", "lock"],
@@ -1731,6 +1734,11 @@ async function settingsScreen(ctx, tab) {
       agents.length ? h("ul", { class: "acct-list" }, agents.map((a) => h("li", {},
         h("span", { class: "avatar-dot small" }, icon("bot", 14)), h("span", { class: "acct-name" }, a.name, a.default ? h("span", { class: "tag" }, "Administrator") : null)))) : null,
       h("button", { class: "secondary", onclick: () => grokBotScreen(ctx) }, "Manage Grok Bot connections"),
+    ],
+    library: () => [
+      h("h2", {}, "Skill library"),
+      h("p", { class: "muted" }, "Skills that Bots share and give to roles. One curator Bot admits them after an automatic scan; you can read everything here and choose the curator."),
+      h("button", { class: "secondary", onclick: () => libraryScreen(ctx, back) }, icon("sparkle", 16), "Open the skill library"),
     ],
     home: () => [
       h("h2", {}, "Rubi Home"),
@@ -2382,6 +2390,169 @@ async function storeScreen(ctx, back) {
     tiles.length ? grid : (store.catalog_error ? null : h("p", { class: "muted" }, "The store is empty.")),
     none,
     sideload,
+  );
+}
+
+// ---------- skill library (docs/design/agent-roles.md section 8) ----------
+// Bots share skills through a library; one curator Bot admits them. This screen is the owner's read-only view of
+// it, plus the one thing the owner decides: who the curator is (a strong approval). There is no button to admit,
+// edit, deprecate or withdraw: those are the curator Bot's, and the core has no panel path for them. Every text a
+// Bot wrote (description, tags, author, scan excerpts, the skill itself) is drawn as clipped text, marked as
+// untrusted, and never as HTML.
+
+const LIB_STATES = { proposed: "Proposed", admitted: "Admitted", rejected: "Rejected", deprecated: "Deprecated", withdrawn: "Withdrawn" };
+const LIB_TEXT_MAX = 400;
+const LIB_CONTENT_MAX = 12000;
+const LIB_LIST_MAX = 200;
+const LIB_VERSIONS_MAX = 40;
+const LIB_HITS_MAX = 40;
+const libState = (s) => LIB_STATES[s] || "Unknown";
+const libVerdict = (v) => (v === "pass" || v === "flag" || v === "reject" ? v : "unknown");
+const libNum = (v) => (Number.isInteger(v) && v >= 0 && v < 1e6 ? v : 0);
+const libTags = (v) => (Array.isArray(v) ? v : []).slice(0, 8).map((t) => clip(t, 32)).filter(Boolean);
+// libBot is a Bot's name as the library stores it (text only, short).
+const libBot = (v) => clip(v, 64) || "(unknown)";
+// libText is Bot-supplied prose: dashed and flagged like an untrusted chat line, so it is never taken for Rubi's own words.
+const libText = (v, max = LIB_TEXT_MAX) => h("span", { class: "lib-text untrusted" }, clip(v, max));
+const libVerdictTag = (v) => {
+  const k = libVerdict(v);
+  return h("span", { class: "tag" + (k === "flag" ? " warn" : k === "reject" ? " bad" : "") }, "Scan: " + k);
+};
+
+async function libraryScreen(ctx, back, f = {}) {
+  const mine = () => libraryScreen(ctx, back, f);
+  currentView = mine;
+  const err = errorBox();
+  const query = clip(f.query, 100), tag = clip(f.tag, 32);
+  let list, all, queue;
+  try {
+    [list, all, queue] = await Promise.all([
+      ctx.client.call("library.list", { query, tag }),
+      query || tag ? ctx.client.call("library.list", {}) : null,
+      ctx.client.call("library.queue"),
+    ]);
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  if (currentView !== mine) return;
+  const skills = objs(list.skills, LIB_LIST_MAX);
+  const curator = clip(list.curator, 64);
+  const proposals = objs(queue.proposals, LIB_LIST_MAX);
+  const tags = [...new Set(objs((all || list).skills, 500).flatMap((s) => libTags(s.tags)))].sort();
+  const again = (next) => libraryScreen(ctx, back, { ...f, ...next });
+
+  const change = h("button", { class: "secondary small", type: "button", onclick: async (e) => {
+    const name = await askText("Skill library curator", "Bot name, exactly as in Grok Bot connections. Leave empty for no curator.", curator);
+    if (name === null) return;
+    await busy(e.currentTarget, async () => confirmChange(ctx, await ctx.client.call("library.curator.set", { name: name.trim() }), mine, "Back to the library"))
+      .catch((x) => showError(err, x));
+  } }, curator ? "Change" : "Choose a curator");
+
+  const search = h("input", { type: "search", placeholder: "Search skills", "aria-label": "Search skills", value: query, autocomplete: "off", autocapitalize: "none", maxlength: "100" });
+  const searchForm = h("form", { class: "notes-search", onsubmit: (e) => { e.preventDefault(); again({ query: search.value.trim() }); } },
+    h("div", { class: "search" }, icon("search", 18), search));
+  const pills = h("div", { class: "pills", role: "group", "aria-label": "Filter by tag" }, [
+    h("button", { type: "button", class: "pill-filter", "aria-pressed": String(!tag), onclick: () => again({ tag: "" }) }, "All"),
+    ...tags.map((t) => h("button", { type: "button", class: "pill-filter", "aria-pressed": String(t === tag), onclick: () => again({ tag: t }) }, "#" + t)),
+  ]);
+
+  const row = (s) => {
+    const id = clip(s.id, 48);
+    const vs = objs(s.versions, LIB_VERSIONS_MAX);
+    const latest = libNum(s.latest_admitted);
+    return h("li", {},
+      h("span", { class: "acct-name" }, id,
+        h("small", { class: "muted" }, libText(s.description)),
+        h("small", { class: "muted" }, latest ? `Latest admitted: v${latest}` : "Nothing admitted yet", " · ", `${vs.length} ${vs.length === 1 ? "version" : "versions"}`,
+          ...libTags(s.tags).map((t) => h("span", { class: "tag" }, "#" + t)))),
+      h("button", { class: "secondary small", type: "button", onclick: () => libraryEntryScreen(ctx, id, mine) }, "Open"));
+  };
+  const propRow = (p) => h("li", {},
+    h("span", { class: "acct-name" }, `${clip(p.id, 48)} v${libNum(p.version)}`,
+      h("small", { class: "muted" }, libText(p.description)),
+      h("small", { class: "muted" }, "From ", h("strong", {}, libBot(p.author_bot)), " · ", fmtTime(clip(p.submitted_at, 40)), " ", libVerdictTag(p.scan_verdict),
+        Array.isArray(p.scan_hits) && p.scan_hits.length ? ` · ${p.scan_hits.length} to check` : "")),
+    h("button", { class: "secondary small", type: "button", onclick: () => libraryEntryScreen(ctx, clip(p.id, 48), mine) }, "Review"));
+
+  screen(
+    { cls: "wide", focus: false },
+    header(ctx.hello),
+    backBar("Settings", back),
+    h("h1", {}, "Skill library"),
+    h("p", { class: "muted" }, "Skills that Bots share, to give to roles. A Bot proposes a skill; only the curator Bot admits it, after the automatic scan. You read the library here and choose the curator; you don't admit or edit skills yourself."),
+    err,
+    h("section", { class: "waiting", "aria-label": "Curator" },
+      h("h2", {}, "Curator"),
+      h("p", { class: curator ? "" : "muted" }, curator ? h("span", {}, h("strong", {}, curator), " can admit skills, publish new versions, deprecate and withdraw them. The curator may admit its own, marked \"self-admitted by curator\".")
+        : "No curator: nobody can admit skills, and proposals stay in the queue."),
+      h("p", { class: "muted small" }, icon("lock", 14), " Changing the curator always needs your passkey or password."),
+      change),
+    h("div", { class: "section-head" }, h("h2", {}, "Waiting for the curator")),
+    proposals.length ? h("ul", { class: "acct-list" }, proposals.map(propRow)) : h("p", { class: "muted" }, "No proposals waiting."),
+    h("div", { class: "section-head" }, h("h2", {}, "Skills")),
+    searchForm,
+    tags.length ? pills : null,
+    skills.length ? h("ul", { class: "acct-list" }, skills.map(row)) : h("div", { class: "empty" }, face("idle", 64), h("p", {}, query || tag ? "No skill matches." : "The library is empty.")),
+  );
+}
+
+async function libraryEntryScreen(ctx, id, back) {
+  const mine = () => libraryEntryScreen(ctx, id, back);
+  currentView = mine;
+  const err = errorBox();
+  let data;
+  try {
+    data = await ctx.client.call("library.entry", { id });
+  } catch (e) {
+    return fatal(e instanceof UserError ? e.message : friendly(e));
+  }
+  if (currentView !== mine) return;
+  const versions = objs(data.versions, LIB_VERSIONS_MAX).sort((a, b) => libNum(b.version) - libNum(a.version));
+  const field = (k, ...v) => h("div", { class: "field-item" }, h("dt", {}, k), h("dd", {}, ...v));
+  const card = (v) => {
+    const n = libNum(v.version);
+    const hits = objs(v.scan_hits, LIB_HITS_MAX);
+    const stripped = (Array.isArray(v.scan_stripped) ? v.scan_stripped : []).slice(0, LIB_HITS_MAX);
+    const hist = (Array.isArray(v.history) ? v.history : []).slice(0, LIB_HITS_MAX);
+    const shown = h("div", {});
+    const show = h("button", { class: "secondary small", type: "button", onclick: async (e) => {
+      await busy(e.currentTarget, async () => {
+        const full = await ctx.client.call("library.version", { id, version: n });
+        // Text only, in a <pre>, clipped; it is a skill a Bot wrote, not something to follow.
+        shown.replaceChildren(h("p", { class: "muted small" }, h("span", { class: "chat-flag" }, "untrusted text"), " Shown as text; nothing in it runs."),
+          h("pre", { class: "lib-skill" }, clip(full.content, LIB_CONTENT_MAX)));
+        show.hidden = true;
+      }).catch((x) => showError(err, x));
+    } }, "Show the skill");
+    if (v.state === "rejected") show.hidden = true; // a rejected version keeps no content
+    return h("article", { class: "pcard" },
+      h("header", { class: "pcard-head" },
+        h("div", { class: "pcard-title" }, h("strong", {}, `v${n}`),
+          h("span", { class: "muted small" }, libState(v.state), " · ", libVerdictTag(v.scan_verdict),
+            v.self_admitted ? h("span", { class: "tag warn" }, "self-admitted by curator") : null))),
+      h("dl", { class: "fields" },
+        field("Description", libText(v.description)),
+        field("Tags", libTags(v.tags).map((t) => "#" + t).join(" ") || "(none)"),
+        field("Author Bot", libBot(v.author_bot)),
+        field("Submitted", fmtTime(clip(v.submitted_at, 40))),
+        v.admitted_by ? field("Admitted by", libBot(v.admitted_by), v.self_admitted ? " (self-admitted by curator)" : "", " · ", fmtTime(clip(v.admitted_at, 40))) : null,
+        field("Hash (SHA-256)", h("code", {}, clip(v.sha256, 64))),
+        field("Scanner", clip(v.scanner_version, 40) || "(unknown)"),
+        field("Scan rules", hits.length ? h("ul", { class: "lib-hits" }, hits.map((x) => h("li", {},
+          h("strong", {}, clip(x.id, 60)), ` (${clip(x.severity, 10)}${libNum(x.line) ? ", line " + libNum(x.line) : ""}) `, libText(x.excerpt, 200))))
+          : "No rule matched."),
+        stripped.length ? field("Removed by the scan", stripped.map((x) => clip(x, 100)).join(", ")) : null,
+        hist.length ? field("Curator actions", h("ul", { class: "lib-hits" }, hist.map((x) => h("li", {}, libText(x, 200))))) : null),
+      show, shown);
+  };
+  screen(
+    { cls: "wide", focus: false },
+    header(ctx.hello),
+    backBar("Skill library", back),
+    h("h1", {}, clip(id, 48)),
+    h("p", { class: "muted" }, "Every version, in every state. Texts below were written by Bots and are shown as plain text."),
+    err,
+    versions.length ? h("div", { class: "agent-list" }, versions.map(card)) : h("p", { class: "muted" }, "No versions."),
   );
 }
 
