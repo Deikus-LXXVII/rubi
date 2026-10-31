@@ -709,3 +709,13 @@ func TestInstallTimeoutSaysSo(t *testing.T) {
 		t.Errorf("%+v", st)
 	}
 }
+
+func TestInstallFailureShowsOnlyFixedLines(t *testing.T) {
+	if got := installFailure("0:1: execution error: the package changed after it was checked (11)"); !strings.Contains(got, "the package changed after it was checked") {
+		t.Errorf("known reason lost: %q", got)
+	}
+	got := installFailure("installer: token=sk-abcdef0123456789abcdef0123456789 leaked")
+	if strings.Contains(got, "sk-") || strings.Contains(got, "leaked") {
+		t.Errorf("unknown output shown: %q", got)
+	}
+}
