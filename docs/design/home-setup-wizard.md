@@ -1,7 +1,7 @@
 # Rubi Home: first-time setup of the agent path
 
 The agent path (agent-runner.md) needs Apple's `container` tool, its service and kernel, a host-only network,
-the runner image, a Claude sign-in inside the VM and a working proxy. This page is the button-only setup of
+the runner image, one shared Claude sign-in for all projects and a working proxy. This page is the button-only setup of
 all of it: the user never types a command in a terminal. It is a page of the `claude-code` plugin in the Rubi
 panel, backed by `agent-setup.*` operations of Rubi Home. Rubi Home has no web server of its own and gets none
 for this: the page uses the panel's existing sign-in, encryption and approvals, and the operations reach Rubi
@@ -18,8 +18,8 @@ One row per step. Each row shows a state, a one-line reason in plain language, a
 | 3 | Host-only network | the network inspects as one network with mode `hostOnly` and a private gateway in its subnet | Create | strong |
 | 4 | Runner image | the image tagged with the hash of the runner bundled in this Rubi Home exists | Build / Update | none |
 | 5 | Projects | `agent_projects` has at least one folder | Add a folder / Remove | strong / none |
-| 6 | Claude sign-in (per project) | `claude auth status` in that project's VM says logged in | Sign in / Sign in again | none |
-| 7 | Self-test (per project) | the last self-test passed (kept in memory only) | Run self-test | none |
+| 6 | Claude sign-in (one for the computer) | the shared token is stored and not past its end of life | Sign in / Sign in again / Sign out | none |
+| 7 | Self-test (per project) | the last self-test passed with the shared sign-in (kept in memory only) | Run self-test | none |
 
 "Set up everything" (`all`) runs the service (2) and image (4) steps, then 6 and 7 for the first project, in order.
 It never runs the two privileged steps, installing the container tool (1) and creating the network (3): each has
@@ -44,24 +44,24 @@ isn't rebuilt). One job runs at a time; a second press gets "busy". Self-test re
 All are `agent-setup.*`, listed in the hello as capability `agent-setup`.
 
 - `agent-setup.status {}` -> `{steps: [{id, title, state, reason, progress?: [line], action?, projects?: [...]}],
-  job?: {step, project?, started}, login?: {project, url?, wants_code}}`. A project step (`projects`, `login`,
-  `selftest`) carries `projects: [{id, dir, state, reason?, progress?, action?}]`; `project` in `job` and `login`
-  is the project id. `action` is the one button of a row: `install`, `upgrade`, `start`, `create`,
-  `use_auto_address`, `build`, `add` (step rows); `remove`, `check`, `login`, `login_again`, `selftest`
+  job?: {step, project?, started}, login?: {url?, wants_code}}`. A project step (`projects`, `selftest`) carries
+  `projects: [{id, dir, state, reason?, progress?, action?}]`; `project` in `job` is the project id. The
+  sign-in (`login`) is one row for the whole computer, with no project rows, `action` and `action2` (two buttons). `action` is the one button of a row: `install`, `upgrade`, `start`, `create`,
+  `use_auto_address`, `build`, `add`, `check`, `login`, `login_again`, `sign_out` (step rows); `remove`, `selftest`
   (project rows); `cancel` while it works. Progress keeps the last 20 lines of the
   running job, each at most 200 characters, with anything that looks like a token removed. `login.url` is present
   only while a sign-in waits for the browser.
 - `agent-setup.run {step, project?, method?, option?}` -> `{started: true}` or an error (`busy`, `needs step N
-  first`, unknown step). `step` is one of `container`, `service`, `network`, `image`, `login`, `selftest`, `all`.
-  `project` is a project id (`login`, `selftest`; `all` takes the first project when it is empty). `method` is
-  `console` or `claudeai` for `login`; without it `login` only checks the sign-in (and ends `needs_user` when
+  first`, unknown step). `step` is one of `container`, `service`, `network`, `image`, `login`, `signout`, `selftest`, `all`.
+  `project` is a project id (`selftest`; `all` takes the first project when it is empty; `login` ignores it). `method` is
+  `claudeai` (a Claude subscription) for `login`; without it `login` only checks the sign-in (and ends `needs_user` when
   the project isn't signed in); with it, it signs in even when already signed in ("Sign in again"). `all` skips
   a signed-in project. `option` is `auto-address` for `network`: it never creates the network (error "creating the network needs its own
   approval" when it is missing, nothing changed); it only clears, when the network exists and is host-only,
   `agent_proxy_listen` and `agent_proxy_vm_host`.
 - `agent-setup.login.code {project, code}` -> `{sent: true}`: writes the code and a newline to the running sign-in's
-  stdin. At most 512 printable ASCII characters, no spaces; refused when no sign-in for that project waits.
-- `agent-setup.login.open {project}` -> `{opened: true}`: opens the sign-in link in the Mac's default browser
+  stdin. At most 512 printable ASCII characters, no spaces; refused when no sign-in waits; the `project` argument is ignored.
+- `agent-setup.login.open {}` -> `{opened: true}`: opens the sign-in link in the Mac's default browser
   (`/usr/bin/open`), only when it is an `https://` link to `claude.com`, `claude.ai`, `platform.claude.com` or
   `console.anthropic.com`.
 - `agent-setup.project.add {}` -> `{added: dir}` or `{cancelled: true}`: shows the macOS folder chooser on the
@@ -113,15 +113,11 @@ installation, and the user confirms twice: in the panel (passkey) and on the Mac
   image pinned by digest; a builder stage installs the npm packages from the lockfile with `--ignore-scripts` and
   compiles the runner). Progress lines come from `container build --progress plain`. The VM uses that tag, so
   an updated Rubi Home builds its new runner once and older images stay until the user removes them.
-- **Sign-in.** Starts the project's VM (as a session start would, with the proxy), then runs the bundled
-  `claude auth login` in it with stdin and stdout as pipes (no terminal). Rubi Home reads stdout until the
-  sign-in link appears, keeps it in memory, and the page shows "Open the sign-in page" (`login.open`) and the link
-  as text. If Claude asks for a code, the page's "Paste the code" button (a panel prompt) sends it with
-  `login.code`; Rubi Home writes it to stdin and keeps no copy. The job ends when `claude` exits; the row then
-  probes `claude auth status`. The sign-in waits at most 15 minutes. Two sign-in methods, both Anthropic's own
-  flow inside the VM: "Anthropic Console account" (`--console`, billed per token) and "Claude subscription"
-  (`--claudeai`); the page notes that a subscription is for the user's own personal use under Anthropic's terms.
-  The credentials stay in the project's `.rubi/claude` (the VM's config directory); Rubi Home never reads them.
+- **Sign-in.** One for the whole computer, see "Shared sign-in" below. `run {step: login, method: claudeai}` starts
+  the sign-in container; the page shows "Open the sign-in page" (`login.open`) and the link as text, and a
+  "Paste the code" prompt that sends `login.code`. The sign-in waits at most 15 minutes; cancel or the limit
+  removes the container. `run {step: signout}` deletes the stored token for every project. `run {step: login}`
+  without a method only checks.
 - **Self-test.** Home runs it itself, against its own agent manager, and needs no plugin. It takes the manager's
   slot (refused while a session runs or waits) and, while it exists, the manager denies every `perm.ask`,
   `cred.ask` and `net.ask` of that project internally: the question is never queued for the plugin, so no
@@ -130,6 +126,48 @@ installation, and the user confirms twice: in the panel (passkey) and on the Mac
   refused), then one small turn asking for a Bash command that the self-test denies through `perm.ask`. Pass needs
   every check plus a `result` after the deny. The prompt and answers are fixed; it never runs the user's prompt.
 
+## Shared sign-in
+
+All projects (and later roles) use one Claude sign-in; only the credential is shared, never the rest of the
+config directory: `CLAUDE_CONFIG_DIR` stays `/work/.rubi/claude` in each project (skills, settings, history,
+MCP).
+
+- **Credential.** A long-lived token from `claude setup-token`: a Claude subscription, one year, scope
+  `user:inference` only, no refresh (so no refresh race between projects). The setup-token command needs a
+  terminal, so the image carries a helper, `/usr/local/bin/rubi-claude-token` (`runner/container/`, embedded with
+  the runner), that runs it under `script` with a wide pty, strips the terminal escapes and tells Home on stdout
+  only `URL <link>`, `CODE?`, `SAVED` or `FAILED <reason>`. It writes the token atomically (mode 0600) to
+  `/rubi-auth/token/oauth-token` with a non-secret `oauth-token.meta` (`created`, `expires`, `method`). It never
+  prints the token, and drops any output line with `sk-ant`.
+- **Storage.** A container volume Home owns, `rubi-agent-auth` (config `agent_auth_volume`). On first use Home
+  creates it and runs a one-shot container (`--user 0 --cap-drop ALL --cap-add CHOWN --cap-add FOWNER`) that makes
+  `/rubi-auth/token` owned by the runner's user, mode 700. Every project VM mounts the volume **read-only** at
+  `/rubi-auth`, outside `/work` and so outside git. A VM started before the first sign-in needs a restart to see
+  the volume (the mount is made at start).
+- **Sign-in container.** Short-lived, with no project mounted, the volume read-write, the host-only network, and
+  a proxy started by Home that allows only `claude.com`, `claude.ai`, `platform.claude.com`,
+  `console.anthropic.com` and `api.anthropic.com`. It is removed (with the helper, claude and the proxy) when the
+  sign-in ends, is cancelled or times out.
+- **Runner.** At each query start the runner reads `$RUBI_AUTH_DIR/token/oauth-token` (default `/rubi-auth`) and,
+  if it is non-empty, puts it into the SDK child's environment as `CLAUDE_CODE_OAUTH_TOKEN`: only there, never
+  in an event, a log (claude's own stderr is redacted) or a tool argument; the Read tool is denied on the
+  directory. A sign-in or sign-out applies to the next query; `usage.probe` `logged_in` reflects it. The shared
+  token wins when present.
+- **Status.** Home never reads the token. The row is probed with a throwaway container that mounts the volume
+  read-only and prints whether the file is non-empty and the metadata file; the answer is reused for a minute.
+  The row says "Signed in until <date>", "expired on <date>" or "Not signed in".
+- **Sign out** deletes the token and the metadata (another throwaway container, volume read-write). It cannot
+  revoke the token: for a full revoke, also remove it in the Claude account settings at claude.ai.
+- **Console accounts.** The wizard offers only the subscription sign-in (the simpler path). A console (per
+  token billing) account can still sign in inside one project with `claude auth login --console`, whose
+  credentials stay in that project's `.rubi/claude`; it is used only when no shared token is stored.
+
+**Trade-off.** Any code that runs as the agent's user in a project VM can read the token (`cat` in a shell), as
+with any Claude Code install. Mitigations: egress only through the allow-list proxy; the token's scope
+(`user:inference`, no account or organization access) and one-year life; the read-only mount outside `/work`
+and git; sign-out deletes it; revoking at claude.ai ends it everywhere. Sharing it means one project's compromise
+reaches every project's inference access (not their files), which is the owner's decision for one account.
+
 ## Secrets
 
 The sign-in code, Claude's credentials and the run and proxy tokens never appear in progress lines, events,
@@ -137,7 +175,8 @@ logs, errors or URLs. Progress lines pass through a filter that drops lines with
 `code=`, `refresh` (any case) and long base64-like words. The sign-in link is shown (it carries a PKCE challenge
 and state, not a secret) but not logged. The code goes from the panel's prompt to the plugin op, from the plugin
 to Rubi Home in an encrypted call, and to the VM's stdin; the plugin neither stores nor audits it (the audit says
-"sign-in code sent").
+"sign-in code sent"). The token itself never passes through Home, the plugin or the panel: it goes from
+Anthropic to the helper in the sign-in container and into the volume.
 
 ## Failure modes
 
