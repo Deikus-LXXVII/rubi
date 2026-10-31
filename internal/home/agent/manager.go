@@ -272,7 +272,6 @@ func New(opt Options) *Manager {
 		m.q.path = filepath.Join(opt.Dir, QueueFile)
 	}
 	m.q.load()
-	sweepShields(opt.Dir) // snapshots of VMs of an earlier Home run
 	m.net = newNetState(opt.Dir)
 	if opt.Dir != "" {
 		m.roles, m.rolesErr = roles.Open(roles.Options{
@@ -308,6 +307,10 @@ func (m *Manager) Resume() {
 		m.wake()
 	}
 }
+
+// SweepShields removes the role snapshots an earlier Home run left. Only the daemon's start calls it (never New:
+// every command that opens the helper makes a Manager, and a running Home's VMs mount these directories).
+func (m *Manager) SweepShields() { sweepShields(m.opt.Dir) }
 
 // Close stops the manager's work and every VM; the queue stays on disk.
 func (m *Manager) Close() {
@@ -736,7 +739,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	var roleHosts []string
 	var shield Project
 	allowWebSearch := true // the legacy role has Claude Code's default tools
-	var shieldGuard fileGuard
+	var shieldGuard *fileGuard
 	if p.Role == "" {
 		if err := prepareWorkDir(p.Dir); err != nil {
 			return nil, err
@@ -754,6 +757,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		shield = roleShield(p.Dir, filepath.Join(m.opt.Dir, RoleEmptyDir), p.Role)
 		shieldGuard = newFileGuard(p.Dir)
 		if shield.EmptyDir == "" {
+			removeShield(m.opt.Dir, p.Dir, p.Role)
 			return nil, fmt.Errorf("role %s: can't prepare the empty directory that covers /work/.rubi", clip(p.RoleName, 40))
 		}
 		m.mu.Lock()
@@ -762,10 +766,14 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		defer func() {
 			m.mu.Lock()
 			p.starting = false
-			if p.runner == nil {
+			failed := p.runner == nil
+			if failed {
 				m.unpinLocked(p) // the start failed
 			}
 			m.mu.Unlock()
+			if failed {
+				removeShield(m.opt.Dir, p.Dir, p.Role) // no VM will mount these
+			}
 		}()
 		role, err := m.pinRole(p)
 		if err != nil {
@@ -896,14 +904,30 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	if p.Role != "" {
 		m.ensureLoop() // the loop stops an idle role VM
 	}
-	guard := fileGuard(nil)
-	if p.Role != "" {
-		guard = shieldGuard
+	guard := shieldGuard
+	if len(shield.snapFailed) > 0 {
+		m.pushShieldFailedEvent(p, shield.snapFailed)
+	}
+	if guard != nil {
+		go func() { // a role VM can idle for hours: look at the guarded files while it runs, not only at its end
+			t := time.NewTicker(time.Duration(guardInterval.Load()))
+			defer t.Stop()
+			for {
+				select {
+				case <-r.Done():
+					return
+				case <-t.C:
+					if ch := guard.report(p.RoleName); len(ch) > 0 {
+						m.pushGuardEvent(p, ch)
+					}
+				}
+			}
+		}()
 	}
 	go func() {
 		<-r.Done()
 		if guard != nil {
-			if ch := guard.report(p.Dir, p.RoleName); len(ch) > 0 {
+			if ch := guard.report(p.RoleName); len(ch) > 0 {
 				m.pushGuardEvent(p, ch)
 			}
 		}
@@ -919,6 +943,19 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 func (m *Manager) pushGuardEvent(p *projState, files []string) {
 	ev, err := json.Marshal(map[string]any{"kind": "project_files_changed", "files": files, "role_name": clip(p.RoleName, 40),
 		"message": "a role session changed " + strings.Join(files, ", ") + " in " + clip(p.ID, 64) + "; review before another session or your editor loads it"})
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	m.pushLocked(Item{Type: "event", Project: p.ID, Role: p.key(), RoleName: p.RoleName, Event: ev})
+	m.mu.Unlock()
+}
+
+// pushShieldFailedEvent tells the plugin that a role VM's read-only copy of some protected place is empty
+// because the copy failed (too big, or the place changed while it was copied).
+func (m *Manager) pushShieldFailedEvent(p *projState, names []string) {
+	ev, err := json.Marshal(map[string]any{"kind": "shield_snapshot_failed", "files": names, "role_name": clip(p.RoleName, 40),
+		"message": "the read-only copy of " + strings.Join(names, ", ") + " in " + clip(p.ID, 64) + " is empty for this role session (too big, or it changed while copied)"})
 	if err != nil {
 		return
 	}
@@ -2438,9 +2475,15 @@ func roleShield(projectDir, emptyDir, role string) Project {
 	var mounts []ShieldMount
 	for _, name := range names {
 		dst := filepath.Join(root, strings.NewReplacer("/", "_", ".", "").Replace(name))
-		if err := snapshotDir(filepath.Join(projectDir, name), dst); err != nil {
+		copyErr, err := snapshotDir(projectDir, filepath.ToSlash(name), dst)
+		if err != nil {
 			log.Printf("agent: can't snapshot %s: %v", name, err)
-			return s
+			removeShield(filepath.Dir(emptyDir), projectDir, role)
+			return Project{}
+		}
+		if copyErr != nil {
+			log.Printf("agent: the read-only copy of %s is empty: %v", name, copyErr)
+			s.snapFailed = append(s.snapFailed, name)
 		}
 		mounts = append(mounts, ShieldMount{Name: name, Source: dst})
 	}

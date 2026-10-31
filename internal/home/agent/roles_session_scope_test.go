@@ -390,14 +390,15 @@ func TestRoleShieldGit(t *testing.T) {
 func TestSnapshotIgnoresASwapAfterwards(t *testing.T) {
 	root := t.TempDir()
 	src, dst := filepath.Join(root, "src"), filepath.Join(root, "snap")
+	snap := func(src, dst string) (error, error) { return snapshotDir(filepath.Dir(src), filepath.Base(src), dst) }
 	if err := os.Mkdir(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(src, "a"), []byte("1"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := snapshotDir(src, dst); err != nil {
-		t.Fatal(err)
+	if cerr, err := snap(src, dst); err != nil || cerr != nil {
+		t.Fatal(cerr, err)
 	}
 	// The swap after the snapshot (the TOCTOU window) doesn't touch what gets mounted.
 	if err := os.RemoveAll(src); err != nil {
@@ -409,7 +410,7 @@ func TestSnapshotIgnoresASwapAfterwards(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(dst, "a")); err != nil || string(b) != "1" {
 		t.Fatalf("snapshot: %q %v", b, err)
 	}
-	if err := snapshotDir(src, dst); err != nil { // a symlinked source yields an empty copy, never /etc
+	if _, err := snap(src, dst); err != nil { // a symlinked source yields an empty copy, never /etc
 		t.Fatal(err)
 	}
 	if ents, _ := os.ReadDir(dst); len(ents) != 0 {
