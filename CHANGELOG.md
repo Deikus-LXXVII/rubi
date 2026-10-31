@@ -14,7 +14,8 @@
   gateway while its session runs; the secret dies with the runner. Each project keeps its own config directory.
   Status never reads the token for the page (it stats the file and reads a non-secret metadata file); "Sign out"
   deletes it (revoke it at claude.ai for a full end). Anything shaped like `sk-ant-…` is redacted in what the
-  runner and Home send on. The wizard drops the console method.
+  runner and Home send on. The wizard drops the console method. The gateway bounds what a guest can hold (request cap, read and write
+  deadlines) and WebFetch skips its direct domain check, which the VM's proxy would refuse.
 - **Rubi Home: button-only setup of the agent path (`agent-setup.*`, capability `agent-setup`).** Home probes the
   machine on every status call (Apple's `container` tool at the pinned release, its service and kernel, the
   host-only network, the runner image, the projects, each project's Claude sign-in, a self-test) and runs one

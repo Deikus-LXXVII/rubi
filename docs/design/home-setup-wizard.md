@@ -164,8 +164,20 @@ in each project (skills, settings, history, MCP).
   - sends to `https://api.anthropic.com` only, never follows a redirect (the token goes nowhere else), reads the
     token file at each request (a sign-in or sign-out applies at once) and answers 401 "Rubi Home isn't signed in
     to Claude" when there is no token, which claude shows as its error;
-  - streams the answer (server-sent events) chunk by chunk, with a header timeout, a 5-minute stall limit, a
-    64 MiB request limit, and never logs a header, a body or a token (it logs the reason of a refusal).
+  - streams the answer (server-sent events) chunk by chunk, and never logs a header, a body or a token (it logs
+    the reason of a refusal, each reason at most once per 10 seconds with a count of the rest);
+  - bounds what a guest can hold: at most 64 requests in flight (more get 429 with `Retry-After`), 64 KiB of
+    headers, 10 s for the headers, 5 minutes for a request to arrive with its body, 64 MiB of body, a 60-second
+    deadline for each chunk written back (a guest that stops reading is cut off and the upstream stream with it),
+    a 2-minute wait for the upstream's headers and a 5-minute stall limit on the upstream's stream;
+  - passes on every `anthropic-beta` line (joined) plus the OAuth beta: whichever beta the agent asks for is
+    forwarded, by design; the gateway injects a credential, it is no policy on the API's features.
+  Its listener is its own: on the Mac's address on the VM network when the VM reports one, whatever
+  `agent_proxy_listen` gave the CONNECT proxy, and the VM is told that address as the base URL host and in
+  `NO_PROXY` (without a reported address, as in tests, it follows the proxy's host). A wildcard address or a name
+  is refused for both listeners. The upstream is fixed to `https://api.anthropic.com` in code: the override used by
+  tests is an unexported field, set only by the package's own tests or by the build-tagged hook of the live check
+  (`-tags gatewaytest`); no configuration can reach it.
   Requests to any other host never get the token: they go through the CONNECT proxy untouched, and
   `api.anthropic.com` is no longer on its allow-list.
 - **Runner.** It holds no token and reads no token file. It passes the base URL, the secret and `NO_PROXY` to the
@@ -208,6 +220,13 @@ recording local server, `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`, `CLAUDE_CO
 - Without the image's variables claude also calls fixed hosts that ignore the base URL: `POST
   https://api.anthropic.com/api/event_logging/v2/batch` (telemetry), a bootstrap fetch and an MCP-registry fetch.
   Those are off with the variables the image sets, and would be refused by the proxy list anyway.
+- **WebFetch** (checked with the integration harness: scripted API, a recording CONNECT proxy that refuses
+  everything, `NO_PROXY` for the base URL, the image's environment): by default it first asks
+  `api.anthropic.com` about the domain (`/api/web/domain_info`, "Domain blocklist check") with a direct connection,
+  outside the base URL; behind the VM's proxy, which does not allow that host, the check fails and WebFetch
+  refuses the fetch (`DomainCheckFailedError`). The runner therefore sets the flag-layer setting
+  `skipWebFetchPreflight: true`; the integration test then sees no connection to any Anthropic host and only the
+  fetch itself (`example.com:443`) at the proxy. `api.anthropic.com` is never put back on the CONNECT list.
 - With `HTTPS_PROXY` set, claude sends even a plain-HTTP base URL through that proxy; `NO_PROXY=<gateway host>`
   makes it go direct.
 
