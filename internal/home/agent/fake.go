@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 )
 
 // Fake is a VM whose runner is a FakeRunner in the same process, speaking the runner protocol over
@@ -24,8 +27,12 @@ type Fake struct {
 	StartErr error
 	// Gateway is the address handed to StartSpec.Prepare ("" by default, as a VM with none to report).
 	Gateway string
+	// NoNetwork makes the fake a NetlessVM, like the real one: Start gets a Pipe (and no Prepare), and PipeMux is the
+	// forwarder's end of the channel (open streams on it as the runner's connections would).
+	NoNetwork bool
 
 	mu      sync.Mutex
+	pipeVM  *netpipe.Mux
 	state   State
 	last    *FakeRunner
 	starts  int
@@ -63,6 +70,16 @@ func (f *Fake) Env() map[string]string {
 	return f.lastEnv
 }
 
+// Netless implements NetlessVM.
+func (f *Fake) Netless() bool { return f.NoNetwork }
+
+// PipeMux is the VM side of the last start's pipe (NoNetwork only).
+func (f *Fake) PipeMux() *netpipe.Mux {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pipeVM
+}
+
 // Start implements VM.
 func (f *Fake) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 	f.mu.Lock()
@@ -74,6 +91,27 @@ func (f *Fake) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 	}
 	f.starts++
 	f.mu.Unlock()
+	if f.NoNetwork {
+		if spec.Pipe == nil {
+			return nil, errors.New("fake VM: a VM without a network needs its pipe")
+		}
+		x, y := net.Pipe()
+		home := netpipe.New(x, netpipe.Config{OnOpen: func(svc byte, s *netpipe.Stream) bool {
+			switch svc {
+			case netpipe.SvcProxy:
+				return spec.Pipe.Proxy != nil && spec.Pipe.Proxy.Offer(s)
+			case netpipe.SvcGateway:
+				return spec.Pipe.Gateway != nil && spec.Pipe.Gateway.Offer(s)
+			}
+			return false
+		}})
+		vm := netpipe.New(y, netpipe.Config{})
+		go home.Run()
+		go vm.Run()
+		f.mu.Lock()
+		f.pipeVM = vm
+		f.mu.Unlock()
+	}
 	env, err := prepareEnv(ctx, spec, f.Gateway)
 	f.mu.Lock()
 	if err != nil {
@@ -115,7 +153,11 @@ func (f *Fake) Stop(ctx context.Context) error {
 	f.mu.Lock()
 	f.state = StateStopped
 	fr := f.last
+	pv := f.pipeVM
 	f.mu.Unlock()
+	if pv != nil {
+		pv.Close()
+	}
 	if fr != nil {
 		fr.Exit()
 	}

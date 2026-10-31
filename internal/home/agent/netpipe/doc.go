@@ -12,7 +12,8 @@
 //
 // Types: HELLO (VM to Home, once, when its listeners are up; payload: 1 byte, Version), OPEN (payload: 1 byte,
 // the service: SvcProxy or SvcGateway; sent by the side that accepted a connection), DATA, CLOSE (the sender
-// writes no more: a half close), RESET (the stream is dead both ways) and ACK (payload: 4 bytes, how many bytes
+// writes no more: a half close; closing a stream sends one), RESET (the stream is dead both ways: a refused
+// stream, a violation, a closed stream that gets data, a peer that never answers a close) and ACK (payload: 4 bytes, how many bytes
 // of DATA the reader has handed on). Flow control: each direction of each stream starts with Window bytes of
 // credit, DATA spends it and ACK gives it back, so a slow reader stops its sender and no more than Window
 // bytes are ever buffered per stream and direction. A frame that doesn't parse (unknown type, oversize,

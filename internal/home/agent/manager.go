@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/sshtarget"
 )
@@ -759,8 +760,8 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		return nil, err
 	}
 	hosts := AllowList(m.opt.GitHosts(), m.extraHosts(p, roleHosts))
-	// The proxy starts once the VM is up: the Mac's address on a host-only network (its gateway) exists only
-	// while a VM is attached to it.
+	// A VM that has a network (the fakes of the tests) starts the proxy once the VM is up and reports the Mac's
+	// address on its network; a VM without one (the real thing) is served through its pipe, started below.
 	var px *Proxy
 	var penv map[string]string
 	var gw *Gateway
@@ -818,7 +819,34 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	}
 	pj := p.Project
 	pj.EmptyDir, pj.ReadOnly = shield.EmptyDir, shield.ReadOnly
-	conn, err := p.vm.Start(sctx, StartSpec{Project: pj, Env: env, Prepare: prepare})
+	spec := StartSpec{Project: pj, Env: env, Prepare: prepare}
+	if nv, ok := p.vm.(NetlessVM); ok && nv.Netless() {
+		// A VM without a network: the proxy and the gateway serve streams of its pipe, not a socket, so they start now
+		// (there is no address to wait for). The VM reaches them on its own loopback (the forwarder in the image).
+		pl, gl := netpipe.NewListener("proxy", 16), netpipe.NewListener("gateway", 16)
+		upstream, client := gatewaySeam()
+		px, err = StartProxy(ProxyConfig{Listener: pl, AuthToken: proxyToken, Hosts: hosts, Exempt: m.opt.GitHosts(),
+			Resolve: m.opt.Resolve, Dial: m.opt.Dial, Logf: log.Printf,
+			Ask: func(ctx context.Context, host string) bool { return m.askHost(ctx, p, host) }})
+		if err != nil {
+			return nil, fmt.Errorf("proxy: %w", err)
+		}
+		gw, err = StartGateway(GatewayConfig{Listener: gl, Secret: gwSecret, TokenFile: TokenFileOf(authDir),
+			upstream: upstream, client: client, Logf: log.Printf})
+		if err != nil {
+			px.Close()
+			return nil, fmt.Errorf("gateway: %w", err)
+		}
+		proxyURL := "http://rubi:" + proxyToken + "@" + PipeProxyAddr
+		penv = map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL,
+			"ANTHROPIC_BASE_URL": "http://" + PipeGatewayAddr, "CLAUDE_CODE_OAUTH_TOKEN": gwSecret,
+			"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}
+		for k, v := range penv {
+			env[k] = v
+		}
+		spec.Prepare, spec.Pipe = nil, &PipeSpec{Proxy: pl, Gateway: gl}
+	}
+	conn, err := p.vm.Start(sctx, spec)
 	if err != nil {
 		if px != nil {
 			px.Close()

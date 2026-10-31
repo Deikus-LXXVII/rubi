@@ -120,13 +120,6 @@ func readFile(t *testing.T, p string) string {
 	return string(b)
 }
 
-func internalNet(t *testing.T) string {
-	return readFile(t, "../agent/testdata/container-1.6.1-network-internal.json")
-}
-func defaultNet(t *testing.T) string {
-	return readFile(t, "../agent/testdata/container-1.6.1-network-default.json")
-}
-
 // fakeAgents has projects, a self-test and the shared sign-in.
 type fakeAgents struct {
 	mu       sync.Mutex
@@ -337,7 +330,6 @@ func (e *testEnv) ready() {
 	}
 	e.m.version = version161
 	e.m.sysJSON = strings.ReplaceAll(sysRunning, "%APP%", e.appDir+"/")
-	e.m.network = internalNet(e.t)
 	e.m.image = true
 }
 

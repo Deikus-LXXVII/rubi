@@ -78,7 +78,7 @@ func liveGateway(ctx context.Context, t *testing.T, h *Helper) {
 	mgr := agent.New(agent.Options{
 		Dir: h.Dir, Projects: func() []string { return []string{proj} }, Wait: time.Minute,
 		NewVM: func(agent.Project) agent.VM {
-			return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, Network: cfg.AgentNetwork, EnvDir: h.Dir}
+			return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, EnvDir: h.Dir}
 		},
 	})
 	defer mgr.Close()

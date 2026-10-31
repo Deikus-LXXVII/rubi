@@ -59,14 +59,11 @@ type Config struct {
 	// AgentGitHosts are the git hosts the agent's proxy allows and the credential helper serves, for
 	// example "git.example.com".
 	AgentGitHosts []string `json:"agent_git_hosts,omitempty"`
-	// AgentNetwork is the host-only network of Apple's container tool the VMs join ("rubi-agent" by
-	// default). Home creates it with --internal when it is missing and refuses to start a VM on a network
-	// whose mode isn't hostOnly.
-	AgentNetwork string `json:"agent_network,omitempty"`
-	// AgentProxyListen is where the agent proxy listens and AgentProxyVMHost the host name the VM uses to
-	// reach it. By default the proxy listens on the Mac's address on AgentNetwork (its gateway, read from
-	// the network when a VM starts, port chosen by the system) and the VM is told that address; set them only
-	// to pin a port or to use another address.
+	// AgentNetwork, AgentProxyListen and AgentProxyVMHost are obsolete and ignored: VMs run with no network at all
+	// (`container run --network none`) and reach the proxy and the auth gateway through a stream pipe to Rubi Home
+	// (docs/design/agent-runner.md, "No network: rubi-netpipe"), so there is no host-only network, no listener on the
+	// Mac and no address to choose. They are still read so that an old configuration file parses.
+	AgentNetwork     string `json:"agent_network,omitempty"`
 	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
 	// AgentAuthDir is the directory that holds the sign-in shared by all projects (<helper dir>/agent-auth by
@@ -190,7 +187,7 @@ func Open(dir string) (*Helper, error) {
 // container. It is for Rubi Home's start (not for tests, which never run the real tool).
 func (h *Helper) SweepAgent(ctx context.Context) {
 	c := h.Fresh()
-	(&agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}).SweepAuth(ctx)
+	(&agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}).SweepAuth(ctx)
 }
 
 // AgentCredFile is the git credential file for agents in the helper's directory (see agent.FileCredSource).
@@ -207,7 +204,7 @@ func (h *Helper) newAgent() *agent.Manager {
 		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
 		NewVM: func(p agent.Project) agent.VM {
 			c := h.Fresh()
-			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
+			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
 		},
 		AllowedHosts:    func() []string { return h.Fresh().AgentAllowedHosts },
 		NoDefaultForges: func() bool { return h.Fresh().AgentNoDefaultForges },
@@ -241,16 +238,16 @@ func (h *Helper) newSetup() *setup.Setup {
 		Dir: h.Dir,
 		Agents: setup.ManagerAgents{M: h.Agent, Auth: func() *agent.AppleContainer {
 			c := h.Fresh()
-			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
+			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
 		}},
 		Settings: func() setup.Settings {
 			c := h.Fresh()
-			return setup.Settings{Projects: c.AgentProjects, Network: c.AgentNetwork, ProxyListen: c.AgentProxyListen,
+			return setup.Settings{Projects: c.AgentProjects, ProxyListen: c.AgentProxyListen,
 				ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir}
 		},
 		Update: func(fn func(*setup.Settings)) error {
 			return h.Update(func(c *Config) {
-				st := setup.Settings{Projects: c.AgentProjects, Network: c.AgentNetwork, ProxyListen: c.AgentProxyListen,
+				st := setup.Settings{Projects: c.AgentProjects, ProxyListen: c.AgentProxyListen,
 					ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir}
 				fn(&st)
 				c.AgentProjects, c.AgentProxyListen, c.AgentProxyVMHost = st.Projects, st.ProxyListen, st.ProxyVMHost

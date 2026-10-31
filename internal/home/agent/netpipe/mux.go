@@ -407,14 +407,14 @@ func (s *Stream) abort(err error) {
 	signal(s.wsig)
 }
 
-// onData stores a chunk; false if the peer broke the window or wrote after its CLOSE.
+// onData stores a chunk; false if the peer broke the window, wrote after its CLOSE, or wrote to a stream this side closed.
 func (s *Stream) onData(b []byte) bool {
 	s.mu.Lock()
-	if s.dead != nil || s.closed {
+	if s.dead != nil {
 		s.mu.Unlock()
-		return true // late data for a stream this side has given up
+		return true // late data for a stream that is already gone
 	}
-	if s.rfin || len(s.rbuf)+len(b) > s.m.cfg.Window {
+	if s.closed || s.rfin || len(s.rbuf)+len(b) > s.m.cfg.Window {
 		s.mu.Unlock()
 		return false
 	}
@@ -550,7 +550,12 @@ func (s *Stream) CloseWrite() error {
 	return err
 }
 
-// Close ends the stream both ways. Unless both sides had finished, the peer is told with a RESET.
+// closeLinger is how long a closed stream waits for the peer's CLOSE before it is reset.
+var closeLinger = 30 * time.Second
+
+// Close ends the stream like closing a socket: what was written is delivered, then the peer reads EOF (a CLOSE);
+// what the peer sends from now on is refused with a RESET. A peer that never closes its side is reset after
+// closeLinger. Unread data is dropped.
 func (s *Stream) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -558,17 +563,29 @@ func (s *Stream) Close() error {
 		return nil
 	}
 	s.closed = true
-	clean := s.rfin && s.wfin
-	dead := s.dead != nil
+	sendClose := !s.wfin && s.dead == nil
+	s.wfin = true
+	finished := s.rfin || s.dead != nil
 	s.rbuf = nil
 	s.mu.Unlock()
-	s.m.remove(s)
 	signal(s.rsig)
 	signal(s.wsig)
-	if !clean && !dead {
-		return s.m.send(tReset, s.id, nil)
+	var err error
+	if sendClose {
+		err = s.m.send(tClose, s.id, nil)
 	}
-	return nil
+	if finished {
+		s.m.remove(s)
+		return err
+	}
+	time.AfterFunc(closeLinger, func() {
+		if s.m.lookup(s.id) == s {
+			s.m.remove(s)
+			s.abort(ErrReset)
+			_ = s.m.send(tReset, s.id, nil)
+		}
+	})
+	return err
 }
 
 type addr struct{ s string }

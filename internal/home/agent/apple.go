@@ -12,7 +12,6 @@ import (
 	"io"
 	"io/fs"
 	"log"
-	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,13 +19,16 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/runner"
 )
 
 // AppleContainer runs a project in a VM of Apple's container tool (github.com/apple/container, 1.6.x),
 // by shelling out to its CLI. Every container gets the image below, the project at /work, a non-root
-// user, no capabilities, and a host-only network: the only way out is the allow-list proxy on the Mac.
+// user, no capabilities and no network at all (`--network none`: loopback only, no route to the Mac or anywhere).
+// The only way out is a stream through the stdio of a long-lived `container exec -i ... rubi-netpipe` to the
+// allow-list proxy and the auth gateway inside Rubi Home (pipe.go, internal/home/agent/netpipe).
 type AppleContainer struct {
 	// Bin is the container CLI ("container" when empty, looked up in PATH).
 	Bin string
@@ -35,9 +37,6 @@ type AppleContainer struct {
 	// bundled in this binary (package runner) is written to EnvDir/runner-build/<hash> and built from there.
 	Image     string
 	RunnerDir string
-	// Network is the host-only network the container joins (created with --internal on first use;
-	// DefaultNetwork when empty). Home refuses to start a VM on a network that isn't host-only.
-	Network string
 	// CPUs and Memory limit the VM ("" = the CLI's defaults).
 	CPUs   string
 	Memory string
@@ -49,19 +48,17 @@ type AppleContainer struct {
 
 	// run starts a CLI command to completion and returns its combined output; spawn starts one with
 	// pipes. Both are seams for tests; nil uses os/exec.
-	// authListen overrides where the sign-in proxy listens (tests: the gateway isn't an address of this machine).
-	authListen string
-	run        func(ctx context.Context, argv []string) ([]byte, error)
-	spawn      func(ctx context.Context, argv []string) (Conn, error)
+	run   func(ctx context.Context, argv []string) ([]byte, error)
+	spawn func(ctx context.Context, argv []string) (Conn, error)
 
 	mu    sync.Mutex
 	name  string
 	proj  Project
 	state State
+	pipe  *pipeSup
 }
 
 const (
-	DefaultNetwork = "rubi-agent"
 	// runnerUID is the non-root user inside the image (see runner/container/Dockerfile).
 	runnerUID = "10001"
 	// RunnerCmd is how the image starts the runner (the exec in the VM).
@@ -99,13 +96,6 @@ func (a *AppleContainer) image() string {
 		return a.Image
 	}
 	return DefaultImage
-}
-
-func (a *AppleContainer) network() string {
-	if a.Network != "" {
-		return a.Network
-	}
-	return DefaultNetwork
 }
 
 var nameUnsafe = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -249,16 +239,12 @@ func (a *AppleContainer) imageInspectArgs() []string {
 	return []string{a.bin(), "image", "inspect", a.image()}
 }
 
-func (a *AppleContainer) networkCreateArgs() []string {
-	return []string{a.bin(), "network", "create", "--internal", a.network()}
-}
-
-// RunArgs starts the VM detached: the project at /work, the host-only network, no capabilities, a
+// RunArgs starts the VM detached: the project at /work, no network, no capabilities, a
 // read-only root with a tmpfs for /tmp, a non-root user. The container just waits; the runner is started by
 // exec so its environment (the run token) never appears on a command line.
 func (a *AppleContainer) RunArgs(p Project) []string {
 	args := []string{a.bin(), "run", "-d", "--name", containerName(p), "--init",
-		"--network", a.network(), "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
+		"--network", "none", "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
 		"--tmpfs", "/tmp",
 		"--mount", "type=bind,source=" + p.Dir + ",target=/work"}
 	if p.Role != "" {
@@ -374,61 +360,10 @@ func (a *AppleContainer) EnsureImage(ctx context.Context) error {
 	return err
 }
 
-// networkInfo is one entry of `container network inspect` (container 1.6.x): an array of these.
-type networkInfo struct {
-	ID            string `json:"id"`
-	Configuration struct {
-		Name string `json:"name"`
-		Mode string `json:"mode"`
-	} `json:"configuration"`
-	Status struct {
-		IPv4Gateway string `json:"ipv4Gateway"`
-		IPv4Subnet  string `json:"ipv4Subnet"`
-	} `json:"status"`
-}
+// Netless implements NetlessVM: the VM has no network, only the pipe.
+func (a *AppleContainer) Netless() bool { return true }
 
-// hostOnlyMode is the mode `container network create --internal` gives a network; the default network is
-// "nat", which reaches the Internet.
-const hostOnlyMode = "hostOnly"
-
-// verifyInternal inspects the network and refuses to go on unless it is host-only. It returns the network's
-// gateway, the Mac's address on it. Anything else in the output (another mode, a missing or unknown field,
-// more than one network, a gateway outside the subnet) is a refusal.
-func (a *AppleContainer) verifyInternal(ctx context.Context) (string, error) {
-	out, err := a.do(ctx, []string{a.bin(), "network", "inspect", a.network()})
-	if err != nil {
-		return "", fmt.Errorf("can't inspect network %s: %w", a.network(), err)
-	}
-	return checkHostOnly(out, a.network())
-}
-
-// CheckHostOnly is the host-only check of a `container network inspect` output; it returns the gateway.
-func CheckHostOnly(out []byte, name string) (string, error) { return checkHostOnly(out, name) }
-
-func checkHostOnly(out []byte, name string) (string, error) {
-	var nets []networkInfo
-	if json.Unmarshal(out, &nets) != nil || len(nets) != 1 {
-		return "", fmt.Errorf("network %s: the inspect output isn't one network, so it can't be shown to be host-only", name)
-	}
-	n := nets[0]
-	if n.ID != name || n.Configuration.Name != name {
-		return "", fmt.Errorf("network %s: the inspect output describes another network", name)
-	}
-	if n.Configuration.Mode != hostOnlyMode {
-		return "", fmt.Errorf("network %s is not host-only (mode %q); refusing to start a VM on it "+
-			"(create it with `container network create --internal %s`)", name, n.Configuration.Mode, name)
-	}
-	gw, err := netip.ParseAddr(n.Status.IPv4Gateway)
-	if err != nil || !gw.Is4() || !gw.IsPrivate() {
-		return "", fmt.Errorf("network %s: no usable gateway address", name)
-	}
-	if pfx, err := netip.ParsePrefix(n.Status.IPv4Subnet); err != nil || !pfx.Contains(gw) {
-		return "", fmt.Errorf("network %s: the gateway isn't in the network's subnet", name)
-	}
-	return gw.String(), nil
-}
-
-// Start implements VM: image, network, container, then the runner by exec.
+// Start implements VM: image, container (no network), the pipe, then the runner by exec.
 func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 	a.setState(StateStarting)
 	fail := func(err error) (Conn, error) {
@@ -453,14 +388,8 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	if err := a.EnsureImage(ctx); err != nil {
 		return fail(err)
 	}
-	if _, err := a.do(ctx, []string{a.bin(), "network", "inspect", a.network()}); err != nil {
-		if _, err := a.do(ctx, a.networkCreateArgs()); err != nil {
-			return fail(err)
-		}
-	}
-	gateway, err := a.verifyInternal(ctx)
-	if err != nil {
-		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
+	if spec.Pipe == nil {
+		return fail(errors.New("a VM without a network needs its pipe")) // fail closed: nothing would serve it
 	}
 	for _, n := range a.leftoverNames(ctx, spec.Project) { // a leftover of a crash, or of an older name
 		_, _ = a.do(ctx, []string{a.bin(), "delete", "--force", n})
@@ -472,7 +401,19 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	a.name = containerName(spec.Project)
 	a.proj = spec.Project
 	a.mu.Unlock()
-	env, err := prepareEnv(ctx, spec, gateway)
+	pipe, err := a.startPipe(ctx, containerName(spec.Project), spec.Pipe, func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = a.Stop(sctx)
+	})
+	if err != nil {
+		_ = a.Stop(context.Background())
+		return fail(fmt.Errorf("the network pipe: %w", err))
+	}
+	a.mu.Lock()
+	a.pipe = pipe
+	a.mu.Unlock()
+	env, err := prepareEnv(ctx, spec, "")
 	if err == nil && spec.Project.Role != "" { // the exec doesn't depend on the container's own environment
 		env = withRoleEnv(env)
 	}
@@ -563,7 +504,10 @@ func (a *AppleContainer) Stop(ctx context.Context) error {
 	name := a.name
 	p := a.proj
 	a.name = ""
+	pipe := a.pipe
+	a.pipe = nil
 	a.mu.Unlock()
+	pipe.stop()
 	a.setState(StateStopped)
 	if name == "" {
 		return nil

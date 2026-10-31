@@ -41,43 +41,11 @@ func (s *Setup) runService(ctx context.Context, j *job) outcome {
 	}
 }
 
-// msgNetworkApproval: creating the network has its own approval, which "use the automatic address" doesn't give.
-const msgNetworkApproval = "Creating the network needs its own approval."
-
-// runNetwork creates the host-only network when it is missing. With autoAddress it never creates anything: it
-// clears agent_proxy_listen and agent_proxy_vm_host, and only when the network exists and is host-only.
-func (s *Setup) runNetwork(ctx context.Context, j *job, autoAddress bool) outcome {
-	log := j.log(s)
-	name := s.network()
+// runNetwork does nothing: VMs have no network, so there is none to create (the step is "done: not needed"). The
+// "auto-address" option of older plugins is accepted and has no effect.
+func (s *Setup) runNetwork(ctx context.Context, j *job) outcome {
+	j.log(s)(networkNotNeeded)
 	st := s.probeNetwork(ctx)
-	if autoAddress {
-		if st.State != Done && st.State != NeedsUser {
-			if st.State == Todo {
-				return outcome{Failed, msgNetworkApproval}
-			}
-			return outcome{st.State, st.Reason}
-		}
-		if err := s.opt.Update(func(c *Settings) { c.ProxyListen, c.ProxyVMHost = "", "" }); err != nil {
-			return outcome{Failed, "Couldn't save the setting: " + safeText(err.Error())}
-		}
-		log("The proxy now uses the network's address.")
-		st = s.probeNetwork(ctx)
-		return outcome{st.State, st.Reason}
-	}
-	if st.State != Todo {
-		return outcome{st.State, st.Reason} // done, or a network that isn't host-only: nothing is changed
-	}
-	log("Creating the host-only network " + name + "...")
-	if out, err := s.opt.Cmd.Run(ctx, []string{"container", "network", "create", "--internal", name}); err != nil {
-		if ctx.Err() != nil {
-			return outcome{Todo, "Cancelled."}
-		}
-		return outcome{Failed, "Creating the network failed: " + safeText(string(out))}
-	}
-	st = s.probeNetwork(ctx)
-	if st.State == Todo {
-		return outcome{Failed, "The network was created but can't be inspected."}
-	}
 	return outcome{st.State, st.Reason}
 }
 

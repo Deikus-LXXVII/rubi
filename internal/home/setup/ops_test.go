@@ -66,15 +66,12 @@ func TestRunNeedsEarlierSteps(t *testing.T) {
 		}
 	}
 	e.ready()
-	e.m.network = ""
-	if _, err := e.op("run", map[string]any{"step": "image"}); err == nil || err.Error() != "needs step 3 first" {
-		t.Errorf("image: %v", err)
-	}
+	e.m.image = false
 	e.addProject("my-project")
-	if _, err := e.op("run", map[string]any{"step": "login"}); err == nil || err.Error() != "needs step 3 first" {
+	if _, err := e.op("run", map[string]any{"step": "login"}); err == nil || err.Error() != "needs step 4 first" {
 		t.Errorf("login: %v", err)
 	}
-	e.m.network = internalNet(t)
+	e.m.image = true
 	if _, err := e.op("run", map[string]any{"step": "selftest", "project": "my-project"}); err == nil || err.Error() != "needs step 6 first" {
 		t.Errorf("selftest: %v", err)
 	}
@@ -180,48 +177,34 @@ func TestServiceJobTimesOut(t *testing.T) {
 	}
 }
 
-func TestNetworkJob(t *testing.T) {
-	e := newTestEnv(t)
-	e.ready()
-	e.m.network = ""
-	prev := e.m.extra
-	e.m.extra = func(argv []string) ([]byte, error, bool) {
-		if len(argv) > 2 && argv[1] == "network" && argv[2] == "create" {
-			e.m.network = internalNet(t)
-			return nil, nil, true
+// The network step has nothing to do: VMs have no network. Running it (with or without the old option) is "done, not
+// needed", runs no network command and changes no setting.
+func TestNetworkJobDoesNothing(t *testing.T) {
+	for _, opt := range []string{"", "auto-address"} {
+		e := newTestEnv(t)
+		e.ready()
+		e.m.network = ""
+		e.cfg.Network, e.cfg.ProxyListen, e.cfg.ProxyVMHost = "default", "127.0.0.1:3128", "host.example.com"
+		args := map[string]any{"step": "network"}
+		if opt != "" {
+			args["option"] = opt
 		}
-		return prev(argv)
-	}
-	e.cfg.ProxyListen = "127.0.0.1:3128"
-	e.op("run", map[string]any{"step": "network"})
-	e.wait()
-	// the network exists and is host-only, but the proxy address is the user's call: not cleared on its own
-	if st := e.step("network"); st.State != NeedsUser || e.cfg.ProxyListen == "" {
-		t.Errorf("%+v %q", st, e.cfg.ProxyListen)
-	}
-	if e.cmd.ran("container", "network", "create", "--internal", "rubi-agent") != 1 {
-		t.Errorf("create: %v", e.cmd.calls)
-	}
-	e.op("run", map[string]any{"step": "network", "option": "auto-address"})
-	e.wait()
-	if st := e.step("network"); st.State != Done || e.cfg.ProxyListen != "" || e.cfg.ProxyVMHost != "" {
-		t.Errorf("%+v %+v", st, e.cfg)
-	}
-	if e.cmd.ran("container", "network", "create") != 1 {
-		t.Error("created an existing network again")
-	}
-}
-
-func TestNetworkJobNeverTouchesAnotherNetwork(t *testing.T) {
-	e := newTestEnv(t)
-	e.ready()
-	e.cfg.Network = "default"
-	e.m.network = defaultNet(t)
-	e.op("run", map[string]any{"step": "network"})
-	e.wait()
-	st := e.step("network")
-	if st.State != Failed || e.cmd.ran("container", "network", "create") != 0 || e.cmd.ran("container", "network", "delete") != 0 {
-		t.Errorf("%+v %v", st, e.cmd.calls)
+		if _, err := e.op("run", args); err != nil {
+			t.Fatalf("option %q: %v", opt, err)
+		}
+		e.wait()
+		st := e.step("network")
+		if st.State != Done || !strings.Contains(st.Reason, "Not needed") || st.Action != "" {
+			t.Errorf("option %q: %+v", opt, st)
+		}
+		for _, c := range e.cmd.calls {
+			if len(c) > 1 && c[1] == "network" {
+				t.Errorf("option %q: a network command ran: %v", opt, c)
+			}
+		}
+		if e.cfg.Network != "default" || e.cfg.ProxyListen != "127.0.0.1:3128" || e.cfg.ProxyVMHost != "host.example.com" {
+			t.Errorf("option %q: a setting changed: %+v", opt, e.cfg)
+		}
 	}
 }
 
@@ -289,7 +272,7 @@ func TestRunAllStopsAtTheFirstStepThatNeedsTheUser(t *testing.T) {
 	}
 }
 
-// allEnv is a Mac with the container tool installed and the network made, a stopped service, no image, and
+// allEnv is a Mac with the container tool installed, a stopped service, no image, and
 // a signed-in project: what "all" is allowed to finish.
 func allEnv(t *testing.T) *testEnv {
 	e := newTestEnv(t)
@@ -311,12 +294,12 @@ func allEnv(t *testing.T) *testEnv {
 	return e
 }
 
-// noPrivilegedCommand fails the test if "all" ran the installer, its downloads or the network creation.
+// noPrivilegedCommand fails the test if "all" ran the installer, its downloads or any network command.
 func noPrivilegedCommand(t *testing.T, e *testEnv) {
 	t.Helper()
 	for _, c := range e.cmd.calls {
 		j := strings.Join(c, " ")
-		if c[0] == "/usr/bin/osascript" || c[0] == "/usr/sbin/pkgutil" || strings.HasPrefix(j, "container network create") {
+		if c[0] == "/usr/bin/osascript" || c[0] == "/usr/sbin/pkgutil" || strings.HasPrefix(j, "container network") {
 			t.Errorf("a privileged command ran: %s", j)
 		}
 	}
@@ -347,7 +330,6 @@ func TestRunAllNeverRunsThePrivilegedSteps(t *testing.T) {
 	}{
 		"container missing": {func(e *testEnv) { e.m.version = "" }, "container", "1"},
 		"container older":   {func(e *testEnv) { e.m.version = "container CLI version 1.0.0 (build: release, commit: abc)\n" }, "container", "1"},
-		"network missing":   {func(e *testEnv) { e.m.network = "" }, "network", "3"},
 	} {
 		e := allEnv(t)
 		c.break_(e)
@@ -366,30 +348,10 @@ func TestRunAllNeverRunsThePrivilegedSteps(t *testing.T) {
 	}
 }
 
-// The tool or the network goes away between the plugin's check and Home's run, or while "all" runs.
+// The tool goes away between the plugin's check and Home's run, or while "all" runs.
 func TestRunAllStopsWhenAPrivilegedStepRegressesMidRun(t *testing.T) {
 	e := allEnv(t)
 	prev := e.m.extra
-	e.m.extra = func(argv []string) ([]byte, error, bool) {
-		if len(argv) > 1 && argv[1] == "build" { // the network disappears while the image builds
-			e.m.image = true
-			e.m.network = ""
-			return []byte("built"), nil, true
-		}
-		return prev(argv)
-	}
-	e.op("run", map[string]any{"step": "all"})
-	e.wait()
-	if st := e.step("network"); st.State != NeedsUser || !strings.Contains(st.Reason, "needs step 3 (asks for approval)") {
-		t.Errorf("network: %+v", st)
-	}
-	if len(e.ag.box.execs) != 0 {
-		t.Errorf("the sign-in or the self-test started: %v", e.ag.box.execs)
-	}
-	noPrivilegedCommand(t, e)
-
-	e = allEnv(t)
-	prev = e.m.extra
 	e.m.extra = func(argv []string) ([]byte, error, bool) {
 		if len(argv) > 2 && argv[1] == "system" && argv[2] == "start" { // the tool is removed as the service starts
 			e.m.version = ""
@@ -407,46 +369,6 @@ func TestRunAllStopsWhenAPrivilegedStepRegressesMidRun(t *testing.T) {
 		t.Error("the image was built after the tool went away")
 	}
 	noPrivilegedCommand(t, e)
-}
-
-func TestAutoAddressNeverCreatesTheNetwork(t *testing.T) {
-	e := newTestEnv(t)
-	e.ready()
-	e.m.network = ""
-	e.cfg.ProxyListen, e.cfg.ProxyVMHost = "127.0.0.1:3128", "host.example.com"
-	// refused right away, and if it got through, the job would still not create anything
-	if _, err := e.op("run", map[string]any{"step": "network", "option": "auto-address"}); err == nil || !strings.Contains(err.Error(), "its own approval") {
-		t.Fatalf("run: %v", err)
-	}
-	j, ctx, err := e.s.begin(StepNetwork, agentProject())
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := e.s.runNetwork(ctx, j, true)
-	e.s.release(j)
-	if out.State != Failed || !strings.Contains(out.Reason, "needs its own approval") {
-		t.Errorf("job: %+v", out)
-	}
-	if e.cmd.ran("container", "network", "create") != 0 || e.cfg.ProxyListen == "" || e.cfg.ProxyVMHost == "" {
-		t.Errorf("something changed: %v %+v", e.cmd.calls, e.cfg)
-	}
-	// an existing host-only network: the addresses are cleared
-	e.m.network = internalNet(t)
-	if _, err := e.op("run", map[string]any{"step": "network", "option": "auto-address"}); err != nil {
-		t.Fatal(err)
-	}
-	e.wait()
-	if e.cfg.ProxyListen != "" || e.cfg.ProxyVMHost != "" || e.step("network").State != Done || e.cmd.ran("container", "network", "create") != 0 {
-		t.Errorf("%+v", e.cfg)
-	}
-	// a network that isn't host-only: nothing is cleared
-	e.cfg.Network, e.cfg.ProxyListen = "default", "127.0.0.1:3128"
-	e.m.network = defaultNet(t)
-	e.op("run", map[string]any{"step": "network", "option": "auto-address"})
-	e.wait()
-	if e.cfg.ProxyListen == "" || e.step("network").State != Failed {
-		t.Errorf("%+v %+v", e.cfg, e.step("network"))
-	}
 }
 
 func TestStatusJSONShape(t *testing.T) {

@@ -258,27 +258,76 @@ func TestHalfClose(t *testing.T) {
 	s.Close()
 }
 
-func TestCloseResetsThePeer(t *testing.T) {
+// Close is a graceful close: what was written before it is delivered, then the peer reads EOF. (A proxy answers a
+// refusal with a status line and closes; the status line must not be lost.)
+func TestCloseDeliversWhatWasWritten(t *testing.T) {
 	srv := make(chan *Stream, 1)
+	a, b := pair(t, Config{}, Config{OnOpen: func(_ byte, s *Stream) bool { srv <- s; return true }})
+	for i := 0; i < 50; i++ {
+		c, _ := a.Open(SvcProxy)
+		s := <-srv
+		s.Write([]byte("HTTP/1.1 403 Forbidden\r\n"))
+		s.Close() // straight after the write, before the peer reads
+		var got []byte
+		within(t, "read", 3*time.Second, func() { got, _ = io.ReadAll(c) })
+		if string(got) != "HTTP/1.1 403 Forbidden\r\n" {
+			t.Fatalf("round %d: read %q", i, got)
+		}
+		c.Close()
+	}
+	waitFor(t, func() bool { return a.Streams() == 0 && b.Streams() == 0 })
+}
+
+// After Close, what the peer still sends is refused with a RESET, and a peer that never closes is reset after the
+// linger.
+func TestDataAfterCloseIsResetAndTheLingerEnds(t *testing.T) {
+	old := closeLinger
+	closeLinger = 100 * time.Millisecond
+	defer func() { closeLinger = old }()
+	srv := make(chan *Stream, 2)
 	a, b := pair(t, Config{}, Config{OnOpen: func(_ byte, s *Stream) bool { srv <- s; return true }})
 	c, _ := a.Open(SvcProxy)
 	s := <-srv
-	c.Write([]byte("partial"))
-	c.Close()
-	buf := make([]byte, 100)
-	s.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, err := s.Read(buf)
-	if err != nil && !errors.Is(err, ErrReset) {
-		t.Fatalf("read after the peer's Close: %v", err)
+	s.Close()
+	waitFor(t, func() bool { _, err := c.Read(make([]byte, 1)); return err == io.EOF })
+	if _, err := c.Write([]byte("late")); err != nil {
+		t.Fatal(err) // c's own write side is still open
 	}
-	_, err = s.Read(buf)
-	if !errors.Is(err, ErrReset) {
-		t.Fatalf("expected a reset, got %v", err)
-	}
-	if _, err := s.Write([]byte("x")); !errors.Is(err, ErrReset) {
-		t.Fatalf("write on a reset stream: %v", err)
+	c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := c.Read(make([]byte, 1)); !errors.Is(err, ErrReset) && !errors.Is(err, io.EOF) {
+		t.Fatalf("after data to a closed stream: %v", err)
 	}
 	waitFor(t, func() bool { return a.Streams() == 0 && b.Streams() == 0 })
+
+	// the peer never closes: reset when the linger is over
+	c2, _ := a.Open(SvcProxy)
+	s2 := <-srv
+	s2.Close()
+	waitFor(t, func() bool { return b.Streams() == 0 })
+	if _, err := c2.Write([]byte("x")); err == nil {
+		// the stream may already be reset; either way it must end
+		c2.SetReadDeadline(time.Now().Add(3 * time.Second))
+		c2.Read(make([]byte, 1))
+	}
+	waitFor(t, func() bool { return a.Streams() == 0 })
+}
+
+// A RESET from the peer discards what was unread and fails reads and writes.
+func TestResetFromThePeer(t *testing.T) {
+	r := newRaw(t, Config{})
+	r.write(fr(tOpen, 1, SvcProxy))
+	s := <-r.opened
+	r.write(fr(tData, 1, 'a', 'b'), fr(tReset, 1))
+	waitFor(t, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.dead != nil })
+	if _, err := s.Read(make([]byte, 10)); !errors.Is(err, ErrReset) {
+		t.Fatalf("read after reset: %v", err)
+	}
+	if _, err := s.Write([]byte("x")); !errors.Is(err, ErrReset) {
+		t.Fatalf("write after reset: %v", err)
+	}
+	if r.m.Streams() != 0 {
+		t.Fatal("stream kept")
+	}
 }
 
 func TestOnOpenRefuses(t *testing.T) {

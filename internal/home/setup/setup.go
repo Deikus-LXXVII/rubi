@@ -1,5 +1,6 @@
 // Package setup is the button-only first-time setup of the agent path in Rubi Home (docs/design/
-// home-setup-wizard.md): Apple's container tool, its service, the host-only network, the runner image, the
+// home-setup-wizard.md): Apple's container tool, its service, the network step (no network is needed any more:
+// VMs run with none), the runner image, the
 // projects, each project's Claude sign-in and a self-test. Nothing is stored: every status call probes the
 // machine, and a job that was running when Rubi Home stopped is simply gone. Processes are started only
 // through Commander, so tests never run a real command.
@@ -33,7 +34,7 @@ var stepOrder = []string{StepContainer, StepService, StepNetwork, StepImage, Ste
 var stepTitles = map[string]string{
 	StepContainer: "Apple container",
 	StepService:   "Container service",
-	StepNetwork:   "Host-only network",
+	StepNetwork:   "VM network (none needed)",
 	StepImage:     "Runner image",
 	StepProjects:  "Projects",
 	StepLogin:     "Claude sign-in",
@@ -55,9 +56,9 @@ const MaxProjects = 20
 // Settings is the part of Rubi Home's configuration setup reads and changes.
 type Settings struct {
 	Projects    []string // agent_projects
-	Network     string   // agent_network
-	ProxyListen string   // agent_proxy_listen
-	ProxyVMHost string   // agent_proxy_vm_host
+	Network     string   // agent_network (obsolete: VMs have no network; read, never used)
+	ProxyListen string   // agent_proxy_listen (obsolete, as above)
+	ProxyVMHost string   // agent_proxy_vm_host (obsolete, as above)
 	RunnerDir   string   // agent_runner_dir
 }
 
@@ -177,13 +178,6 @@ func (s *Setup) mac() bool { return s.opt.GOOS == "darwin" }
 
 var errNotMac = errors.New("this works only on macOS")
 
-func (s *Setup) network() string {
-	if n := s.opt.Settings().Network; n != "" {
-		return n
-	}
-	return agent.DefaultNetwork
-}
-
 // ---- jobs ----
 
 var errBusy = errors.New("busy: another setup job is running")
@@ -265,7 +259,7 @@ const StepSignOut = "signout"
 
 // Run starts a step as a job. project is a project id (selftest, all; the first project when empty for
 // all; the sign-in is one for the whole computer and ignores it); method is "claudeai" (a Claude
-// subscription) for login (empty: only check); option is "auto-address" for the network step.
+// subscription) for login (empty: only check); option is "auto-address" for the network step (accepted and ignored: there is no address any more).
 func (s *Setup) Run(ctx context.Context, step, project, method, option string) error {
 	switch step {
 	case StepContainer, StepService, StepNetwork, StepImage, StepLogin, StepSignOut, StepSelfTest, "all":
@@ -294,11 +288,6 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 	if n := s.firstUnmet(ctx, needs(step)); n > 0 && step != "all" {
 		return fmt.Errorf("needs step %d first", n)
 	}
-	if step == StepNetwork && option == optAutoAddress {
-		if st := s.probeNetwork(ctx); st.State == Todo {
-			return errors.New("creating the network needs its own approval")
-		}
-	}
 	if step == StepSelfTest {
 		if st, errText, known := s.authProbe(ctx, true); !known || errText != "" || !st.SignedIn || st.Expired(s.opt.Now()) {
 			return fmt.Errorf("needs step %d first", 6)
@@ -316,7 +305,7 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 		case StepService:
 			s.record(jctx, step, "", j, s.runService(jctx, j))
 		case StepNetwork:
-			s.record(jctx, step, "", j, s.runNetwork(jctx, j, option == optAutoAddress))
+			s.record(jctx, step, "", j, s.runNetwork(jctx, j))
 		case StepImage:
 			s.record(jctx, step, "", j, s.runImage(jctx, j))
 		case StepLogin:
@@ -376,13 +365,13 @@ func clip(s string, n int) string {
 	return s
 }
 
-// privileged are the steps "all" never runs: installing the tool and creating the network each have their own
-// approval in the plugin, so "all" stops when one isn't done.
-var privileged = map[string]bool{StepContainer: true, StepNetwork: true}
+// privileged are the steps "all" never runs: installing the tool has its own approval in the plugin, so "all" stops
+// when it isn't done.
+var privileged = map[string]bool{StepContainer: true}
 
 // runAll runs the service and image steps, then the sign-in and the self-test for the project (the first when
 // none is named), skipping what is done. It stops at the first step that isn't done. It never installs the
-// container tool or creates the network: if either is missing, also if it goes missing while "all" runs, it stops
+// container tool: if it is missing, also if it goes missing while "all" runs, it stops
 // there ("needs step N (asks for approval)").
 func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method string) {
 	// gate checks that the steps up to and including n are done, now. A privileged one that isn't stops "all".

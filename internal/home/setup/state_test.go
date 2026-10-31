@@ -87,51 +87,25 @@ func TestServiceStep(t *testing.T) {
 	}
 }
 
-func TestNetworkStep(t *testing.T) {
+// The network step is "done: not needed" whatever the container tool has, even settings of the old host-only design.
+func TestNetworkStepIsNotNeeded(t *testing.T) {
 	e := newTestEnv(t)
 	e.ready()
-	if st := e.step("network"); st.State != Done || !strings.Contains(st.Reason, "192.168.128.1") {
-		t.Fatalf("host-only: %+v", st)
-	}
-	e.m.network = ""
-	if st := e.step("network"); st.State != Todo || st.Action != "create" {
-		t.Errorf("missing: %+v", st)
-	}
-	e.m.network = "[]"
-	if st := e.step("network"); st.State != Todo || st.Action != "create" {
-		t.Errorf("empty list: %+v", st)
-	}
-	// the default network has another name and mode: with agent_network = default it is refused, not changed
-	e.cfg.Network = "default"
-	e.m.network = defaultNet(t)
-	st := e.step("network")
-	if st.State != Failed || !strings.Contains(st.Reason, "Remove the network default or set another agent_network") || st.Action != "" {
-		t.Errorf("nat: %+v", st)
-	}
-	e.cfg.Network = ""
-	e.m.network = "garbage"
-	if st := e.step("network"); st.State != Failed {
-		t.Errorf("garbage: %+v", st)
-	}
-}
-
-func TestNetworkStepProxyAddress(t *testing.T) {
-	for _, c := range []struct {
-		listen, vm string
-		state      string
-	}{
-		{"", "", Done},
-		{"192.168.128.1:0", "", Done},
-		{"192.168.128.1:3128", "192.168.128.1", Done},
-		{"127.0.0.1:3128", "", NeedsUser},
-		{"", "host.example.com", NeedsUser},
-	} {
-		e := newTestEnv(t)
-		e.ready()
-		e.cfg.ProxyListen, e.cfg.ProxyVMHost = c.listen, c.vm
+	check := func(what string) {
+		t.Helper()
 		st := e.step("network")
-		if st.State != c.state || c.state == NeedsUser && st.Action != "use_auto_address" {
-			t.Errorf("%q %q: %+v", c.listen, c.vm, st)
+		if st.ID != "network" || st.State != Done || !strings.Contains(st.Reason, "Not needed") || st.Action != "" || st.Title != "VM network (none needed)" {
+			t.Errorf("%s: %+v", what, st)
+		}
+	}
+	check("a network exists")
+	e.m.network = ""
+	check("no network")
+	e.cfg.Network, e.cfg.ProxyListen, e.cfg.ProxyVMHost = "default", "127.0.0.1:3128", "host.example.com"
+	check("old settings")
+	for _, c := range e.cmd.calls {
+		if len(c) > 1 && c[1] == "network" {
+			t.Errorf("the step looked at a network: %v", c)
 		}
 	}
 }
