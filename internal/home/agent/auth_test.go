@@ -66,7 +66,7 @@ func TestAuthVolumeIsCreatedAndPreparedOnce(t *testing.T) {
 	if err := a.EnsureAuthVolume(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	init := strings.Join(f.find("run --rm --network rubi-agent --user 0"), " ")
+	init := strings.Join(f.find("run --rm --progress none --network rubi-agent --user 0"), " ")
 	for _, want := range []string{"--cap-drop ALL", "--cap-add CHOWN", "--cap-add FOWNER", "type=volume,source=rubi-agent-auth,target=/rubi-auth",
 		"mkdir -p /rubi-auth/token && chown 10001:10001 /rubi-auth/token && chmod 700 /rubi-auth/token"} {
 		if !strings.Contains(init, want) {
@@ -207,5 +207,19 @@ func TestStartAuthIsolatedAndProxyAllowsOnlySignInHosts(t *testing.T) {
 	s.Close()
 	if f.find("stop --time 2 rubi-agent-auth") == nil || f.find("delete --force rubi-agent-auth") == nil {
 		t.Errorf("not cleaned up: %v", f.cmds)
+	}
+}
+
+// Lines the container tool prints before the script's own (its progress) don't hide the answer.
+func TestParseAuthStatusSkipsToolOutput(t *testing.T) {
+	st, err := parseAuthStatus("[0/6] [0s]\n[6/6] Starting container [0s]\nSIGNED_IN\n{\"created\":\"2026-10-31T10:00:00Z\",\"expires\":\"2027-10-31T10:00:00Z\"}\n")
+	if err != nil || !st.SignedIn || st.Expires.Year() != 2027 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if st, err := parseAuthStatus("[0/6] [0s]\nNOT_SIGNED_IN\n"); err != nil || st.SignedIn {
+		t.Fatalf("%+v %v", st, err)
+	}
+	if _, err := parseAuthStatus("[0/6] [0s]\nsomething else\n"); err == nil {
+		t.Fatal("no marker was accepted")
 	}
 }

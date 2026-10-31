@@ -49,14 +49,14 @@ func (a *AppleContainer) authMount(readOnly bool) string {
 // authSh runs a shell script in a throwaway container: the runner image, as the runner's user, no
 // capabilities, a read-only root, the host-only network, the auth volume (read-only unless rw).
 func (a *AppleContainer) authSh(rw bool, script string) []string {
-	return []string{a.bin(), "run", "--rm", "--network", a.network(), "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
+	return []string{a.bin(), "run", "--rm", "--progress", "none", "--network", a.network(), "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
 		"--tmpfs", "/tmp", "--mount", a.authMount(!rw), "--entrypoint", "sh", a.image(), "-c", script}
 }
 
 // authInitArgs prepares a new volume: its root is owned by root, so a one-shot container as root (with only
 // the two capabilities chown needs) makes the token directory the runner's user owns.
 func (a *AppleContainer) authInitArgs() []string {
-	return []string{a.bin(), "run", "--rm", "--network", a.network(), "--user", "0", "--cap-drop", "ALL", "--cap-add", "CHOWN",
+	return []string{a.bin(), "run", "--rm", "--progress", "none", "--network", a.network(), "--user", "0", "--cap-drop", "ALL", "--cap-add", "CHOWN",
 		"--cap-add", "FOWNER", "--mount", a.authMount(false), "--entrypoint", "sh", a.image(), "-c",
 		"mkdir -p /rubi-auth/token && chown " + runnerUID + ":" + runnerUID + " /rubi-auth/token && chmod 700 /rubi-auth/token"}
 }
@@ -106,7 +106,18 @@ func (a *AppleContainer) AuthStatus(ctx context.Context) (AuthStatus, error) {
 }
 
 func parseAuthStatus(out string) (AuthStatus, error) {
-	lines := strings.SplitN(strings.TrimSpace(out), "\n", 2)
+	// The marker is the first line the script prints; anything the container tool printed before it is skipped.
+	all := strings.Split(strings.TrimSpace(out), "\n")
+	for i, l := range all {
+		if t := strings.TrimSpace(l); t == "SIGNED_IN" || t == "NOT_SIGNED_IN" {
+			all = all[i:]
+			break
+		}
+	}
+	lines := all
+	if len(lines) > 2 {
+		lines = []string{lines[0], strings.Join(lines[1:], "\n")}
+	}
 	switch strings.TrimSpace(lines[0]) {
 	case "NOT_SIGNED_IN":
 		return AuthStatus{}, nil
@@ -160,7 +171,7 @@ func (a *AppleContainer) StartAuth(ctx context.Context) (*AuthSession, error) {
 	}
 	del := []string{a.bin(), "delete", "--force", authContainer}
 	_, _ = a.do(ctx, del) // a leftover of a crash
-	run := []string{a.bin(), "run", "-d", "--name", authContainer, "--init", "--network", a.network(), "--user", runnerUID,
+	run := []string{a.bin(), "run", "-d", "--progress", "none", "--name", authContainer, "--init", "--network", a.network(), "--user", runnerUID,
 		"--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp", "--mount", a.authMount(false), "--entrypoint", "sleep", a.image(), "infinity"}
 	if _, err := a.do(ctx, run); err != nil {
 		return nil, err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,6 +34,28 @@ func TestLiveSetupStatus(t *testing.T) {
 		}
 		for h.Setup.Busy() && ctx.Err() == nil {
 			time.Sleep(2 * time.Second)
+		}
+	}
+	// RUBI_AGENT_LIVE_RUN=login-url starts the shared sign-in, waits for its link and cancels: no code is sent.
+	if os.Getenv("RUBI_AGENT_LIVE_RUN") == "login-url" {
+		if err := h.Setup.Run(ctx, "login", "", "claudeai", ""); err != nil {
+			t.Fatal(err)
+		}
+		url := ""
+		for i := 0; i < 90 && url == "" && h.Setup.Busy(); i++ {
+			time.Sleep(2 * time.Second)
+			if l := h.Setup.Status(ctx).Login; l != nil {
+				url = l.URL
+			}
+		}
+		h.Setup.Cancel()
+		for h.Setup.Busy() && ctx.Err() == nil {
+			time.Sleep(time.Second)
+		}
+		if !strings.HasPrefix(url, "https://claude.com/") {
+			t.Errorf("no sign-in link: %q", url)
+		} else {
+			t.Logf("sign-in link host ok (%d characters)", len(url))
 		}
 	}
 	b, _ := json.MarshalIndent(h.Setup.Status(ctx), "", "  ")
