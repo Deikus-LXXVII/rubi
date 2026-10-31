@@ -111,18 +111,58 @@ func (a *AppleContainer) network() string {
 var nameUnsafe = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // containerName is the container's id for a project: stable, so a leftover from a crash is found and
-// removed by the next start.
+// removed by the next start. A role's carries its id (never its name, which can change) and 64 bits of a hash of
+// dir|role.
 func containerName(p Project) string {
-	key, name := p.Dir, p.ID
-	if p.Role != "" { // one VM per role: the name carries the role's slug and a hash of dir|role
-		key, name = p.Dir+"|"+p.Role, p.RoleName
+	if p.Role != "" {
+		sum := sha256.Sum256([]byte(p.Dir + "|" + p.Role))
+		id := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(p.Role), "-"), "-")
+		if len(id) > 24 {
+			id = id[:24]
+		}
+		return "rubi-agent-" + id + "-" + hex.EncodeToString(sum[:8])
 	}
-	sum := sha256.Sum256([]byte(key))
-	slug := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(name), "-"), "-")
+	sum := sha256.Sum256([]byte(p.Dir))
+	slug := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(p.ID), "-"), "-")
 	if len(slug) > 24 {
 		slug = slug[:24]
 	}
 	return "rubi-agent-" + slug + "-" + hex.EncodeToString(sum[:4])
+}
+
+// oldRoleSuffix is the end of the names the first builds gave role containers (rubi-agent-<role name>-<8 hex of
+// dir|role>): the name could change, the suffix could not.
+func oldRoleSuffix(p Project) string {
+	sum := sha256.Sum256([]byte(p.Dir + "|" + p.Role))
+	return "-" + hex.EncodeToString(sum[:4])
+}
+
+// leftoverNames are the containers of this project and role that an earlier run or an earlier naming left behind:
+// the current name, and for a role the old-style names, whatever the role was called then.
+func (a *AppleContainer) leftoverNames(ctx context.Context, p Project) []string {
+	names := []string{containerName(p)}
+	if p.Role == "" {
+		return names
+	}
+	out, err := a.do(ctx, []string{a.bin(), "ls", "--all", "--format", "json"})
+	if err != nil {
+		return names
+	}
+	var rows []struct {
+		Configuration struct {
+			ID string `json:"id"`
+		} `json:"configuration"`
+	}
+	if json.Unmarshal(out, &rows) != nil {
+		return names
+	}
+	suffix := oldRoleSuffix(p)
+	for _, r := range rows {
+		if id := r.Configuration.ID; id != names[0] && strings.HasPrefix(id, "rubi-agent-") && strings.HasSuffix(id, suffix) {
+			names = append(names, id)
+		}
+	}
+	return names
 }
 
 // ImageTag is the tag of the runner image this VM runs.
@@ -422,7 +462,9 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	if err != nil {
 		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
 	}
-	_, _ = a.do(ctx, a.deleteArgs(spec.Project)) // a leftover of a crash
+	for _, n := range a.leftoverNames(ctx, spec.Project) { // a leftover of a crash, or of an older name
+		_, _ = a.do(ctx, []string{a.bin(), "delete", "--force", n})
+	}
 	if _, err := a.do(ctx, a.RunArgs(spec.Project)); err != nil {
 		return fail(err)
 	}

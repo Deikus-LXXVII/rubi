@@ -67,8 +67,14 @@ func TestAppleContainerRoleArgs(t *testing.T) {
 	}
 	r1, r2 := mk("r_aaaaaaaa", "visual-design"), mk("r_bbbbbbbb", "reviewer")
 	n1, n2 := containerName(r1), containerName(r2)
-	if !strings.HasPrefix(n1, "rubi-agent-visual-design-") || !strings.HasPrefix(n2, "rubi-agent-reviewer-") || n1 == n2 || n1 == containerName(legacy) {
+	if !strings.HasPrefix(n1, "rubi-agent-r-aaaaaaaa-") || !strings.HasPrefix(n2, "rubi-agent-r-bbbbbbbb-") || len(n1) != len("rubi-agent-r-aaaaaaaa-")+16 || n1 == n2 || n1 == containerName(legacy) {
 		t.Fatalf("names %q %q %q", n1, n2, containerName(legacy))
+	}
+	// A rename doesn't change the container.
+	renamed := r1
+	renamed.RoleName = "something-else"
+	if containerName(renamed) != n1 {
+		t.Fatal("the name follows the role's name")
 	}
 	// Same role, another directory: another container.
 	other := r1
@@ -411,5 +417,28 @@ func TestContainerBinPrefersTheInstalledOne(t *testing.T) {
 	installedBin = filepath.Join(dir, "missing")
 	if got := ContainerBin(); got != filepath.Join(other, "container") {
 		t.Errorf("fallback to PATH: %q", got)
+	}
+}
+
+// A role's leftovers are removed on start under the current name and under the old-style names, whatever the role
+// was called then; other containers are left alone.
+func TestAppleContainerRoleLeftovers(t *testing.T) {
+	p := Project{ID: "my-project", Dir: "/home/alice/my-project", Role: "r_aaaaaaaa", RoleName: "visual-design"}
+	old := "rubi-agent-old-name" + oldRoleSuffix(p)
+	other := "rubi-agent-old-name" + oldRoleSuffix(Project{Dir: p.Dir, Role: "r_bbbbbbbb"})
+	a := &AppleContainer{}
+	a.run = func(ctx context.Context, argv []string) ([]byte, error) {
+		if len(argv) > 1 && argv[1] == "ls" {
+			return []byte(`[{"configuration":{"id":"` + old + `"}},{"configuration":{"id":"` + other + `"}},{"configuration":{"id":"buildkit"}}]`), nil
+		}
+		return nil, nil
+	}
+	got := a.leftoverNames(context.Background(), p)
+	if !reflect.DeepEqual(got, []string{containerName(p), old}) {
+		t.Fatalf("leftovers %v", got)
+	}
+	// The legacy role has one name and asks the tool nothing.
+	if got := a.leftoverNames(context.Background(), Project{ID: "my-project", Dir: p.Dir}); len(got) != 1 {
+		t.Fatalf("legacy leftovers %v", got)
 	}
 }
