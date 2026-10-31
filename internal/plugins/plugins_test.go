@@ -40,25 +40,34 @@ func TestCheck(t *testing.T) {
 	if err := Check(&ok); err != nil {
 		t.Fatal(err)
 	}
-	home := manifest(t, `{"home":["hue","shortcuts","claude","claude-agent","agent-setup"]}`)
+	home := manifest(t, `{"home":["hue","shortcuts","claude","claude-sessions","claude-start"]}`)
 	if err := Check(&home); err != nil {
 		t.Fatalf("Rubi Home capabilities: %v", err)
 	}
+	// claude-agent and agent-setup are the official plugin's: its id and its publisher key.
+	official := manifest(t, `{"id":"`+OfficialPluginID+`","actions":[],"tools":[],"home":["claude-agent","agent-setup"],"publisher":{"name":"x","key":"`+OfficialPublisherKey+`"}}`)
+	if err := Check(&official); err != nil {
+		t.Fatalf("the official plugin: %v", err)
+	}
 	for name, patch := range map[string]string{
-		"unknown home capability": `{"home":["claude-desktop"]}`,
-		"reserved id":             `{"id":"rubi-core"}`,
-		"bad id":                  `{"id":"Demo!"}`,
-		"foreign action":          `{"actions":[{"kind":"other.send","title":"Send","default_level":"none"}]}`,
-		"core action":             `{"actions":[{"kind":"rubi.settings","title":"x","default_level":"none"}]}`,
-		"foreign tool":            `{"tools":[{"name":"rubi_lock","description":"d","input_schema":{"type":"object"}}]}`,
-		"bad level":               `{"actions":[{"kind":"demo.x","title":"x","default_level":"maybe"}]}`,
-		"entry escapes":           `{"entry":"../../bin/sh"}`,
-		"absolute entry":          `{"entry":"/bin/sh"}`,
-		"unknown api":             `{"api":2}`,
-		"bad key":                 `{"publisher":{"name":"x","key":"aGVsbG8="}}`,
-		"bad version":             `{"version":"latest"}`,
-		"tool without schema":     `{"tools":[{"name":"demo_x","description":"d","input_schema":{"type":"string"}}]}`,
-		"duplicate secret key":    `{"secrets":[{"key":"a","label":"A"},{"key":"a","label":"B"}]}`,
+		"unknown home capability":  `{"home":["claude-desktop"]}`,
+		"third party claude-agent": `{"home":["claude-agent"]}`,
+		"third party agent-setup":  `{"home":["agent-setup"]}`,
+		"imitation id, own key":    `{"id":"` + OfficialPluginID + `","actions":[],"tools":[],"home":["claude-agent"],"publisher":{"name":"x","key":"MCowBQYDK2VwAyEAkG4bjWz38ru0Wpsihr0VVFTAMPjRvK8darUtybopFdk="}}`,
+		"official key, other id":   `{"home":["agent-setup"],"publisher":{"name":"x","key":"` + OfficialPublisherKey + `"}}`,
+		"reserved id":              `{"id":"rubi-core"}`,
+		"bad id":                   `{"id":"Demo!"}`,
+		"foreign action":           `{"actions":[{"kind":"other.send","title":"Send","default_level":"none"}]}`,
+		"core action":              `{"actions":[{"kind":"rubi.settings","title":"x","default_level":"none"}]}`,
+		"foreign tool":             `{"tools":[{"name":"rubi_lock","description":"d","input_schema":{"type":"object"}}]}`,
+		"bad level":                `{"actions":[{"kind":"demo.x","title":"x","default_level":"maybe"}]}`,
+		"entry escapes":            `{"entry":"../../bin/sh"}`,
+		"absolute entry":           `{"entry":"/bin/sh"}`,
+		"unknown api":              `{"api":2}`,
+		"bad key":                  `{"publisher":{"name":"x","key":"aGVsbG8="}}`,
+		"bad version":              `{"version":"latest"}`,
+		"tool without schema":      `{"tools":[{"name":"demo_x","description":"d","input_schema":{"type":"string"}}]}`,
+		"duplicate secret key":     `{"secrets":[{"key":"a","label":"A"},{"key":"a","label":"B"}]}`,
 	} {
 		m := manifest(t, patch)
 		if err := Check(&m); err == nil {
@@ -182,5 +191,17 @@ func TestTrustUsesTheVerifiedManifest(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "demo"), []byte("#!/bin/sh\necho hi\n"), 0o755)
 	if _, err := s.Trust("demo", "v1.0.0", tree); err == nil {
 		t.Fatal("modified files trusted")
+	}
+}
+
+// The refusal of a reserved capability is for that reason, not another one in the manifest.
+func TestReservedHomeCapabilityReason(t *testing.T) {
+	m := manifest(t, `{"home":["claude-agent"]}`)
+	if err := Check(&m); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("%v", err)
+	}
+	m = manifest(t, `{"id":"`+OfficialPluginID+`","actions":[],"tools":[],"home":["claude-agent"],"publisher":{"name":"x","key":"MCowBQYDK2VwAyEAkG4bjWz38ru0Wpsihr0VVFTAMPjRvK8darUtybopFdk="}}`)
+	if err := Check(&m); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("%v", err)
 	}
 }

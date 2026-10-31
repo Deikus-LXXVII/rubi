@@ -68,6 +68,9 @@ type Core struct {
 	// their local receiver.
 	BotWebhookOK func(rawURL string) bool
 
+	execMu sync.Mutex
+	execs  map[string][]*execGrant // approvals whose execute is running, by plugin (homegate.go)
+
 	mu             sync.Mutex
 	paired         bool
 	downgradedFrom string // see checkDowngrade

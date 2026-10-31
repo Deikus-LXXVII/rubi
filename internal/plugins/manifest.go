@@ -26,6 +26,20 @@ var (
 	toolPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
+// OfficialPluginID and OfficialPublisherKey identify the one plugin that may declare the reserved Rubi Home
+// capabilities: the Rubi-Project claude-code plugin, signed with the Rubi-Project plugin key (public half, base64
+// SubjectPublicKeyInfo). The capabilities are reserved because Rubi Home trusts what comes through them (it checks
+// no approval itself; core gates the ids, see core/homegate.go), so a third-party plugin must not get them. A var
+// only so tests can stand in another key.
+var (
+	OfficialPluginID     = "claude-code"
+	OfficialPublisherKey = "MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="
+)
+
+// ReservedHomeCapability lists the Rubi Home capabilities only the official plugin may declare: running agents in
+// a VM (roles, SSH targets, MCP servers) and setting up that path (installing software, creating networks).
+var ReservedHomeCapability = map[string]bool{"claude-agent": true, "agent-setup": true}
+
 // Check enforces the manifest rules: valid id, everything in the plugin's own namespace, a usable key.
 var panelPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
@@ -112,6 +126,9 @@ func Check(m *Manifest) error {
 		}
 	}
 	for _, h := range m.Home {
+		if ReservedHomeCapability[h] && (m.ID != OfficialPluginID || strings.TrimSpace(m.Publisher.Key) != OfficialPublisherKey) {
+			return fmt.Errorf("the Rubi Home capability %q is reserved for the official %s plugin", h, OfficialPluginID)
+		}
 		if h != "hue" && h != "shortcuts" && h != "claude" && h != "claude-sessions" && h != "claude-start" && h != "claude-agent" && h != "agent-setup" {
 			return fmt.Errorf("unknown Rubi Home capability %q", h)
 		}

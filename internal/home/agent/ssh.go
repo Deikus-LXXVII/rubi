@@ -80,7 +80,8 @@ func decodeStrict(args json.RawMessage, v any) error {
 }
 
 // sshOp serves ssh.scan, ssh.register, ssh.list, ssh.remove and ssh.audit (op without the "claude-agent." prefix).
-// The plugin gates them; Home does not decide who may call them.
+// Home does not decide who may call them: core (homegate.go) attests ssh.register against the user's approval, and
+// only the official plugin may declare the capability.
 func (m *Manager) sshOp(ctx context.Context, op string, args json.RawMessage) (any, error) {
 	if m.ssh == nil {
 		return nil, errors.New("SSH targets aren't available here")

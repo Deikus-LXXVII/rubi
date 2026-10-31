@@ -204,6 +204,9 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 	if !ok {
 		return nil, fmt.Errorf("the manifest doesn't allow Rubi Home operation %q", op)
 	}
+	if err := c.attestHomeCall(plugin, op, args); err != nil {
+		return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeFailed, Message: err.Error()}
+	}
 	dev, err := c.device(ref)
 	if err != nil {
 		return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeNotPaired, Message: err.Error()}
