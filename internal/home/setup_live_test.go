@@ -264,7 +264,7 @@ func TestLiveSSH(t *testing.T) {
 		_ = c.CloseWrite()
 		out, _ := io.ReadAll(io.LimitReader(c, 1<<20))
 		_ = c.Close()
-		t.Logf("%s -> %q", script, out)
+		t.Logf("%s -> %q", script, liveRedact(string(out)))
 		return string(out)
 	}
 	if out := run("command -v ssh; command -v rubi-ssh", ""); !strings.Contains(out, "rubi/bin/ssh") || !strings.Contains(out, "/rubi-ssh") {
@@ -291,10 +291,23 @@ func TestLiveSSH(t *testing.T) {
 		}
 	}
 	// The VM holds no key and no host: nothing of the target in the VM's files or environment.
-	if out := run("env; ls -la /tmp", ""); strings.Contains(out, "id_") || strings.Contains(out, "agent-ssh") {
+	// Names only: the environment holds the per-start proxy and gateway secrets, which must not reach the log.
+	if out := run("env | cut -d= -f1; ls -la /tmp", ""); strings.Contains(out, "id_") || strings.Contains(out, "agent-ssh") {
 		t.Errorf("key material in the VM: %q", out)
 	}
 	if got := len(srv.Commands()); got != 3 {
 		t.Errorf("the server ran %d commands, want 3 (echo hi, exit 7, cat): %v", got, srv.Commands())
 	}
+}
+
+// liveRedact drops the lines of a VM's output that look like secrets (the per-start proxy or gateway secrets).
+func liveRedact(out string) string {
+	var keep []string
+	for _, l := range strings.Split(out, "\n") {
+		if agent.LooksSecret(l) {
+			l = "[line dropped: looks like a secret]"
+		}
+		keep = append(keep, l)
+	}
+	return strings.Join(keep, "\n")
 }
