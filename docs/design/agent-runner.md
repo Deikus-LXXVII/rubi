@@ -33,8 +33,8 @@ Home -> runner (requests):
 |---|---|---|
 | `session.list` | `{}` | `{sessions:[{id, name, created, last_activity, mode, busy}]}` (SDK `listSessions`, cwd `/work`) |
 | `session.messages` | `{id, limit?}` | `{messages:[...]}` (SDK `getSessionMessages`) |
-| `session.start` | `{prompt, name?, from?, mode}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option); `name` becomes the SDK `title` (no automatic title request) |
-| `session.send` | `{id, text, from?, steer?}` | `{queued:true, delivered}`: into the live query's input queue; `steer:true` = `priority:"now"`, `delivered:true`; without `steer` while a turn runs the runner holds the message and hands it to the SDK at the turn's `result` (`delivered:false`; the SDK never answers a mid-turn message of default priority); a session the runner does not hold -> `resume` |
+| `session.start` | `{prompt, name?, from?, mode, max_subagents?}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option); `name` becomes the SDK `title` (no automatic title request) |
+| `session.send` | `{id, text, from?, steer?, max_subagents?}` | `{queued:true, delivered}`: into the live query's input queue; `steer:true` = `priority:"now"`, `delivered:true`; without `steer` while a turn runs the runner holds the message and hands it to the SDK at the turn's `result` (`delivered:false`; the SDK never answers a mid-turn message of default priority); a session the runner does not hold -> `resume` |
 | `session.rename` | `{id, name}` | `{ok}` (`renameSession`) |
 | `session.fork` | `{id, name?}` | `{id}` (`forkSession`, then idle until sent to) |
 | `session.interrupt` | `{id}` | `{ok}` |
@@ -144,5 +144,20 @@ mode no approval, to a looser one strong (passkey). Sisters: bind/send/replies a
 Runner -> Home request `git.credential {op: get|store|erase, input, purpose?: "push"}` -> `{output}` (the runner relays
 the in-VM `git-credential-rubi`). Home -> plugin `next` items besides `perm.ask`: `cred.ask {host, path, op:"push"}` (a push
 credential), `net.ask {host}` (a host not on the proxy's list), `queue {action, queue_id}`; all answered with `decide`.
+Subagent cap. `max_subagents` (an integer, 0 or absent = no cap) is the most subagents one session may run at once
+(Home sends the cap of the Bot that owns the session). The runner counts a session's running subagents as its
+background tasks plus its `Agent`/`Task` calls that passed the gate and have no tool result yet (also those of
+subagents, so the count is the whole tree), and reports a change with an event `subagents {count}`. The
+`PreToolUse` gate for `Agent` and `Task` **waits** (never denies) while the count is at the cap: it sends
+`waiting {reason, tool_use_id}` ("waiting: this session already has N subagents running, the limit"), and when
+the call goes on `waiting {reason:"", done:true, tool_use_id}`. The gate runs before the ask, so the user is
+asked only when the subagent can start. The SDK's hook timeout would otherwise end the wait: the hook's timeout
+is `hookTimeoutSec` plus the longest wait, `subagentWaitSec` (default 6 h; the ask keeps its own 295 s
+limit). After the longest wait, or if the session is closed or the call interrupted, the call is denied with a
+reason the model sees (and an `error` event), never silently. The cap is read at `session.start`; a
+`session.send` to a session with no turn, task or call running takes the cap it brings, a running one keeps its
+own. `session.fork` copies the cap of the source. Raising or lowering a mode kills nothing: running subagents
+finish, new ones wait. Counting is approximate for a moment around a background launch (the tool result and the
+task start are two messages).
 Slot events (each session holds one slot; limits in `rubi-home.md`, "Slots"): `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
 `docs/design/rubi-home.md` ("Agents in a VM").

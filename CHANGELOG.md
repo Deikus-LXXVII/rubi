@@ -12,6 +12,16 @@
   idle interrupt, per slot). `claude-agent.status` has `slots` and `limits` (and still `slot`, the first busy
   one, for older plugins); `claude-agent.projects` rows add `sessions_running`, and `slot_busy` means the
   project's slots are full.
+- **Rubi Home and runner: usage modes per Bot, and a cap on subagents.** Each Bot has a mode, `maximum` (no cap),
+  `medium` (the default: 4 sessions, 4 subagents per session) or `light` (1 session, 2 subagents per session); its
+  limits apply to the sessions it started only. `agent_default_mode` is for new Bots and for the sessions the user
+  starts from the panel; `agent_bot_modes` holds each Bot's; `agent_max_sessions_per_project`, `agent_max_sessions`
+  (now the cap on the whole computer, default 16) and the new `agent_max_subagents_per_session` override. Only the
+  user changes a mode: `claude-agent.usage_mode {mode, bot | default | all}` is for the plugin's panel and has no Bot
+  tool. A change applies to new starts; nothing running is killed. `claude-agent.start` and `send` take `bot`;
+  `status` reports `usage` with each Bot's mode and live counters. The runner takes `max_subagents` in
+  `session.start`/`send` and makes the `Agent`/`Task` gate wait (event `waiting`, count in `subagents`) while a session
+  has its cap running, with a longer SDK hook timeout; after 6 h of waiting the call is denied with a reason.
 
 - **Rubi Home: `claude-agent.*` operations and the Mac side of the Agent SDK runner (milestone M2).** A new Home
   capability, `claude-agent` (shown on the install screen as running Claude agents in a virtual machine on
