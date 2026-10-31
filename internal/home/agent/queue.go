@@ -36,6 +36,7 @@ type QueueItem struct {
 	ID      string    `json:"id"`
 	Op      string    `json:"op"` // "start" or "send"
 	Project string    `json:"project"`
+	Bot     string    `json:"bot,omitempty"` // the Bot that sent it ("" = the user)
 	Session string    `json:"session,omitempty"`
 	Text    string    `json:"text"`
 	Name    string    `json:"name,omitempty"`

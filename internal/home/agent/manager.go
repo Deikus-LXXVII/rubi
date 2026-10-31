@@ -63,11 +63,13 @@ type Options struct {
 	AllowedHosts    func() []string
 	NoDefaultForges func() bool
 	AllowBypass     func() bool
-	// Usage is the usage mode and the raw limits (agent_usage_mode, agent_max_sessions_per_project,
-	// agent_max_sessions, agent_max_subagents_per_session); nil means the medium mode. SetUsageMode saves a
-	// new mode (the user's choice from the plugin's panel); nil means it can't be changed.
-	Usage        func() UsageConfig
-	SetUsageMode func(mode string) error
+	// Usage is the usage modes and raw limits (agent_default_mode, agent_bot_modes,
+	// agent_max_sessions_per_project, agent_max_sessions, agent_max_subagents_per_session); nil means
+	// medium for everyone. SetUsage saves a change of mode (the user's choice from the plugin's panel) and
+	// SeeBot records a Bot met for the first time with the default mode; nil means no change is possible.
+	Usage    func() UsageConfig
+	SetUsage func(UsageChange) error
+	SeeBot   func(id string)
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
 	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it. An
@@ -109,6 +111,7 @@ type Item struct {
 
 // slotState is one running top-level session (a slot in use). Subagents and forks inside it don't count.
 type slotState struct {
+	bot     string // the Bot that started the session ("" = the user, from the panel)
 	project string
 	session string          // "" while a start hasn't got its session id yet
 	turn    bool            // a turn is running
@@ -741,19 +744,12 @@ func (m *Manager) credential(ctx context.Context, p *projState, c CredParams) (C
 
 // ---- events and the slots ----
 
-// limitsNow is the limits in force, read at each use so a change applies to the next start.
-func (m *Manager) limitsNow() Limits {
-	var c UsageConfig
+// usageNow is the usage configuration, read at each use so a change applies to the next start.
+func (m *Manager) usageNow() UsageConfig {
 	if m.opt.Usage != nil {
-		c = m.opt.Usage()
+		return m.opt.Usage()
 	}
-	return ResolveUsage(c)
-}
-
-// limits are the slot limits in force: sessions per project (at least 1) and in total (0 = no cap).
-func (m *Manager) limits() (perProject, total int) {
-	l := m.limitsNow()
-	return l.PerProject, l.Total
+	return UsageConfig{}
 }
 
 func sessions(n int) string {
@@ -763,28 +759,39 @@ func sessions(n int) string {
 	return fmt.Sprintf("%d sessions", n)
 }
 
-// fullLocked says why a new top-level session in the project can't run now ("" when it can): the project
-// has its sessions already, or the computer does. A start also waits while another start of the project
-// hasn't got its session id, so an event is never matched to the wrong one.
-func (m *Manager) fullLocked(project string, start bool) string {
-	per, total := m.limits()
-	n, pending := 0, false
+func botName(bot string) string {
+	if bot == "" {
+		return "your panel sessions"
+	}
+	return "bot " + bot
+}
+
+// fullLocked says why a new top-level session of the Bot in the project can't run now ("" when it can):
+// the project has its sessions already, the Bot has (its mode's limit), or the computer has. A start also
+// waits while another start of the project hasn't got its session id, so an event is never matched to the
+// wrong one.
+func (m *Manager) fullLocked(project, bot string, start bool) string {
+	c := m.usageNow()
+	l := c.For(bot)
+	n, nb, pending := 0, 0, false
 	for _, s := range m.slots {
 		if s.project == project {
 			n++
 			pending = pending || s.session == ""
 		}
+		if s.bot == bot {
+			nb++
+		}
 	}
 	switch {
 	case start && pending:
 		return "waiting: project " + project + " is still starting a session"
-	case n >= per:
+	case n >= l.PerProject:
 		return "waiting: project " + project + " already has " + sessions(n)
-	case total > 0 && len(m.slots) >= total:
-		if len(m.slots) == 1 {
-			return "waiting: 1 session is running, the limit"
-		}
-		return fmt.Sprintf("waiting: %d sessions are running, the limit", len(m.slots))
+	case l.Sessions > 0 && nb >= l.Sessions:
+		return fmt.Sprintf("waiting: %s already has %s, the limit of its %s mode", botName(bot), sessions(nb), l.Mode)
+	case c.Machine() > 0 && len(m.slots) >= c.Machine():
+		return fmt.Sprintf("waiting: %s are running on this computer, the limit", sessions(len(m.slots)))
 	}
 	return ""
 }
@@ -830,7 +837,7 @@ func (m *Manager) reasonLocked(it QueueItem) (reason string, owner *slotState) {
 			return "", s
 		}
 	}
-	return m.fullLocked(it.Project, it.Op == "start"), nil
+	return m.fullLocked(it.Project, it.Bot, it.Op == "start"), nil
 }
 
 // runnableLocked says whether some queued item could be delivered now (a drain is then due).
@@ -895,7 +902,7 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 		switch f.Status {
 		case "busy":
 			if s == nil {
-				if m.fullLocked(p.ID, false) == "" {
+				if m.fullLocked(p.ID, "", false) == "" {
 					m.slots = append(m.slots, &slotState{project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()})
 				}
 			} else {
@@ -1042,7 +1049,7 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 
 // takeSlotLocked books a slot for a start or a send (the caller checked there is room).
 func (m *Manager) takeSlotLocked(it QueueItem) *slotState {
-	s := &slotState{project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+	s := &slotState{bot: it.Bot, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
 	m.slots = append(m.slots, s)
 	return s
 }
@@ -1059,7 +1066,7 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 			ID string `json:"id"`
 		}
 		err := r.Call(ctx, "session.start", map[string]any{"prompt": it.Text, "name": it.Name, "from": it.From, "mode": it.Mode,
-			"max_subagents": m.limitsNow().Subagents}, &res)
+			"max_subagents": m.usageNow().For(it.Bot).Subagents}, &res)
 		if err != nil {
 			return nil, err
 		}
@@ -1072,7 +1079,7 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 	default:
 		var res json.RawMessage
 		err := r.Call(ctx, "session.send", map[string]any{"id": it.Session, "text": it.Text, "from": it.From, "steer": it.Steer,
-			"max_subagents": m.limitsNow().Subagents}, &res)
+			"max_subagents": m.usageNow().For(it.Bot).Subagents}, &res)
 		if err != nil {
 			return nil, err
 		}
@@ -1154,6 +1161,21 @@ func (m *Manager) drain() {
 
 var modes = map[string]bool{"default": true, "acceptEdits": true, "plan": true, "bypassPermissions": true, "dontAsk": true}
 
+var botRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$`)
+
+// okBot accepts a Bot id (a stable name the plugin gives) or "" (the user's own).
+func okBot(s string) bool { return s == "" || botRE.MatchString(s) }
+
+// seeBot records a Bot met for the first time (it gets the default mode, and the panel lists it).
+func (m *Manager) seeBot(bot string) {
+	if bot == "" || m.opt.SeeBot == nil {
+		return
+	}
+	if _, ok := m.usageNow().Bots[bot]; !ok {
+		m.opt.SeeBot(bot)
+	}
+}
+
 func okID(s string) bool { return idRE.MatchString(s) }
 
 // Handle serves one claude-agent.* operation.
@@ -1171,6 +1193,9 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		Probe       bool            `json:"probe"`
 		WaitSeconds int             `json:"wait_seconds"`
 		AskID       string          `json:"ask_id"`
+		Bot         string          `json:"bot"`
+		Default     bool            `json:"default"`
+		All         bool            `json:"all"`
 		Behavior    string          `json:"behavior"`
 		Message     string          `json:"message"`
 		Updated     json.RawMessage `json:"updated_input"`
@@ -1196,14 +1221,25 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 	case "status":
 		return m.opStatus(ctx, in.Probe), nil
 	case "usage_mode":
-		// The user's switch: the plugin offers it only on its panel, never as a Bot tool.
-		if !validMode(in.Mode) {
-			return nil, fmt.Errorf("unknown usage mode %q", clip(in.Mode, 32))
+		// The user's switch: the plugin offers it only on its panel, never as a Bot tool. One of: bot (one
+		// Bot), default (the default for new Bots and the user's own sessions), all (every known Bot and
+		// the default).
+		ch := UsageChange{Mode: in.Mode, Bot: in.Bot, Default: in.Default, All: in.All}
+		n := 0
+		for _, set := range []bool{in.Bot != "", in.Default, in.All} {
+			if set {
+				n++
+			}
 		}
-		if m.opt.SetUsageMode == nil {
+		switch {
+		case !validMode(in.Mode):
+			return nil, fmt.Errorf("unknown usage mode %q", clip(in.Mode, 32))
+		case n != 1 || !okBot(in.Bot):
+			return nil, errors.New("say which: one bot, the default, or all")
+		case m.opt.SetUsage == nil:
 			return nil, errors.New("the usage mode can't be changed here")
 		}
-		if err := m.opt.SetUsageMode(in.Mode); err != nil {
+		if err := m.opt.SetUsage(ch); err != nil {
 			return nil, err
 		}
 		m.wake() // a raised limit may let the queue go
@@ -1223,7 +1259,11 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if err != nil {
 			return nil, err
 		}
-		return m.submit(ctx, QueueItem{Op: "start", Project: in.Project, Text: in.Prompt, Name: in.Name, From: in.From, Mode: mode})
+		if !okBot(in.Bot) {
+			return nil, errors.New("bad bot id")
+		}
+		m.seeBot(in.Bot)
+		return m.submit(ctx, QueueItem{Op: "start", Bot: in.Bot, Project: in.Project, Text: in.Prompt, Name: in.Name, From: in.From, Mode: mode})
 	case "send":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
@@ -1231,7 +1271,11 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if strings.TrimSpace(in.Text) == "" {
 			return nil, errors.New("the text is empty")
 		}
-		return m.submit(ctx, QueueItem{Op: "send", Project: in.Project, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
+		if !okBot(in.Bot) {
+			return nil, errors.New("bad bot id")
+		}
+		m.seeBot(in.Bot)
+		return m.submit(ctx, QueueItem{Op: "send", Bot: in.Bot, Project: in.Project, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
 	case "rename":
 		if !okID(in.ID) || strings.TrimSpace(in.Name) == "" {
 			return nil, errors.New("a session id and a name are needed")
@@ -1324,7 +1368,7 @@ func (m *Manager) opProjects() any {
 		if ps := m.projs[p.ID]; ps != nil && ps.Dir == p.Dir && ps.vm != nil {
 			r.VMState = ps.vm.State()
 		}
-		per, _ := m.limits()
+		per := m.usageNow().For("").PerProject
 		for _, s := range m.slots {
 			if s.project == p.ID {
 				r.Running++
@@ -1345,14 +1389,15 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 	m.mu.Lock()
 	slots := []map[string]any{}
 	for _, s := range m.slots {
-		slots = append(slots, map[string]any{"project": s.project, "session": s.session, "busy": true, "background": len(s.bg), "subagents": s.sub})
+		slots = append(slots, map[string]any{"project": s.project, "session": s.session, "busy": true, "background": len(s.bg), "subagents": s.sub, "bot": s.bot})
 	}
 	slot := map[string]any{"busy": false, "project": "", "session": "", "background": 0} // for older plugins: the first
 	if len(slots) > 0 {
 		slot = slots[0]
 	}
-	lim := m.limitsNow()
-	per, total := lim.PerProject, lim.Total
+	uc := m.usageNow()
+	def := uc.For("")
+	bots := m.botRowsLocked(uc)
 	reasons := map[string]string{}
 	waiting := m.q.list()
 	for _, it := range waiting {
@@ -1374,9 +1419,35 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 		login = json.RawMessage("null")
 	}
 	return map[string]any{"login": login, "slot": slot, "slots": slots,
-		"limits":           map[string]any{"per_project": per, "total": total, "subagents_per_session": lim.Subagents},
-		"usage":            map[string]any{"mode": lim.Mode, "custom": lim.Custom, "modes": UsageModes},
+		"limits":           map[string]any{"per_project": def.PerProject, "total": uc.Machine()},
+		"usage":            map[string]any{"default": def.Mode, "modes": UsageModes, "bots": bots},
 		"sessions_running": len(slots), "queue": queue, "usage_today": usage}
+}
+
+// botRowsLocked is one row per Bot known (listed in the configuration or running something), with its mode,
+// its limits and what it runs now. The user's own sessions (id "") show when they run.
+func (m *Manager) botRowsLocked(c UsageConfig) []map[string]any {
+	ids := map[string]bool{}
+	for id := range c.Bots {
+		ids[id] = true
+	}
+	running := map[string]int{}
+	for _, s := range m.slots {
+		ids[s.bot] = true
+		running[s.bot]++
+	}
+	var sorted []string
+	for id := range ids {
+		sorted = append(sorted, id)
+	}
+	sort.Strings(sorted)
+	rows := []map[string]any{}
+	for _, id := range sorted {
+		l := c.For(id)
+		rows = append(rows, map[string]any{"id": id, "mode": l.Mode, "custom": l.Custom, "sessions_running": running[id],
+			"sessions_limit": l.Sessions, "subagents_per_session": l.Subagents})
+	}
+	return rows
 }
 
 // probe asks a running runner for the login state (usage.probe spends no tokens); it never starts a VM.

@@ -303,26 +303,47 @@ func TestWatchBeats(t *testing.T) {
 func TestAgentUsageConfig(t *testing.T) {
 	zero, five, neg := 0, 5, -1
 	for _, c := range []struct {
-		cfg        Config
-		per, total int
-		subs       int
-		mode       string
-		custom     bool
+		cfg       Config
+		bot       string
+		per, subs int
+		sessions  int // the Bot's
+		machine   int
+		mode      string
+		custom    bool
 	}{
-		{Config{}, 1, 4, 4, "medium", false}, // the defaults
-		{Config{AgentUsageMode: "light"}, 1, 1, 2, "light", false},
-		{Config{AgentUsageMode: "maximum"}, 1, 0, 0, "maximum", false},
-		{Config{AgentUsageMode: "nonsense"}, 1, 4, 4, "medium", false},
-		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, 2, 5, 4, "medium", true},
-		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, 1, 0, 4, "medium", true}, // 0 = no cap
-		{Config{AgentMaxSessions: &neg}, 1, 4, 4, "medium", false},
-		{Config{AgentUsageMode: "light", AgentMaxSessions: &zero, AgentMaxSubagentsPerSession: &five}, 1, 0, 5, "light", true},
-		{Config{AgentUsageMode: "light", AgentMaxSessions: new(int)}, 1, 0, 2, "light", true},
-		{Config{AgentUsageMode: "medium", AgentMaxSessions: &zero, AgentMaxSubagentsPerSession: &zero}, 1, 0, 0, "medium", true},
+		{Config{}, "bot-a", 1, 4, 4, 16, "medium", false}, // the defaults
+		{Config{AgentDefaultMode: "light"}, "bot-a", 1, 2, 1, 16, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-a", 1, 0, 0, 16, "maximum", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-b", 1, 2, 1, 16, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "", 1, 2, 1, 16, "light", false}, // the user's own
+		{Config{AgentDefaultMode: "nonsense"}, "bot-a", 1, 4, 4, 16, "medium", false},
+		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, "bot-a", 2, 4, 4, 5, "medium", true},
+		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, "bot-a", 1, 4, 4, 0, "medium", false}, // 0 = no cap
+		{Config{AgentMaxSessions: &neg}, "bot-a", 1, 4, 4, 16, "medium", false},
+		{Config{AgentDefaultMode: "light", AgentMaxSubagentsPerSession: &five}, "bot-a", 1, 5, 1, 16, "light", true},
+		{Config{AgentMaxSubagentsPerSession: &zero}, "bot-a", 1, 0, 4, 16, "medium", true},
 	} {
-		l := agent.ResolveUsage(c.cfg.agentUsage())
-		if l.PerProject != c.per || l.Total != c.total || l.Subagents != c.subs || l.Mode != c.mode || l.Custom != c.custom {
-			t.Errorf("%+v: got %+v", c.cfg, l)
+		u := c.cfg.agentUsage()
+		l := u.For(c.bot)
+		if l.PerProject != c.per || l.Subagents != c.subs || l.Sessions != c.sessions || u.Machine() != c.machine || l.Mode != c.mode || l.Custom != c.custom {
+			t.Errorf("%+v (%q): got %+v machine %d", c.cfg, c.bot, l, u.Machine())
 		}
+	}
+}
+
+func TestApplyUsageChange(t *testing.T) {
+	c := Config{AgentBotModes: map[string]string{"bot-a": "light", "bot-b": "medium"}}
+	c.applyUsageChange(agent.UsageChange{Bot: "bot-c", Mode: "maximum"})
+	c.applyUsageChange(agent.UsageChange{Bot: "bot-a", Mode: "medium"})
+	if c.AgentBotModes["bot-c"] != "maximum" || c.AgentBotModes["bot-a"] != "medium" || c.AgentDefaultMode != "" {
+		t.Fatalf("one bot: %+v", c)
+	}
+	c.applyUsageChange(agent.UsageChange{Default: true, Mode: "light"})
+	if c.AgentDefaultMode != "light" || c.AgentBotModes["bot-b"] != "medium" {
+		t.Fatalf("default: %+v", c)
+	}
+	c.applyUsageChange(agent.UsageChange{All: true, Mode: "maximum"})
+	if c.AgentDefaultMode != "maximum" || c.AgentBotModes["bot-a"] != "maximum" || c.AgentBotModes["bot-b"] != "maximum" || c.AgentBotModes["bot-c"] != "maximum" {
+		t.Fatalf("all: %+v", c)
 	}
 }

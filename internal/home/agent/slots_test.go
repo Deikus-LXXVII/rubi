@@ -68,9 +68,12 @@ func (mu *multi) startsOf(project string) int {
 	return len(fr.CallsOf("session.start"))
 }
 
+// setLimits sets the per-project limit and the cap on the computer; the Bots' modes don't limit (maximum).
 func setLimits(per, total int) func(*Options) {
 	return func(o *Options) {
-		o.Usage = func() UsageConfig { return UsageConfig{MaxSessionsPerProject: per, MaxSessions: &total} }
+		o.Usage = func() UsageConfig {
+			return UsageConfig{Default: ModeMaximum, MaxSessionsPerProject: per, MaxSessions: &total}
+		}
 	}
 }
 
@@ -85,7 +88,7 @@ func TestTwoProjectsRunConcurrently(t *testing.T) {
 	eventually(t, "two slots", func() bool { return mu.running() == 2 })
 	st, _ := mu.op("status", nil)
 	slots := st["slots"].([]any)
-	if len(slots) != 2 || st["limits"].(map[string]any)["per_project"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(4) {
+	if len(slots) != 2 || st["limits"].(map[string]any)["per_project"] != float64(1) || st["limits"].(map[string]any)["total"] != float64(16) {
 		t.Fatalf("status: %v", st)
 	}
 	first := slots[0].(map[string]any)
@@ -181,7 +184,7 @@ func TestGlobalCapWaitsAndReleases(t *testing.T) {
 	mu.start("my-project", "a")
 	mu.start("web-app", "b")
 	r := mu.start("docs-site", "c")
-	if r["queued"] != true || r["reason"] != "waiting: 2 sessions are running, the limit" {
+	if r["queued"] != true || r["reason"] != "waiting: 2 sessions are running on this computer, the limit" {
 		t.Fatalf("over the cap: %v", r)
 	}
 	mu.fakes["web-app"].Runner().Emit(statusEv("sess-1", "idle"))
@@ -202,18 +205,17 @@ func TestZeroMeansNoGlobalCapAndDefaults(t *testing.T) {
 	if mu.running() != len(names) {
 		t.Fatalf("%d running", mu.running())
 	}
-	// The defaults (medium), and values that are out of range.
-	m := New(Options{})
-	defer m.Close()
-	if p, tot := m.limits(); p != 1 || tot != 4 {
-		t.Fatalf("defaults %d %d", p, tot)
+	// The defaults: medium for everyone (4 sessions per Bot), 16 on the computer, 1 per project.
+	c := UsageConfig{}
+	if l := c.For("bot-a"); l.PerProject != 1 || l.Sessions != 4 || l.Subagents != 4 || c.Machine() != 16 {
+		t.Fatalf("defaults %+v %d", l, c.Machine())
 	}
 	neg := -3
-	m.opt.Usage = func() UsageConfig { return UsageConfig{MaxSessionsPerProject: 0, MaxSessions: &neg} }
-	if p, tot := m.limits(); p != 1 || tot != 4 {
-		t.Fatalf("out of range %d %d", p, tot)
+	c = UsageConfig{MaxSessions: &neg, MaxSubagents: &neg}
+	if l := c.For(""); l.PerProject != 1 || l.Subagents != 4 || c.Machine() != 16 {
+		t.Fatalf("out of range %+v %d", l, c.Machine())
 	}
-	// The default total of 4 holds.
+	// The default mode (medium) lets a Bot run 4 sessions.
 	mu4 := newMulti(t, names)
 	for i, n := range names {
 		r := mu4.start(n, "x")

@@ -76,18 +76,20 @@ type Config struct {
 	// AgentAllowBypass says whether agent sessions may run in bypassPermissions or dontAsk (default true;
 	// the plugin still decides every tool call and approves loosening a mode with a passkey).
 	AgentAllowBypass *bool `json:"agent_allow_bypass,omitempty"`
-	// AgentUsageMode is "maximum", "medium" (default) or "light": presets for how much the agents may run at
-	// once (see agent/usage.go). The raw keys below override the preset for their limit. The user changes
-	// the mode from the plugin's panel; a Bot can't.
-	AgentUsageMode string `json:"agent_usage_mode,omitempty"`
+	// AgentDefaultMode ("maximum", "medium" (default) or "light") is the usage mode of a Bot met for the
+	// first time and of the sessions the user starts from the panel; AgentBotModes has the mode of each Bot
+	// (by the Bot id the plugin passes). Presets for how much a Bot may run at once: see agent/usage.go. The
+	// user changes modes from the plugin's panel; a Bot can't.
+	AgentDefaultMode string            `json:"agent_default_mode,omitempty"`
+	AgentBotModes    map[string]string `json:"agent_bot_modes,omitempty"`
 	// AgentMaxSessionsPerProject is how many top-level agent sessions may run at once in one project
 	// (default 1, at least 1); more wait in the queue. Subagents and forks inside a session don't count.
 	AgentMaxSessionsPerProject int `json:"agent_max_sessions_per_project,omitempty"`
-	// AgentMaxSessions caps top-level agent sessions running at once across all projects (0 = no cap;
-	// unset: the mode's preset).
+	// AgentMaxSessions caps top-level agent sessions running at once on the computer, whatever the Bots'
+	// modes allow (0 = no cap; default 16).
 	AgentMaxSessions *int `json:"agent_max_sessions,omitempty"`
-	// AgentMaxSubagentsPerSession caps subagents running at once in one session (0 = no cap; unset: the
-	// mode's preset). A session over it waits; nothing is denied.
+	// AgentMaxSubagentsPerSession caps subagents running at once in one session for every Bot (0 = no cap;
+	// unset: each Bot's mode decides). A session over it waits; nothing is denied.
 	AgentMaxSubagentsPerSession *int `json:"agent_max_subagents_per_session,omitempty"`
 }
 
@@ -183,9 +185,14 @@ func (h *Helper) newAgent() *agent.Manager {
 			b := h.Fresh().AgentAllowBypass
 			return b == nil || *b
 		},
-		Usage: func() agent.UsageConfig { return h.Fresh().agentUsage() },
-		SetUsageMode: func(mode string) error {
-			return h.Update(func(c *Config) { c.AgentUsageMode = mode })
+		Usage:    func() agent.UsageConfig { return h.Fresh().agentUsage() },
+		SetUsage: func(ch agent.UsageChange) error { return h.Update(func(c *Config) { c.applyUsageChange(ch) }) },
+		SeeBot: func(id string) {
+			_ = h.Update(func(c *Config) {
+				if _, ok := c.AgentBotModes[id]; !ok && len(c.AgentBotModes) < agent.MaxBots {
+					c.setBotMode(id, agent.UsageConfig{Default: c.AgentDefaultMode}.ModeOf(""))
+				}
+			})
 		},
 		Cred:        agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
 		ProxyListen: h.Fresh().AgentProxyListen,
@@ -194,8 +201,30 @@ func (h *Helper) newAgent() *agent.Manager {
 }
 
 func (c Config) agentUsage() agent.UsageConfig {
-	return agent.UsageConfig{Mode: c.AgentUsageMode, MaxSessionsPerProject: c.AgentMaxSessionsPerProject,
+	return agent.UsageConfig{Default: c.AgentDefaultMode, Bots: c.AgentBotModes, MaxSessionsPerProject: c.AgentMaxSessionsPerProject,
 		MaxSessions: c.AgentMaxSessions, MaxSubagents: c.AgentMaxSubagentsPerSession}
+}
+
+func (c *Config) setBotMode(id, mode string) {
+	if c.AgentBotModes == nil {
+		c.AgentBotModes = map[string]string{}
+	}
+	c.AgentBotModes[id] = mode
+}
+
+// applyUsageChange sets the mode of one Bot, of the default, or of every known Bot and the default.
+func (c *Config) applyUsageChange(ch agent.UsageChange) {
+	switch {
+	case ch.All:
+		c.AgentDefaultMode = ch.Mode
+		for id := range c.AgentBotModes {
+			c.AgentBotModes[id] = ch.Mode
+		}
+	case ch.Default:
+		c.AgentDefaultMode = ch.Mode
+	case ch.Bot != "" && (len(c.AgentBotModes) < agent.MaxBots || c.AgentBotModes[ch.Bot] != ""):
+		c.setBotMode(ch.Bot, ch.Mode)
+	}
 }
 
 func (h *Helper) path() string { return filepath.Join(h.Dir, "config.json") }
