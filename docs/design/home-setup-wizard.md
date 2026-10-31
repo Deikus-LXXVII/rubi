@@ -139,12 +139,14 @@ MCP).
   only `URL <link>`, `CODE?`, `SAVED` or `FAILED <reason>`. It writes the token atomically (mode 0600) to
   `/rubi-auth/token/oauth-token` with a non-secret `oauth-token.meta` (`created`, `expires`, `method`). It never
   prints the token, and drops any output line with `sk-ant`.
-- **Storage.** A container volume Home owns, `rubi-agent-auth` (config `agent_auth_volume`). On first use Home
-  creates it and runs a one-shot container (`--user 0 --cap-drop ALL --cap-add CHOWN --cap-add FOWNER`) that makes
-  `/rubi-auth/token` owned by the runner's user, mode 700. Every project VM mounts the volume **read-only** at
-  `/rubi-auth`, outside `/work` and so outside git. A VM started before the first sign-in needs a restart to see
-  the volume (the mount is made at start).
-- **Sign-in container.** Short-lived, with no project mounted, the volume read-write, the host-only network, and
+- **Storage.** A directory of Rubi Home on the Mac: `<helper dir>/agent-auth/` (config `agent_auth_dir`; 0700,
+  made by Home; the token in `agent-auth/token/`). It is a bind mount, not a container volume: an Apple
+  container volume is a block device and can't be attached to two running VMs, a bind mount (virtiofs) can, and
+  `readonly` is enforced there. Every project VM mounts it **read-only** at `/rubi-auth`, outside `/work` and so
+  outside git; only the sign-in container mounts it read-write. The token file is therefore on the Mac's disk in
+  Rubi Home's directory (0600, as the Mac user), and Home never reads it. No project may be, contain or sit
+  inside it or the helper's directory. A VM started before the first sign-in needs a restart to see the mount.
+- **Sign-in container.** Short-lived, with no project mounted, the directory read-write, the host-only network, and
   a proxy started by Home that allows only `claude.com`, `claude.ai`, `platform.claude.com`,
   `console.anthropic.com` and `api.anthropic.com`. It is removed (with the helper, claude and the proxy) when the
   sign-in ends, is cancelled or times out.
@@ -153,20 +155,40 @@ MCP).
   in an event, a log (claude's own stderr is redacted) or a tool argument; the Read tool is denied on the
   directory. A sign-in or sign-out applies to the next query; `usage.probe` `logged_in` reflects it. The shared
   token wins when present.
-- **Status.** Home never reads the token. The row is probed with a throwaway container that mounts the volume
-  read-only and prints whether the file is non-empty and the metadata file; the answer is reused for a minute.
-  The row says "Signed in until <date>", "expired on <date>" or "Not signed in".
-- **Sign out** deletes the token and the metadata (another throwaway container, volume read-write). It cannot
-  revoke the token: for a full revoke, also remove it in the Claude account settings at claude.ai.
+- **Status.** Home never reads the token. It stats the token file (a plain file, size above zero: signed in) and
+  reads the metadata file, which has no secret in it; the answer is reused for a minute. The row says "Signed in
+  until <date>", "expired on <date>" or "Not signed in".
+- **Sign out** removes the token and the metadata files. It cannot revoke the token: for a full revoke, also
+  remove it in the Claude account settings at claude.ai.
+- **Leftovers.** A sign-in container left by a crash (named `rubi-agent-auth`, labelled `rubi.role=auth`) is
+  removed when Rubi Home starts.
+- **API key.** Claude Code prefers `ANTHROPIC_API_KEY` to an OAuth token when both are set. When a shared token is
+  stored, the runner does not pass `ANTHROPIC_API_KEY` to the SDK child (the token wins); without a token the key
+  is passed as before.
 - **Console accounts.** The wizard offers only the subscription sign-in (the simpler path). A console (per
   token billing) account can still sign in inside one project with `claude auth login --console`, whose
   credentials stay in that project's `.rubi/claude`; it is used only when no shared token is stored.
 
-**Trade-off.** Any code that runs as the agent's user in a project VM can read the token (`cat` in a shell), as
-with any Claude Code install. Mitigations: egress only through the allow-list proxy; the token's scope
-(`user:inference`, no account or organization access) and one-year life; the read-only mount outside `/work`
-and git; sign-out deletes it; revoking at claude.ai ends it everywhere. Sharing it means one project's compromise
-reaches every project's inference access (not their files), which is the owner's decision for one account.
+**Trade-off, stated plainly.** The token is readable by anything that runs as the agent's user in a project VM:
+a tool call (Bash, `cp`, a script, a hook, a package's install script) can copy it into `/work`, into a commit, to
+a push to an allowed forge, into a tool result, or send it to any host the VM may reach. A hostile repository or
+prompt can therefore try to exfiltrate it to any allowed host (the proxy allows the model API, the package
+registries, the forges and what the owner added or approved). Claude Code installs have the same property for
+their own login. What limits the damage:
+
+- egress only through the allow-list proxy (hosts not on the list are asked about, never silently allowed);
+- the token's scope (`user:inference` only: no account, organization or billing access) and its one-year life;
+- the read-only mount outside `/work` and git, so nothing writes the token by accident and a commit doesn't
+  contain it unless a tool copied it;
+- every tool call is approved (or denied) by the user, and the Read tool is denied on `/rubi-auth`;
+- best-effort redaction: the runner replaces anything shaped like `sk-ant-…` in every event, answer and question
+  before it leaves, and Home does the same before it hands items to the plugin. This does not stop a tool that
+  encodes or splits the token;
+- sign-out deletes the files, and revoking the token at claude.ai ends it everywhere.
+
+Sharing it means one project's compromise reaches every project's inference access (not their files), which is
+the owner's decision for one account. Per-project sign-ins remain possible (`claude auth login` in a project),
+used only when no shared token is stored.
 
 ## Secrets
 
@@ -176,7 +198,7 @@ logs, errors or URLs. Progress lines pass through a filter that drops lines with
 and state, not a secret) but not logged. The code goes from the panel's prompt to the plugin op, from the plugin
 to Rubi Home in an encrypted call, and to the VM's stdin; the plugin neither stores nor audits it (the audit says
 "sign-in code sent"). The token itself never passes through Home, the plugin or the panel: it goes from
-Anthropic to the helper in the sign-in container and into the volume.
+Anthropic to the helper in the sign-in container and into the sign-in directory.
 
 ## Failure modes
 

@@ -5,10 +5,12 @@
 - **Agents: one Claude sign-in for all projects (shared token, nothing else shared).** The setup's sign-in step is
   now one for the computer: the image's `rubi-claude-token` helper runs `claude setup-token` under a terminal in a
   short-lived sign-in container (no project mounted; a proxy allows only the sign-in hosts) and stores a one-year,
-  `user:inference`-scope subscription token in a container volume (`rubi-agent-auth`, config `agent_auth_volume`).
-  Every project VM mounts the volume read-only at `/rubi-auth`, outside `/work`; the runner reads the token at each
+  `user:inference`-scope subscription token in a directory of Rubi Home (`<helper dir>/agent-auth`, config
+  `agent_auth_dir`, 0700; a bind mount, since a container volume can't be attached to two running VMs). Every
+  project VM mounts it read-only at `/rubi-auth`, outside `/work`; the runner reads the token at each
   query start into the SDK child's environment only. Each project keeps its own config directory. Status never
-  reads the token (a throwaway container tests the file and prints a metadata file); a "Sign out" step deletes
+  reads the token (it stats the file and reads a non-secret metadata file); anything shaped like `sk-ant-…` is
+  redacted in what the runner and Home send on; a shared token wins over `ANTHROPIC_API_KEY`; a "Sign out" step deletes
   it for every project (it can't revoke it: do that at claude.ai). The per-project `claude auth login` remains a
   fallback; the wizard drops the console method.
 - **Rubi Home: button-only setup of the agent path (`agent-setup.*`, capability `agent-setup`).** Home probes the
