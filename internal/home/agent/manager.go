@@ -271,6 +271,7 @@ func New(opt Options) *Manager {
 		m.q.path = filepath.Join(opt.Dir, QueueFile)
 	}
 	m.q.load()
+	sweepShields(opt.Dir) // snapshots of VMs of an earlier Home run
 	m.net = newNetState(opt.Dir)
 	if opt.Dir != "" {
 		m.roles, m.rolesErr = roles.Open(roles.Options{
@@ -731,7 +732,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		if err := prepareWorkDir(p.Dir); err != nil { // /work/.rubi exists to be covered
 			return nil, err
 		}
-		shield = roleShield(p.Dir, filepath.Join(m.opt.Dir, RoleEmptyDir))
+		shield = roleShield(p.Dir, filepath.Join(m.opt.Dir, RoleEmptyDir), p.Role)
 		shieldGuard = newFileGuard(p.Dir)
 		if shield.EmptyDir == "" {
 			return nil, fmt.Errorf("role %s: can't prepare the empty directory that covers /work/.rubi", clip(p.RoleName, 40))
@@ -882,11 +883,41 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	go func() {
 		<-r.Done()
 		if guard != nil {
-			guard.report(p.Dir, p.RoleName)
+			if ch := guard.report(p.Dir, p.RoleName); len(ch) > 0 {
+				m.pushGuardEvent(p, ch)
+			}
 		}
 		m.runnerGone(p, r)
+		if guard != nil {
+			m.dropShield(p)
+		}
 	}()
 	return r, nil
+}
+
+// pushGuardEvent tells the plugin that a role session changed a file another session or the host's tools load.
+func (m *Manager) pushGuardEvent(p *projState, files []string) {
+	ev, err := json.Marshal(map[string]any{"kind": "project_files_changed", "files": files, "role_name": clip(p.RoleName, 40),
+		"message": "a role session changed " + strings.Join(files, ", ") + " in " + clip(p.ID, 64) + "; review before another session or your editor loads it"})
+	if err != nil {
+		return
+	}
+	m.mu.Lock()
+	m.pushLocked(Item{Type: "event", Project: p.ID, Role: p.key(), RoleName: p.RoleName, Event: ev})
+	m.mu.Unlock()
+}
+
+// dropShield removes a role VM's snapshots once the VM is gone, unless a new start of the same VM is under way
+// or done (it made its own snapshots after we waited for its start to finish).
+func (m *Manager) dropShield(p *projState) {
+	p.startMu.Lock()
+	defer p.startMu.Unlock()
+	m.mu.Lock()
+	live := p.runner != nil
+	m.mu.Unlock()
+	if !live {
+		removeShield(m.opt.Dir, p.Dir, p.Role)
+	}
 }
 
 func (m *Manager) runnerGone(p *projState, r *Runner) {
@@ -2367,7 +2398,7 @@ const RoleEmptyDir = "agent-role-empty"
 // missing, so a role can't make them for another session to load; the snapshot (not the project's own directory)
 // is what is mounted, so a swap of the directory for a symlink can't redirect the mount. EmptyDir is "" when
 // the shield can't be made; the start then refuses.
-func roleShield(projectDir, emptyDir string) Project {
+func roleShield(projectDir, emptyDir, role string) Project {
 	var s Project
 	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
 		return s
@@ -2383,7 +2414,7 @@ func roleShield(projectDir, emptyDir string) Project {
 		log.Printf("agent: can't shield the project: %v", err)
 		return s
 	}
-	root := filepath.Join(filepath.Dir(emptyDir), RoleShieldDir, snapshotKey(projectDir))
+	root := filepath.Join(filepath.Dir(emptyDir), RoleShieldDir, snapshotKey(projectDir, role))
 	var mounts []ShieldMount
 	for _, name := range names {
 		dst := filepath.Join(root, strings.NewReplacer("/", "_", ".", "").Replace(name))

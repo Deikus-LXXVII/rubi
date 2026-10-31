@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 )
 
@@ -148,10 +149,26 @@ func copyTree(src, dst string, bytes *int64, files *int) error {
 	return nil
 }
 
-// snapshotKey names a project's snapshots under RoleShieldDir without putting its path in a file name.
-func snapshotKey(projectDir string) string {
+// snapshotKey names one VM's snapshots under RoleShieldDir: the project's directory hashed (its path stays out of
+// a file name) and the role's id, so two VMs of one project never share a snapshot, and one VM's start only
+// refreshes its own.
+func snapshotKey(projectDir, role string) string {
 	h := sha256.Sum256([]byte(projectDir))
-	return hex.EncodeToString(h[:8])
+	return hex.EncodeToString(h[:8]) + "-" + role
+}
+
+// removeShield deletes a VM's snapshots (the VM is gone), and sweepShields all of them (at Home start).
+func removeShield(helperDir, projectDir, role string) {
+	if helperDir == "" || role == "" {
+		return
+	}
+	_ = os.RemoveAll(filepath.Join(helperDir, RoleShieldDir, snapshotKey(projectDir, role)))
+}
+
+func sweepShields(helperDir string) {
+	if helperDir != "" {
+		_ = os.RemoveAll(filepath.Join(helperDir, RoleShieldDir))
+	}
 }
 
 // guardedFiles are single files a role VM can still write (a file can't be bind-mounted) that another session or
@@ -199,8 +216,12 @@ func (g fileGuard) changed(projectDir string) []string {
 	return out
 }
 
-func (g fileGuard) report(projectDir, roleName string) {
-	if ch := g.changed(projectDir); len(ch) > 0 {
+// report logs the files that changed and returns them.
+func (g fileGuard) report(projectDir, roleName string) []string {
+	ch := g.changed(projectDir)
+	if len(ch) > 0 {
+		sort.Strings(ch)
 		log.Printf("agent: WARNING role %q changed %v in its project while its VM ran; review before another session or your editor loads them", clip(roleName, 40), ch)
 	}
+	return ch
 }

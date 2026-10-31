@@ -218,14 +218,14 @@ Mounts of a role VM (the legacy role keeps today's):
   sees or rewrites the legacy role's state) and the project's `.claude` and `.git/hooks` are bound read-only. Home creates them (0755, owned by the user)
   when missing, so a role can never create them for another session or the host's Claude Code to load, and refuses the
   start when one exists as a symlink or a file. What is mounted is a **Home-owned snapshot copy**
-  (`<helper>/agent-role-shield/<project key>/`, symlinks skipped, capped at 8 MiB / 2000 files, an empty copy past the
+  (`<helper>/agent-role-shield/<project key>-<role id>/`, one per VM, symlinks skipped, capped at 8 MiB / 2000 files, an empty copy past the
   cap), never the project's own directory: a writer VM of the same project can't swap the directory for a symlink
   between Home's check and the container tool's mount (the swap can't redirect a mount whose source is outside the
-  project). The snapshot is refreshed at each VM start. A `.git` that is a file (a worktree) gets no hooks overlay.
+  project). A VM's snapshot is made at its own start, so a sibling's start never replaces it, and removed when the VM ends (all are swept at Home start). A `.git` that is a file (a worktree) gets no hooks overlay.
   A single file can't be bound (the tool refuses a file as source, and a directory over a file), so **`/work/CLAUDE.md`,
   `/work/.mcp.json` and `/work/.git/config` stay writable by a role**: residuals, known. Mounting `.git` read-only
   would stop agents committing, so instead Home fingerprints `.mcp.json` and `.git/config` when a role VM starts and
-  logs a warning naming the files when they differ after it ends (detection, not prevention: review them before
+  logs a warning naming the files when they differ after it ends and pushes an event item (`{"kind":"project_files_changed","files":[...],"role_name","message"}`, project and role set) for the plugin to show (detection, not prevention: review them before
   another session or your editor loads them). Role sessions themselves load neither (`strictMcpConfig`, no setting
   sources). A role bound to a different
   directory than the one its project id names now (ids come from directory names) is refused, and a role records the

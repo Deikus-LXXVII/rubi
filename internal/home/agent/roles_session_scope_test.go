@@ -123,7 +123,7 @@ func TestRoleVMGetsTheShield(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(proj, ".claude")); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); len(s.ReadOnly) != 1 || s.EmptyDir == "" {
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir), "r_a"); len(s.ReadOnly) != 1 || s.EmptyDir == "" {
 		t.Fatalf("no .claude: %+v", s)
 	}
 	if st, err := os.Lstat(filepath.Join(proj, ".claude")); err != nil || !st.IsDir() || st.Mode().Perm() != 0o755 {
@@ -136,7 +136,7 @@ func TestRoleVMGetsTheShield(t *testing.T) {
 	if err := os.Symlink("/etc", filepath.Join(proj, ".claude")); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); s.EmptyDir != "" || len(s.ReadOnly) != 0 {
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir), "r_a"); s.EmptyDir != "" || len(s.ReadOnly) != 0 {
 		t.Fatalf("symlinked .claude: %+v", s)
 	}
 	if err := os.Remove(filepath.Join(proj, ".claude")); err != nil {
@@ -146,7 +146,7 @@ func TestRoleVMGetsTheShield(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(re.dir, RoleEmptyDir, "x"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); s.EmptyDir != "" {
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir), "r_a"); s.EmptyDir != "" {
 		t.Fatalf("dirty empty dir: %+v", s)
 	}
 }
@@ -343,7 +343,7 @@ func TestRoleShieldGit(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	s := roleShield(proj, empty)
+	s := roleShield(proj, empty, "r_a")
 	if len(s.ReadOnly) != 2 || s.ReadOnly[1].Name != filepath.Join(".git", "hooks") {
 		t.Fatalf("hooks aren't shielded: %+v", s)
 	}
@@ -358,7 +358,7 @@ func TestRoleShieldGit(t *testing.T) {
 	if err := os.Symlink("/etc/hosts", filepath.Join(hooks, "link")); err != nil {
 		t.Fatal(err)
 	}
-	s = roleShield(proj, empty)
+	s = roleShield(proj, empty, "r_a")
 	src := s.ReadOnly[1].Source
 	if st, err := os.Stat(filepath.Join(src, "pre-commit")); err != nil || st.Mode()&0o111 == 0 {
 		t.Fatalf("pre-commit not copied: %v", err)
@@ -373,7 +373,7 @@ func TestRoleShieldGit(t *testing.T) {
 	if err := os.Symlink("/etc", hooks); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, empty); s.EmptyDir != "" {
+	if s := roleShield(proj, empty, "r_a"); s.EmptyDir != "" {
 		t.Fatalf("symlinked hooks: %+v", s)
 	}
 	if err := os.RemoveAll(filepath.Join(proj, ".git")); err != nil {
@@ -382,7 +382,7 @@ func TestRoleShieldGit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(proj, ".git"), []byte("gitdir: x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if s := roleShield(proj, empty); len(s.ReadOnly) != 1 {
+	if s := roleShield(proj, empty, "r_a"); len(s.ReadOnly) != 1 {
 		t.Fatalf("worktree .git: %+v", s)
 	}
 }
@@ -434,5 +434,42 @@ func TestFileGuard(t *testing.T) {
 	}
 	if len(g.changed(proj)) != 2 {
 		t.Fatalf("changed: %v", g.changed(proj))
+	}
+}
+
+func TestShieldSnapshotsArePerVM(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	proj, empty := filepath.Join(root, "p"), filepath.Join(home, RoleEmptyDir)
+	if err := os.MkdirAll(filepath.Join(proj, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".claude", "a"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := roleShield(proj, empty, "r_a")
+	if err := os.WriteFile(filepath.Join(proj, ".claude", "b"), []byte("2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := roleShield(proj, empty, "r_b") // the second VM starts: the first one's snapshot stays as it was
+	if a.ReadOnly[0].Source == b.ReadOnly[0].Source {
+		t.Fatal("two VMs share a snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(a.ReadOnly[0].Source, "b")); err == nil {
+		t.Fatal("the second start changed the first VM's snapshot")
+	}
+	if _, err := os.Stat(filepath.Join(b.ReadOnly[0].Source, "b")); err != nil {
+		t.Fatalf("the second VM's snapshot is stale: %v", err)
+	}
+	removeShield(home, proj, "r_a")
+	if _, err := os.Stat(a.ReadOnly[0].Source); err == nil {
+		t.Fatal("the stopped VM's snapshot stays")
+	}
+	if _, err := os.Stat(b.ReadOnly[0].Source); err != nil {
+		t.Fatal("removing one VM's snapshot took the other's")
+	}
+	sweepShields(home)
+	if _, err := os.Stat(b.ReadOnly[0].Source); err == nil {
+		t.Fatal("the sweep left a snapshot")
 	}
 }
