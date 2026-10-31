@@ -13,7 +13,7 @@ import (
 // Only the command lines are tested; no container is ever started.
 
 func TestAppleContainerArgs(t *testing.T) {
-	a := &AppleContainer{RunnerDir: "/opt/rubi/runner", CPUs: "2", Memory: "2G"}
+	a := &AppleContainer{Bin: "container", RunnerDir: "/opt/rubi/runner", CPUs: "2", Memory: "2G"}
 	p := Project{ID: "my-project", Dir: "/home/alice/my-project"}
 	name := containerName(p)
 	if !strings.HasPrefix(name, "rubi-agent-my-project-") || containerName(p) != name || containerName(Project{ID: "my-project", Dir: "/other"}) == name {

@@ -314,6 +314,12 @@ func badMountPath(dir string) bool {
 }
 
 func (m *Manager) protected(dir string) bool {
+	return ProtectedDir(dir, append([]string{m.opt.Dir}, m.opt.Protected...)...)
+}
+
+// ProtectedDir says whether dir can never be a project: it can't be mounted, it is, or contains, the user's
+// home (or a secrets directory in it), or it is, or contains, one of extra (the helper's own directory).
+func ProtectedDir(dir string, extra ...string) bool {
 	if badMountPath(dir) {
 		return true
 	}
@@ -331,7 +337,7 @@ func (m *Manager) protected(dir string) bool {
 			}
 		}
 	}
-	for _, p := range append([]string{m.opt.Dir}, m.opt.Protected...) {
+	for _, p := range extra {
 		if p == "" {
 			continue
 		}

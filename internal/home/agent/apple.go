@@ -71,6 +71,18 @@ func (a *AppleContainer) bin() string {
 	if a.Bin != "" {
 		return a.Bin
 	}
+	return ContainerBin()
+}
+
+// ContainerBin is the container CLI: "container" in PATH, else where Apple's installer puts it (a launchd
+// job's PATH doesn't have /usr/local/bin).
+func ContainerBin() string {
+	if p, err := exec.LookPath("container"); err == nil {
+		return p
+	}
+	if st, err := os.Stat("/usr/local/bin/container"); err == nil && st.Mode().IsRegular() {
+		return "/usr/local/bin/container"
+	}
 	return "container"
 }
 

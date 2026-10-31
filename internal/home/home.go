@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
@@ -105,6 +106,8 @@ type Helper struct {
 	Claude *Claude
 	// Agent runs the Agent SDK runner in a VM per project (see agent/ and claude-agent.* ops).
 	Agent *agent.Manager
+	// Setup is the button-only setup of the agent path (see setup/ and the agent-setup.* ops).
+	Setup *setup.Setup
 
 	mu  sync.Mutex
 	cfg Config
@@ -144,6 +147,7 @@ func Open(dir string) (*Helper, error) {
 	h.Claude.ProtectedDirs = []string{dir}
 	h.Claude.loadQueue()
 	h.Agent = h.newAgent()
+	h.Setup = h.newSetup()
 	if s := h.Config().ClaudeWaitSeconds; s >= 10 && s <= 590 {
 		h.Claude.Wait = time.Duration(s) * time.Second
 	}
@@ -173,6 +177,27 @@ func (h *Helper) newAgent() *agent.Manager {
 		Cred:        agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
 		ProxyListen: h.Fresh().AgentProxyListen,
 		ProxyVMHost: h.Fresh().AgentProxyVMHost,
+	})
+}
+
+// newSetup makes the agent setup; it reads and changes the agent_* configuration like the CLI does.
+func (h *Helper) newSetup() *setup.Setup {
+	return setup.New(setup.Options{
+		Dir:    h.Dir,
+		Agents: setup.ManagerAgents{M: h.Agent},
+		Settings: func() setup.Settings {
+			c := h.Fresh()
+			return setup.Settings{Projects: c.AgentProjects, Network: c.AgentNetwork, ProxyListen: c.AgentProxyListen,
+				ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir}
+		},
+		Update: func(fn func(*setup.Settings)) error {
+			return h.Update(func(c *Config) {
+				st := setup.Settings{Projects: c.AgentProjects, Network: c.AgentNetwork, ProxyListen: c.AgentProxyListen,
+					ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir}
+				fn(&st)
+				c.AgentProjects, c.AgentProxyListen, c.AgentProxyVMHost = st.Projects, st.ProxyListen, st.ProxyVMHost
+			})
+		},
 	})
 }
 
@@ -356,6 +381,9 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		"claude-agent.rename", "claude-agent.fork", "claude-agent.interrupt", "claude-agent.close", "claude-agent.mode",
 		"claude-agent.next", "claude-agent.decide", "claude-agent.status":
 		return h.Agent.Handle(ctx, env.Op, env.Args)
+	case "agent-setup.status", "agent-setup.run", "agent-setup.login.code", "agent-setup.login.open",
+		"agent-setup.project.add", "agent-setup.project.remove", "agent-setup.cancel":
+		return h.Setup.Handle(ctx, env.Op, env.Args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
 }
@@ -363,7 +391,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
-		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent"}}
+		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup"}}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {
