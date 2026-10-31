@@ -149,16 +149,25 @@ type Helper struct {
 	cfg Config
 }
 
-// DefaultDir is ~/Library/Application Support/Rubi Home on a Mac (the user config dir elsewhere).
-func DefaultDir() string {
+// DefaultDir is ~/Library/Application Support/Rubi Home on a Mac (the user config dir elsewhere). It fails
+// when there is no config dir (it never falls back to the working directory).
+func DefaultDir() (string, error) {
 	if d := os.Getenv("RUBI_HOME_DIR"); d != "" {
-		return d
+		return d, nil
 	}
 	base, err := os.UserConfigDir()
-	if err != nil {
-		base = "."
+	if err != nil || base == "" {
+		return "", errors.New("can't find a configuration folder for Rubi Home; set RUBI_HOME_DIR")
 	}
-	return filepath.Join(base, "Rubi Home")
+	return filepath.Join(base, "Rubi Home"), nil
+}
+
+// OpenExisting is Open for read-only commands: it creates nothing, and fails when Rubi Home was never set up.
+func OpenExisting(dir string) (*Helper, error) {
+	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
+		return nil, fmt.Errorf("Rubi Home isn't set up in %q yet (start it with: rubi-home run)", dir)
+	}
+	return Open(dir)
 }
 
 // Open loads (or creates) the helper's identity and configuration.

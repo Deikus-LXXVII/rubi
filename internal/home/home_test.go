@@ -483,3 +483,34 @@ func TestLibraryRevocationList(t *testing.T) {
 		t.Fatal("lost on reopen")
 	}
 }
+
+func TestDefaultDirNeverFallsBackToWorkingDir(t *testing.T) {
+	t.Setenv("RUBI_HOME_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if d, err := DefaultDir(); err == nil {
+		t.Errorf("no config dir should be an error, got %q", d)
+	}
+	t.Setenv("RUBI_HOME_DIR", "/some/dir")
+	if d, err := DefaultDir(); err != nil || d != "/some/dir" {
+		t.Errorf("env dir: %q %v", d, err)
+	}
+}
+
+func TestOpenExistingCreatesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Rubi Home")
+	if _, err := OpenExisting(dir); err == nil {
+		t.Fatal("a missing Rubi Home should be an error")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("OpenExisting created %s", dir)
+	}
+	h, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h
+	if _, err := OpenExisting(dir); err != nil {
+		t.Errorf("existing home: %v", err)
+	}
+}
