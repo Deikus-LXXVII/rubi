@@ -33,7 +33,7 @@ func TestAppleContainerArgs(t *testing.T) {
 	run := a.RunArgs(p)
 	want := []string{"container", "run", "-d", "--name", name, "--init", "--network", DefaultNetwork, "--user", "10001",
 		"--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp", "--mount", "type=bind,source=/home/alice/my-project,target=/work",
-		"--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
+		"--mount", "type=volume,source=rubi-agent-auth,target=/rubi-auth,readonly", "--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
 	if !reflect.DeepEqual(run, want) {
 		t.Fatalf("run\n got %v\nwant %v", run, want)
 	}
@@ -126,7 +126,7 @@ func TestAppleContainerStartSequence(t *testing.T) {
 			t.Errorf("token on a command line: %v", c)
 		}
 	}
-	want := []string{"image inspect", "build --progress", "network inspect", "network create", "network inspect", "delete --force", "run -d", "exec -i"}
+	want := []string{"image inspect", "build --progress", "network inspect", "network create", "network inspect", "volume inspect", "delete --force", "run -d", "exec -i"}
 	if !reflect.DeepEqual(seq, want) {
 		t.Fatalf("sequence %v", seq)
 	}

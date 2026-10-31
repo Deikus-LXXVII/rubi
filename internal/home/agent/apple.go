@@ -41,13 +41,17 @@ type AppleContainer struct {
 	// CPUs and Memory limit the VM ("" = the CLI's defaults).
 	CPUs   string
 	Memory string
+	// AuthVolume is the volume holding the sign-in shared by all projects (DefaultAuthVolume when empty).
+	AuthVolume string
 	// EnvDir is where the exec's environment file is written (0600, in a 0700 directory of its own).
 	EnvDir string
 
 	// run starts a CLI command to completion and returns its combined output; spawn starts one with
 	// pipes. Both are seams for tests; nil uses os/exec.
-	run   func(ctx context.Context, argv []string) ([]byte, error)
-	spawn func(ctx context.Context, argv []string) (Conn, error)
+	// authListen overrides where the sign-in proxy listens (tests: the gateway isn't an address of this machine).
+	authListen string
+	run        func(ctx context.Context, argv []string) ([]byte, error)
+	spawn      func(ctx context.Context, argv []string) (Conn, error)
 
 	mu    sync.Mutex
 	name  string
@@ -212,6 +216,8 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 		"--network", a.network(), "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
 		"--tmpfs", "/tmp",
 		"--mount", "type=bind,source=" + p.Dir + ",target=/work",
+		// The shared sign-in's volume, read-only and outside /work: only its token is shared (auth.go).
+		"--mount", a.authMount(true),
 		"--workdir", "/work"}
 	if a.CPUs != "" {
 		args = append(args, "--cpus", a.CPUs)
@@ -224,11 +230,15 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 
 // ExecArgs runs argv in the running container with stdin open; env goes through an environment file.
 func (a *AppleContainer) ExecArgs(p Project, envFile string, argv []string) []string {
+	return a.execArgs(containerName(p), envFile, argv)
+}
+
+func (a *AppleContainer) execArgs(name, envFile string, argv []string) []string {
 	args := []string{a.bin(), "exec", "-i", "--user", runnerUID, "--workdir", "/work"}
 	if envFile != "" {
 		args = append(args, "--env-file", envFile)
 	}
-	args = append(args, containerName(p))
+	args = append(args, name)
 	return append(args, argv...)
 }
 
@@ -384,6 +394,9 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	if err != nil {
 		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
 	}
+	if err := a.EnsureAuthVolume(ctx); err != nil {
+		return fail(err)
+	}
 	_, _ = a.do(ctx, a.deleteArgs(spec.Project)) // a leftover of a crash
 	if _, err := a.do(ctx, a.RunArgs(spec.Project)); err != nil {
 		return fail(err)
@@ -429,6 +442,11 @@ func (a *AppleContainer) execConn(ctx context.Context, p Project, env map[string
 	a.mu.Lock()
 	a.proj = p
 	a.mu.Unlock()
+	return a.execNamed(ctx, containerName(p), env, argv, logStderr)
+}
+
+// execNamed is execConn for any container by name.
+func (a *AppleContainer) execNamed(ctx context.Context, name string, env map[string]string, argv []string, logStderr bool) (Conn, error) {
 	envFile := ""
 	if len(env) > 0 {
 		body, err := EnvFile(env)
@@ -445,7 +463,7 @@ func (a *AppleContainer) execConn(ctx context.Context, p Project, env map[string
 			return nil, err
 		}
 	}
-	args := a.ExecArgs(p, envFile, argv)
+	args := a.execArgs(name, envFile, argv)
 	var c Conn
 	var err error
 	if a.spawn != nil {
