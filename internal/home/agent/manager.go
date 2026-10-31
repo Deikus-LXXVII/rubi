@@ -272,6 +272,7 @@ func New(opt Options) *Manager {
 				}
 				return ids
 			},
+			ProjectDir: m.projectDir,
 			BaseHosts: func() []string {
 				if opt.AllowedHosts == nil {
 					return nil
@@ -451,6 +452,32 @@ func ProtectedDir(dir string, extra ...string) bool {
 	return false
 }
 
+// projectDir is the real directory of an agent project id ("" when it isn't one).
+func (m *Manager) projectDir(id string) string {
+	for _, p := range m.projects() {
+		if p.ID == id {
+			return p.Dir
+		}
+	}
+	return ""
+}
+
+// roleBoundTo refuses a role made for another directory than the one the project id names now (the ids come from
+// the directories' names and shift when the list changes): its sessions, instructions and approvals are not for that
+// directory.
+func (m *Manager) roleBoundTo(r *roles.Role, project string) error {
+	if r.Project != project {
+		return fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(project, 64))
+	}
+	if r.DirHash == "" {
+		return fmt.Errorf("role %s has no recorded project directory; make it again", clip(r.Name, 40))
+	}
+	if dir := m.projectDir(project); dir == "" || roles.DirHash(dir) != r.DirHash {
+		return fmt.Errorf("role %s was made for another directory than project %q is now; it isn't used here", clip(r.Name, 40), clip(project, 64))
+	}
+	return nil
+}
+
 // project is the project's legacy-role VM.
 func (m *Manager) project(id string) (*projState, error) { return m.projectFor(id, "") }
 
@@ -477,8 +504,8 @@ func (m *Manager) selectRole(project, role string) (roleSel, error) {
 	if err != nil {
 		return roleSel{}, fmt.Errorf("unknown role %q", clip(role, 64))
 	}
-	if r.Project != project {
-		return roleSel{}, fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(project, 64))
+	if err := m.roleBoundTo(r, project); err != nil {
+		return roleSel{}, err
 	}
 	m.nameMu.Lock()
 	if m.names == nil {
@@ -569,8 +596,11 @@ func (m *Manager) pinRole(p *projState) (*roles.Role, func(), error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("role %q: %w", clip(p.Role, 64), err)
 	}
-	if r.Project != p.ID {
-		return nil, nil, fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(p.ID, 64))
+	if err := m.roleBoundTo(r, p.ID); err != nil {
+		return nil, nil, err
+	}
+	if roles.DirHash(p.Dir) != r.DirHash { // the VM about to mount p.Dir
+		return nil, nil, fmt.Errorf("role %s was made for another directory than the one this VM would mount", clip(r.Name, 40))
 	}
 	return r, m.roles.Pin(p.Role, r.Version), nil
 }

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 )
 
 // listing makes a role's runner list the given session ids.
@@ -131,5 +133,39 @@ func TestRoleVMGetsTheShield(t *testing.T) {
 	}
 	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); s.EmptyDir != "" {
 		t.Fatalf("dirty empty dir: %+v", s)
+	}
+}
+
+func TestRoleIsBoundToItsProjectDirectory(t *testing.T) {
+	re := newRoleEnv(t, setLimits(2, 4))
+	a, _ := re.put("role-a", nil)
+	r, err := re.m.roles.Get(a, 0)
+	if err != nil || r.DirHash != roles.DirHash(re.m.projectDir("my-project")) {
+		t.Fatalf("hash %q %v", r.DirHash, err)
+	}
+	// The spec can't set it, and a later version keeps it.
+	spec := map[string]any{"project": "my-project", "name": "role-a", "description": "e", "tools": []string{"Read"}, "dir_hash": "abc"}
+	if _, err := re.op("role.put", map[string]any{"id": a, "base_version": 1, "spec": spec}); err != nil {
+		t.Fatal(err)
+	}
+	if r2, _ := re.m.roles.Get(a, 0); r2.DirHash != r.DirHash {
+		t.Fatalf("hash changed: %q", r2.DirHash)
+	}
+	// The project id now names another directory: the id "my-project" moves to a different one.
+	other := filepath.Join(t.TempDir(), "my-project")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	re.opt.Projects = func() []string { return []string{other} }
+	re.m.Close()
+	re.m = New(re.opt)
+	t.Cleanup(re.m.Close)
+	for _, op := range []string{"start", "sessions"} {
+		if _, err := re.op(op, map[string]any{"project": "my-project", "role": a, "prompt": "x"}); err == nil || !strings.Contains(err.Error(), "another directory") {
+			t.Errorf("%s in another directory: %v", op, err)
+		}
+	}
+	if re.vm(a) != nil && re.vm(a).Starts() != 0 {
+		t.Fatal("a VM started for a role bound to another directory")
 	}
 }

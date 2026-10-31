@@ -1,8 +1,11 @@
 package roles
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -97,6 +100,15 @@ func (p *problems) scanText(field, s string, hosts []string) {
 	p.addf("%s refused by the text scan: %s", field, strings.Join(ids, ", "))
 }
 
+// DirHash is the binding of a role to a project directory: the SHA-256 of the directory's path ("" for no directory).
+func DirHash(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(dir)))
+	return hex.EncodeToString(sum[:])
+}
+
 func inList(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {
@@ -141,6 +153,14 @@ func (s *Store) normalize(spec *Role, cur *Role) (*Role, problems) {
 		p.addf("project: bad id")
 	} else if s.opt.Projects != nil && !inList(s.opt.Projects(), r.Project) {
 		p.addf("project: unknown project %q", clipText(r.Project, 64))
+	}
+	// The binding of the role to its project's directory is Home's: kept from the previous version, else taken from
+	// the project id Home resolves, never from the spec.
+	switch {
+	case cur != nil && cur.DirHash != "":
+		r.DirHash = cur.DirHash
+	case s.opt.ProjectDir != nil && projectRE.MatchString(r.Project):
+		r.DirHash = DirHash(s.opt.ProjectDir(r.Project))
 	}
 	r.Name, r.Description = spec.Name, spec.Description
 	switch {
