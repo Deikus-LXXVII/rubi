@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,6 +83,30 @@ func readAll(ctx context.Context, c agent.Conn, limit int64) []byte {
 	}
 }
 
+// endLoginScript ends every `claude auth login` in the VM (closing the exec from the Mac does not always
+// end the process inside): it looks through /proc, so it needs no pkill in the image.
+const endLoginScript = `const fs = require("fs");
+for (const p of fs.readdirSync("/proc")) {
+  if (!/^\d+$/.test(p) || +p === process.pid) continue;
+  try {
+    const c = fs.readFileSync("/proc/" + p + "/cmdline", "utf8").split("\0");
+    if (c.some(a => a.endsWith("/claude")) && c.includes("auth") && c.includes("login")) process.kill(+p, "SIGTERM");
+  } catch (e) {}
+}`
+
+// endLogin runs the cleanup; the sign-in is over whether it works or not.
+func (s *Setup) endLogin(box Box) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	c, err := box.Exec(ctx, []string{"node", "-e", endLoginScript}, nil)
+	if err != nil {
+		return
+	}
+	defer c.Close()
+	_ = c.CloseWrite()
+	readAll(ctx, c, 4<<10)
+}
+
 func (s *Setup) setLogin(j *job, l *loginState) {
 	s.mu.Lock()
 	j.login = l
@@ -121,10 +146,13 @@ func (s *Setup) runLogin(ctx context.Context, j *job, p agent.Project, method st
 	}
 	lctx, cancel := context.WithTimeout(ctx, loginLimit)
 	defer cancel()
-	conn, err := box.Exec(lctx, []string{claudeBin, "auth", "login", flag}, nil)
+	// `timeout` is the backstop inside the VM; endLogin is the cleanup when the sign-in ends or is cancelled.
+	secs := strconv.Itoa(int(loginLimit.Seconds()) + 60)
+	conn, err := box.Exec(lctx, []string{"timeout", secs, claudeBin, "auth", "login", flag}, nil)
 	if err != nil {
 		return outcome{Failed, "Couldn't start the sign-in: " + safeText(err.Error())}
 	}
+	defer s.endLogin(box)
 	defer conn.Close()
 	st := &loginState{project: p, conn: conn}
 	s.setLogin(j, st)

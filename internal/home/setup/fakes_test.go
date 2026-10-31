@@ -174,7 +174,7 @@ func (b *fakeBox) Exec(ctx context.Context, argv []string, extra map[string]stri
 	b.mu.Unlock()
 	c := newFakeConn()
 	switch {
-	case len(argv) >= 3 && argv[1] == "auth" && argv[2] == "status":
+	case len(argv) >= 3 && argv[0] != "node" && argv[1] == "auth" && argv[2] == "status":
 		b.mu.Lock()
 		in := b.loggedIn
 		b.mu.Unlock()
@@ -183,7 +183,7 @@ func (b *fakeBox) Exec(ctx context.Context, argv []string, extra map[string]stri
 			out = `{"loggedIn":true,"authMethod":"claude.ai"}`
 		}
 		go func() { c.out.Write([]byte(out)); c.finish() }()
-	case len(argv) >= 3 && argv[1] == "auth" && argv[2] == "login":
+	case len(argv) >= 4 && argv[0] == "timeout" && argv[3] == "auth" || len(argv) >= 3 && argv[1] == "auth" && argv[2] == "login":
 		b.mu.Lock()
 		b.lastLogin = c
 		b.mu.Unlock()

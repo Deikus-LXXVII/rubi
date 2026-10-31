@@ -122,7 +122,7 @@ func TestLoginFlow(t *testing.T) {
 			}
 		}
 	}
-	if e.ag.box.execs[len(e.ag.box.execs)-1][3] != "--claudeai" {
+	if x := e.ag.box.execs[0]; len(x) != 6 || x[0] != "timeout" || x[3] != "auth" || x[5] != "--claudeai" {
 		t.Errorf("exec: %v", e.ag.box.execs)
 	}
 	// the code: validation, project match
@@ -161,7 +161,7 @@ func TestLoginMethods(t *testing.T) {
 		e.wait()
 		found := false
 		for _, x := range e.ag.box.execs {
-			found = found || len(x) == 4 && x[1] == "auth" && x[2] == "login" && x[3] == flag
+			found = found || len(x) == 6 && x[0] == "timeout" && x[3] == "auth" && x[4] == "login" && x[5] == flag
 		}
 		if !found {
 			t.Errorf("%s: %v", method, e.ag.box.execs)
@@ -217,6 +217,52 @@ func TestLoginTimesOut(t *testing.T) {
 	if st := e.step("login"); st.State != Failed || !strings.Contains(st.Projects[0].Reason, "waited") {
 		t.Errorf("%+v", st)
 	}
+}
+
+// endedInVM says whether the cleanup of `claude auth login` was run in the VM.
+func (b *fakeBox) endedInVM() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, x := range b.execs {
+		if len(x) == 3 && x[0] == "node" && strings.Contains(x[2], "SIGTERM") && strings.Contains(x[2], "/proc") {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLoginEndsInsideTheVMAfterTimeoutAndCancel(t *testing.T) {
+	old := loginLimit
+	loginLimit = 150 * time.Millisecond
+	defer func() { loginLimit = old }()
+	for _, how := range []string{"timeout", "cancel"} {
+		e := newTestEnv(t)
+		e.ready()
+		p := e.addProject("my-project")
+		e.ag.box.login = func(c *fakeConn) {
+			c.out.Write([]byte("visit: " + claudeURL + "\n"))
+			for !c.isClosed() {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		if how == "cancel" {
+			loginLimit = time.Minute
+		}
+		e.op("run", map[string]any{"step": "login", "project": p.ID, "method": "claudeai"})
+		if how == "cancel" {
+			waitFor(t, "the link", func() bool { st := e.s.Status(context.Background()); return st.Login != nil && st.Login.URL != "" })
+			e.s.Cancel()
+		}
+		e.wait()
+		if !e.ag.box.endedInVM() {
+			t.Errorf("%s: no cleanup ran in the VM; execs %v", how, e.ag.box.execs)
+		}
+		// the backstop inside the VM outlives the Mac's own limit
+		if x := e.ag.box.execs[0]; x[0] != "timeout" {
+			t.Errorf("%s: %v", how, x)
+		}
+	}
+	loginLimit = 150 * time.Millisecond
 }
 
 func TestLoginOpen(t *testing.T) {
