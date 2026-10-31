@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Real output of pkgutil and spctl on container-1.6.1-installer-signed.pkg.
@@ -593,5 +594,66 @@ func TestContainerUnreadableVersionIsNeverInstalledOver(t *testing.T) {
 		if st.State != Failed || !strings.Contains(st.Reason, "not reinstalling") || len(c.osaCalls) != 0 || c.cmd.ran("/usr/sbin/pkgutil") != 0 {
 			t.Errorf("%s: %+v osascript %v", step, st, c.osaCalls)
 		}
+	}
+}
+
+func TestCancelDuringInstallWaitsForTheScript(t *testing.T) {
+	c := newContainerEnv(t)
+	release := make(chan struct{})
+	started := make(chan struct{})
+	c.osa = func(argv []string) ([]byte, error) {
+		close(started)
+		<-release
+		c.installed = true
+		return nil, nil
+	}
+	if err := c.s.Run(context.Background(), "container", "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	c.s.Cancel()
+	time.Sleep(100 * time.Millisecond)
+	if !c.s.Busy() {
+		t.Fatal("the job was released while the privileged script may still run")
+	}
+	if _, err := c.op("run", map[string]any{"step": "container"}); err == nil {
+		t.Error("a second install could start")
+	}
+	st := c.s.Status(context.Background())
+	if st.Steps[0].State != Working || !strings.Contains(strings.Join(st.Steps[0].Progress, " "), "waiting for the installer") {
+		t.Errorf("status while waiting: %+v", st.Steps[0])
+	}
+	close(release)
+	c.wait()
+	if st := c.step("container"); st.State != Done {
+		t.Errorf("after the script ended: %+v", st)
+	}
+}
+
+func TestInstallTimeoutSaysSo(t *testing.T) {
+	old := installLimit
+	installLimit = 100 * time.Millisecond
+	defer func() { installLimit = old }()
+	c := newContainerEnv(t)
+	c.m.extra = func(argv []string) ([]byte, error, bool) {
+		if argv[0] == "/usr/bin/osascript" {
+			time.Sleep(300 * time.Millisecond)
+			return nil, errors.New("killed"), true
+		}
+		return nil, nil, false
+	}
+	prev := c.m.extra
+	c.m.extra = func(argv []string) ([]byte, error, bool) {
+		switch argv[0] {
+		case "/usr/sbin/pkgutil":
+			return []byte(pkgutilOut), nil, true
+		case "/usr/sbin/spctl":
+			return []byte(spctlOut), nil, true
+		}
+		return prev(argv)
+	}
+	c.runJob()
+	if st := c.step("container"); st.State != Failed || !strings.Contains(st.Reason, "half done") {
+		t.Errorf("%+v", st)
 	}
 }

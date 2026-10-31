@@ -281,6 +281,9 @@ func cancelled(out string) bool {
 	return strings.Contains(out, "(-128)") || strings.Contains(out, "User canceled")
 }
 
+// installLimit is how long the administrator install may take (the dialog waits for the user).
+var installLimit = 30 * time.Minute
+
 // ---- the job ----
 
 func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
@@ -310,15 +313,22 @@ func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
 		return outcome{Failed, err.Error()}
 	}
 	log("Waiting for the administrator dialog on this Mac...")
-	ictx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	// The privileged script is not stopped by a cancel: killing osascript could leave the installer running
+	// in the middle of its work. The job stays busy until the script has ended (the administrator dialog
+	// itself can be cancelled by the user); only the time limit stops it.
+	ictx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installLimit)
 	defer cancel()
+	stop := context.AfterFunc(ctx, func() { log("Cancel noticed; waiting for the installer to finish.") })
+	defer stop()
 	out, err := s.opt.Cmd.Run(ictx, argv)
 	if err != nil {
-		if ctx.Err() != nil {
-			return outcome{Todo, "Cancelled."}
-		}
-		if cancelled(string(out)) {
+		switch {
+		case cancelled(string(out)):
 			return outcome{NeedsUser, "The administrator dialog was cancelled."}
+		case ictx.Err() != nil:
+			return outcome{Failed, "The installer didn't finish in " + installLimit.String() + " and was stopped; the installation may be half done."}
+		case ctx.Err() != nil:
+			return outcome{Failed, "Cancel came too late: the installer had started and ended with an error. " + safeText(string(out))}
 		}
 		return outcome{Failed, "The installer failed: " + safeText(string(out))}
 	}
