@@ -5,6 +5,7 @@
 // A step is { tools: [{name, input}] } or { text }. "$AGENT" resolves to Agent or Task.
 import http from "node:http";
 import fs from "node:fs";
+import path from "node:path";
 const require_fs = () => fs;
 
 let n = 0;
@@ -30,6 +31,8 @@ function pick(messages, scripts) {
   return { name: null, step: 0, steps: null };
 }
 
+let dumpSeq = 0;
+
 export function startMock(scripts, log = () => {}) {
   const requests = [];
   const others = [];
@@ -38,6 +41,13 @@ export function startMock(scripts, log = () => {}) {
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       const url = req.url.split("?")[0];
+      // Optional: keep every request body (and its anthropic-beta header) for checking against the gateway policy.
+      if (process.env.RUBI_DUMP_API_BODIES && req.method === "POST") {
+        fs.mkdirSync(process.env.RUBI_DUMP_API_BODIES, { recursive: true });
+        const n = String(dumpSeq++).padStart(5, "0") + "-" + process.pid;
+        fs.writeFileSync(path.join(process.env.RUBI_DUMP_API_BODIES, n + ".json"), body);
+        fs.writeFileSync(path.join(process.env.RUBI_DUMP_API_BODIES, n + ".beta"), String(req.headers["anthropic-beta"] ?? ""));
+      }
       if (req.method === "POST" && url.endsWith("/v1/messages/count_tokens")) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ input_tokens: 42 }));

@@ -3,6 +3,8 @@ package agent
 import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -245,5 +247,20 @@ func TestGatewayKeepsEveryBetaTheCLIKnows(t *testing.T) {
 	}
 	if !strings.Contains(filterBeta([]string{"web-search-2025-03-05"}, true), "web-search-2025-03-05") {
 		t.Error("web-search beta dropped with the policy")
+	}
+}
+
+// Real request bodies of the bundled Claude Code CLI (from the runner's scripted-API integration tests).
+func TestGatewayPassesRealClaudeCodeBodies(t *testing.T) {
+	for _, f := range []string{"claude_code_first_turn.json", "claude_code_tool_result.json"} {
+		b, err := os.ReadFile(filepath.Join("testdata", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ws := range []bool{false, true} {
+			if why := checkBody(b, ws); why != "" {
+				t.Errorf("%s (webSearch=%v): %s", f, ws, why)
+			}
+		}
 	}
 }
