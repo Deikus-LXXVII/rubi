@@ -180,9 +180,14 @@ export class Runner {
       },
     });
     try {
-      const r = (await this.peer.request("hello", { run_token: token, version: this.c.version }, { timeoutMs: this.cfg.helloTimeoutMs })) as { ok?: unknown } | null;
+      const r = (await this.peer.request("hello", { run_token: token, version: this.c.version }, {
+        timeoutMs: this.cfg.helloTimeoutMs,
+        // synchronous: a request that follows the answer in the same chunk must already find us ready
+        onResult: (res) => {
+          if ((res as { ok?: unknown } | null)?.ok === true) this.authed = true;
+        },
+      })) as { ok?: unknown } | null;
       if (r?.ok !== true) throw new Error("hello refused");
-      this.authed = true;
     } catch (e) {
       this.log(`hello failed: ${errMsg(e)}`);
       this.exit(EXIT_HELLO_FAILED);
@@ -197,7 +202,7 @@ export class Runner {
       case "session.list":
         return this.sessionList();
       case "session.messages": {
-        const id = str(p, "id");
+        const id = uuid(p, "id");
         const limit = optInt(p, "limit");
         const messages = await this.sdk.getSessionMessages(id, { dir: this.cfg.cwd, ...(limit !== undefined ? { limit } : {}) });
         return { messages };
@@ -207,7 +212,7 @@ export class Runner {
       case "session.send":
         return this.sessionSend(p);
       case "session.rename": {
-        const id = str(p, "id");
+        const id = uuid(p, "id");
         const name = str(p, "name");
         await this.sdk.renameSession(id, name, { dir: this.cfg.cwd });
         const s = this.sessions.get(id);
@@ -215,7 +220,7 @@ export class Runner {
         return { ok: true };
       }
       case "session.fork": {
-        const id = str(p, "id");
+        const id = uuid(p, "id");
         const name = optStr(p, "name");
         const f = await this.sdk.forkSession(id, { dir: this.cfg.cwd, ...(name !== undefined ? { title: name } : {}) });
         const src = this.sessions.get(id);
@@ -223,20 +228,20 @@ export class Runner {
         return { id: f.sessionId };
       }
       case "session.interrupt": {
-        const s = this.get(str(p, "id"));
+        const s = this.get(uuid(p, "id"));
         for (const a of [...s.asking]) a.abort(); // pending asks are given up (perm.cancel) and denied
         if (s.query) await s.query.interrupt();
         return { ok: true };
       }
       case "session.mode": {
-        const s = this.get(str(p, "id"));
+        const s = this.get(uuid(p, "id"));
         const mode = modeOf(p, "mode");
         if (s.query) await s.query.setPermissionMode(mode);
         s.mode = mode;
         return { ok: true };
       }
       case "session.close": {
-        const s = this.sessions.get(str(p, "id"));
+        const s = this.sessions.get(uuid(p, "id"));
         if (s) this.closeSession(s);
         return { ok: true };
       }
@@ -307,7 +312,7 @@ export class Runner {
   }
 
   private sessionSend(p: Record<string, unknown>) {
-    const id = str(p, "id");
+    const id = uuid(p, "id");
     const text = str(p, "text");
     const steer = p.steer === true;
     let s = this.sessions.get(id);
@@ -607,6 +612,11 @@ function bad(k: string): never {
 function str(p: Record<string, unknown>, k: string): string {
   const v = p[k];
   return typeof v === "string" && v !== "" ? v : bad(k);
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function uuid(p: Record<string, unknown>, k: string): string {
+  const v = p[k];
+  return typeof v === "string" && UUID_RE.test(v) ? v : bad(k);
 }
 function optStr(p: Record<string, unknown>, k: string): string | undefined {
   const v = p[k];

@@ -24,6 +24,22 @@ describe("handshake", () => {
     assert.deepEqual(await h.ok("session.list"), { sessions: [] });
   });
 
+  it("accepts a request that arrives in the same chunk as the hello answer", async () => {
+    const h = new Home();
+    const orig = h.reply.bind(h);
+    h.reply = () => {};
+    const started = h.runner.start();
+    await h.waitFor((l) => l.msg.method === "hello");
+    h.writeBytes(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } }) + "\n" + JSON.stringify({ jsonrpc: "2.0", id: 77, method: "session.list", params: {} }) + "\n",
+    );
+    const r = await h.waitFor((l) => l.from === "runner" && l.msg.id === 77);
+    assert.deepEqual(r.msg.result, { sessions: [] });
+    await started;
+    h.reply = orig;
+    assert.deepEqual(h.exits, []);
+  });
+
   it("exits when Home refuses (wrong token: stdin closed)", async () => {
     const h = new Home({ env: { RUBI_RUN_TOKEN: "wrong" } });
     await h.runner.start();
@@ -102,7 +118,8 @@ describe("protocol robustness", () => {
     assert.equal((await h.call("nope")).error.code, -32601);
     assert.equal((await h.call("session.send", { id: 5 })).error.code, -32602);
     assert.equal((await h.call("session.start", { prompt: "x", mode: "yolo" })).error.code, -32602);
-    assert.equal((await h.call("session.interrupt", { id: "nope" })).error.code, -32004);
+    assert.equal((await h.call("session.interrupt", { id: "00000000-0000-4000-8000-000000000000" })).error.code, -32004);
+    for (const bad of ["nope", "../../etc/passwd", "", 5, null]) assert.equal((await h.call("session.interrupt", { id: bad })).error.code, -32602, String(bad));
   });
 
   it("skips a line over the limit with an error and reads the next line", async () => {

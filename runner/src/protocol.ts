@@ -47,11 +47,17 @@ interface Pending {
   reject: (e: unknown) => void;
   timer?: NodeJS.Timeout;
   cleanup?: () => void;
+  onResult?: (result: unknown) => void;
 }
 
 export interface RequestOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Called synchronously, in the same turn as the line that carries the result, before any later
+   * line of the same chunk is handled. (A promise continuation would run too late for that.)
+   */
+  onResult?: (result: unknown) => void;
 }
 
 export class Peer {
@@ -190,6 +196,11 @@ export class Peer {
         const e = m.error as Record<string, unknown>;
         p.reject(new RpcError(typeof e.code === "number" ? e.code : ERR.internal, typeof e.message === "string" ? e.message : "error", e.data));
       } else {
+        try {
+          p.onResult?.(m.result);
+        } catch (e) {
+          this.log(`onResult failed: ${errMsg(e)}`);
+        }
         p.resolve(m.result);
       }
       return;
@@ -216,7 +227,7 @@ export class Peer {
     if (ro.signal?.aborted) return Promise.reject(new RpcError(ERR.closed, "cancelled"));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const p: Pending = { resolve, reject };
+      const p: Pending = { resolve, reject, ...(ro.onResult ? { onResult: ro.onResult } : {}) };
       if (ro.timeoutMs !== undefined) {
         p.timer = setTimeout(() => {
           this.pending.delete(id);

@@ -399,7 +399,7 @@ describe("fork, rename, interrupt, mode, close, list, messages", () => {
     const { id } = await start(h);
     assert.deepEqual(await h.ok("session.interrupt", { id }), { ok: true });
     assert.equal(h.sdk.last.interrupted, 1);
-    assert.equal((await h.call("session.interrupt", { id: "nope" })).error.code, -32004);
+    assert.equal((await h.call("session.interrupt", { id: "00000000-0000-4000-8000-000000000000" })).error.code, -32004);
     h.sdk.last.release();
   });
 
@@ -438,14 +438,14 @@ describe("fork, rename, interrupt, mode, close, list, messages", () => {
 
   it("list merges the disk list with the registry (name, mode, busy)", async () => {
     const h = await new Home().up();
-    h.sdk.sessions.push({ sessionId: "disk-1", summary: "from disk", lastModified: 5000, createdAt: 1000 });
+    h.sdk.sessions.push({ sessionId: "22222222-0000-4000-8000-000000000001", summary: "from disk", lastModified: 5000, createdAt: 1000 });
     h.sdk.turn = async (ctx) => {
       await ctx.hold();
     };
     const { id } = await start(h, { name: "live one", mode: "acceptEdits" });
     const { sessions } = (await h.ok("session.list")) as { sessions: any[] };
-    const disk = sessions.find((s) => s.id === "disk-1");
-    assert.deepEqual(disk, { id: "disk-1", name: "from disk", created: 1000, last_activity: 5000, mode: "default", busy: false });
+    const disk = sessions.find((s) => s.id === "22222222-0000-4000-8000-000000000001");
+    assert.deepEqual(disk, { id: "22222222-0000-4000-8000-000000000001", name: "from disk", created: 1000, last_activity: 5000, mode: "default", busy: false });
     const live = sessions.find((s) => s.id === id);
     assert.equal(live.name, "live one");
     assert.equal(live.mode, "acceptEdits");
@@ -455,9 +455,9 @@ describe("fork, rename, interrupt, mode, close, list, messages", () => {
 
   it("messages passes the limit through", async () => {
     const h = await new Home().up();
-    const r = (await h.ok("session.messages", { id: "abc", limit: 1 })) as { messages: unknown[] };
+    const r = (await h.ok("session.messages", { id: "00000000-0000-4000-8000-000000000000", limit: 1 })) as { messages: unknown[] };
     assert.equal(r.messages.length, 1);
-    assert.equal((await h.call("session.messages", { id: "abc", limit: -1 })).error.code, -32602);
+    assert.equal((await h.call("session.messages", { id: "00000000-0000-4000-8000-000000000000", limit: -1 })).error.code, -32602);
   });
 });
 
