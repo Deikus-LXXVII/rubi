@@ -146,18 +146,30 @@ the in-VM `git-credential-rubi`). Home -> plugin `next` items besides `perm.ask`
 credential), `net.ask {host}` (a host not on the proxy's list), `queue {action, queue_id}`; all answered with `decide`.
 Subagent cap. `max_subagents` (an integer, 0 or absent = no cap) is the most subagents one session may run at once
 (Home sends the cap of the Bot that owns the session). The runner counts a session's running subagents as its
-background tasks plus its `Agent`/`Task` calls that passed the gate and have no tool result yet (also those of
-subagents, so the count is the whole tree), and reports a change with an event `subagents {count}`. The
-`PreToolUse` gate for `Agent` and `Task` **waits** (never denies) while the count is at the cap: it sends
-`waiting {reason, tool_use_id}` ("waiting: this session already has N subagents running, the limit"), and when
-the call goes on `waiting {reason:"", done:true, tool_use_id}`. The gate runs before the ask, so the user is
-asked only when the subagent can start. The SDK's hook timeout would otherwise end the wait: the hook's timeout
-is `hookTimeoutSec` plus the longest wait, `subagentWaitSec` (default 6 h; the ask keeps its own 295 s
-limit). After the longest wait, or if the session is closed or the call interrupted, the call is denied with a
-reason the model sees (and an `error` event), never silently. The cap is read at `session.start`; a
-`session.send` to a session with no turn, task or call running takes the cap it brings, a running one keeps its
-own. `session.fork` copies the cap of the source. Raising or lowering a mode kills nothing: running subagents
-finish, new ones wait. Counting is approximate for a moment around a background launch (the tool result and the
-task start are two messages).
+background tasks plus its `Agent`/`Task` calls that passed the gate and have not ended; a subagent started by a call
+(`task_started.tool_use_id`) is counted once, whether or not the SDK says it runs in the background. A change is
+reported with an event `subagents {count}`. The gate is its own `PreToolUse` hook, matcher `^(Agent|Task)$`, next to
+the hook that asks Home about every tool (no matcher, `hookTimeoutSec` = 300 s, unchanged: it asks about the subagent
+tools too, so a matcher that failed to match would lose the cap, never an ask; the integration test checks that every
+tool is still asked about). The gate hook **waits** (never denies) while the count is at the cap: it sends
+`waiting {reason, tool_use_id}` ("waiting: this session already has N subagents running, the limit"), repeats it every
+`waitKeepaliveMs` (5 min, with `still: true`; Home reads any event as a sign of life, so its 30-minute idle watchdog
+doesn't interrupt a session that waits on purpose), and when the call goes on sends `waiting {reason:"", done:true,
+tool_use_id}`. The gate has the long SDK timeout: `hookTimeoutSec` plus the longest wait, `subagentWaitSec` (default
+6 h). After the longest wait the call is denied with a reason the model sees (and an `error` event), never silently.
+A call is also denied ("Stopped while waiting...") when the session is interrupted or closed while it waits, and a wait
+stops when the call is denied by Home or ends some other way. The decision Home gave for such a call is remembered for
+as long as the call may wait, so the user is not asked twice.
+
+Places are released by the subagent's own end, not only by the tool result of its call: `task_notification` (which
+carries the call's `tool_use_id`) ends the call and the task. **Checked against the real SDK** (integration test,
+scripted API): the hooks of parallel `Agent` calls run together, the results of the calls stream one by one, a
+background subagent's call returns at once ("Async agent launched") while its task goes on, and a subagent can start
+subagents of its own (`spawn_depth` 2). **Rule for nested subagents:** a call made by a subagent is not held back by the
+places that subagent and its parents hold (it would wait for itself for ever), so a tree can run deeper than the cap by
+the depth of the chain; calls of other branches count in full. The count is approximate for a moment around a launch (the
+tool result and the task start are two messages). The cap is read at `session.start`; a `session.send` to a session with
+no turn, task or call running takes the cap it brings, a running one keeps its own. `session.fork` copies the cap of the
+source. Lowering a mode kills nothing: running subagents finish, new ones wait.
 Slot events (each session holds one slot; limits in `rubi-home.md`, "Slots"): `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
 `docs/design/rubi-home.md` ("Agents in a VM").
