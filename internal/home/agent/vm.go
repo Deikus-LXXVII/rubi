@@ -7,6 +7,8 @@ package agent
 import (
 	"context"
 	"io"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 )
 
 // State is what a VM is doing.
@@ -54,6 +56,28 @@ type StartSpec struct {
 	// on the VM's network ("" when the VM has none to report). The variables it returns are added to Env.
 	// An error stops the VM.
 	Prepare func(ctx context.Context, gateway string) (map[string]string, error)
+	// Pipe is what a VM without a network (NetlessVM) reaches: the listeners its streams are offered to. The
+	// proxy and the auth gateway already serve them, so nothing on the Mac listens for the VM.
+	Pipe *PipeSpec
+}
+
+// PipeSpec names the services of a netless VM's pipe (netpipe): a stream to a nil one is reset.
+type PipeSpec struct {
+	Proxy   *netpipe.Listener
+	Gateway *netpipe.Listener
+}
+
+// The runner's view of its two services: the forwarder (runner/container/rubi-netpipe) listens on these in the VM.
+const (
+	PipeProxyAddr   = "127.0.0.1:3128"
+	PipeGatewayAddr = "127.0.0.1:3129"
+)
+
+// NetlessVM is implemented by a VM that has no network at all (`container run --network none`). Its
+// only way out is the Pipe of the StartSpec; Start gets no gateway address and does not call Prepare.
+type NetlessVM interface {
+	VM
+	Netless() bool
 }
 
 // prepareEnv runs spec.Prepare and returns the runner's environment.

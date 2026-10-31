@@ -13,7 +13,7 @@ import (
 
 const (
 	claudeURL = "https://claude.com/cai/oauth/authorize?code=true&client_id=00000000-0000-0000-0000-000000000000&response_type=code&state=abcdefghijklmnopqrstuvwxyz0123456789"
-	goodProbe = `{"write":"ok","uid":10001,"dns":"EAI_AGAIN","direct_ip":"timeout","direct_default_gw":"ENETUNREACH","proxy_allowed":"HTTP/1.1 200 Connection Established","proxy_not_listed":"HTTP/1.1 403 Forbidden"}`
+	goodProbe = `{"write":"ok","uid":10001,"routes":[],"ifaces":[],"dns":"EAI_AGAIN","direct_ip":"ENETUNREACH","direct_gateways":["ENETUNREACH","ENETUNREACH"],"proxy_allowed":"HTTP/1.1 200 Connection Established","proxy_not_listed":"HTTP/1.1 403 Forbidden"}`
 )
 
 var goodTurn = agent.TurnResult{Result: "DENIED", Denied: []string{"Bash"}}
@@ -433,38 +433,37 @@ func TestLoginOpen(t *testing.T) {
 }
 
 func TestIsolationAndTurnChecks(t *testing.T) {
-	if bad := checkIsolation([]byte(goodProbe+"\n"), true); bad != "" {
+	if bad := checkIsolation([]byte(goodProbe + "\n")); bad != "" {
 		t.Errorf("good probe: %s", bad)
 	}
 	mod := func(k, v string) []byte {
+		if !strings.Contains(goodProbe, k) {
+			t.Fatalf("%q isn't in the probe", k)
+		}
 		return []byte(strings.Replace(goodProbe, k, v, 1))
 	}
 	for name, out := range map[string][]byte{
-		"empty":        nil,
-		"not json":     []byte("oops"),
-		"not writable": mod(`"write":"ok"`, `"write":"EACCES"`),
-		"wrong user":   mod(`"uid":10001`, `"uid":0`),
-		"dns works":    mod(`"EAI_AGAIN"`, `"93.184.216.34"`),
-		"direct ip":    mod(`"direct_ip":"timeout"`, `"direct_ip":"connected"`),
-		"direct gw":    mod(`"direct_default_gw":"ENETUNREACH"`, `"direct_default_gw":"connected"`),
-		"proxy blocks": mod(`HTTP/1.1 200 Connection Established`, `HTTP/1.1 403 Forbidden`),
-		"proxy leaks":  mod(`"proxy_not_listed":"HTTP/1.1 403 Forbidden"`, `"proxy_not_listed":"HTTP/1.1 200 Connection Established"`),
+		"empty":          nil,
+		"not json":       []byte("oops"),
+		"not writable":   mod(`"write":"ok"`, `"write":"EACCES"`),
+		"wrong user":     mod(`"uid":10001`, `"uid":0`),
+		"a route":        mod(`"routes":[]`, `"routes":["eth0\t00000000\t0180A8C0"]`),
+		"an ipv6 route":  mod(`"routes":[]`, `"routes":["fd00:: 40 eth0"]`),
+		"no routes key":  mod(`"routes":[],`, ``),
+		"an interface":   mod(`"ifaces":[]`, `"ifaces":["eth0"]`),
+		"no ifaces key":  mod(`"ifaces":[],`, ``),
+		"dns works":      mod(`"EAI_AGAIN"`, `"93.184.216.34"`),
+		"direct ip":      mod(`"direct_ip":"ENETUNREACH"`, `"direct_ip":"connected"`),
+		"direct timeout": mod(`"direct_ip":"ENETUNREACH"`, `"direct_ip":"timeout"`), // a route that goes nowhere is still a route
+		"direct gw":      mod(`"direct_gateways":["ENETUNREACH","ENETUNREACH"]`, `"direct_gateways":["ENETUNREACH","connected"]`),
+		"gw refused":     mod(`"direct_gateways":["ENETUNREACH","ENETUNREACH"]`, `"direct_gateways":["ECONNREFUSED","ENETUNREACH"]`),
+		"no gw probes":   mod(`"direct_gateways":["ENETUNREACH","ENETUNREACH"]`, `"direct_gateways":[]`),
+		"proxy blocks":   mod(`HTTP/1.1 200 Connection Established`, `HTTP/1.1 403 Forbidden`),
+		"proxy leaks":    mod(`"proxy_not_listed":"HTTP/1.1 403 Forbidden"`, `"proxy_not_listed":"HTTP/1.1 200 Connection Established"`),
 	} {
-		if checkIsolation(out, true) == "" {
+		if checkIsolation(out) == "" {
 			t.Errorf("%s passed", name)
 		}
-	}
-	for _, ok := range []string{"ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "timeout"} {
-		if bad := checkIsolation(mod(`"direct_ip":"timeout"`, `"direct_ip":"`+ok+`"`), true); bad != "" {
-			t.Errorf("%s: %s", ok, bad)
-		}
-	}
-	// without a known default network the gateway probe is skipped, but then it must say so
-	if checkIsolation(mod(`"direct_default_gw":"ENETUNREACH"`, `"direct_default_gw":"skipped"`), false) != "" {
-		t.Error("skipped gateway probe refused")
-	}
-	if checkIsolation(mod(`"direct_default_gw":"ENETUNREACH"`, `"direct_default_gw":"skipped"`), true) == "" {
-		t.Error("a skipped probe passed although a gateway was given")
 	}
 	if checkTurn(goodTurn) != "" {
 		t.Error("good turn failed")
@@ -500,11 +499,11 @@ func TestSelfTestJob(t *testing.T) {
 		t.Errorf("%+v", s)
 	}
 	// a failing check names itself, and a new run replaces the result
-	e.ag.box.probeOut = strings.Replace(goodProbe, `"direct_ip":"timeout"`, `"direct_ip":"connected"`, 1)
+	e.ag.box.probeOut = strings.Replace(goodProbe, `"direct_ip":"ENETUNREACH"`, `"direct_ip":"connected"`, 1)
 	e.op("run", map[string]any{"step": "selftest", "project": p.ID})
 	e.wait()
 	s := e.step("selftest")
-	if s.State != Failed || !strings.Contains(s.Reason, "connects to the Internet directly") {
+	if s.State != Failed || !strings.Contains(s.Reason, "connects to the Internet or to a gateway directly") {
 		t.Errorf("%+v", s)
 	}
 	// a session in the way
@@ -516,47 +515,32 @@ func TestSelfTestJob(t *testing.T) {
 	}
 }
 
-func TestSelfTestProbesTheDefaultNetworkGatewayWhenKnown(t *testing.T) {
-	for _, known := range []bool{true, false} {
-		e := newTestEnv(t)
-		e.ready()
-		p := e.addProject("my-project")
-		e.ag.token = true
-		e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn}
-		probe := goodProbe
-		if !known {
-			probe = strings.Replace(goodProbe, `"direct_default_gw":"ENETUNREACH"`, `"direct_default_gw":"skipped"`, 1)
-			e.m.extra = func(argv []string) ([]byte, error, bool) {
-				if len(argv) > 3 && argv[1] == "network" && argv[3] == "default" {
-					return nil, errors.New("no such network"), true
-				}
-				return nil, nil, false
-			}
-		} else {
-			e.m.extra = func(argv []string) ([]byte, error, bool) {
-				if len(argv) > 3 && argv[1] == "network" && argv[3] == "default" {
-					return []byte(defaultNet(t)), nil, true
-				}
-				return nil, nil, false
-			}
+// The probe reads the VM's routes and interfaces and tries gateways by address; it needs nothing from the Mac.
+func TestSelfTestProbeNeedsNothingFromTheMac(t *testing.T) {
+	e := newTestEnv(t)
+	e.ready()
+	p := e.addProject("my-project")
+	e.ag.token = true
+	e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn}
+	e.ag.box.probeOut = goodProbe
+	e.op("run", map[string]any{"step": "selftest", "project": p.ID})
+	e.wait()
+	if s := e.step("selftest"); s.State != Done {
+		t.Errorf("%+v", s)
+	}
+	for _, c := range e.cmd.calls {
+		if len(c) > 1 && c[1] == "network" {
+			t.Errorf("the self-test looked at a network: %v", c)
 		}
-		e.ag.box.probeOut = probe
-		e.op("run", map[string]any{"step": "selftest", "project": p.ID})
-		e.wait()
-		if s := e.step("selftest"); s.State != Done {
-			t.Errorf("known=%v: %+v", known, s)
+	}
+	for _, env := range e.ag.box.envs {
+		if _, ok := env["RUBI_PROBE_GW"]; ok {
+			t.Error("the probe was given a gateway")
 		}
-		var gw string
-		for _, env := range e.ag.box.envs {
-			if v, ok := env["RUBI_PROBE_GW"]; ok {
-				gw = v
-			}
-		}
-		if known != (gw != "") {
-			t.Errorf("known=%v but the probe got gateway %q", known, gw)
-		}
-		if strings.Contains(isolationProbe, "192.168.64.1") {
-			t.Error("a gateway address is hardcoded in the probe")
+	}
+	for _, want := range []string{"/proc/net/route", "/proc/net/ipv6_route", "/sys/class/net", "192.168."} {
+		if !strings.Contains(isolationProbe, want) {
+			t.Errorf("the probe doesn't look at %s", want)
 		}
 	}
 }

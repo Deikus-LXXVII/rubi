@@ -11,6 +11,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 	"github.com/Deikus-LXXVII/rubi/runner"
 )
 
@@ -27,11 +28,8 @@ func TestAppleContainerArgs(t *testing.T) {
 		"-f", "/opt/rubi/runner/container/Dockerfile", "/opt/rubi/runner"}) {
 		t.Fatalf("build %v", got)
 	}
-	if got := a.networkCreateArgs(); !reflect.DeepEqual(got, []string{"container", "network", "create", "--internal", DefaultNetwork}) {
-		t.Fatalf("network %v", got)
-	}
 	run := a.RunArgs(p)
-	want := []string{"container", "run", "-d", "--name", name, "--init", "--network", DefaultNetwork, "--user", "10001",
+	want := []string{"container", "run", "-d", "--name", name, "--init", "--network", "none", "--user", "10001",
 		"--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp", "--mount", "type=bind,source=/home/alice/my-project,target=/work",
 		"--workdir", "/work", "--cpus", "2", "--memory", "2G", "--entrypoint", "sleep", DefaultImage, "infinity"}
 	if !reflect.DeepEqual(run, want) {
@@ -84,7 +82,7 @@ func TestAppleContainerRoleArgs(t *testing.T) {
 	}
 	run := a.RunArgs(r1)
 	joined := strings.Join(run, " ")
-	want := []string{"container", "run", "-d", "--name", n1, "--init", "--network", DefaultNetwork, "--user", "10001",
+	want := []string{"container", "run", "-d", "--name", n1, "--init", "--network", "none", "--user", "10001",
 		"--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp",
 		"--mount", "type=bind,source=/home/alice/my-project,target=/work",
 		"--mount", "type=bind,source=/home/alice/rubi-home/agent-roles/r_aaaaaaaa/content,target=/rubi-role,readonly",
@@ -154,53 +152,51 @@ func TestEnvFile(t *testing.T) {
 	}
 }
 
-// Start goes through inspect, network, delete, run, exec in that order; the run token is in the env
-// file and on no command line; the file is gone once the runner is up.
+// Start goes through image, delete, run, the forwarder's exec, the runner's exec in that order; there is no network
+// command at all; the run token is in the env file and on no command line; the file is gone once the runner is up.
 func TestAppleContainerStartSequence(t *testing.T) {
+	fastPipe(t)
 	var cmds [][]string
 	var envPath string
-	netMade := false
 	a := &AppleContainer{RunnerDir: "/opt/rubi/runner", EnvDir: t.TempDir()}
 	a.run = func(ctx context.Context, argv []string) ([]byte, error) {
 		cmds = append(cmds, argv)
-		if len(argv) > 2 && argv[1] == "image" || len(argv) > 2 && argv[1] == "network" && argv[2] == "inspect" && !netMade {
-			return nil, os.ErrNotExist // image and network missing
-		}
-		if len(argv) > 2 && argv[1] == "network" && argv[2] == "create" {
-			netMade = true
-		}
-		if len(argv) > 2 && argv[1] == "network" && argv[2] == "inspect" {
-			return os.ReadFile("testdata/container-1.6.1-network-internal.json")
+		if len(argv) > 2 && argv[1] == "image" {
+			return nil, os.ErrNotExist // image missing
 		}
 		return nil, nil
 	}
-	a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
-		cmds = append(cmds, argv)
+	vm := newVMPipes(t, func(ctx context.Context, argv []string) (Conn, error) {
 		for i, x := range argv {
 			if x == "--env-file" {
 				envPath = argv[i+1]
 			}
 		}
 		b, err := os.ReadFile(envPath)
-		if err != nil || !strings.Contains(string(b), "RUBI_RUN_TOKEN=tok123") || !strings.Contains(string(b), "HTTPS_PROXY=http://192.168.128.1:3128") {
+		if err != nil || !strings.Contains(string(b), "RUBI_RUN_TOKEN=tok123") || !strings.Contains(string(b), "HTTPS_PROXY=http://127.0.0.1:3128") {
 			t.Errorf("env file at exec time: %q %v", b, err)
 		}
 		if st, _ := os.Stat(envPath); st.Mode().Perm() != 0o600 {
 			t.Errorf("env file mode %v", st.Mode())
 		}
 		return nopConn{}, nil
+	})
+	a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
+		cmds = append(cmds, argv)
+		return vm.spawn(ctx, argv)
 	}
 	// LookPath is skipped because run is set.
 	c, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "my-project", Dir: "/home/alice/my-project"},
-		Env: map[string]string{"RUBI_RUN_TOKEN": "tok123"},
+		Env:  map[string]string{"RUBI_RUN_TOKEN": "tok123"},
+		Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1), Gateway: netpipe.NewListener("g", 1)},
 		Prepare: func(ctx context.Context, gateway string) (map[string]string, error) {
-			if last := cmds[len(cmds)-1]; last[1] != "run" {
-				t.Errorf("prepared before the container ran: %v", last)
+			if last := cmds[len(cmds)-1]; last[1] != "exec" {
+				t.Errorf("prepared before the pipe ran: %v", last)
 			}
-			if gateway != "192.168.128.1" {
-				t.Errorf("gateway %q", gateway)
+			if gateway != "" {
+				t.Errorf("gateway %q: a VM without a network has none", gateway)
 			}
-			return map[string]string{"HTTPS_PROXY": "http://" + gateway + ":3128"}, nil
+			return map[string]string{"HTTPS_PROXY": "http://127.0.0.1:3128"}, nil
 		}})
 	if err != nil {
 		t.Fatal(err)
@@ -212,9 +208,12 @@ func TestAppleContainerStartSequence(t *testing.T) {
 			t.Errorf("token on a command line: %v", c)
 		}
 	}
-	want := []string{"image inspect", "build --progress", "network inspect", "network create", "network inspect", "delete --force", "run -d", "exec -i"}
+	want := []string{"image inspect", "build --progress", "delete --force", "run -d", "exec -i", "exec -i"}
 	if !reflect.DeepEqual(seq, want) {
 		t.Fatalf("sequence %v", seq)
+	}
+	if !a.Netless() {
+		t.Error("an Apple container VM has a network")
 	}
 	if a.State() != StateRunning {
 		t.Fatal(a.State())
@@ -247,70 +246,20 @@ func (nopConn) CloseWrite() error           { return nil }
 func (nopConn) Close() error                { return nil }
 func (nopConn) Done() <-chan struct{}       { return make(chan struct{}) }
 
-func TestAppleContainerFailsClosedOnNetwork(t *testing.T) {
-	nat, err := os.ReadFile("testdata/container-1.6.1-network-default.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	internal, err := os.ReadFile("testdata/container-1.6.1-network-internal.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	two := "[" + strings.Trim(strings.TrimSpace(string(internal)), "[]") + "," + strings.Trim(strings.TrimSpace(string(internal)), "[]") + "]"
-	for name, out := range map[string]string{
-		"nat (real default network)": strings.ReplaceAll(string(nat), `"default"`, `"rubi-agent"`),
-		"another network":            strings.ReplaceAll(string(internal), `"rubi-agent"`, `"other"`),
-		"two networks":               two,
-		"no mode":                    strings.ReplaceAll(string(internal), `"mode"`, `"kind"`),
-		"gateway outside subnet":     strings.ReplaceAll(string(internal), `"192.168.128.1"`, `"192.168.129.1"`),
-		"public gateway":             strings.ReplaceAll(strings.ReplaceAll(string(internal), `192.168.128.1"`, `203.0.113.1"`), `192.168.128.0/24`, `203.0.113.0/24`),
-		"old guess":                  `[{"id":"rubi-agent","internal":true}]`,
-		"not json":                   `oops`,
-		"":                           ``,
-	} {
-		a := &AppleContainer{Image: "img"}
-		var ran []string
-		a.run = func(ctx context.Context, argv []string) ([]byte, error) {
-			ran = append(ran, strings.Join(argv[1:min(len(argv), 3)], " "))
-			if argv[1] == "network" && argv[2] == "inspect" {
-				return []byte(out), nil
-			}
-			return nil, nil
-		}
-		a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
-			t.Error("runner started")
-			return nopConn{}, nil
-		}
-		if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "p", Dir: "/x"}}); err == nil || a.State() != StateFailed {
-			t.Errorf("%s: started (%v)", name, err)
-		}
-		for _, r := range ran {
-			if strings.HasPrefix(r, "run ") {
-				t.Errorf("%s: a container was run", name)
-			}
-		}
-	}
-	if gw, err := checkHostOnly(internal, "rubi-agent"); err != nil || gw != "192.168.128.1" {
-		t.Errorf("real host-only network refused: %q %v", gw, err)
-	}
-}
-
 // A failing Prepare stops the container and starts no runner.
 func TestAppleContainerPrepareFails(t *testing.T) {
+	fastPipe(t)
 	a := &AppleContainer{Image: "img"}
 	var ran []string
 	a.run = func(ctx context.Context, argv []string) ([]byte, error) {
 		ran = append(ran, strings.Join(argv[1:min(len(argv), 3)], " "))
-		if argv[1] == "network" && argv[2] == "inspect" {
-			return os.ReadFile("testdata/container-1.6.1-network-internal.json")
-		}
 		return nil, nil
 	}
-	a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
+	a.spawn = newVMPipes(t, func(ctx context.Context, argv []string) (Conn, error) {
 		t.Error("runner started")
 		return nopConn{}, nil
-	}
-	_, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "p", Dir: "/x"},
+	}).spawn
+	_, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "p", Dir: "/x"}, Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1)},
 		Prepare: func(context.Context, string) (map[string]string, error) { return nil, errors.New("no proxy") }})
 	if err == nil || a.State() != StateFailed || ran[len(ran)-1] != "delete --force" {
 		t.Fatalf("%v %s %v", err, a.State(), ran)

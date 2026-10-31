@@ -629,6 +629,9 @@ That is strictly narrower.
 
 ## 10. Closing the VM-to-Mac gateway
 
+**Status (R13, done): option D is built and is the only mode.** Every VM runs with `--network none`; the mux, the forwarder and
+the Home side are described in "As built (R13)" at the end of this section. The table below is the decision record.
+
 **The gap today.** VMs sit on the host-only network (for example `192.168.128.0/24`, gateway `192.168.128.1`). Any Mac service
 listening on all interfaces is reachable from a VM through the gateway. A typical Mac has several such listeners
 (system sharing services, development servers). The self-test only probes the default NAT network's gateway on port
@@ -636,7 +639,7 @@ listening on all interfaces is reachable from a VM through the gateway. A typica
 
 | Option | How | Pros | Cons |
 |---|---|---|---|
-| **D. No IP route (recommended if it works)** | Run role VMs with no network attachment. An in-VM forwarder (`rubi-netpipe`, part of the runner image) listens on `127.0.0.1:3128` (proxy) and `127.0.0.1:3129` (auth gateway) and multiplexes connections over a dedicated `container exec -i` stdio channel to Home. Home applies the same allow-list and dials out. | No root, no admin dialog. Nothing on the Mac is reachable at all (no route). DNS is moot. Survives reboots with no system state. | Unverified that Apple container 1.6.1 can run a container **without any network**: `run --help` lists no `none` network, and the binary shows no such string. If `--network` is omitted it probably attaches `default` (NAT), which is worse. Needs a mux (frames, flow control). Throughput over exec stdio to be measured (API and npm traffic). |
+| **D. No IP route (recommended if it works)** | Run role VMs with no network attachment. An in-VM forwarder (`rubi-netpipe`, part of the runner image) listens on `127.0.0.1:3128` (proxy) and `127.0.0.1:3129` (auth gateway) and multiplexes connections over a dedicated `container exec -i` stdio channel to Home. Home applies the same allow-list and dials out. | No root, no admin dialog. Nothing on the Mac is reachable at all (no route). DNS is moot. Survives reboots with no system state. | Needed a mux (frames, flow control). **Verified (R13a):** Apple container 1.6.1 runs `--network none` with loopback only, and `exec -i` stdio is binary safe at 220-290 MiB/s. |
 | **A. pf anchor through the wizard's administrator step** | Installed with the same `osascript ... with administrator privileges` path as step 1: rules in `/Library/Application Support/Rubi/pf.rules`, loaded into anchor `com.apple/250.RubiAgent` (the stock `pf.conf` already references `com.apple/*`), with `block in quick inet from <subnet> to any`, `pass in quick proto tcp from <subnet> to <gw> port {<proxy-range>, <auth-port>}`, the same for the network's IPv6 ULA prefix, and a root LaunchDaemon that runs `pfctl -e` and reloads the anchor at boot. The network is created with a fixed `--subnet`; the proxy and auth gateway use a fixed port range (`agent_gateway_ports`, for example 47300-47399) instead of `:0`. | Kernel-enforced, all protocols, independent of the VM tool. | Root. Needs the owner at the Mac (administrator dialog). Changes system state (pf enable, a LaunchDaemon) that must be uninstallable. Possible interaction with other pf users (VPNs). Subnet and ports must stay in sync with the config. |
 | B. Bind only plus a firewall check | Proxy and auth gateway listen only on the gateway address (already the case); the wizard checks the macOS application firewall (`socketfilterfw --getglobalstate`, `--getblockall`). | No root. | Does not close anything: other apps' wildcard listeners stay reachable. The application firewall is per app, not per interface, and "block all" would also block Rubi Home's own listeners. A warning at most. |
 | C. Apple container network policy | `network create` offers only `--internal`, `--subnet`, `--subnet-v6`, `--label`, `--plugin`, `--option` (vmnet plugin options undocumented). | | No per-port or per-host filter exists in 1.6.1. |
@@ -650,6 +653,29 @@ listening on all interfaces is reachable from a VM through the gateway. A typica
   wildcard address (Home enumerates them with `lsof -iTCP -sTCP:LISTEN`, or a fixed sample of ports). Every port except
   the proxy and auth ports must be unreachable (`ETIMEDOUT`, `EHOSTUNREACH` or `ENETUNREACH`). An `ECONNREFUSED` counts
   as reachable.
+
+### As built (R13)
+
+- **VM.** `RunArgs` has `--network none` for the legacy role, every role and the sign-in container. No network is created,
+  inspected or verified any more (`verifyInternal`, `checkHostOnly` and the fixture files are gone); `agent_network`,
+  `agent_proxy_listen` and `agent_proxy_vm_host` are ignored.
+- **Pipe.** `internal/home/agent/netpipe` (Go) and `runner/container/rubi-netpipe` (node, in the image) speak the framing in
+  agent-runner.md ("No network: rubi-netpipe"). `pipe.go` runs the forwarder with a long-lived `container exec -i`, waits for
+  HELLO, restarts it up to three times in five minutes if it dies and then stops the VM.
+- **Services.** `StartProxy` and `StartGateway` take a `Listener` (a `netpipe.Listener` fed by the streams): the proxy's
+  CONNECT checks and the gateway's checks are unchanged; neither listens on the Mac. The manager starts them before the VM.
+  The env is `HTTPS_PROXY=http://rubi:<token>@127.0.0.1:3128`, `ANTHROPIC_BASE_URL=http://127.0.0.1:3129`, `NO_PROXY=127.0.0.1`.
+- **Self-test.** The gateway-port check of the decision rule is moot (the VM has no route to any address). The isolation probe
+  asserts: `/proc/net/route` has no row but the header, `/proc/net/ipv6_route` none off `lo`, `/sys/class/net` is `lo` only;
+  `1.1.1.1` and four gateway addresses (`192.168.64.1`, `192.168.128.1`, `192.168.0.1`, `10.0.0.1`) fail with `ENETUNREACH`
+  (a timeout or `ECONNREFUSED` fails the check); DNS fails; the proxy path gives 200 for a listed host and 403 for an
+  unlisted one. The wizard's network step reports "done: not needed".
+- **Live test** (`RUBI_AGENT_LIVE=1 RUBI_AGENT_LIVE_RUN=netless go test ./internal/home -run TestLiveNetless`): a role VM; no
+  route; `ENETUNREACH` to `1.1.1.1`, to the NAT network's real gateway, to the usual 192.168 gateways, each on 443 and on a
+  port that is open on every address of the Mac; DNS fails; a real TLS request to `registry.npmjs.org` through the CONNECT
+  tunnel returns 200; an unlisted host 403; no credentials 407; the gateway answers 401 to a wrong secret; no listener was
+  added to the Home process; after the exec process of the pipe is killed, the pipe comes back and the proxy path works again.
+  `TestLiveIsolationProbe` (package `setup`, same hook) runs the self-test's probe script in a real VM.
 
 ## 11. Panel (plugin pages)
 
@@ -710,8 +736,8 @@ Order: after the auth gateway work. Each step is green on its own, and the legac
 | R10 (done) | Core panel: library browser and curator queue | core/panel | panel tests |
 | R11 | Home SSH: key generation, target registry, pinned-host-key client, stream relay, limits, audit | core/home | unit with an in-process SSH server |
 | R12 | Runner and image: `rubi-ssh` wrapper, socket, `ssh.*` relay; plugin: `ssh_target` kind, grants, ask-each-time, SSH page | core/runner, plugin | integration and a live run |
-| R13a | Live spike: networkless container plus mux throughput | core | spike report |
-| R13b | Either D (`rubi-netpipe` mux and Home side, network check replaced) or A (pf anchor, LaunchDaemon, uninstall, fixed subnet and ports; **needs the owner at the Mac for the administrator dialog**) | core | self-test gateway check and a live test |
+| R13a (done) | Live spike: networkless container plus mux throughput | core | spike report (agent-runner.md) |
+| R13b (done: D) | Either D (`rubi-netpipe` mux and Home side, network check replaced) or A (pf anchor, LaunchDaemon, uninstall, fixed subnet and ports; **needs the owner at the Mac for the administrator dialog**) | core | self-test gateway check and a live test |
 | R14 | Docs: agent-runner.md, rubi-home.md, plugins.md, home-setup-wizard.md, security-model.md (§9a) | core | review |
 
 ## 14. Decisions and open questions

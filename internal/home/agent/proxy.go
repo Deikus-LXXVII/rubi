@@ -74,9 +74,12 @@ func AllowList(gitHosts, extra []string) []string {
 // ProxyConfig configures a Proxy.
 type ProxyConfig struct {
 	// Listen is the address to listen on ("127.0.0.1:0" when empty). A wildcard address (empty host,
-	// 0.0.0.0, ::) is refused: the proxy would be open to the whole network. A VM can't reach the Mac's
-	// 127.0.0.1: for a real VM set this to the address of the Mac on the VM's host-only network.
+	// 0.0.0.0, ::) is refused: the proxy would be open to the whole network. (A VM without a network doesn't use
+	// this: it is served through a Listener, see pipe.go.)
 	Listen string
+	// Listener, when set, replaces Listen: the proxy serves the connections it yields and nothing listens on
+	// the machine (a VM without a network reaches the proxy through a netpipe stream).
+	Listener net.Listener
 	// AuthToken is required from every client as the password of Proxy-Authorization: Basic (the user name
 	// is ignored); the VM gets it in HTTPS_PROXY. Without it any process that can reach the port would
 	// use the Mac's network access.
@@ -126,11 +129,13 @@ const (
 
 // StartProxy listens and serves in the background.
 func StartProxy(cfg ProxyConfig) (*Proxy, error) {
-	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:0"
-	}
-	if err := validateListen(cfg.Listen, "proxy"); err != nil {
-		return nil, err
+	if cfg.Listener == nil {
+		if cfg.Listen == "" {
+			cfg.Listen = "127.0.0.1:0"
+		}
+		if err := validateListen(cfg.Listen, "proxy"); err != nil {
+			return nil, err
+		}
 	}
 	if len(cfg.AuthToken) < 16 {
 		return nil, errors.New("the proxy needs an authentication token")
@@ -141,9 +146,12 @@ func StartProxy(cfg ProxyConfig) (*Proxy, error) {
 	if cfg.Resolve == nil {
 		cfg.Resolve = defaultResolve
 	}
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return nil, err
+	ln := cfg.Listener
+	if ln == nil {
+		var err error
+		if ln, err = net.Listen("tcp", cfg.Listen); err != nil {
+			return nil, err
+		}
 	}
 	p := &Proxy{cfg: cfg, ln: ln, allow: map[string]bool{}, exempt: map[string]bool{}, slots: make(chan struct{}, proxyMaxConns),
 		conns: map[net.Conn]string{}}

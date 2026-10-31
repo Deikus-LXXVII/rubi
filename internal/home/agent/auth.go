@@ -15,10 +15,12 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 )
 
 const (
@@ -167,21 +169,19 @@ func (a *AppleContainer) SweepAuth(ctx context.Context) {
 type AuthSession struct {
 	a     *AppleContainer
 	px    *Proxy
+	pipe  *pipeSup
 	env   map[string]string
+	endMu sync.Mutex
 	ended bool
 }
 
-// StartAuth starts the sign-in container: no project, the directory read-write, the host-only network, and a
-// proxy on the Mac's address on that network that allows only AuthHosts. It fails closed like a VM start.
+// StartAuth starts the sign-in container: no project, the directory read-write, no network, and a proxy that
+// allows only AuthHosts, reached through the pipe (pipe.go). It fails closed like a VM start.
 func (a *AppleContainer) StartAuth(ctx context.Context) (*AuthSession, error) {
 	if a.authMount(false) == "" {
 		return nil, errors.New("there is no directory for the sign-in")
 	}
 	if err := a.EnsureImage(ctx); err != nil {
-		return nil, err
-	}
-	gateway, err := a.verifyInternal(ctx)
-	if err != nil {
 		return nil, err
 	}
 	if err := a.EnsureAuthDir(); err != nil {
@@ -190,7 +190,7 @@ func (a *AppleContainer) StartAuth(ctx context.Context) (*AuthSession, error) {
 	del := []string{a.bin(), "delete", "--force", authContainer}
 	_, _ = a.do(ctx, del) // a leftover of a crash
 	run := []string{a.bin(), "run", "-d", "--progress", "none", "--name", authContainer, "--label", "rubi.role=auth", "--init",
-		"--network", a.network(), "--user", runnerUID, "--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp",
+		"--network", "none", "--user", runnerUID, "--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp",
 		"--mount", a.authMount(false), "--entrypoint", "sleep", a.image(), "infinity"}
 	if _, err := a.do(ctx, run); err != nil {
 		return nil, err
@@ -200,18 +200,29 @@ func (a *AppleContainer) StartAuth(ctx context.Context) (*AuthSession, error) {
 		_, _ = a.do(context.WithoutCancel(ctx), del)
 		return nil, err
 	}
-	listen := net.JoinHostPort(gateway, "0")
-	if a.authListen != "" {
-		listen = a.authListen
-	}
-	px, err := StartProxy(ProxyConfig{Listen: listen, AuthToken: token, Hosts: AuthHosts, Logf: log.Printf})
+	// No network: the sign-in's only way out is the pipe, whose proxy allows only AuthHosts.
+	ln := netpipe.NewListener("auth-proxy", 16)
+	u := "http://rubi:" + token + "@" + PipeProxyAddr
+	px, err := StartProxy(ProxyConfig{Listener: ln, AuthToken: token, Hosts: AuthHosts, Logf: log.Printf})
 	if err != nil {
 		_, _ = a.do(context.WithoutCancel(ctx), del)
 		return nil, fmt.Errorf("proxy: %w", err)
 	}
-	_, port, _ := net.SplitHostPort(px.Addr())
-	u := "http://rubi:" + token + "@" + net.JoinHostPort(gateway, port)
-	return &AuthSession{a: a, px: px, env: map[string]string{"HTTPS_PROXY": u, "https_proxy": u}}, nil
+	sess := &AuthSession{a: a, px: px, env: map[string]string{"HTTPS_PROXY": u, "https_proxy": u, "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}}
+	pipe, err := a.startPipe(ctx, authContainer, &PipeSpec{Proxy: ln}, func() { sess.Close() })
+	if err != nil {
+		px.Close()
+		_, _ = a.do(context.WithoutCancel(ctx), del)
+		return nil, fmt.Errorf("the network pipe: %w", err)
+	}
+	sess.endMu.Lock()
+	sess.pipe = pipe
+	ended := sess.ended
+	sess.endMu.Unlock()
+	if ended { // the pipe gave up while it was being set up
+		pipe.stop()
+	}
+	return sess, nil
 }
 
 // envFileGrace is how long the exec's environment file (it holds the proxy password) lives after the exec
@@ -239,10 +250,15 @@ func (s *AuthSession) Exec(ctx context.Context, argv []string, extra map[string]
 
 // Close ends the sign-in: the proxy, then the container with everything running in it.
 func (s *AuthSession) Close() {
+	s.endMu.Lock()
 	if s.ended {
+		s.endMu.Unlock()
 		return
 	}
 	s.ended = true
+	pipe := s.pipe
+	s.endMu.Unlock()
+	pipe.stop()
 	s.px.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

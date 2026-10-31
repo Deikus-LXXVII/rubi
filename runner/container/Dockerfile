@@ -39,7 +39,11 @@ COPY container/rubi-claude-token /usr/local/bin/rubi-claude-token
 # ssh is therefore not supported (git would call the wrapper, which refuses options); remotes are https, with the
 # credential helper above.
 COPY container/rubi-ssh /usr/local/bin/rubi-ssh
-RUN chmod 0755 /usr/local/bin/git-credential-rubi /usr/local/bin/rubi-claude-token /usr/local/bin/rubi-ssh \
+# The VM has no network (`container run --network none`): its only way out is this forwarder, run by Rubi Home with
+# `container exec -i` as a long-lived process. It listens on 127.0.0.1:3128 (the CONNECT proxy) and :3129 (the auth
+# gateway) and multiplexes every connection over its stdio to Rubi Home (docs/design/agent-roles.md section 10).
+COPY container/rubi-netpipe /usr/local/bin/rubi-netpipe
+RUN chmod 0755 /usr/local/bin/git-credential-rubi /usr/local/bin/rubi-claude-token /usr/local/bin/rubi-ssh /usr/local/bin/rubi-netpipe \
  && mkdir -p /usr/local/rubi/bin \
  && ln -s /usr/local/bin/rubi-ssh /usr/local/rubi/bin/ssh \
  && git config --system credential.helper /usr/local/bin/git-credential-rubi \

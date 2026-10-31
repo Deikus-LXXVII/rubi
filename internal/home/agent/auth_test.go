@@ -5,23 +5,29 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 )
 
 // authFake answers the container CLI; nothing real runs.
-type authFake struct{ cmds [][]string }
+type authFake struct {
+	mu   sync.Mutex
+	cmds [][]string
+}
 
 func (f *authFake) run(ctx context.Context, argv []string) ([]byte, error) {
+	f.mu.Lock()
 	f.cmds = append(f.cmds, argv)
-	j := strings.Join(argv[1:], " ")
-	if strings.HasPrefix(j, "network inspect") {
-		return os.ReadFile("testdata/container-1.6.1-network-internal.json")
-	}
+	f.mu.Unlock()
 	return nil, nil
 }
 
 func (f *authFake) find(prefix string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	for _, c := range f.cmds {
 		if strings.HasPrefix(strings.Join(c[1:], " "), prefix) {
 			return c
@@ -92,8 +98,9 @@ func TestProjectVMsNeverMountTheAuthDir(t *testing.T) {
 func TestStartLeavesTheAuthDirAlone(t *testing.T) {
 	f := &authFake{}
 	a, dir := newAuthVM(t, f)
-	a.spawn = func(ctx context.Context, argv []string) (Conn, error) { return nopConn{}, nil }
-	if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "my-project", Dir: "/home/alice/my-project"}}); err != nil {
+	a.spawn = newVMPipes(t, nil).spawn
+	fastPipe(t)
+	if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "my-project", Dir: "/home/alice/my-project"}, Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1)}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dir); err == nil {
@@ -168,15 +175,16 @@ func TestAuthSignOutRemovesBothFiles(t *testing.T) {
 func TestStartAuthIsolatedAndProxyAllowsOnlySignInHosts(t *testing.T) {
 	f := &authFake{}
 	a, dir := newAuthVM(t, f)
-	a.spawn = func(ctx context.Context, argv []string) (Conn, error) { return nopConn{}, nil }
-	a.authListen = "127.0.0.1:0"
+	fastPipe(t)
+	vm := newVMPipes(t, nil)
+	a.spawn = vm.spawn
 	s, err := a.StartAuth(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	run := strings.Join(f.find("run -d"), " ")
-	for _, want := range []string{"--name rubi-agent-auth", "--label rubi.role=auth", "--network rubi-agent", "--user 10001", "--cap-drop ALL", "--read-only",
+	for _, want := range []string{"--name rubi-agent-auth", "--label rubi.role=auth", "--network none", "--user 10001", "--cap-drop ALL", "--read-only",
 		"--mount type=bind,source=" + dir + ",target=/rubi-auth "} {
 		if !strings.Contains(run+" ", want) {
 			t.Errorf("auth container lacks %q: %s", want, run)
@@ -184,6 +192,17 @@ func TestStartAuthIsolatedAndProxyAllowsOnlySignInHosts(t *testing.T) {
 	}
 	if strings.Contains(run, "target=/work") || strings.Contains(run, "readonly") {
 		t.Errorf("a project is mounted, or the directory is read-only: %s", run)
+	}
+	// the sign-in's proxy is reached through the pipe, with its own per-start password
+	if s.env["HTTPS_PROXY"] == "" || !strings.HasSuffix(s.env["HTTPS_PROXY"], "@127.0.0.1:3128") || s.env["NO_PROXY"] != "127.0.0.1" {
+		t.Errorf("proxy environment %v", s.env)
+	}
+	tok := strings.TrimPrefix(strings.TrimSuffix(s.env["HTTPS_PROXY"], "@127.0.0.1:3128"), "http://rubi:")
+	if got := connectVia(t, vm.latest(), netpipe.SvcProxy, "CONNECT example.org:443 HTTP/1.1\r\nHost: x\r\nProxy-Authorization: "+basic(tok)+"\r\n\r\n"); !strings.Contains(got, " 403 ") {
+		t.Errorf("unlisted host through the pipe: %q", got)
+	}
+	if got := connectVia(t, vm.latest(), netpipe.SvcGateway, "GET / HTTP/1.1\r\nHost: x\r\n\r\n"); !strings.Contains(got, "reset") {
+		t.Errorf("the sign-in has no auth gateway: %q", got)
 	}
 	for _, h := range AuthHosts {
 		if !s.px.Allowed(h) {
@@ -200,14 +219,14 @@ func TestStartAuthIsolatedAndProxyAllowsOnlySignInHosts(t *testing.T) {
 	envFileGrace = 50 * time.Millisecond
 	defer func() { envFileGrace = old }()
 	var envPath string
-	a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
+	a.spawn = newVMPipes(t, func(ctx context.Context, argv []string) (Conn, error) {
 		for i, x := range argv {
 			if x == "--env-file" {
 				envPath = argv[i+1]
 			}
 		}
 		return nopConn{}, nil
-	}
+	}).spawn
 	c, err := s.Exec(context.Background(), []string{AuthHelper}, map[string]string{"CLAUDE_CONFIG_DIR": "/tmp/claude"})
 	if err != nil {
 		t.Fatal(err)

@@ -1,7 +1,6 @@
 # Rubi Home: first-time setup of the agent path
 
-The agent path (agent-runner.md) needs Apple's `container` tool, its service and kernel, a host-only network,
-the runner image, one shared Claude sign-in for all projects and a working proxy. This page is the button-only setup of
+The agent path (agent-runner.md) needs Apple's `container` tool, its service and kernel, the runner image, one shared Claude sign-in for all projects and a working proxy. This page is the button-only setup of
 all of it: the user never types a command in a terminal. It is a page of the `claude-code` plugin in the Rubi
 panel, backed by `agent-setup.*` operations of Rubi Home. Rubi Home has no web server of its own and gets none
 for this: the page uses the panel's existing sign-in, encryption and approvals, and the operations reach Rubi
@@ -15,15 +14,15 @@ One row per step. Each row shows a state, a one-line reason in plain language, a
 |---|------|-----------|--------|----------|
 | 1 | Apple container | `container --version` reports the release Rubi Home pins, or a newer one | Install / Upgrade | strong |
 | 2 | Container service | `container system status --format json` says `running` and the default kernel exists | Start | none |
-| 3 | Host-only network | the network inspects as one network with mode `hostOnly` and a private gateway in its subnet | Create | strong |
+| 3 | VM network (none needed) | always done, with the reason "Not needed: VMs run with no network at all" (VMs run with `--network none`; nothing is created or checked). The id `network` and its place stay so that the plugin's list of steps is unchanged | none | none |
 | 4 | Runner image | the image tagged with the hash of the runner bundled in this Rubi Home exists | Build / Update | none |
 | 5 | Projects | `agent_projects` has at least one folder | Add a folder / Remove | strong / none |
 | 6 | Claude sign-in (one for the computer) | the shared token is stored and not past its end of life | Sign in / Sign in again / Sign out | none |
 | 7 | Self-test (per project) | the last self-test passed with the shared sign-in (kept in memory only) | Run self-test | none |
 
 "Set up everything" (`all`) runs the service (2) and image (4) steps, then 6 and 7 for the first project, in order.
-It never runs the two privileged steps, installing the container tool (1) and creating the network (3): each has
-its own approval in the plugin. When either isn't done as `all` starts, or stops being done while it runs, `all`
+It never runs the privileged step, installing the container tool (1), which has its own approval in the plugin. When
+it isn't done as `all` starts, or stops being done while it runs, `all`
 stops with `needs_user` "needs step N (asks for approval)" on that step. It also stops at the first step that needs
 the user: a folder choice or the browser sign-in.
 
@@ -34,9 +33,9 @@ reason), `needs_user` (waiting for the user: the reason says what to do). A step
 ## Idempotent and resumable
 
 Rubi Home stores no setup state. Each status call probes the machine: the installed version, the service, the
-network, the image, the projects, the sign-in. A job that was running when Rubi Home stopped is simply gone; the
+image, the projects, the sign-in. A job that was running when Rubi Home stopped is simply gone; the
 next status shows what it left behind, and pressing the button again continues from there (every step checks
-before it acts: an installed release isn't reinstalled, an existing network isn't recreated, an existing image
+before it acts: an installed release isn't reinstalled, an existing image
 isn't rebuilt). One job runs at a time; a second press gets "busy". Self-test results live in memory.
 
 ## Operations (Rubi Home)
@@ -46,8 +45,8 @@ All are `agent-setup.*`, listed in the hello as capability `agent-setup`.
 - `agent-setup.status {}` -> `{steps: [{id, title, state, reason, progress?: [line], action?, projects?: [...]}],
   job?: {step, project?, started}, login?: {url?, wants_code}}`. A project step (`projects`, `selftest`) carries
   `projects: [{id, dir, state, reason?, progress?, action?}]`; `project` in `job` is the project id. The
-  sign-in (`login`) is one row for the whole computer, with no project rows, `action` and `action2` (two buttons). `action` is the one button of a row: `install`, `upgrade`, `start`, `create`,
-  `use_auto_address`, `build`, `add`, `check`, `login`, `login_again`, `sign_out` (step rows); `remove`, `selftest`
+  sign-in (`login`) is one row for the whole computer, with no project rows, `action` and `action2` (two buttons). `action` is the one button of a row: `install`, `upgrade`, `start`,
+  `build`, `add`, `check`, `login`, `login_again`, `sign_out` (step rows); `remove`, `selftest`
   (project rows); `cancel` while it works. Progress keeps the last 20 lines of the
   running job, each at most 200 characters, with anything that looks like a token removed. `login.url` is present
   only while a sign-in waits for the browser.
@@ -56,9 +55,8 @@ All are `agent-setup.*`, listed in the hello as capability `agent-setup`.
   `project` is a project id (`selftest`; `all` takes the first project when it is empty; `login` ignores it). `method` is
   `claudeai` (a Claude subscription) for `login`; without it `login` only checks the sign-in (and ends `needs_user` when
   the project isn't signed in); with it, it signs in even when already signed in ("Sign in again"). `all` skips
-  a signed-in project. `option` is `auto-address` for `network`: it never creates the network (error "creating the network needs its own
-  approval" when it is missing, nothing changed); it only clears, when the network exists and is host-only,
-  `agent_proxy_listen` and `agent_proxy_vm_host`.
+  a signed-in project. `option` is `auto-address` for `network` only; it is accepted for older plugins and has no effect (there is no network
+  and no address). Running `network` does nothing and ends `done` ("Not needed"); it never runs a network command.
 - `agent-setup.login.code {project, code}` -> `{sent: true}`: writes the code and a newline to the running sign-in's
   stdin. At most 512 printable ASCII characters, no spaces; refused when no sign-in waits; the `project` argument is ignored.
 - `agent-setup.login.open {}` -> `{opened: true}`: opens the sign-in link in the Mac's default browser
@@ -102,12 +100,11 @@ installation, and the user confirms twice: in the panel (passkey) and on the Mac
 ## Other steps
 
 - **Service.** `container system start --enable-kernel-install` (no prompt), then checks the status again.
-- **Network.** Creates `agent_network` (default `rubi-agent`) with `container network create --internal`, then
-  runs the same host-only check as every VM start (`checkHostOnly`). The proxy listens on that network's
-  gateway by default (agent-runner.md); when `agent_proxy_listen` or `agent_proxy_vm_host` are set and don't name
-  the gateway, the row says so and offers "Use the automatic address", which clears them. A network that exists
-  but isn't host-only is `failed` with "Remove the network <name> or set another agent_network"; Rubi Home never
-  deletes a network.
+- **Network.** Nothing to do (R13): VMs are started with `container run --network none`, so there is no host-only
+  network to create or to check, and the proxy and the auth gateway need no address. The step keeps its id and its
+  position and reports `done` with the reason "Not needed: VMs run with no network at all. They reach the proxy and the
+  Claude gateway through Rubi Home." The settings `agent_network`, `agent_proxy_listen` and `agent_proxy_vm_host` are
+  obsolete and ignored. Rubi Home never creates, changes or deletes a container network.
 - **Image.** The runner's sources are embedded in Rubi Home (`runner/` package, `go:embed`). The step writes them
   to `<helper dir>/runner-build/<hash>` and builds `rubi-agent-runner:<hash12>` with the bundled Dockerfile (base
   image pinned by digest; a builder stage installs the npm packages from the lockfile with `--ignore-scripts` and
@@ -121,8 +118,9 @@ installation, and the user confirms twice: in the panel (passkey) and on the Mac
 - **Self-test.** Home runs it itself, against its own agent manager, and needs no plugin. It takes the manager's
   slot (refused while a session runs or waits) and, while it exists, the manager denies every `perm.ask`,
   `cred.ask` and `net.ask` of that project internally: the question is never queued for the plugin, so no
-  `decide` can answer it (or be mistaken for the answer), and the self-test's events stay with it. In the project's VM: the isolation probe (the runner's user writes `/work/.rubi`, direct
-  connections and name lookups fail, an allowed host is reachable through the proxy, a host not on the list is
+  `decide` can answer it (or be mistaken for the answer), and the self-test's events stay with it. In the project's VM: the isolation probe (the runner's user writes `/work/.rubi`; the VM has no route and
+  no interface but `lo`; direct connections to a public address and to four gateway addresses fail with `ENETUNREACH`;
+  name lookups fail; an allowed host is reachable through the proxy on `127.0.0.1:3128`, a host not on the list is
   refused), then one small turn asking for a Bash command that the self-test denies through `perm.ask`. Pass needs
   every check plus a `result` after the deny. The prompt and answers are fixed; it never runs the user's prompt.
 
@@ -145,14 +143,14 @@ in each project (skills, settings, history, MCP).
   container**, which mounts it read-write at `/rubi-auth` (bind mount; an Apple container volume is a block
   device and can't be attached to two VMs) and is destroyed when the sign-in ends, and Home's **auth gateway**.
   No project VM mounts it. No project folder may be, contain or sit inside it or the helper's directory.
-- **Sign-in container.** No project mounted, the host-only network, and a proxy started by Home that allows only
+- **Sign-in container.** No project mounted, no network (`--network none`; it reaches the proxy through the same `rubi-netpipe` pipe as a project VM), and a proxy started by Home that allows only
   `claude.com`, `claude.ai`, `platform.claude.com`, `console.anthropic.com` and `api.anthropic.com`. It is removed
   (with the helper, claude and the proxy) when the sign-in ends, is cancelled or times out; a leftover of a
   crash (named `rubi-agent-auth`, labelled `rubi.role=auth`) is removed when Rubi Home starts.
-- **Auth gateway.** Every project start runs its own: a plain HTTP reverse proxy on the Mac's address on the VM's
-  network (like the CONNECT proxy, random port), alive as long as that runner. The runner gets
-  `ANTHROPIC_BASE_URL=http://<gateway>:<port>`, `CLAUDE_CODE_OAUTH_TOKEN=<per-start secret>` (random, useful
-  only at this gateway and only while this runner lives) and `NO_PROXY=<gateway host>` (claude would otherwise
+- **Auth gateway.** Every project start runs its own: a plain HTTP reverse proxy served on a stream listener of the VM's
+  pipe (no socket on the Mac), alive as long as that runner. The runner gets
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:3129`, `CLAUDE_CODE_OAUTH_TOKEN=<per-start secret>` (random, useful
+  only at this gateway and only while this runner lives) and `NO_PROXY=127.0.0.1` (claude would otherwise
   send even this plain-HTTP traffic to the CONNECT proxy). The gateway:
   - requires `Authorization: Bearer <per-start secret>` (constant-time compare) and refuses anything else (401);
   - serves only `POST /v1/messages` and `POST /v1/messages/count_tokens` (query `beta=true` or none); every other
@@ -172,10 +170,8 @@ in each project (skills, settings, history, MCP).
     a 2-minute wait for the upstream's headers and a 5-minute stall limit on the upstream's stream;
   - passes on every `anthropic-beta` line (joined) plus the OAuth beta: whichever beta the agent asks for is
     forwarded, by design; the gateway injects a credential, it is no policy on the API's features.
-  Its listener is its own: on the Mac's address on the VM network when the VM reports one, whatever
-  `agent_proxy_listen` gave the CONNECT proxy, and the VM is told that address as the base URL host and in
-  `NO_PROXY` (without a reported address, as in tests, it follows the proxy's host). A wildcard address or a name
-  is refused for both listeners. The upstream is fixed to `https://api.anthropic.com` in code: the override used by
+  The listener is a `netpipe.Listener`, not a socket, so there is no address to bind and nothing to refuse (the socket form,
+  which tests use, still refuses a wildcard address or a name). The upstream is fixed to `https://api.anthropic.com` in code: the override used by
   tests is an unexported field, set only by the package's own tests or by the build-tagged hook of the live check
   (`-tags gatewaytest`); no configuration can reach it.
   Requests to any other host never get the token: they go through the CONNECT proxy untouched, and
@@ -227,8 +223,8 @@ recording local server, `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`, `CLAUDE_CO
   refuses the fetch (`DomainCheckFailedError`). The runner therefore sets the flag-layer setting
   `skipWebFetchPreflight: true`; the integration test then sees no connection to any Anthropic host and only the
   fetch itself (`example.com:443`) at the proxy. `api.anthropic.com` is never put back on the CONNECT list.
-- With `HTTPS_PROXY` set, claude sends even a plain-HTTP base URL through that proxy; `NO_PROXY=<gateway host>`
-  makes it go direct.
+- With `HTTPS_PROXY` set, claude sends even a plain-HTTP base URL through that proxy; `NO_PROXY=127.0.0.1`
+  makes it go direct (to the gateway on the VM's own loopback).
 
 ## Secrets
 
@@ -247,7 +243,7 @@ Anthropic to the helper in the sign-in container and into the sign-in directory;
 | No network to GitHub, wrong size or hash, bad signature, not notarized | step 1 `failed`, file deleted |
 | Administrator dialog cancelled | step 1 `needs_user` |
 | Service doesn't start in 60 s | step 2 `failed` with the last lines of `container system status` |
-| Network exists with another mode | step 3 `failed`, nothing changed |
+| (no row: the network step cannot fail; VMs have no network) | step 3 `done`, "Not needed" |
 | Build fails | step 4 `failed` with the last progress lines |
 | Folder chooser cancelled, or folder refused | step 5 unchanged, reason says why |
 | Sign-in: link never appears, 15 minutes pass, `claude` exits non-zero | step 6 `failed` |

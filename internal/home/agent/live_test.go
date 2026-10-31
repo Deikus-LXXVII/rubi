@@ -48,7 +48,7 @@ func newLive(t *testing.T) *liveEnv {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	t.Cleanup(cancel)
 	l := &liveEnv{t: t, ctx: ctx, id: filepath.Base(proj)}
-	l.vm = &AppleContainer{RunnerDir: os.Getenv("RUBI_AGENT_RUNNER_DIR"), Network: os.Getenv("RUBI_AGENT_NETWORK"), EnvDir: t.TempDir()}
+	l.vm = &AppleContainer{RunnerDir: os.Getenv("RUBI_AGENT_RUNNER_DIR"), EnvDir: t.TempDir()}
 	l.m = New(Options{Dir: t.TempDir(), Projects: func() []string { return []string{proj} },
 		GitHosts: func() []string { return nil }, NewVM: func(Project) VM { return l.vm }, Wait: 2 * time.Minute})
 	t.Cleanup(func() {

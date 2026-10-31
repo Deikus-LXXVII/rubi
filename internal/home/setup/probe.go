@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -388,41 +387,19 @@ func (s *Setup) probeService(ctx context.Context) Step {
 	return Step{State: Done, Reason: "The service is running."}
 }
 
+// networkNotNeeded is the network step's reason. VMs run with `--network none` and reach the proxy and the Claude
+// gateway through Rubi Home (docs/design/agent-runner.md), so there is nothing to create or to check. The step keeps its
+// id so that the plugin's list of steps stays the same.
+const networkNotNeeded = "Not needed: VMs run with no network at all. They reach the proxy and the Claude gateway through Rubi Home."
+
 func (s *Setup) probeNetwork(ctx context.Context) Step {
-	name := s.network()
-	out, err := s.opt.Cmd.Run(ctx, []string{"container", "network", "inspect", name})
-	var list []json.RawMessage
-	if err != nil || json.Unmarshal(out, &list) == nil && len(list) == 0 {
-		return Step{State: Todo, Reason: "The network " + name + " doesn't exist yet.", Action: "create"}
-	}
-	gw, err := agent.CheckHostOnly(out, name)
-	if err != nil {
-		if strings.Contains(err.Error(), "not host-only") {
-			return Step{State: Failed, Reason: "The network " + name + " exists but isn't host-only. Remove the network " + name + " or set another agent_network."}
-		}
-		return Step{State: Failed, Reason: safeText(err.Error())}
-	}
-	cfg := s.opt.Settings()
-	for _, a := range []string{cfg.ProxyListen, cfg.ProxyVMHost} {
-		if a == "" {
-			continue
-		}
-		host := a
-		if h, _, err := net.SplitHostPort(a); err == nil {
-			host = h
-		}
-		if host != gw {
-			return Step{State: NeedsUser, Reason: "agent_proxy_listen or agent_proxy_vm_host is set and doesn't name the network's address (" + gw +
-				"). The proxy uses that address by default.", Action: "use_auto_address"}
-		}
-	}
-	return Step{State: Done, Reason: "The host-only network " + name + " (address " + gw + ")."}
+	return Step{State: Done, Reason: networkNotNeeded}
 }
 
 // appleVM is the VM definition the image and the network are checked and built with.
 func (s *Setup) appleVM() *agent.AppleContainer {
 	cfg := s.opt.Settings()
-	return &agent.AppleContainer{Bin: "container", RunnerDir: cfg.RunnerDir, Network: cfg.Network, EnvDir: s.opt.Dir}
+	return &agent.AppleContainer{Bin: "container", RunnerDir: cfg.RunnerDir, EnvDir: s.opt.Dir}
 }
 
 func (s *Setup) probeImage(ctx context.Context) Step {

@@ -75,6 +75,8 @@ func forwardedResponse(name string) bool {
 type GatewayConfig struct {
 	// Listen is where to listen (the Mac's address on the VM network, port 0); loopback is for tests.
 	Listen string
+	// Listener, when set, replaces Listen (see ProxyConfig.Listener).
+	Listener net.Listener
 	// Secret is what the runner must present as "Authorization: Bearer <Secret>".
 	Secret string
 	// TokenFile is the file with the real token. It is read at each request (a sign-in or sign-out applies at once).
@@ -120,15 +122,17 @@ func StartGateway(cfg GatewayConfig) (*Gateway, error) {
 	if cfg.client == nil && (up.Scheme != "https" || up.Host != "api.anthropic.com") {
 		return nil, errors.New("the gateway only talks to https://api.anthropic.com")
 	}
-	if cfg.Listen == "" {
-		cfg.Listen = "127.0.0.1:0"
-	}
-	if err := validateListen(cfg.Listen, "gateway"); err != nil {
-		return nil, err
-	}
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return nil, err
+	ln := cfg.Listener
+	if ln == nil {
+		if cfg.Listen == "" {
+			cfg.Listen = "127.0.0.1:0"
+		}
+		if err := validateListen(cfg.Listen, "gateway"); err != nil {
+			return nil, err
+		}
+		if ln, err = net.Listen("tcp", cfg.Listen); err != nil {
+			return nil, err
+		}
 	}
 	client := cfg.client
 	if client == nil {
