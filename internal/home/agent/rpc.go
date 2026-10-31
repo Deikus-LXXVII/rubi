@@ -16,6 +16,9 @@ import (
 
 const maxLine = 4 << 20
 
+// maxServing bounds the requests of the other end served at once; more get an error at once.
+const maxServing = 64
+
 type rpcMsg struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
@@ -71,10 +74,11 @@ type peer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+	sem    chan struct{} // bounds the requests served at once
 }
 
 func newPeer(w io.Writer) *peer {
-	p := &peer{w: w, pending: map[string]chan rpcMsg{}, done: make(chan struct{})}
+	p := &peer{w: w, pending: map[string]chan rpcMsg{}, done: make(chan struct{}), sem: make(chan struct{}, maxServing)}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	return p
 }
@@ -120,7 +124,15 @@ func (p *peer) run(r *bufio.Reader) {
 func (p *peer) dispatch(m rpcMsg) {
 	switch {
 	case m.Method != "" && len(m.ID) > 0:
-		go p.serve(m)
+		select {
+		case p.sem <- struct{}{}:
+			go func() {
+				defer func() { <-p.sem }()
+				p.serve(m)
+			}()
+		default:
+			_ = p.send(rpcMsg{ID: m.ID, Error: &RPCError{Code: -32000, Message: "too many requests at once"}})
+		}
 	case m.Method != "":
 		if p.onNote != nil {
 			p.onNote(m.Method, m.Params)

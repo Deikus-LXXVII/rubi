@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -136,7 +137,9 @@ type FakeRunner struct {
 	Token    string
 	BadToken bool
 	NoHello  bool
-	Project  Project
+	// ReplaySession is the session id "<uuid-1>" stands for in a replayed transcript.
+	ReplaySession string
+	Project       Project
 	// Handle, when set, answers requests before the defaults (return handled=false to fall through).
 	Handle func(method string, params json.RawMessage) (res any, err error, handled bool)
 
@@ -272,6 +275,12 @@ func (fr *FakeRunner) Ask(ctx context.Context, p AskParams) (AskResult, error) {
 	return r, err
 }
 
+// Cancel sends perm.cancel for an ask the runner gave up on.
+func (fr *FakeRunner) Cancel(askID, sessionID string) {
+	b, _ := json.Marshal(map[string]string{"ask_id": askID, "session_id": sessionID})
+	_ = fr.peer.send(rpcMsg{Method: "perm.cancel", Params: b})
+}
+
 // Credential sends a git.credential request.
 func (fr *FakeRunner) Credential(ctx context.Context, p CredParams) (CredResult, error) {
 	var r CredResult
@@ -279,18 +288,36 @@ func (fr *FakeRunner) Credential(ctx context.Context, p CredParams) (CredResult,
 	return r, err
 }
 
-// Replay plays a recorded runner transcript (newline-delimited JSON-RPC as the runner wrote it, without
-// the hello): notifications are sent, requests are made and their results kept (Replies). "$RUN_TOKEN"
-// in a line is replaced by the token.
+// Replay plays a recorded runner transcript. Two formats are read: plain newline-delimited JSON-RPC as the
+// runner wrote it, and the runner's wire transcripts (runner/testdata: {"from":"runner"|"home","msg":...}),
+// of which only the runner's own notifications and requests are played (hello, responses and Home's lines
+// are skipped). Notifications are sent, requests are made and their results kept (Replies). In the text,
+// "$RUN_TOKEN" becomes the token, "<uuid-1>" the session id ReplaySession (sess-1 when empty) and "<uuid-N>"
+// "ask-N".
 func (fr *FakeRunner) Replay(ctx context.Context, ndjson []byte) error {
+	sess := fr.ReplaySession
+	if sess == "" {
+		sess = "sess-1"
+	}
 	for _, line := range bytes.Split(ndjson, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 || line[0] == '#' {
 			continue
 		}
 		line = bytes.ReplaceAll(line, []byte("$RUN_TOKEN"), []byte(fr.Token))
+		line = bytes.ReplaceAll(line, []byte("<uuid-1>"), []byte(sess))
+		line = placeholderRE.ReplaceAll(line, []byte("ask-$1"))
+		var wire struct {
+			From string  `json:"from"`
+			Msg  *rpcMsg `json:"msg"`
+		}
 		var m rpcMsg
-		if err := json.Unmarshal(line, &m); err != nil || m.Method == "" {
+		if json.Unmarshal(line, &wire) == nil && wire.From != "" {
+			if wire.From != "runner" || wire.Msg == nil || wire.Msg.Method == "" || wire.Msg.Method == "hello" {
+				continue
+			}
+			m = *wire.Msg
+		} else if err := json.Unmarshal(line, &m); err != nil || m.Method == "" {
 			return fmt.Errorf("replay: bad line %q", line)
 		}
 		if len(m.ID) == 0 {
@@ -301,7 +328,12 @@ func (fr *FakeRunner) Replay(ctx context.Context, ndjson []byte) error {
 		}
 		var res json.RawMessage
 		if err := fr.peer.call(ctx, m.Method, m.Params, &res); err != nil {
-			return err
+			var re *RPCError
+			if errors.As(err, &re) {
+				res = nil
+			} else {
+				return err
+			}
 		}
 		fr.mu.Lock()
 		fr.replies = append(fr.replies, res)
@@ -309,6 +341,8 @@ func (fr *FakeRunner) Replay(ctx context.Context, ndjson []byte) error {
 	}
 	return nil
 }
+
+var placeholderRE = regexp.MustCompile(`<uuid-(\d+)>`)
 
 // Replies are the results Home gave to the requests of a replay.
 func (fr *FakeRunner) Replies() []json.RawMessage {

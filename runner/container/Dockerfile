@@ -12,7 +12,8 @@ RUN apt-get update \
 
 WORKDIR /opt/rubi-runner
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# --ignore-scripts: no package's install script runs during the build.
+RUN npm ci --omit=dev --ignore-scripts
 COPY dist/ ./dist/
 
 # git asks Rubi Home for credentials through the runner (socket served by the runner, see

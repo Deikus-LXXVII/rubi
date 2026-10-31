@@ -31,6 +31,8 @@ type AskParams struct {
 	AgentID   string          `json:"agent_id,omitempty"`
 	AgentType string          `json:"agent_type,omitempty"`
 	Tool      string          `json:"tool"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Via       string          `json:"via,omitempty"`
 	Input     json.RawMessage `json:"input"`
 	Cwd       string          `json:"cwd,omitempty"`
 	Mode      string          `json:"mode,omitempty"`
@@ -71,6 +73,8 @@ type Handler interface {
 	Ask(ctx context.Context, p AskParams) AskResult
 	Event(ev Event)
 	Credential(ctx context.Context, p CredParams) (CredResult, error)
+	// Cancel: the runner gave up on a perm.ask (perm.cancel).
+	Cancel(askID string)
 }
 
 // Runner is the client of one runner process.
@@ -137,6 +141,15 @@ func Connect(ctx context.Context, conn Conn, token string, h Handler) (*Runner, 
 		return nil, &RPCError{Code: -32601, Message: "method not found"}
 	}
 	r.peer.onNote = func(method string, params json.RawMessage) {
+		if method == "perm.cancel" {
+			var c struct {
+				AskID string `json:"ask_id"`
+			}
+			if json.Unmarshal(params, &c) == nil && c.AskID != "" {
+				h.Cancel(c.AskID)
+			}
+			return
+		}
 		if method != "event" {
 			return
 		}

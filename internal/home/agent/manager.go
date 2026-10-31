@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 )
@@ -83,6 +84,8 @@ type Item struct {
 	AgentID   string          `json:"agent_id,omitempty"`
 	AgentType string          `json:"agent_type,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
+	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Via       string          `json:"via,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Cwd       string          `json:"cwd,omitempty"`
 	Mode      string          `json:"mode,omitempty"`
@@ -102,6 +105,7 @@ type slotState struct {
 	project string
 	session string
 	turn    bool            // a turn is running
+	last    time.Time       // the last sign of life (event, ask, delivery)
 	bg      map[string]bool // background subagents still running
 }
 
@@ -153,6 +157,7 @@ type Manager struct {
 	lastCost map[string]float64
 	closed   bool
 
+	cancels    map[string]context.CancelFunc
 	netFlights map[string]*netFlight
 	netDenied  map[string]time.Time
 
@@ -295,7 +300,31 @@ func (m *Manager) projects() []Project {
 	return out
 }
 
+// deniedTrees are directories under the user's home that never become a project, nor anything inside them.
+var deniedTrees = []string{".ssh", "Library", ".gnupg", ".aws", ".config", ".kube"}
+
+func badMountPath(dir string) bool {
+	return strings.ContainsAny(dir, ",\x00\r\n") || strings.ContainsFunc(dir, unicode.IsControl)
+}
+
 func (m *Manager) protected(dir string) bool {
+	if badMountPath(dir) {
+		return true
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if rh, err := filepath.EvalSymlinks(home); err == nil {
+			home = rh
+		}
+		if dir == home || strings.HasPrefix(home, dir+string(filepath.Separator)) {
+			return true // the home itself, and /Users, /home, /
+		}
+		for _, t := range deniedTrees {
+			tt := filepath.Join(home, t)
+			if dir == tt || strings.HasPrefix(dir, tt+string(filepath.Separator)) || strings.HasPrefix(tt, dir+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
 	for _, p := range append([]string{m.opt.Dir}, m.opt.Protected...) {
 		if p == "" {
 			continue
@@ -346,6 +375,9 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		default:
 			return r, nil
 		}
+	}
+	if err := prepareWorkDir(p.Dir); err != nil {
+		return nil, err
 	}
 	// A VM start can take minutes (the image); it must not die with the request that asked for it.
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
@@ -603,12 +635,36 @@ type handler struct {
 	p *projState
 }
 
+func (h *handler) Cancel(askID string) {
+	h.m.mu.Lock()
+	cancel := h.m.cancels[h.p.ID+"|"+askID]
+	h.m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (h *handler) Ask(ctx context.Context, a AskParams) AskResult {
+	// The runner gives a call up with perm.cancel {ask_id}: that ends the wait and drops the item.
+	ctx, cancel := context.WithCancel(ctx)
+	key := h.p.ID + "|" + a.AskID
+	h.m.mu.Lock()
+	if h.m.cancels == nil {
+		h.m.cancels = map[string]context.CancelFunc{}
+	}
+	h.m.cancels[key] = cancel
+	h.m.mu.Unlock()
+	defer func() {
+		h.m.mu.Lock()
+		delete(h.m.cancels, key)
+		h.m.mu.Unlock()
+		cancel()
+	}()
 	if len(a.Input) > maxInput {
 		return deny("Rubi: the tool input is too large to review, so the call was denied.")
 	}
 	it := Item{Type: "perm.ask", Project: h.p.ID, SessionID: a.SessionID, AgentID: a.AgentID, AgentType: a.AgentType,
-		Tool: a.Tool, Input: a.Input, Cwd: a.Cwd, Mode: a.Mode}
+		Tool: a.Tool, ToolUseID: a.ToolUseID, Via: a.Via, Input: a.Input, Cwd: a.Cwd, Mode: a.Mode}
 	return h.m.waitDecision(ctx, h.p.ID, it)
 }
 
@@ -645,7 +701,7 @@ func (m *Manager) credential(ctx context.Context, p *projState, c CredParams) (C
 		return CredResult{}, errors.New("no git credential source is configured")
 	}
 	if c.Purpose == "push" {
-		it := Item{Type: "cred.ask", Project: p.ID, Host: host, Path: kv["path"], Op: "push"}
+		it := Item{Type: "cred.ask", Project: p.ID, Host: host, Path: clip(strings.TrimSpace(kv["path"]), 200), Op: "push"}
 		if r := m.waitDecision(ctx, p.ID, it); r.Behavior != "allow" {
 			msg := r.Message
 			if msg == "" {
@@ -677,7 +733,11 @@ func (m *Manager) releaseLocked() {
 
 func (m *Manager) onEvent(p *projState, ev Event) {
 	var f struct {
-		Status    string  `json:"status"`
+		Status string `json:"status"`
+		State  string `json:"state"`
+		Tasks  *[]struct {
+			ID string `json:"task_id"`
+		} `json:"tasks"`
 		TotalCost float64 `json:"total_cost_usd"`
 		Usage     struct {
 			In  int64 `json:"input_tokens"`
@@ -685,14 +745,20 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 		} `json:"usage"`
 	}
 	_ = json.Unmarshal(ev.Raw, &f)
+	if f.State != "" {
+		f.Status = f.State // the runner says "state"; "status" is accepted too
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.ownerLocked(p, ev.SessionID) {
+		m.slot.last = m.opt.Now()
+	}
 	switch ev.Kind {
 	case "status":
 		switch f.Status {
 		case "busy":
 			if !m.slot.busy {
-				m.slot = slotState{busy: true, project: p.ID, session: ev.SessionID, turn: true}
+				m.slot = slotState{busy: true, project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()}
 			} else if m.ownerLocked(p, ev.SessionID) {
 				m.slot.turn = true
 				if m.slot.session == "" {
@@ -710,7 +776,16 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 			}
 		}
 	case "background":
-		if m.ownerLocked(p, ev.SessionID) && ev.AgentID != "" {
+		if m.ownerLocked(p, ev.SessionID) && f.Tasks != nil {
+			// The runner lists every task still alive: that is the whole set.
+			m.slot.bg = map[string]bool{}
+			for i, t := range *f.Tasks {
+				if t.ID != "" && i < 1024 {
+					m.slot.bg[t.ID] = true
+				}
+			}
+			m.maybeReleaseLocked()
+		} else if m.ownerLocked(p, ev.SessionID) && ev.AgentID != "" {
 			if ev.Done {
 				delete(m.slot.bg, ev.AgentID)
 				m.maybeReleaseLocked()
@@ -792,7 +867,7 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 	case owner:
 		m.slot.turn = true
 	case acquire:
-		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true}
+		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
 	}
 	m.mu.Unlock()
 	if owner || acquire {
@@ -857,6 +932,7 @@ func (m *Manager) loop() {
 		select {
 		case <-m.kick:
 		case <-tick.C:
+			m.checkSlot()
 		case <-m.stop:
 			return
 		}
@@ -879,7 +955,7 @@ func (m *Manager) drain() {
 			m.mu.Unlock()
 			return
 		}
-		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true}
+		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
 		m.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 		var err error
@@ -957,7 +1033,7 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if strings.TrimSpace(in.Prompt) == "" {
 			return nil, errors.New("the prompt is empty")
 		}
-		mode, err := checkMode(in.Mode)
+		mode, err := m.checkMode(in.Mode)
 		if err != nil {
 			return nil, err
 		}
@@ -999,7 +1075,7 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		}
 		return res, err
 	case "mode":
-		mode, err := checkMode(in.Mode)
+		mode, err := m.checkMode(in.Mode)
 		if err != nil || !okID(in.ID) || in.Mode == "" {
 			return nil, errors.New("a session id and a valid mode are needed")
 		}
@@ -1008,12 +1084,15 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
 }
 
-func checkMode(s string) (string, error) {
+func (m *Manager) checkMode(s string) (string, error) {
 	if s == "" {
 		return "default", nil
 	}
 	if !modes[s] {
 		return "", fmt.Errorf("unknown mode %q", clip(s, 32))
+	}
+	if (s == "bypassPermissions" || s == "dontAsk") && m.opt.AllowBypass != nil && !m.opt.AllowBypass() {
+		return "", fmt.Errorf("the mode %s is switched off on this computer (agent_allow_bypass)", s)
 	}
 	return s, nil
 }
@@ -1155,4 +1234,60 @@ func (m *Manager) askHost(ctx context.Context, p *projState, host string) bool {
 	m.mu.Unlock()
 	close(f.done)
 	return f.ok
+}
+
+// SlotIdleTTL is how long a session may hold the slot without a sign of life (no event, no ask) before it
+// is interrupted and the slot freed, so a wedged runner can't block the queue forever.
+var SlotIdleTTL = 30 * time.Minute
+
+func (m *Manager) checkSlot() {
+	m.mu.Lock()
+	if !m.slot.busy || m.slot.last.IsZero() || m.opt.Now().Sub(m.slot.last) < SlotIdleTTL || len(m.asks) > 0 {
+		m.mu.Unlock()
+		return
+	}
+	project, session := m.slot.project, m.slot.session
+	var r *Runner
+	if p := m.projs[project]; p != nil {
+		r = p.runner
+	}
+	m.releaseLocked()
+	m.pushLocked(Item{Type: "event", Project: project, SessionID: session,
+		Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"no activity; the slot was released"}`)})
+	m.mu.Unlock()
+	log.Printf("agent: session %q of project %q held the slot with no activity for %v; interrupted and released", clip(session, 64), clip(project, 64), SlotIdleTTL)
+	if r != nil && session != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = r.Call(ctx, "session.interrupt", map[string]any{"id": session}, nil)
+	}
+}
+
+// prepareWorkDir makes /work/.rubi with a .gitignore of "*" on the first start, so the runner's sessions and
+// config (which can hold conversation text and tokens) are never committed. /work is shared with the VM
+// and the agent controls its content: nothing is followed through a symlink, and only a real directory and a
+// regular file are accepted. Nothing else on the Mac reads /work for decisions.
+func prepareWorkDir(dir string) error {
+	rubi := filepath.Join(dir, ".rubi")
+	st, err := os.Lstat(rubi)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.Mkdir(rubi, 0o755); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case !st.IsDir():
+		return fmt.Errorf("%s isn't a plain directory; refusing to start", rubi)
+	}
+	f, err := os.OpenFile(filepath.Join(rubi, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString("*\n")
+	return err
 }

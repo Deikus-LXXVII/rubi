@@ -1,5 +1,5 @@
-# A subagent keeps working after the turn ended; the slot stays busy until its own result.
-{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"status","status":"busy"}}
-{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"background","agent_id":"a1"}}
-{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"result","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.001}}
-{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"status","status":"idle"}}
+# A subagent keeps working after the turn ended; the slot stays busy until the task list is empty.
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","state":"busy"}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"background","tasks":[{"task_id":"t1","subagent_type":"pusher"}]}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"result","usage":{"input_tokens":10,"output_tokens":5},"total_cost_usd":0.001}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","state":"idle"}}

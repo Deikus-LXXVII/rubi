@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -206,12 +207,58 @@ func (a *AppleContainer) EnsureImage(ctx context.Context) error {
 	return err
 }
 
+// verifyInternal inspects the network and refuses to go on unless it says it is internal (host-only). The
+// inspect output is JSON; any object with a boolean "internal" (any case) that is true counts. Output that
+// doesn't say so is a refusal too.
+func (a *AppleContainer) verifyInternal(ctx context.Context) error {
+	out, err := a.do(ctx, []string{a.bin(), "network", "inspect", a.network()})
+	if err != nil {
+		return fmt.Errorf("can't inspect network %s: %w", a.network(), err)
+	}
+	var v any
+	if json.Unmarshal(out, &v) != nil {
+		return fmt.Errorf("network %s: the inspect output isn't JSON, so it can't be shown to be internal", a.network())
+	}
+	if !findInternal(v) {
+		return fmt.Errorf("network %s is not internal (host-only); refusing to start a VM on it", a.network())
+	}
+	return nil
+}
+
+func findInternal(v any) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			if strings.EqualFold(k, "internal") {
+				if b, ok := val.(bool); ok {
+					return b
+				}
+			}
+		}
+		for _, val := range x {
+			if findInternal(val) {
+				return true
+			}
+		}
+	case []any:
+		for _, val := range x {
+			if findInternal(val) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Start implements VM: image, network, container, then the runner by exec.
 func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 	a.setState(StateStarting)
 	fail := func(err error) (Conn, error) {
 		a.setState(StateFailed)
 		return nil, err
+	}
+	if badMountPath(spec.Project.Dir) {
+		return fail(errors.New("the project path can't be mounted (a comma or control character in it)"))
 	}
 	if _, err := exec.LookPath(a.bin()); err != nil && a.run == nil {
 		return fail(errors.New("the container tool isn't installed (https://github.com/apple/container)"))
@@ -223,6 +270,9 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 		if _, err := a.do(ctx, a.networkCreateArgs()); err != nil {
 			return fail(err)
 		}
+	}
+	if err := a.verifyInternal(ctx); err != nil {
+		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
 	}
 	_, _ = a.do(ctx, a.deleteArgs(spec.Project)) // a leftover of a crash
 	if _, err := a.do(ctx, a.RunArgs(spec.Project)); err != nil {

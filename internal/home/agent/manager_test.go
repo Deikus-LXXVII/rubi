@@ -2,15 +2,20 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -121,7 +126,7 @@ func (p *poller) wait(t *testing.T, typ string) Item {
 }
 
 func statusEv(session, status string) map[string]any {
-	return map[string]any{"session_id": session, "kind": "status", "status": status}
+	return map[string]any{"session_id": session, "kind": "status", "state": status}
 }
 
 func TestHandshakeBadTokenRefused(t *testing.T) {
@@ -282,7 +287,7 @@ func TestBackgroundSubagentKeepsSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	fr := e.fake.Runner()
-	fr.Emit(map[string]any{"session_id": "sess-1", "kind": "background", "agent_id": "a1"})
+	fr.Emit(map[string]any{"session_id": "sess-1", "kind": "background", "tasks": []any{map[string]any{"task_id": "a1"}}})
 	fr.Emit(statusEv("sess-1", "idle"))
 	if res, _ := e.op("start", map[string]any{"project": "my-project", "prompt": "next"}); res["queued"] != true {
 		t.Fatalf("a start while a subagent runs: %v", res)
@@ -291,44 +296,82 @@ func TestBackgroundSubagentKeepsSlot(t *testing.T) {
 	if !e.busy() {
 		t.Fatal("the slot was freed with a subagent running")
 	}
-	fr.Emit(map[string]any{"session_id": "sess-1", "kind": "result", "agent_id": "a1"})
+	fr.Emit(map[string]any{"session_id": "sess-1", "kind": "background", "tasks": []any{}})
 	eventually(t, "queued start delivered", func() bool { return len(fr.CallsOf("session.start")) == 2 })
 }
 
-func TestReplayFixtures(t *testing.T) {
+// The runner's own wire transcripts (runner/testdata of milestone M1) played against the manager.
+func TestReplayRunnerTranscripts(t *testing.T) {
 	e := newEnv(t)
 	pl := startPoller(t, e.m)
 	if _, err := e.op("start", map[string]any{"project": "my-project", "prompt": "go"}); err != nil {
 		t.Fatal(err)
 	}
 	fr := e.fake.Runner()
-	basic, err := ReadFixture("testdata/session-basic.ndjson")
+	basic, err := ReadFixture("testdata/m1-start-perm-allow-deny-subagent.ndjson")
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- fr.Replay(e.ctx, basic) }()
 	ask := pl.wait(t, "perm.ask")
-	if ask.Tool != "Bash" || ask.Project != "my-project" || !strings.Contains(string(ask.Input), "go test") || ask.Mode != "bypassPermissions" {
+	if ask.Tool != "Bash" || ask.Project != "my-project" || !strings.Contains(string(ask.Input), "ls") || ask.Mode != "bypassPermissions" ||
+		ask.Via != "hook" || ask.ToolUseID != "toolu_1" || ask.SessionID != "sess-1" {
 		t.Fatalf("ask item: %+v", ask)
 	}
-	if err := e.m.Decide(ask.AskID, "deny", "not now", nil); err != nil {
+	if err := e.m.Decide(ask.AskID, "allow", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	ask = pl.wait(t, "perm.ask")
+	if ask.AgentType != "pusher" || ask.AgentID != "agent-1" || !strings.Contains(string(ask.Input), "git push") {
+		t.Fatalf("subagent ask: %+v", ask)
+	}
+	if err := e.m.Decide(ask.AskID, "deny", "subagents may not push", nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
 	var r AskResult
-	if json.Unmarshal(fr.Replies()[0], &r) != nil || r.Behavior != "deny" || !strings.Contains(r.Message, "not now") {
-		t.Fatalf("replayed ask answered %s", fr.Replies()[0])
+	if rep := fr.Replies(); len(rep) != 2 || json.Unmarshal(rep[1], &r) != nil || r.Behavior != "deny" || !strings.Contains(r.Message, "subagents may not push") {
+		t.Fatalf("replayed asks answered %s", fr.Replies())
 	}
 	eventually(t, "slot freed by idle", func() bool { return !e.busy() })
 	st, _ := e.op("status", nil)
-	if u := st["usage_today"].(map[string]any); u["input_tokens"].(float64) < 120 || u["output_tokens"].(float64) < 30 {
+	if u := st["usage_today"].(map[string]any); u["input_tokens"].(float64) != 100 || u["output_tokens"].(float64) != 20 {
 		t.Fatalf("usage: %v", u)
 	}
 
-	// The background transcript: idle with a subagent out keeps the slot; its result frees it.
+	// queue-and-steer: events only; the slot is taken by busy and freed by the last idle.
+	e.op("start", map[string]any{"project": "my-project", "prompt": "again"})
+	qs, _ := ReadFixture("testdata/m1-queue-and-steer.ndjson")
+	fr.ReplaySession = "sess-2"
+	if err := fr.Replay(e.ctx, qs); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "slot freed", func() bool { return !e.busy() })
+
+	// AskUserQuestion: the answers travel back in updated_input.
+	e.op("start", map[string]any{"project": "my-project", "prompt": "ask me"})
+	auq, _ := ReadFixture("testdata/m1-ask-user-question.ndjson")
+	fr.ReplaySession = "sess-3"
+	go func() { done <- fr.Replay(e.ctx, auq) }()
+	ask = pl.wait(t, "perm.ask")
+	if ask.Tool != "AskUserQuestion" || ask.Via != "can_use_tool" {
+		t.Fatalf("question ask: %+v", ask)
+	}
+	e.m.Decide(ask.AskID, "allow", "", json.RawMessage(`{"questions":[{"question":"Which one?"}],"answers":{"Which one?":"A"}}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if rep := fr.Replies(); !strings.Contains(string(rep[len(rep)-1]), `"answers"`) {
+		t.Fatalf("answers not returned: %s", rep[len(rep)-1])
+	}
+	eventually(t, "slot freed after the question", func() bool { return !e.busy() })
+
+	// The background transcript: idle with a task out keeps the slot; an empty task list frees it.
+	e.op("start", map[string]any{"project": "my-project", "prompt": "bg"})
+	fr.ReplaySession = "sess-4"
 	bg, _ := ReadFixture("testdata/background.ndjson")
 	if err := fr.Replay(e.ctx, bg); err != nil {
 		t.Fatal(err)
@@ -737,4 +780,182 @@ func TestNetAskLockedDenies(t *testing.T) {
 	if e.m.askHost(e.ctx, p, "packages.example.net") {
 		t.Fatal("host approved with nobody polling")
 	}
+}
+
+func TestPermCancelDropsTheAsk(t *testing.T) {
+	e := newEnv(t)
+	pl := startPoller(t, e.m)
+	e.op("sessions", map[string]any{"project": "my-project"})
+	fr := e.fake.Runner()
+	ch := make(chan AskResult, 1)
+	go func() {
+		r, _ := fr.Ask(e.ctx, AskParams{AskID: "r-9", SessionID: "s", Tool: "Bash", Input: json.RawMessage(`{}`)})
+		ch <- r
+	}()
+	it := pl.wait(t, "perm.ask")
+	fr.Cancel("r-9", "s")
+	if r := <-ch; r.Behavior != "deny" || r.Message != DenyGone {
+		t.Fatalf("%+v", r)
+	}
+	if err := e.m.Decide(it.AskID, "allow", "", nil); err == nil {
+		t.Fatal("a cancelled ask was decided")
+	}
+}
+
+func TestBypassModesCanBeSwitchedOff(t *testing.T) {
+	off := newEnv(t, func(o *Options) { o.AllowBypass = func() bool { return false } })
+	for _, mode := range []string{"bypassPermissions", "dontAsk"} {
+		if _, err := off.op("start", map[string]any{"project": "my-project", "prompt": "x", "mode": mode}); err == nil || !strings.Contains(err.Error(), "agent_allow_bypass") {
+			t.Fatalf("start in %s: %v", mode, err)
+		}
+		if _, err := off.op("mode", map[string]any{"project": "my-project", "id": "s", "mode": mode}); err == nil {
+			t.Fatalf("mode %s accepted", mode)
+		}
+	}
+	if _, err := off.op("mode", map[string]any{"project": "my-project", "id": "s", "mode": "plan"}); err != nil {
+		t.Fatal(err)
+	}
+	on := newEnv(t) // the default: allowed
+	if _, err := on.op("start", map[string]any{"project": "my-project", "prompt": "x", "mode": "bypassPermissions"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIdleSlotIsInterruptedAndReleased(t *testing.T) {
+	old := SlotIdleTTL
+	SlotIdleTTL = 50 * time.Millisecond
+	defer func() { SlotIdleTTL = old }()
+	e := newEnv(t)
+	e.op("start", map[string]any{"project": "my-project", "prompt": "x"})
+	e.m.checkSlot()
+	if !e.busy() {
+		t.Fatal("released too early")
+	}
+	time.Sleep(80 * time.Millisecond)
+	e.m.checkSlot()
+	if e.busy() {
+		t.Fatal("not released")
+	}
+	if n := len(e.fake.Runner().CallsOf("session.interrupt")); n != 1 {
+		t.Fatalf("%d interrupts", n)
+	}
+	// A sign of life keeps it.
+	e.op("start", map[string]any{"project": "my-project", "prompt": "y"})
+	time.Sleep(80 * time.Millisecond)
+	e.fake.Runner().Emit(map[string]any{"session_id": "sess-2", "kind": "assistant", "text": "working"})
+	time.Sleep(20 * time.Millisecond)
+	e.m.checkSlot()
+	if !e.busy() {
+		t.Fatal("released a session that is alive")
+	}
+}
+
+func TestWorkDirPreparation(t *testing.T) {
+	e := newEnv(t)
+	e.op("sessions", map[string]any{"project": "my-project"})
+	b, err := os.ReadFile(filepath.Join(e.proj, ".rubi", ".gitignore"))
+	if err != nil || string(b) != "*\n" {
+		t.Fatalf("%q %v", b, err)
+	}
+	// An existing .gitignore is left alone.
+	os.WriteFile(filepath.Join(e.proj, ".rubi", ".gitignore"), []byte("mine\n"), 0o644)
+	if err := prepareWorkDir(e.proj); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(e.proj, ".rubi", ".gitignore")); string(b) != "mine\n" {
+		t.Fatalf("%q", b)
+	}
+	// Symlinks are never followed.
+	other := t.TempDir()
+	proj2 := t.TempDir()
+	os.Symlink(other, filepath.Join(proj2, ".rubi"))
+	if err := prepareWorkDir(proj2); err == nil {
+		t.Fatal(".rubi as a symlink accepted")
+	}
+	proj3 := t.TempDir()
+	os.Mkdir(filepath.Join(proj3, ".rubi"), 0o755)
+	target := filepath.Join(other, "victim")
+	os.Symlink(target, filepath.Join(proj3, ".rubi", ".gitignore"))
+	prepareWorkDir(proj3)
+	if _, err := os.Stat(target); err == nil {
+		t.Fatal("wrote through a symlink")
+	}
+	proj4 := t.TempDir() // a plain file where .rubi should be
+	os.WriteFile(filepath.Join(proj4, ".rubi"), nil, 0o600)
+	if prepareWorkDir(proj4) == nil {
+		t.Fatal(".rubi as a file accepted")
+	}
+}
+
+func TestProjectsRefuseSensitiveDirsAndMountPaths(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	e := newEnv(t)
+	for _, d := range []string{".ssh", ".gnupg", "Library/Application Support/x", "work/ok", "work/a,b"} {
+		os.MkdirAll(filepath.Join(home, d), 0o700)
+	}
+	rhome, _ := filepath.EvalSymlinks(home)
+	e.m.opt.Projects = func() []string {
+		return []string{home, filepath.Join(home, ".ssh"), filepath.Join(home, ".gnupg"), filepath.Join(home, "Library"),
+			filepath.Join(home, "Library/Application Support/x"), filepath.Join(home, ".ssh/sub"), filepath.Dir(home), filepath.Join(home, "work/a,b"),
+			filepath.Join(home, "work/ok")}
+	}
+	ps := e.m.projects()
+	if len(ps) != 1 || ps[0].Dir != filepath.Join(rhome, "work/ok") {
+		t.Fatalf("%+v", ps)
+	}
+	a := &AppleContainer{}
+	if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "p", Dir: "/x/a,b"}}); err == nil || a.State() != StateFailed {
+		t.Fatalf("comma in mount path: %v", err)
+	}
+}
+
+func TestCredAskPathIsCleaned(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.Cred = fakeCreds{} })
+	pl := startPoller(t, e.m)
+	e.op("sessions", map[string]any{"project": "my-project"})
+	go e.fake.Runner().Credential(e.ctx, CredParams{Op: "get", Purpose: "push",
+		Input: "protocol=https\nhost=git.example.com\npath=alice/re\x1b[31mpo.git" + strings.Repeat("x", 500) + "\n\n"})
+	it := pl.wait(t, "cred.ask")
+	if len(it.Path) > 200 || strings.ContainsRune(it.Path, 0x1b) {
+		t.Fatalf("path %q", it.Path)
+	}
+	e.m.Decide(it.AskID, "deny", "", nil)
+}
+
+// Nothing the credential helper sends or receives is written to the log.
+func TestCredentialsAreNotLogged(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	e := newEnv(t, func(o *Options) { o.Cred = fakeCreds{} })
+	e.op("sessions", map[string]any{"project": "my-project"})
+	in := "protocol=https\nhost=git.example.com\nusername=alice\npassword=s3cret-from-helper\n\n"
+	for _, op := range []string{"get", "store", "erase"} {
+		e.fake.Runner().Credential(e.ctx, CredParams{Op: op, Input: in})
+	}
+	e.fake.Runner().Credential(e.ctx, CredParams{Op: "get", Input: "protocol=https\nhost=evil.example.org\npassword=s3cret-from-helper\n\n"})
+	if strings.Contains(buf.String(), "s3cret") || strings.Contains(buf.String(), "read-token") {
+		t.Fatalf("log: %s", buf.String())
+	}
+}
+
+func TestRPCServesBoundedRequests(t *testing.T) {
+	block := make(chan struct{})
+	p := newPeer(io.Discard)
+	var started atomic.Int32
+	p.onReq = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
+		started.Add(1)
+		<-block
+		return nil, nil
+	}
+	for i := 0; i < maxServing+10; i++ {
+		p.dispatch(rpcMsg{ID: json.RawMessage(strconv.Itoa(i)), Method: "x"})
+	}
+	eventually(t, "serving", func() bool { return started.Load() == maxServing })
+	time.Sleep(50 * time.Millisecond)
+	if started.Load() != maxServing {
+		t.Fatalf("%d served at once", started.Load())
+	}
+	close(block)
 }

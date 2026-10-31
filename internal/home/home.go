@@ -62,6 +62,15 @@ type Config struct {
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
 	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
 	AgentRunnerDir string `json:"agent_runner_dir,omitempty"`
+	// AgentAllowedHosts are extra hosts (port 443) the agents' proxy allows for every project, for example
+	// "packages.example.net" for a Swift package; nothing is read from a project's own files. Hosts not
+	// listed are asked about (net.ask) and a plugin approval is remembered per project.
+	AgentAllowedHosts []string `json:"agent_allowed_hosts,omitempty"`
+	// AgentNoDefaultForges drops github.com, gitlab.com and bitbucket.org from the default allow-list.
+	AgentNoDefaultForges bool `json:"agent_no_default_forges,omitempty"`
+	// AgentAllowBypass says whether agent sessions may run in bypassPermissions or dontAsk (default true;
+	// the plugin still decides every tool call and approves loosening a mode with a passkey).
+	AgentAllowBypass *bool `json:"agent_allow_bypass,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -149,6 +158,12 @@ func (h *Helper) newAgent() *agent.Manager {
 		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
 		NewVM: func(p agent.Project) agent.VM {
 			return &agent.AppleContainer{RunnerDir: h.Fresh().AgentRunnerDir, EnvDir: h.Dir}
+		},
+		AllowedHosts:    func() []string { return h.Fresh().AgentAllowedHosts },
+		NoDefaultForges: func() bool { return h.Fresh().AgentNoDefaultForges },
+		AllowBypass: func() bool {
+			b := h.Fresh().AgentAllowBypass
+			return b == nil || *b
 		},
 		Cred:        agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
 		ProxyListen: h.Fresh().AgentProxyListen,

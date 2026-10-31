@@ -1,1 +1,1 @@
-{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"result","agent_id":"a1","usage":{"input_tokens":3,"output_tokens":3}}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"background","tasks":[]}}

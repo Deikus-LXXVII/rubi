@@ -67,11 +67,18 @@ func TestEnvFile(t *testing.T) {
 func TestAppleContainerStartSequence(t *testing.T) {
 	var cmds [][]string
 	var envPath string
+	netMade := false
 	a := &AppleContainer{RunnerDir: "/opt/rubi/runner", EnvDir: t.TempDir()}
 	a.run = func(ctx context.Context, argv []string) ([]byte, error) {
 		cmds = append(cmds, argv)
-		if len(argv) > 2 && argv[1] == "image" || len(argv) > 2 && argv[1] == "network" && argv[2] == "inspect" {
+		if len(argv) > 2 && argv[1] == "image" || len(argv) > 2 && argv[1] == "network" && argv[2] == "inspect" && !netMade {
 			return nil, os.ErrNotExist // image and network missing
+		}
+		if len(argv) > 2 && argv[1] == "network" && argv[2] == "create" {
+			netMade = true
+		}
+		if len(argv) > 2 && argv[1] == "network" && argv[2] == "inspect" {
+			return []byte(`[{"id":"rubi-agent","config":{"Internal":true}}]`), nil
 		}
 		return nil, nil
 	}
@@ -104,7 +111,7 @@ func TestAppleContainerStartSequence(t *testing.T) {
 			t.Errorf("token on a command line: %v", c)
 		}
 	}
-	want := []string{"image inspect", "build --progress", "network inspect", "network create", "delete --force", "run -d", "exec -i"}
+	want := []string{"image inspect", "build --progress", "network inspect", "network create", "network inspect", "delete --force", "run -d", "exec -i"}
 	if !reflect.DeepEqual(seq, want) {
 		t.Fatalf("sequence %v", seq)
 	}
@@ -138,3 +145,32 @@ func (nopConn) Write(p []byte) (int, error) { return len(p), nil }
 func (nopConn) CloseWrite() error           { return nil }
 func (nopConn) Close() error                { return nil }
 func (nopConn) Done() <-chan struct{}       { return make(chan struct{}) }
+
+func TestAppleContainerFailsClosedOnNetwork(t *testing.T) {
+	for name, out := range map[string]string{"not internal": `[{"id":"x","internal":false}]`, "no field": `[{"id":"x"}]`, "not json": `oops`, "": ``} {
+		a := &AppleContainer{Image: "img"}
+		var ran []string
+		a.run = func(ctx context.Context, argv []string) ([]byte, error) {
+			ran = append(ran, strings.Join(argv[1:min(len(argv), 3)], " "))
+			if argv[1] == "network" && argv[2] == "inspect" {
+				return []byte(out), nil
+			}
+			return nil, nil
+		}
+		a.spawn = func(ctx context.Context, argv []string) (Conn, error) {
+			t.Error("runner started")
+			return nopConn{}, nil
+		}
+		if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "p", Dir: "/x"}}); err == nil || a.State() != StateFailed {
+			t.Errorf("%s: started (%v)", name, err)
+		}
+		for _, r := range ran {
+			if strings.HasPrefix(r, "run ") {
+				t.Errorf("%s: a container was run", name)
+			}
+		}
+	}
+	if !findInternal(map[string]any{"a": []any{map[string]any{"Config": map[string]any{"INTERNAL": true}}}}) {
+		t.Error("nested internal not found")
+	}
+}
