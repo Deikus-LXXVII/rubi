@@ -269,8 +269,7 @@ The panel button runs `role.put` for a new isolated role on the same project, th
   default rule.
 - `agent_max_sessions_per_project` stays as an optional extra cap: unset or 0 means no cap. An explicit value set today
   keeps working.
-- The computer's `agent_max_sessions` is unchanged. **Discrepancy:** the addendum says its default is 4; the code and
-  rubi-home.md say 16. The owner should decide; this draft keeps 16.
+- The computer's `agent_max_sessions` is unchanged: default 4 (owner decision), 0 = no cap.
 - Per-Bot mode limits are unchanged.
 - Queue reasons gain "waiting: role visual-design (web-app) already has 1 session".
 - `fullLocked` counts by role. A queue item keeps `role`; items of one role and Bot keep their order.
@@ -326,7 +325,8 @@ can carry no grants: the frontmatter is stripped, and the body is only context.
 
 ### 6.3 Mode ceiling
 
-User config field `role_mode_ceiling` (default `default`). Ladder: `plan` < `default` < `acceptEdits` < `auto` <
+User config field `role_mode_ceiling` (default `bypassPermissions`, owner decision: the VM is the boundary, and the user's
+per-Bot usage mode and the network, secret and SSH approvals stay as designed). Ladder: `plan` < `default` < `acceptEdits` < `auto` <
 `bypassPermissions`. `dontAsk` is not offered for roles: Home treats it as loose, the SDK as strict. Home's
 `agent_allow_bypass` remains the hard floor.
 
@@ -425,7 +425,8 @@ credentials in the VM. An optional model review can be added later; it is not in
 - **Curator:** core setting `library_curator` (one Bot name). Assigning or changing it is `rubi.library.curator`
   (strong, locked). The curator may admit, publish new versions, deprecate (no new attachments) and withdraw (active
   roles drop the skill at their next materialization; audited per role). Other Bots only submit into the queue.
-  A curator admitting its own proposal is allowed and marked "self-admitted" (owner may prefer to forbid it).
+  A curator may admit its own proposal (owner decision): the automatic checks still run and must pass, the version is
+  marked with the curator as author, and the panel and audit show "self-admitted by curator".
   All curator actions go to Rubi's audit log. "Revert" is a new admit or un-withdraw, never an edit.
 - **Bot tools (core MCP):**
   - `rubi_library_list {query?, tag?}`, `rubi_library_get {id, version?}`, `rubi_library_submit {id?, description,
@@ -587,11 +588,17 @@ Order: after the auth gateway work. Each step is green on its own, and the legac
 | R13b | Either D (`rubi-netpipe` mux and Home side, network check replaced) or A (pf anchor, LaunchDaemon, uninstall, fixed subnet and ports; **needs the owner at the Mac for the administrator dialog**) | core | self-test gateway check and a live test |
 | R14 | Docs: agent-runner.md, rubi-home.md, plugins.md, home-setup-wizard.md, security-model.md (§9a) | core | review |
 
-## 14. Open questions for the owner
+## 14. Decisions and open questions
 
-1. The global cap default: 4 (addendum) or 16 (code and docs)?
-2. Default `role_mode_ceiling`: `default` (proposed) or `acceptEdits`?
-3. May the curator admit its own proposals (proposed: yes, marked)?
-4. Gateway: accept D as the target, subject to R13a, with A as the fallback?
-5. Should a role be able to opt back into the repo's `.claude` skills, as the legacy role does? Proposed: no; only the
-   legacy role keeps that.
+Decided by the owner (2026-10-31):
+1. The computer-wide cap defaults to 4.
+2. `role_mode_ceiling` defaults to `bypassPermissions` (a user setting).
+3. The curator may admit its own skills, marked "self-admitted by curator"; the checks must still pass.
+4. SSH: Rubi Home is the SSH client; the VM never connects to a target.
+
+Verified: `container run --network none` gives a VM with only loopback and no routes, so option D (§10) is possible
+without root; the exec-channel mux still needs a throughput check.
+
+Open:
+- Should a role be able to opt back into the repo's `.claude` skills, as the legacy role does? Proposed: no; only the
+  legacy role keeps that.
