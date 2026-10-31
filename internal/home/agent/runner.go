@@ -77,6 +77,13 @@ type Handler interface {
 	Cancel(askID string)
 }
 
+// SSHHandler is implemented by a Handler that also serves the runner's ssh.* messages (ssh.go). notify sends
+// a notification to this runner (ssh.data, ssh.ack, ssh.exit).
+type SSHHandler interface {
+	SSHOpen(ctx context.Context, p SSHOpenParams, notify func(method string, params any)) (*SSHOpened, error)
+	SSHNote(method string, params json.RawMessage)
+}
+
 // Runner is the client of one runner process.
 type Runner struct {
 	conn Conn
@@ -123,6 +130,7 @@ func Connect(ctx context.Context, conn Conn, token string, h Handler) (*Runner, 
 		return refuse(errors.New("the runner's hello was refused"))
 	}
 	r := &Runner{conn: conn, peer: newPeer(conn)}
+	sh, _ := h.(SSHHandler)
 	r.peer.onReq = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
 		switch method {
 		case "perm.ask":
@@ -137,10 +145,27 @@ func Connect(ctx context.Context, conn Conn, token string, h Handler) (*Runner, 
 				return nil, &RPCError{Code: -32602, Message: "bad params"}
 			}
 			return h.Credential(ctx, p)
+		case "ssh.open":
+			var p SSHOpenParams
+			if sh == nil || json.Unmarshal(params, &p) != nil {
+				return nil, &RPCError{Code: -32602, Message: "bad params"}
+			}
+			return sh.SSHOpen(ctx, p, func(method string, params any) {
+				if b, err := json.Marshal(params); err == nil {
+					_ = r.peer.send(rpcMsg{Method: method, Params: b})
+				}
+			})
 		}
 		return nil, &RPCError{Code: -32601, Message: "method not found"}
 	}
 	r.peer.onNote = func(method string, params json.RawMessage) {
+		switch method {
+		case "ssh.data", "ssh.ack", "ssh.close":
+			if sh != nil {
+				sh.SSHNote(method, params)
+			}
+			return
+		}
 		if method == "perm.cancel" {
 			var c struct {
 				AskID string `json:"ask_id"`

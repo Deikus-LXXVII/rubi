@@ -48,6 +48,7 @@ Runner -> Home (requests the runner waits on):
 |---|---|---|
 | `perm.ask` | `{ask_id, session_id, agent_id?, agent_type?, tool, tool_use_id?, via, input, cwd, mode}` | `{behavior:"allow"\|"deny", message?, updated_input?}` |
 | `git.credential` | `{op:"get"\|"store"\|"erase", input, purpose:"read"\|"push"}` | `{output}` (git's text; empty for store/erase) |
+| `ssh.open` | `{target, command, session_id, tool_use_id?}` | `{stream}` (role mode only; see "SSH relay (R11)") |
 
 `perm.ask` is sent from the `PreToolUse` hook for **every** tool call in every mode (the hook is installed for
 the main session, subagents and forks; M0 showed deny works in bypass and inside subagents/forks). The hook's
@@ -226,3 +227,65 @@ no turn, task or call running takes the cap it brings, a running one keeps its o
 source. Lowering a mode kills nothing: running subagents finish, new ones wait.
 Slot events (each session holds one slot; limits in `rubi-home.md`, "Slots"): `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
 `docs/design/rubi-home.md` ("Agents in a VM").
+
+## SSH relay (R11, contract for the runner's `rubi-ssh` wrapper, R12)
+
+Rubi Home is the SSH client; the VM never connects to a target and never holds a key (design `agent-roles.md` section 9).
+The runner only relays what the in-VM wrapper (`ssh <target> [command...]`) says to Home. Home takes the role from the
+VM it is talking to; nothing in these messages names a role, a host, a user or a key, and Home ignores any such field.
+
+Runner -> Home request `ssh.open {target, command, session_id, tool_use_id?}` -> `{stream}`.
+
+- `target` is a registered target name (`^[a-z0-9][a-z0-9-]{0,31}$`); `command` is a non-empty string of at most 8192
+  bytes, run by the target's shell on an exec channel (no pty, no interactive shell in v1: an empty command is an
+  error). `session_id` and `tool_use_id` correlate the approval and the audit with the Bash call that ran `ssh`.
+- Errors (JSON-RPC error, code -32000, message for the model): `this SSH target isn't available to this role` (not
+  granted, unknown, or the default role: the three look the same), `this command isn't allowed on the target`,
+  `this role has 4 SSH streams open already`, `Rubi: ...` (the user denied the `ssh.ask`, or no answer in time), `host key
+  changed: ...` (the target presented another host key than the pinned one; nothing was sent to it), or a reach/login
+  failure. The request can take as long as an approval (up to the ask timeout) plus the dial (15 s).
+- The answer is written before any notification about the stream, so the runner always knows the id first.
+
+Notifications, `stream` always the id from `ssh.open` (bytes are standard base64 in `b64`; `fd` 1 is stdout, 2 is stderr):
+
+| Direction | Method | Params | Meaning |
+|---|---|---|---|
+| Home -> runner | `ssh.data` | `{stream, fd: 1\|2, b64}` | output of the command (at most 32 KiB per notification) |
+| runner -> Home | `ssh.data` | `{stream, fd: 0, b64?, eof?: true}` | input for the command's stdin; `eof: true` closes stdin (may be sent with the last bytes, or alone) |
+| both | `ssh.ack` | `{stream, n}` | the sender consumed `n` bytes of the data it received (flow control, below) |
+| runner -> Home | `ssh.close` | `{stream}` | abort: Home hangs up and answers with `ssh.exit` (`reason: "closed by the runner"`) |
+| Home -> runner | `ssh.exit` | `{stream, code, reason?}` | the stream is over; always the last message about it, after all its output was sent |
+
+- `code` is the command's exit status. When the stream did not end by the command exiting (`reason` is present), `code` is
+  -1 and `reason` says why: `revoked` (grant removed, role archived, target removed), `idle timeout`, `time limit`,
+  `closed by the runner`, `input buffer overrun`, `Rubi Home stopped`, `signal NAME`, or `the connection ended without an
+  exit status`. The runner reports 255 to the caller for -1.
+- **Flow control**: at most 8 MiB (`8388608`) bytes may be unacknowledged in each direction. Home stops reading the
+  command's output while 8 MiB of it is unacknowledged by the runner (the runner sends `ssh.ack {stream, n}` as it hands
+  output to the wrapper). The runner must not have more than 8 MiB of input unacknowledged by Home (Home sends
+  `ssh.ack {stream, n}` after it wrote the bytes to the command's stdin); a runner that sends more is cut with
+  `input buffer overrun`. `n` counts decoded bytes, over all fds of that direction.
+- **Limits** (Home): 4 open streams per role, 2 hours per stream, 10 minutes without data in either direction. Acks do not
+  count as activity.
+- A stream is addressed only by the runner of the role that opened it; a stream id from another role is ignored.
+- The runner ending, Home stopping, a `role.put` that removes the grant (or archives the role) and `ssh.remove` cut the
+  streams; the runner gets `ssh.exit` when it is still there.
+- `ssh.ask` is a plugin item (`next`), not a runner message: `{type:"ssh.ask", ask_id, project, role, session_id,
+  tool_use_id, host, op:"ssh", input:{target, host, port, user, command}}` (command redacted, at most 1000 characters),
+  answered with `decide`. It is sent only for targets registered with `ask_each_time`.
+
+Plugin operations (`claude-agent.*`, the plugin gates them; strict arguments, an unknown field is an error):
+
+| Op | Arguments | Result |
+|---|---|---|
+| `ssh.scan` | `{host, port?}` | `{fingerprint, key_type}`: Home dials from this computer and reads the host key; no authentication |
+| `ssh.register` | `{name, host, port?, user, fingerprint, allowed_commands?, ask_each_time?}` | `{public_key_line}`; refused when the live host key's fingerprint is not `fingerprint`, or the name exists |
+| `ssh.list` | `{}` | `{targets:[{name, host, port, user, fingerprint, key_type, allowed_commands, ask_each_time, created_at, host_key_changed?, roles:[{id, name, project}]}]}` |
+| `ssh.remove` | `{name}` | `{ok, closed_streams}`: deletes the key, forgets the target, cuts its streams |
+| `ssh.audit` | `{target?, limit?}` | `{entries:[{stream?, role, project, bot?, target, command, start, end, exit?, bytes_in, bytes_out, result, reason?}]}`, newest first |
+
+`allowed_commands` entries are exact commands, or prefixes when they end in `*` (the rest of the command may then hold only
+letters, digits and ` _./:=@%+,-`, so a prefix cannot be extended into a second command). With none, any command runs. The
+public key line is `restrict[,command="..."] ssh-ed25519 AAAA... rubi-<name>`; `command=` is added only when exactly one
+exact command is allowed. The private key is in `<helper>/agent-ssh/keys/<name>` (0600, directory 0700) and is in no result,
+item, event, log line, error, audit entry or environment variable.

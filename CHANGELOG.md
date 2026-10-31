@@ -23,6 +23,18 @@
   read-only host method `library.get {id, version}` (content and signature). Rubi Home pins the library public key on the
   new op `library.key`, which only Rubi's core sends (no plugin capability reaches it) and verifies library skills in roles
   with it; before, every library skill was refused. A role's skill `sig` may now be up to 600 characters.
+- **Rubi Home: SSH targets (agent roles, R11).** New ops `claude-agent.ssh.scan/register/list/remove/audit` and the runner
+  request `ssh.open` with `ssh.data/ack/close/exit` notifications (contract in `docs/design/agent-runner.md`). Home is the SSH
+  client: it reads and pins the target's host key, generates an Ed25519 key per target in `<helper>/agent-ssh/keys/` (0600;
+  it never leaves Home and is in no result, item, event, log or environment), returns the public key as a `restrict`
+  authorized_keys line (with `command=` for one exact command), and runs commands on an exec channel from the Mac, never
+  from the VM. A role may use a target only when its record's `ssh` lists it (checked from the VM's own role, again after an
+  approval and every 2 s while streaming); `ask_each_time` targets raise an `ssh.ask` item answered with `decide`;
+  `allowed_commands` are enforced; a changed host key is refused and audited. Limits: 4 streams per role, 2 h per stream,
+  10 min idle, 8 MiB per direction with acknowledgement-based backpressure. A `role.put` removing the grant, `ssh.remove`,
+  a stopped runner or Home stopping cuts live streams. Audit per stream in `agent-ssh/audit.jsonl`: no output, no key
+  material. The runner/wrapper side is R12.
+
 - **Rubi Home: one VM per role (agent roles, R4).** `claude-agent.start/send/sessions/messages/rename/fork/interrupt/close/mode`
   take an optional `role` (a role id; missing means the project's legacy role, which keeps its VM, mounts and environment
   exactly). An isolated role runs in its own container (`rubi-agent-<role>-<hash of dir|role>`) with the project at `/work`,

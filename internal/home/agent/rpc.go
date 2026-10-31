@@ -148,8 +148,13 @@ func (p *peer) dispatch(m rpcMsg) {
 	}
 }
 
+// afterReplier is a result with something to do once its answer is on the wire (ssh.open starts relaying
+// output only then, so the runner knows the stream before the first notification about it).
+type afterReplier interface{ afterReply() }
+
 func (p *peer) serve(m rpcMsg) {
 	reply := rpcMsg{ID: m.ID}
+	var after afterReplier
 	if p.onReq == nil {
 		reply.Error = &RPCError{Code: -32601, Message: "method not found"}
 	} else if res, err := p.onReq(p.ctx, m.Method, m.Params); err != nil {
@@ -163,8 +168,12 @@ func (p *peer) serve(m rpcMsg) {
 		reply.Error = &RPCError{Code: -32603, Message: "internal error"}
 	} else {
 		reply.Result = b
+		after, _ = res.(afterReplier)
 	}
 	_ = p.send(reply)
+	if after != nil {
+		after.afterReply()
+	}
 }
 
 // call sends a request and waits for its answer.
