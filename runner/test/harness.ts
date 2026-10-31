@@ -7,6 +7,9 @@ export type Msg = Record<string, any>;
 export interface Line {
   from: "home" | "runner";
   msg: Msg;
+  /** Not a JSON-RPC message: a control step ("close_stdin", "exit") or a raw (malformed) line. */
+  action?: string;
+  raw?: string;
 }
 
 export const TOKEN = "t".repeat(64);
@@ -57,6 +60,7 @@ export class Home {
 
   private record(l: Line) {
     this.lines.push(l);
+    if (l.action || l.raw) return;
     this.waiters = this.waiters.filter((w) => {
       if (!w.pred(l)) return true;
       w.resolve(l);
@@ -88,9 +92,11 @@ export class Home {
   }
   /** Bytes straight onto the wire (malformed lines, huge lines); not recorded. */
   writeBytes(s: string | Buffer) {
+    if (typeof s === "string" && s.endsWith("\n") && s.length < 200) this.record({ from: "home", msg: {}, raw: s.slice(0, -1) });
     this.toRunner.write(s);
   }
   closeStdin() {
+    this.record({ from: "home", msg: {}, action: "close_stdin" });
     this.toRunner.end();
   }
 
