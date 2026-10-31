@@ -16,7 +16,7 @@ plugin claude-code v0.4 (in Rubi)  --Home ops (relay, E2E)-->  Rubi Home (Mac, u
 - **runner/** (TypeScript, `@anthropic-ai/claude-agent-sdk`): one process per project VM. Talks newline-delimited
   JSON-RPC 2.0 on stdin/stdout. No network of its own beyond the proxy given in its env.
 - **internal/home/agent/** (Go): supervisor behind `VM` interface (`AppleContainer` real impl, `Fake` impl for
-  tests), runner client, agent slot, disk queue, allow-list proxy, git credential helper, `run_token`.
+  tests), runner client, session slots (per project and total), disk queue, allow-list proxy, git credential helper, `run_token`.
 - **plugin claude-code v0.4**: replaces `claude-hook` approvals with `perm.ask`; sisters use the new Home ops.
 
 ## Runner protocol (stdio, JSON-RPC 2.0, one JSON object per line)
@@ -66,7 +66,7 @@ num_turns, is_error}`), `ask` (`AskUserQuestion` payload), `rate_limit` (from `r
 `api_error_params.rate_limit_info`), `background`, `status`, `error`. Field names (M1): `status` is
 `{status:"busy"|"idle"|"closed"}` (busy while a turn runs or a background subagent lives; `closed` once, after
 `session.close`); `background` is `{agent_id, subagent_type?, description?}` when a subagent keeps running after the
-turn (the slot stays busy) and `{agent_id, done:true}` when it ends; `error` is `{message}` (also sent when held-back
+turn (its slot stays busy) and `{agent_id, done:true}` when it ends; `error` is `{message}` (also sent when held-back
 messages or events had to be dropped, with `dropped:n` for events). `session_id` is always the id `session.start` returned.
 
 Runner -> Home notification, not an event: `perm.cancel {ask_id, session_id}`, sent when the runner gives up on a
@@ -144,5 +144,5 @@ mode no approval, to a looser one strong (passkey). Sisters: bind/send/replies a
 Runner -> Home request `git.credential {op: get|store|erase, input, purpose?: "push"}` -> `{output}` (the runner relays
 the in-VM `git-credential-rubi`). Home -> plugin `next` items besides `perm.ask`: `cred.ask {host, path, op:"push"}` (a push
 credential), `net.ask {host}` (a host not on the proxy's list), `queue {action, queue_id}`; all answered with `decide`.
-Slot events: `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
+Slot events (each session holds one slot; limits in `rubi-home.md`, "Slots"): `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
 `docs/design/rubi-home.md` ("Agents in a VM").

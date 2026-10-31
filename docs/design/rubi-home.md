@@ -404,13 +404,25 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   is deleted once the handshake succeeded, never on a command line. `Fake` plays a runner in-process for tests.
 - **Handshake.** Per start Home makes a random `run_token`; the runner's first line must be `hello` with it
   (constant-time compare), else stdin is closed and the process killed; no hello in 10 s ends it too.
-- **Slot.** One top-level query on the computer. Events decide it: `status busy` takes it, `status idle` frees
-  it only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
-  done:true}` or a `result` with that `agent_id` removes it), `status closed` frees it. A `send` to the session
-  that holds the slot goes straight to the runner; anything else for a busy slot goes to the disk queue
-  (`<helper dir>/agent-queue.json`, 0600, atomic, 24 h, 64 items, 64 KiB each) and is delivered in order when
-  the slot frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The plugin sees
-  `queue` items (`queued`, `delivered`, `failed`, `expired`) in `next`.
+- **Slots.** A slot is one running top-level session (subagents and forks inside it don't count and stay
+  unlimited). A project (one directory in `agent_projects`, with its own VM and volume) has
+  `agent_max_sessions_per_project` slots (default 1, at least 1), and the computer `agent_max_sessions` (default 4;
+  0 = no cap). Events decide each slot: `status busy` takes one, `status idle` frees it
+  only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
+  done:true}` or a `result` with that `agent_id` removes it), `status closed`, the end of the project's runner
+  and `close` free it. A `send` to a session that holds a slot goes straight to the runner; a start, or a send
+  to a session without a slot, when its project's slots or the total are full goes to the disk queue
+  (`<helper dir>/agent-queue.json`, 0600, atomic, 24 h, 64 items, 64 KiB each) and is delivered when a slot
+  frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The queue is first in,
+  first out, except that an item waiting on a full project doesn't hold up the items behind it: the first item
+  that can run now goes, so a project with a free slot is never stuck behind another project's waiting item.
+  Items of one project keep their order, and when only the total is reached the oldest waiting item takes the
+  next slot freed. A new item doesn't jump ahead of a queued one that could run. Each queued item says why it
+  waits in plain words (`reason`: "waiting: project my-project already has 1 session", "waiting: 4 sessions are
+  running, the limit"). The plugin sees `queue` items (`queued` with the reason, `delivered`, `failed`,
+  `expired`) in `next`. `status` has `slots: [{project, session, busy, background}]` and `limits: {per_project,
+  total}`; `slot` (the first busy slot, or an empty one) stays for older plugins; `projects` rows have
+  `slot_busy` (the project's slots are full) and `sessions_running`.
 - **Asks.** `perm.ask` from the runner and `cred.ask` from the git helper become `next` items with Home's own
   `ask_id` and wait for `decide`. No decision in 280 s (`claude_wait_seconds` does not apply here), no `next`
   poll for 15 s, a cancelled runner or more than 16 pending: deny. Home never decides itself.
@@ -446,8 +458,9 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   credential must be a read-only token. The push credential must be scoped to the repositories the agent
   may push to and short-lived: once the VM has it, nothing stops it using it until it expires, and the VM can
   keep it. Home never logs the credential helper's input or output (tested).
-- **Slot watchdog.** A session that holds the slot with no event and no pending ask for 30 minutes
-  (`SlotIdleTTL`) is interrupted and the slot freed (logged, and the plugin sees a `status closed` event).
+- **Slot watchdog.** A session that holds a slot with no event and no pending ask for 30 minutes
+  (`SlotIdleTTL`) is interrupted and its slot freed (logged, and the plugin sees a `status closed` event); each
+  slot has its own clock.
 - **Modes.** `agent_allow_bypass` (default `true`) allows `start` and `mode` with `bypassPermissions` or
   `dontAsk`; set it `false` to refuse them. The plugin still decides every tool call and approves loosening a
   mode with a passkey.

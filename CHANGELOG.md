@@ -2,14 +2,25 @@
 
 ## Unreleased
 
+- **Rubi Home: Agent SDK sessions run per project, not one at a time.** The single slot ("one top-level query on
+  the computer") is now a slot per running top-level session: `agent_max_sessions_per_project` (default 1, at
+  least 1) per project and `agent_max_sessions` (default 4; 0 = no cap) across projects. Subagents and forks
+  inside a session stay unlimited. A start (or a send to a session without a slot) over a limit waits in the
+  disk queue, first in, first out, except that an item waiting on a full project doesn't hold up one behind it
+  for a project with a free slot; each queued item carries a plain `reason`. Every slot keeps the old rules
+  (busy while a turn or a background subagent runs; freed on idle, close, runner exit or crash; the 30 minute
+  idle interrupt, per slot). `claude-agent.status` has `slots` and `limits` (and still `slot`, the first busy
+  one, for older plugins); `claude-agent.projects` rows add `sessions_running`, and `slot_busy` means the
+  project's slots are full.
+
 - **Rubi Home: `claude-agent.*` operations and the Mac side of the Agent SDK runner (milestone M2).** A new Home
   capability, `claude-agent` (shown on the install screen as running Claude agents in a virtual machine on
   that computer, deciding each tool call and allowing git pushes). Operations: `projects`, `sessions`,
   `messages`, `start`, `send`, `rename`, `fork`, `interrupt`, `close`, `mode`, `next`, `decide`, `status`.
   Behind them (`internal/home/agent`): a `VM` interface with an Apple `container` implementation (argv-tested
   here, not run) and a fake for tests; the runner client with a per-start `run_token` handshake; one top-level
-  query on the computer at a time (the slot; background subagents keep it busy), with a disk queue
-  (`agent-queue.json`, 0600, 24 h) for starts and sends that find it busy; tool-call questions from the runner
+  query per slot (background subagents keep it busy; limits per project and in total, see above), with a disk queue
+  (`agent-queue.json`, 0600, 24 h) for starts and sends that find no free slot; tool-call questions from the runner
   reach the plugin through `next` and wait for `decide`: no answer in 280 s, or no `next` poll for 15 s, is a
   denial; an allow-list CONNECT proxy (no TLS decryption) and a git credential helper (reads always, a push
   only after the plugin approves). Configuration: `agent_projects`, `agent_git_hosts`, `agent_proxy_listen`,
