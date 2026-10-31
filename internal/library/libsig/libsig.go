@@ -3,7 +3,7 @@
 //
 // The signed message is Prefix followed by this JSON, written with no spaces and in this field order:
 //
-//	{"id","version","sha256","admitted_by","admitted_at","scan_verdict","scanner_version","self_admitted"}
+//	{"id","version","sha256","admitted_by","admitted_at","scan_verdict","scanner_version","self_admitted","acked"}
 //
 // The signature travels as a Token: URL-safe base64 (no padding) of a JSON object that carries the admission
 // facts and the Ed25519 signature, so a skill in a role needs only its id, version, hash and this one string.
@@ -16,14 +16,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 )
 
 // Prefix separates this signature from any other use of the key.
-const Prefix = "rubi-skill-library-v1\n"
+const Prefix = "rubi-skill-library-v2\n"
 
 // MaxToken is the longest Token Rubi issues.
-const MaxToken = 600
+const MaxToken = 2000
 
 // Claims are the facts a signature covers.
 type Claims struct {
@@ -35,17 +36,21 @@ type Claims struct {
 	ScanVerdict    string // "pass" or "flag"
 	ScannerVersion string
 	SelfAdmitted   bool
+	// Acked are the scan rule ids the curator acknowledged at admission (sorted). Rubi Home holds a library skill
+	// that trips a flag not among them.
+	Acked []string
 }
 
 type message struct {
-	ID             string `json:"id"`
-	Version        int    `json:"version"`
-	SHA256         string `json:"sha256"`
-	AdmittedBy     string `json:"admitted_by"`
-	AdmittedAt     string `json:"admitted_at"`
-	ScanVerdict    string `json:"scan_verdict"`
-	ScannerVersion string `json:"scanner_version"`
-	SelfAdmitted   bool   `json:"self_admitted"`
+	ID             string   `json:"id"`
+	Version        int      `json:"version"`
+	SHA256         string   `json:"sha256"`
+	AdmittedBy     string   `json:"admitted_by"`
+	AdmittedAt     string   `json:"admitted_at"`
+	ScanVerdict    string   `json:"scan_verdict"`
+	ScannerVersion string   `json:"scanner_version"`
+	SelfAdmitted   bool     `json:"self_admitted"`
+	Acked          []string `json:"acked"`
 }
 
 // Message is the exact byte string that is signed.
@@ -54,17 +59,21 @@ func Message(c Claims) []byte {
 	b.WriteString(Prefix)
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(message(c))
+	m := message(c)
+	m.Acked = append([]string{}, c.Acked...)
+	sort.Strings(m.Acked)
+	_ = enc.Encode(m)
 	return bytes.TrimRight(b.Bytes(), "\n")
 }
 
 type token struct {
-	AdmittedBy     string `json:"admitted_by"`
-	AdmittedAt     string `json:"admitted_at"`
-	ScanVerdict    string `json:"scan_verdict"`
-	ScannerVersion string `json:"scanner_version"`
-	SelfAdmitted   bool   `json:"self_admitted"`
-	Sig            string `json:"sig"`
+	AdmittedBy     string   `json:"admitted_by"`
+	AdmittedAt     string   `json:"admitted_at"`
+	ScanVerdict    string   `json:"scan_verdict"`
+	ScannerVersion string   `json:"scanner_version"`
+	SelfAdmitted   bool     `json:"self_admitted"`
+	Acked          []string `json:"acked,omitempty"`
+	Sig            string   `json:"sig"`
 }
 
 // Sign returns the Token for c.
@@ -72,7 +81,7 @@ func Sign(priv ed25519.PrivateKey, c Claims) (string, error) {
 	if len(priv) != ed25519.PrivateKeySize {
 		return "", errors.New("bad library key")
 	}
-	t := token{c.AdmittedBy, c.AdmittedAt, c.ScanVerdict, c.ScannerVersion, c.SelfAdmitted,
+	t := token{c.AdmittedBy, c.AdmittedAt, c.ScanVerdict, c.ScannerVersion, c.SelfAdmitted, c.Acked,
 		base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, Message(c)))}
 	raw, _ := json.Marshal(t)
 	out := base64.RawURLEncoding.EncodeToString(raw)
@@ -104,7 +113,7 @@ func Verify(pub ed25519.PublicKey, id, version, sha256, tok string) (Claims, err
 		return Claims{}, errors.New("malformed signature")
 	}
 	c := Claims{ID: id, Version: n, SHA256: sha256, AdmittedBy: t.AdmittedBy, AdmittedAt: t.AdmittedAt,
-		ScanVerdict: t.ScanVerdict, ScannerVersion: t.ScannerVersion, SelfAdmitted: t.SelfAdmitted}
+		ScanVerdict: t.ScanVerdict, ScannerVersion: t.ScannerVersion, SelfAdmitted: t.SelfAdmitted, Acked: t.Acked}
 	if !ed25519.Verify(pub, Message(c), sig) {
 		return Claims{}, fmt.Errorf("the signature doesn't match skill %s version %d", id, n)
 	}

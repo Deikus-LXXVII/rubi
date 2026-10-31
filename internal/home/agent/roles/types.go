@@ -198,15 +198,21 @@ type LibrarySkill struct {
 	Sig      string
 }
 
+// LibraryFacts is what a valid library signature attests beyond the hash: the scan rule ids the curator
+// acknowledged at admission.
+type LibraryFacts struct {
+	Acked []string
+}
+
 // Verifier says whether a library skill's signature is valid. Until the library exists (R8) Refuse is used.
 type Verifier interface {
-	VerifyLibrary(LibrarySkill) error
+	VerifyLibrary(LibrarySkill) (LibraryFacts, error)
 }
 
 // Refuse is the stub Verifier: it refuses every library skill.
 type Refuse struct{}
 
 // VerifyLibrary always fails.
-func (Refuse) VerifyLibrary(LibrarySkill) error {
-	return fmt.Errorf("the skill library isn't available yet")
+func (Refuse) VerifyLibrary(LibrarySkill) (LibraryFacts, error) {
+	return LibraryFacts{}, fmt.Errorf("the skill library isn't available yet")
 }

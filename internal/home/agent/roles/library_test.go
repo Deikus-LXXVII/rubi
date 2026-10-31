@@ -29,38 +29,38 @@ func TestPinnedVerifier(t *testing.T) {
 	pinned := pub
 	v := Pinned{Key: func() ed25519.PublicKey { return pinned }}
 
-	if err := v.VerifyLibrary(skill(good)); err != nil {
+	if _, err := v.VerifyLibrary(skill(good)); err != nil {
 		t.Fatalf("good signature: %v", err)
 	}
-	if err := v.VerifyLibrary(skill(good[:len(good)-6])); err == nil {
+	if _, err := v.VerifyLibrary(skill(good[:len(good)-6])); err == nil {
 		t.Fatal("damaged signature accepted")
 	}
-	if err := v.VerifyLibrary(LibrarySkill{ID: "layout-notes", Resolved: "4", SHA256: sha(goodSkill), Sig: good}); err == nil {
+	if _, err := v.VerifyLibrary(LibrarySkill{ID: "layout-notes", Resolved: "4", SHA256: sha(goodSkill), Sig: good}); err == nil {
 		t.Fatal("signature for version 3 accepted for 4")
 	}
-	if err := v.VerifyLibrary(LibrarySkill{ID: "layout-notes", Resolved: "3", SHA256: sha("other"), Sig: good}); err == nil {
+	if _, err := v.VerifyLibrary(LibrarySkill{ID: "layout-notes", Resolved: "3", SHA256: sha("other"), Sig: good}); err == nil {
 		t.Fatal("signature accepted for other content")
 	}
-	if err := v.VerifyLibrary(skill(signedSkill(t, priv, "reject"))); err == nil {
+	if _, err := v.VerifyLibrary(skill(signedSkill(t, priv, "reject"))); err == nil {
 		t.Fatal("a signed reject verdict accepted")
 	}
 	// A signature by a key that isn't the pinned one (a plugin's own key, or a rotated library key).
 	other := signedSkill(t, priv2, "pass")
-	if err := v.VerifyLibrary(skill(other)); err == nil {
+	if _, err := v.VerifyLibrary(skill(other)); err == nil {
 		t.Fatal("signature by an unpinned key accepted")
 	}
 	pinned = pub2 // key rotated: the old signatures no longer hold, the new ones do
-	if err := v.VerifyLibrary(skill(good)); err == nil {
+	if _, err := v.VerifyLibrary(skill(good)); err == nil {
 		t.Fatal("old signature accepted after rotation")
 	}
-	if err := v.VerifyLibrary(skill(other)); err != nil {
+	if _, err := v.VerifyLibrary(skill(other)); err != nil {
 		t.Fatalf("new key: %v", err)
 	}
 	pinned = nil // nothing pinned
-	if err := v.VerifyLibrary(skill(good)); err == nil || !strings.Contains(err.Error(), "no library key") {
+	if _, err := v.VerifyLibrary(skill(good)); err == nil || !strings.Contains(err.Error(), "no library key") {
 		t.Fatalf("unpinned: %v", err)
 	}
-	if err := (Pinned{}).VerifyLibrary(skill(good)); err == nil {
+	if _, err := (Pinned{}).VerifyLibrary(skill(good)); err == nil {
 		t.Fatal("a Pinned without a key function accepted")
 	}
 }
@@ -89,5 +89,39 @@ func TestPutWithPinnedVerifier(t *testing.T) {
 	// A plugin cannot label an ad-hoc skill "library" without a valid signature either.
 	if _, err := s.Put(mk(strings.Repeat("A", 100))); err == nil {
 		t.Fatal("a made-up signature was accepted")
+	}
+}
+
+// A flag Home sees on a library skill must be among the rule ids the curator acknowledged (signed); otherwise the
+// skill is held like an ad-hoc one.
+func TestLibraryFlagsMustBeAmongTheSignedAcks(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	s, _ := Open(Options{Dir: t.TempDir(), Verifier: Pinned{Key: func() ed25519.PublicKey { return pub }}})
+	flagged := "---\nname: fetcher\ndescription: Fetch things.\n---\n# Fetch\nRead https://unlisted.example.org/docs first.\n"
+	sign := func(acked []string) string {
+		tok, err := libsig.Sign(priv, libsig.Claims{ID: "fetcher", Version: 1, SHA256: sha(flagged), AdmittedBy: "curator",
+			AdmittedAt: "2026-01-01T00:00:00Z", ScanVerdict: "flag", ScannerVersion: "x", Acked: acked})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tok
+	}
+	n := 0
+	put := func(sig string) *PutResult {
+		r := baseSpec()
+		r.Project = "p"
+		n++
+		r.Name = "fetch-role-" + string(rune('a'+n))
+		r.Skills = []Skill{{Name: "fetcher", Source: SourceLibrary, LibraryID: "fetcher", Resolved: "1", SHA256: sha(flagged), Sig: sig}}
+		return mustPut(t, s, PutArgs{Spec: r, Blobs: map[string]string{sha(flagged): flagged}})
+	}
+	if got := put(sign(nil)).Skills[0]; got.State != StateHeld {
+		t.Fatalf("a flag nobody acknowledged: %+v", got)
+	}
+	if got := put(sign([]string{"ovr.instruction"})).Skills[0]; got.State != StateHeld {
+		t.Fatalf("the wrong rule acknowledged: %+v", got)
+	}
+	if got := put(sign([]string{"exf.url"})).Skills[0]; got.State != StateActive {
+		t.Fatalf("the flag was acknowledged: %+v", got)
 	}
 }

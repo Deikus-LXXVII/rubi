@@ -575,7 +575,7 @@ func (l *Library) admitLocked(proposalID, by string, ack []string) (AdmitResult,
 	now := l.opt.Now().UTC().Format(time.RFC3339)
 	self := strings.EqualFold(by, v.AuthorBot)
 	tok, err := libsig.Sign(priv, libsig.Claims{ID: id, Version: n, SHA256: v.SHA256, AdmittedBy: by, AdmittedAt: now,
-		ScanVerdict: string(scan.Verdict), ScannerVersion: scan.ScannerVersion, SelfAdmitted: self})
+		ScanVerdict: string(scan.Verdict), ScannerVersion: scan.ScannerVersion, SelfAdmitted: self, Acked: flags})
 	if err != nil {
 		return AdmitResult{}, err
 	}

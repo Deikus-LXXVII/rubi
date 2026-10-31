@@ -132,7 +132,7 @@ func TestFlagsMustBeAcknowledged(t *testing.T) {
 		t.Fatalf("admit: %+v %v", res, err)
 	}
 	in, _ := r.l.GetAdmitted("fetcher", 0)
-	if c, err := libsig.Verify(r.pub, in.ID, "1", in.SHA256, in.Signature); err != nil || c.ScanVerdict != "flag" {
+	if c, err := libsig.Verify(r.pub, in.ID, "1", in.SHA256, in.Signature); err != nil || c.ScanVerdict != "flag" || len(c.Acked) != 1 || c.Acked[0] != "exf.url" {
 		t.Fatalf("flag verdict is signed: %+v %v", c, err)
 	}
 }
@@ -395,7 +395,7 @@ func TestSignatureTokenChecks(t *testing.T) {
 		t.Fatal("a reject verdict verified")
 	}
 	if got := string(libsig.Message(libsig.Claims{ID: "a", Version: 1, SHA256: "h", AdmittedBy: "<b>", AdmittedAt: "t", ScanVerdict: "pass", ScannerVersion: "s"})); got !=
-		"rubi-skill-library-v1\n"+`{"id":"a","version":1,"sha256":"h","admitted_by":"<b>","admitted_at":"t","scan_verdict":"pass","scanner_version":"s","self_admitted":false}` {
+		"rubi-skill-library-v2\n"+`{"id":"a","version":1,"sha256":"h","admitted_by":"<b>","admitted_at":"t","scan_verdict":"pass","scanner_version":"s","self_admitted":false,"acked":[]}` {
 		t.Fatalf("message: %q", got)
 	}
 }
