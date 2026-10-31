@@ -91,7 +91,9 @@ transcripts for client tests: `runner/testdata/*.ndjson`, format in `runner/READ
 Runner options for every query: `cwd` (`/work`), `permissionMode` from Home, `allowDangerouslySkipPermissions:true`,
 `settingSources:["project"]` (CLAUDE.md and skills; `RUBI_SETTING_SOURCES=none` ignores the project's `.claude` entirely),
 and, so that a project cannot run code outside the `PreToolUse` gate (checked against the real SDK in M1):
-`settings:{disableAllHooks:true, apiKeyHelper:""}` (flag-layer settings beat the project's files: no hooks from
+`settings:{disableAllHooks:true, apiKeyHelper:"", skipWebFetchPreflight:true, disableSkillShellExecution:true}` (a skill's
+inline ``!`cmd` `` and ```` ```! ```` blocks would run in the CLI outside the PreToolUse gate, checked against the real CLI; off
+in every mode); flag-layer settings beat the project's files: no hooks from
 `.claude/settings.json`, no project `apiKeyHelper`), `strictMcpConfig:true` with `mcpServers:{}` (no `.mcp.json` server),
 and `disallowedTools` `Edit(/work/.rubi/**)`, `Edit(/work/.claude/**)`, `Edit(/work/.mcp.json)`, `Read(/work/.rubi/**)`
 (`Edit(...)` covers Write and the other editing tools; a `Write(...)` rule does not block; deny rules run before hooks and a
@@ -147,7 +149,7 @@ preset:"claude_code", append: <instructions block>}`. The instructions block is 
 `project_instructions` is true, `/work/CLAUDE.md` and `/work/.claude/CLAUDE.md` under a heading that says the text was
 written in the repository (each read with `lstat`, a symlink or a non-regular file is left out, 64 KiB together; `@import`
 lines and CLAUDE.md files in subdirectories are not followed). Unchanged: `settings:{disableAllHooks:true, apiKeyHelper:"",
-skipWebFetchPreflight:true}`, the `PreToolUse` gate and subagent gate, `canUseTool`, redaction, the child env
+skipWebFetchPreflight:true, disableSkillShellExecution:true}`, the `PreToolUse` gate and subagent gate, `canUseTool`, redaction, the child env
 (`ANTHROPIC_BASE_URL`, the `CLAUDE_CODE_OAUTH_TOKEN` placeholder, `NO_PROXY`, the proxy).
 
 Modes: the session mode Home passes in `session.start` always wins. In role mode `mode` is optional there; when Home gives

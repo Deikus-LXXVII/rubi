@@ -482,8 +482,9 @@ export class Runner {
       // skipWebFetchPreflight: WebFetch would otherwise ask api.anthropic.com about the domain on its own, outside
       // the base URL (the auth gateway), fail at the proxy, which does not allow that host, and refuse the fetch.
       // disableSkillShellExecution: a skill's !`cmd` and ```! blocks run in the CLI, outside our PreToolUse gate (and
-      // unprompted in bypassPermissions); role mode (skills written by a Bot) turns them off.
-      settings: { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true, ...(this.roleDir ? { disableSkillShellExecution: true } : {}) },
+      // unprompted in bypassPermissions); off in every mode: role skills are written by Bots, a legacy project's
+      // .claude/skills by whoever wrote the repository.
+      settings: { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true, disableSkillShellExecution: true },
       strictMcpConfig: true,
       mcpServers: {},
       allowDangerouslySkipPermissions: true,
