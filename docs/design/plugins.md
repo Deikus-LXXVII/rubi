@@ -300,6 +300,19 @@ a plugin can't dress its question as an unlock or approval prompt. The answer, p
 refuse a call where the key is missing instead of reading it as empty. The page is the user's own request: it
 needs a settings link, and what a button does needs no approval unless the plugin asks for one.
 
+**Drill-down pages and chats.** The page's `view` call carries args: `{}` for the first page, and whatever an
+action's `open: {..}` holds after that. An action with `open` calls no op: the panel asks the plugin for `view`
+with those args and shows the answer; the answer's `up: {label, open}` is the page's back button. A section may
+have its own `actions` (buttons above its items), and an item `warn: true` gets a yellow edge (a notice, nothing
+is blocked). A section with `kind: "chat"` is a message list: `items` oldest first, each `{role, author, text,
+untrusted, time}` with `role` one of `user`, `assistant`, `tool`, `sister` (other roles are drawn as
+`assistant`); a `sister` message or one with `untrusted: true` carries a visible "untrusted text" label and a
+dashed outline. `input: {op, args, arg, label, send}` adds a text box: the text goes to `op` as `args[arg]` (the
+user's own message, at most 4000 characters). Every string is drawn as text (no HTML, no links), clipped
+(message 4000 characters, item detail 600, title 200, at most 300 messages); the panel keeps what the user
+typed in a chat box when the page refreshes itself. Panels that predate these keys show the sections as plain
+lists, so a plugin should keep every chat message and action usable that way or say so in the page note.
+
 **Panel.** A **Store** screen lists the catalog: install, update, open setup. Settings lists installed
 plugins with their version, review status, Update and Remove. Approval screens render the permission
 table from §5.
