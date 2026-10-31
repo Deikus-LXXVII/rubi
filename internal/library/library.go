@@ -39,7 +39,10 @@ import (
 const (
 	MaxVersionBytes    = skillscan.MaxBytes // 32 KiB
 	MaxEntries         = 500
-	MaxVersionsPerItem = 20
+	MaxVersionsPerItem = 20 // live versions (proposed, admitted, deprecated) of one entry
+	MaxOpenPerBot      = 5  // proposals one Bot may have waiting at once
+	maxStoredVersions  = 100
+	filesPerEntry      = 4 // entries on disk (whatever their versions' states) per entry allowed live
 	MaxTags            = 8
 	maxBotName         = 64
 )
@@ -79,12 +82,43 @@ type Version struct {
 	Sig          string           `json:"sig,omitempty"`
 	// History is the curator's actions on this version, for the panel.
 	History []string `json:"history,omitempty"`
+	// Purged marks a withdrawn version whose content was dropped. It stays as a stub, so the version number is
+	// never reused and the revocation of its signature keeps being told to Rubi Home.
+	Purged bool `json:"purged,omitempty"`
+}
+
+func (v *Version) live() bool {
+	return v.State == Proposed || v.State == Admitted || v.State == Deprecated
 }
 
 // Entry is a skill with its versions.
 type Entry struct {
 	ID       string     `json:"id"`
 	Versions []*Version `json:"versions"`
+	// Next is the highest version number ever given (a purge never makes a number come back).
+	Next int `json:"next,omitempty"`
+	// Counter grows with every save of this entry; an older file put back in its place is refused (index.go).
+	Counter uint64 `json:"counter,omitempty"`
+}
+
+func (e *Entry) liveCount() int {
+	n := 0
+	for _, v := range e.Versions {
+		if v.live() {
+			n++
+		}
+	}
+	return n
+}
+
+func (e *Entry) hasAdmitted() bool { return e.LatestAdmitted() > 0 }
+
+func (e *Entry) nextVersion() int {
+	n := e.Next
+	for _, v := range e.Versions {
+		n = max(n, v.Version)
+	}
+	return n + 1
 }
 
 // LatestAdmitted is the highest version that is admitted (0: none).
@@ -114,12 +148,39 @@ type Options struct {
 	DEK      func() ([]byte, error)
 	Signer   func() (ed25519.PrivateKey, error)
 	Now      func() time.Time
+	// MaxOpenPerBot is how many proposals one Bot may have waiting (0: MaxOpenPerBot).
+	MaxOpenPerBot int
+	// MaxEntries is how many skills with a live version there can be (0: MaxEntries).
+	MaxEntries int
+	// Logf receives notes about files that were skipped (nil: dropped).
+	Logf func(format string, args ...any)
 }
 
 // Library is the store.
 type Library struct {
 	opt Options
 	mu  sync.Mutex
+	idx *counters // highest save counter seen per entry (index.go)
+}
+
+func (l *Library) logf(format string, args ...any) {
+	if l.opt.Logf != nil {
+		l.opt.Logf(format, args...)
+	}
+}
+
+func (l *Library) maxEntries() int {
+	if l.opt.MaxEntries > 0 {
+		return l.opt.MaxEntries
+	}
+	return MaxEntries
+}
+
+func (l *Library) maxOpen() int {
+	if l.opt.MaxOpenPerBot > 0 {
+		return l.opt.MaxOpenPerBot
+	}
+	return MaxOpenPerBot
 }
 
 // Open makes a Library; the directory is created on first write.
@@ -172,7 +233,28 @@ func (l *Library) load(id string) (*Entry, error) {
 	if err := json.Unmarshal(plain, &e); err != nil || e.ID != id {
 		return nil, fmt.Errorf("library entry %s is damaged", id)
 	}
+	if err := l.checkCounter(&e); err != nil {
+		return nil, err
+	}
 	return &e, nil
+}
+
+// loadOrNew is load, but an entry that doesn't exist is a new one that continues the numbering of a removed one.
+func (l *Library) loadOrNew(id string) (*Entry, bool, error) {
+	e, err := l.load(id)
+	if err == nil {
+		return e, false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, false, err
+	}
+	e = &Entry{ID: id}
+	c, ierr := l.index()
+	if ierr != nil {
+		return nil, false, ierr
+	}
+	e.Next, e.Counter = c.m[id].Next, c.m[id].Counter
+	return e, true, nil
 }
 
 func (l *Library) save(e *Entry) error {
@@ -180,6 +262,13 @@ func (l *Library) save(e *Entry) error {
 	if err != nil {
 		return err
 	}
+	c, err := l.index()
+	if err != nil {
+		return err
+	}
+	rec := c.m[e.ID]
+	e.Counter = max(e.Counter, rec.Counter) + 1
+	e.Next = max(e.Next, rec.Next, e.nextVersion()-1)
 	plain, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -191,7 +280,15 @@ func (l *Library) save(e *Entry) error {
 	if err := os.MkdirAll(l.opt.Dir, 0o700); err != nil {
 		return err
 	}
-	return vault.WriteFileAtomic(l.path(e.ID), append(nonce, a.Seal(nil, nonce, plain, l.ad(e.ID))...), 0o600)
+	if err := vault.WriteFileAtomic(l.path(e.ID), append(nonce, a.Seal(nil, nonce, plain, l.ad(e.ID))...), 0o600); err != nil {
+		return err
+	}
+	// The file first: a crash in between leaves a file with a counter above the index's, which is accepted.
+	c.m[e.ID] = idxRec{Counter: e.Counter, Next: e.Next}
+	if err := l.saveIndex(c); err != nil {
+		l.logf("library: the index couldn't be written: %v", err)
+	}
+	return nil
 }
 
 func (l *Library) ids() []string {
@@ -206,6 +303,23 @@ func (l *Library) ids() []string {
 	return out
 }
 
+// each calls f with every entry that can be read; a damaged one is logged and skipped, so one bad file doesn't
+// take the whole library down.
+func (l *Library) each(f func(*Entry)) error {
+	if _, err := l.aead(); err != nil { // locked: nothing can be read, and that is not a damaged file
+		return err
+	}
+	for _, id := range l.ids() {
+		e, err := l.load(id)
+		if err != nil {
+			l.logf("library: skipping %s: %v", id, err)
+			continue
+		}
+		f(e)
+	}
+	return nil
+}
+
 // ---- submit ----
 
 // Submission is what a Bot proposes.
@@ -215,6 +329,9 @@ type Submission struct {
 	Tags        []string
 	Content     string
 	Author      string // the verified Bot
+	// Curator says the author is the library's curator (the caller, Rubi's core, decides): only the curator adds
+	// versions to a skill that already has an admitted version, and the per-Bot limit on open proposals is not its.
+	Curator bool
 }
 
 // Proposal is the outcome of a submission.
@@ -310,24 +427,52 @@ func (l *Library) submitLocked(in Submission) (Proposal, error) {
 	if err != nil {
 		return Proposal{}, err
 	}
-	e, err := l.load(id)
-	switch {
-	case err == nil:
-	case errors.Is(err, os.ErrNotExist):
-		if len(l.ids()) >= MaxEntries {
-			return Proposal{}, fmt.Errorf("the library holds at most %d skills", MaxEntries)
-		}
-		e = &Entry{ID: id}
-	default:
+	e, fresh, err := l.loadOrNew(id)
+	if err != nil {
 		return Proposal{}, err
 	}
-	if len(e.Versions) >= MaxVersionsPerItem {
-		return Proposal{}, fmt.Errorf("%s already has %d versions, the most there can be", id, MaxVersionsPerItem)
+	if fresh {
+		live, total := 0, 0
+		if err := l.each(func(o *Entry) {
+			total++
+			if o.liveCount() > 0 {
+				live++
+			}
+		}); err != nil {
+			return Proposal{}, err
+		}
+		// Only skills with a live version count against the limit; the rest wait for the curator's purge.
+		if live >= l.maxEntries() || total >= filesPerEntry*l.maxEntries() {
+			return Proposal{}, fmt.Errorf("the library holds at most %d skills", l.maxEntries())
+		}
+	} else if e.hasAdmitted() && !in.Curator {
+		return Proposal{}, fmt.Errorf("%s is admitted already: only the curator adds versions to it (ask the curator to publish your change)", id)
+	}
+	if n := e.liveCount(); n >= MaxVersionsPerItem {
+		return Proposal{}, fmt.Errorf("%s already has %d live versions, the most there can be (the curator can withdraw and purge old ones)", id, n)
+	}
+	if len(e.Versions) >= maxStoredVersions {
+		return Proposal{}, fmt.Errorf("%s holds %d versions; the curator must purge rejected or withdrawn ones first", id, len(e.Versions))
+	}
+	if !in.Curator {
+		open := 0
+		if err := l.each(func(o *Entry) {
+			for _, v := range o.Versions {
+				if v.State == Proposed && strings.EqualFold(v.AuthorBot, in.Author) {
+					open++
+				}
+			}
+		}); err != nil {
+			return Proposal{}, err
+		}
+		if open >= l.maxOpen() {
+			return Proposal{}, fmt.Errorf("you have %d proposals waiting already, the most there can be; wait for the curator", open)
+		}
 	}
 	sum := sha256.Sum256([]byte(in.Content))
 	now := l.opt.Now().UTC().Format(time.RFC3339)
 	scan := skillscan.Scan(id, []byte(in.Content), nil)
-	v := &Version{Version: len(e.Versions) + 1, SHA256: hex.EncodeToString(sum[:]), Content: in.Content,
+	v := &Version{Version: e.nextVersion(), SHA256: hex.EncodeToString(sum[:]), Content: in.Content,
 		Description: in.Description, Tags: tags, AuthorBot: in.Author, SubmittedAt: now, State: Proposed, Scan: scan,
 		History: []string{now + " submitted by " + in.Author}}
 	if scan.Verdict == skillscan.Reject {
@@ -391,6 +536,12 @@ func (l *Library) admitLocked(proposalID, by string, ack []string) (AdmitResult,
 	if v == nil {
 		return AdmitResult{}, fmt.Errorf("no proposal %s", proposalID)
 	}
+	if v.Purged {
+		return AdmitResult{}, fmt.Errorf("%s was purged; submit it again", proposalID)
+	}
+	if v.State == Withdrawn && e.liveCount() >= MaxVersionsPerItem {
+		return AdmitResult{}, fmt.Errorf("%s already has %d live versions; purge or withdraw one first", id, e.liveCount())
+	}
 	switch v.State {
 	case Proposed, Deprecated, Withdrawn:
 	case Rejected:
@@ -451,6 +602,7 @@ func noSuch(err error, what string) error {
 func (l *Library) Publish(in Submission, ack []string) (AdmitResult, Proposal, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	in.Curator = true // only the curator publishes
 	p, err := l.submitLocked(in)
 	if err != nil {
 		return AdmitResult{}, p, err
@@ -501,6 +653,64 @@ func (l *Library) SetState(id string, version int, to State, by string) ([]int, 
 		return nil, fmt.Errorf("nothing to %s in %s", strings.TrimSuffix(string(to), "d"), id)
 	}
 	return changed, l.save(e)
+}
+
+// Purge drops versions nobody uses any more: rejected and proposed ones go entirely, a withdrawn one loses its
+// content and stays as a stub (so its number is not reused and its revocation stays in force). version 0 means
+// every such version of the skill. It returns the versions purged. An entry left with no versions is removed.
+func (l *Library) Purge(id string, version int, by string) ([]int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err := validBot(by); err != nil {
+		return nil, err
+	}
+	if !idRE.MatchString(id) {
+		return nil, fmt.Errorf("no such skill: %s", clip(id, 20))
+	}
+	e, err := l.load(id)
+	if err != nil {
+		return nil, noSuch(err, id)
+	}
+	var purged []int
+	kept := e.Versions[:0:0]
+	for _, v := range e.Versions {
+		pick := version == 0 || v.Version == version
+		switch {
+		case pick && (v.State == Rejected || v.State == Proposed):
+			purged = append(purged, v.Version)
+			continue
+		case pick && v.State == Withdrawn && !v.Purged:
+			v.Content, v.Purged = "", true
+			v.History = append(v.History, l.opt.Now().UTC().Format(time.RFC3339)+" purged by "+by)
+			purged = append(purged, v.Version)
+		}
+		kept = append(kept, v)
+	}
+	if len(purged) == 0 {
+		return nil, fmt.Errorf("nothing to purge in %s (only rejected, withdrawn and unadmitted versions can be)", id)
+	}
+	e.Next = max(e.Next, e.nextVersion()-1)
+	e.Versions = kept
+	if len(kept) == 0 {
+		return purged, l.remove(e)
+	}
+	return purged, l.save(e)
+}
+
+// Revoked lists the withdrawn versions as "id@version", sorted: what Rubi Home must refuse to use.
+func (l *Library) Revoked() ([]string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := []string{}
+	err := l.each(func(e *Entry) {
+		for _, v := range e.Versions {
+			if v.State == Withdrawn {
+				out = append(out, ProposalID(e.ID, v.Version))
+			}
+		}
+	})
+	sort.Strings(out)
+	return out, err
 }
 
 // ---- reading ----
@@ -573,11 +783,8 @@ func (l *Library) List(query, tag string, curator bool) ([]Summary, error) {
 	defer l.mu.Unlock()
 	query, tag = strings.ToLower(strings.TrimSpace(query)), strings.ToLower(strings.TrimSpace(tag))
 	out := []Summary{}
-	for _, id := range l.ids() {
-		e, err := l.load(id)
-		if err != nil {
-			return nil, err
-		}
+	err := l.each(func(e *Entry) {
+		id := e.ID
 		s := Summary{ID: id, LatestAdmitted: e.LatestAdmitted(), Versions: []VState{}}
 		var shown *Version
 		for _, v := range e.Versions {
@@ -587,21 +794,21 @@ func (l *Library) List(query, tag string, curator bool) ([]Summary, error) {
 			}
 		}
 		if shown == nil {
-			continue
+			return
 		}
 		if n := e.LatestAdmitted(); n > 0 {
 			shown = e.find(n)
 		}
 		s.Description, s.Tags = shown.Description, shown.Tags
 		if tag != "" && !has(s.Tags, tag) {
-			continue
+			return
 		}
 		if query != "" && !strings.Contains(strings.ToLower(id+" "+s.Description+" "+strings.Join(s.Tags, " ")), query) {
-			continue
+			return
 		}
 		out = append(out, s)
-	}
-	return out, nil
+	})
+	return out, err
 }
 
 func has(list []string, s string) bool {
@@ -697,16 +904,12 @@ func (l *Library) Queue() ([]PanelVersion, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	out := []PanelVersion{}
-	for _, id := range l.ids() {
-		e, err := l.load(id)
-		if err != nil {
-			return nil, err
-		}
+	err := l.each(func(e *Entry) {
 		for _, v := range e.Versions {
 			if v.State == Proposed {
 				out = append(out, panelVersion(e, v))
 			}
 		}
-	}
-	return out, nil
+	})
+	return out, err
 }

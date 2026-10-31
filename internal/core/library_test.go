@@ -328,7 +328,7 @@ func TestLibrarySubmitIsRateLimited(t *testing.T) {
 	c := libCore(t)
 	var failed error
 	for i := 0; i < librarySubmitsPerMin+2 && failed == nil; i++ {
-		_, failed = c.LibrarySubmit("Mail", code(c, "Mail"), library.Submission{ID: "a" + string(rune('a'+i)), Description: "d",
+		_, failed = c.LibrarySubmit("Main", code(c, "Main"), library.Submission{ID: "a" + string(rune('a'+i)), Description: "d",
 			Content: strings.Replace(libSkill, "layout-notes", "a"+string(rune('a'+i)), 1)})
 	}
 	if failed == nil || !strings.Contains(failed.Error(), "slow down") {
@@ -475,5 +475,31 @@ func TestPluginCannotCallTheLibraryKeyOp(t *testing.T) {
 	_, err := c.pluginHandler("agent-plugin")(context.Background(), "home.call", json.RawMessage(`{"op":"library.key","args":{"public_key":"x"}}`))
 	if err == nil || !strings.Contains(err.Error(), "doesn't allow") {
 		t.Fatalf("home.call library.key: %v", err)
+	}
+}
+
+func TestLibraryPurgeAndAdmittedIDsAreTheCuratorsOnly(t *testing.T) {
+	c := libCore(t)
+	p := submitAs(t, c, "Main", libSkill)
+	if _, err := c.LibraryAdmit("Main", code(c, "Main"), p.ProposalID, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Another Bot can't add a version to an admitted skill; the curator's own submit still can.
+	if _, err := c.LibrarySubmit("Mail", code(c, "Mail"), library.Submission{Description: "d", Content: libSkill + "x\n"}); err == nil ||
+		!strings.Contains(err.Error(), "only the curator") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := c.LibrarySubmit("Main", code(c, "Main"), library.Submission{Description: "d", Content: libSkill + "y\n"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.LibraryPurge("Mail", code(c, "Mail"), "layout-notes", 0); err == nil {
+		t.Fatal("a non-curator purged")
+	}
+	got, err := c.LibraryPurge("Main", code(c, "Main"), "layout-notes", 0)
+	if err != nil || len(got) != 1 || got[0] != 2 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if len(auditFor(t, c, "library.purged")) != 1 {
+		t.Fatal("not audited")
 	}
 }

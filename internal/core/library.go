@@ -227,6 +227,8 @@ func (c *Core) LibrarySubmit(agent, code string, in library.Submission) (library
 		return library.Proposal{}, errors.New("too many submissions; slow down")
 	}
 	in.Author = bot
+	cur := c.LibraryCurator()
+	in.Curator = cur != "" && strings.EqualFold(cur, bot)
 	p, err := c.Library.Submit(in)
 	if err != nil {
 		return p, err
@@ -304,6 +306,20 @@ func (c *Core) LibrarySetState(agent, code, id string, version int, to library.S
 	}
 	c.Audit.Record("library."+string(to), audit.Fields{"id": id, "versions": changed, "by": by})
 	return changed, nil
+}
+
+// LibraryPurge drops rejected, unadmitted and withdrawn versions (version 0: all of a skill's); only the curator may.
+func (c *Core) LibraryPurge(agent, code, id string, version int) ([]int, error) {
+	by, err := c.libraryCuratorBot(agent, code)
+	if err != nil {
+		return nil, err
+	}
+	purged, err := c.Library.Purge(id, version, by)
+	if err != nil {
+		return nil, err
+	}
+	c.Audit.Record("library.purged", audit.Fields{"id": id, "versions": purged, "by": by})
+	return purged, nil
 }
 
 // ---- pinning the library key on Rubi Home ----

@@ -12,7 +12,7 @@ const toolSkill = "---\nname: layout-notes\ndescription: How to lay out notes.\n
 func TestLibraryTools(t *testing.T) {
 	r := newRig(t)
 	for _, name := range []string{"rubi_library_list", "rubi_library_get", "rubi_library_submit", "rubi_library_admit",
-		"rubi_library_update", "rubi_library_deprecate", "rubi_library_withdraw"} {
+		"rubi_library_update", "rubi_library_deprecate", "rubi_library_withdraw", "rubi_library_purge"} {
 		found := false
 		for _, n := range r.ag.tools() {
 			found = found || n == name
