@@ -2,7 +2,7 @@
 
 Status: DRAFT for review, 2026-10-31. Implemented so far in the core repo: runner role mode (R1), the role store
 (R3), the VM per role with per-role hosts and approvals, version pins, idle stop and the `role` argument of the ops
-(R4), and slots per profile with `claude-agent.limits` (R5). See rubi-home.md ("VM per role", "Session limits").
+(R4), slots per profile with `claude-agent.limits` (R5), and Home SSH targets (R11, section 9.5.1). See rubi-home.md ("VM per role", "Session limits").
 Deviations noted in implementation: the container's name uses the role's name (not its id) as the slug; role versions put
 while a VM runs stay pinned until it stops; `projects` rows are one per (project, role); `net.ask` approvals of a role are
 kept in `agent-net.json` under `roles`.
@@ -528,6 +528,24 @@ over a unix socket `RUBI_SSH_SOCK` (0600, as `git-credential-rubi` does).
 Limits: 4 streams per role, 2 h per stream, 10 minutes idle, 8 MiB buffered per direction (backpressure). The Bash call
 running `ssh web-1 ...` is itself gated by `perm.ask`; the plugin classifies `ssh <target>` as a remote op (always
 asks, unless a mandate covers it). That is two independent checks.
+
+### 9.5.1 As built (R11, Home side)
+
+Package `internal/home/agent/sshtarget` (registry, keys, pinned client, relay, audit) and `internal/home/agent/ssh.go` (the
+seam to the Manager). The wire contract and the `ssh.scan/register/list/remove/audit` operations are in `agent-runner.md`
+("SSH relay (R11)"). Decisions beyond the text above:
+
+- Home checks the grant from the role record (`role.ssh`, current version, role not archived) at `ssh.open`, again after an
+  `ask_each_time` approval, and every 2 s on a live stream; a `role.put` and `ssh.remove` also cut at once.
+- Registration pins the key found at registration time; the call fails when its fingerprint is not the one the user gave.
+  Dials offer only the pinned key's type as host key algorithm, so a server with several host keys is not a false alarm.
+- Output is paced by acknowledgements (`ssh.ack`), so the 8 MiB bound is real backpressure; input over the bound cuts the stream.
+- `allowed_commands` prefix patterns (`tail -n *`) accept only plain characters after the prefix; anything with shell
+  operators needs an exact entry.
+- The audit is `agent-ssh/audit.jsonl` (rotated at 1 MiB), including refusals (result `refused`, `denied`, `host key
+  changed`). Plugin-side audit entries are the plugin's to add from `ssh.audit`.
+- Removing a target does not edit the role records that name it; a later target registered under the same name would be
+  granted again. Treat names as not reusable until the plugin clears the grants (R12).
 
 ### 9.6 Deliberate difference from the addendum
 
