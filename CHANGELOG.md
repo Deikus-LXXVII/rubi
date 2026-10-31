@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Plugin pages: drill-down, chat section.** A page action may carry `open {..}` (show the page the plugin returns for `view` with those args; the page's `up` is the way back), a section may have `actions`, an item `warn`, and a section of `kind: "chat"` shows a message list (roles, sender, "untrusted text" label) with an input that sends the typed text to a plugin op. Text only, clipped, no new connections. Used by the Agent SDK pages of the claude-code plugin (milestone M6).
+- **Plugin pages: drill-down, chat section.** A page action may carry `open {..}` (show the page the plugin returns for `view` with those args; the page's `up` is the way back), a section may have `actions`, an item `warn`, and a section of `kind: "chat"` shows a message list (roles, sender, "untrusted text" label) with an input that sends the typed text to a plugin op. Text only, clipped, no new connections. Foreign chat lines (a sender field, role sister, or the plugin's untrusted flag) are always marked untrusted; authors that pose as the user or Rubi become "Bot"; lists tolerate null and non-array data and are capped. Used by the Agent SDK pages of the claude-code plugin (milestone M6).
 
 ## v0.13.0 (2026-10-31)
 

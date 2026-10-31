@@ -1141,9 +1141,9 @@ button.copy { box-shadow: none; }
 .chat-msg { padding: 10px 12px; border-radius: var(--r-sm); border: 1px solid var(--line, rgba(128,128,128,.3)); max-width: 90%; }
 .chat-user { justify-self: end; }
 .chat-tool { opacity: .8; font-size: 0.85rem; }
-.chat-msg.untrusted { border-style: dashed; }
+.chat-msg.untrusted { border-style: dashed; background: rgba(217, 164, 0, .12); }
 .chat-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
-.chat-flag { font-weight: 600; }
+.chat-flag { font-weight: 600; text-transform: uppercase; font-size: 0.7rem; letter-spacing: .04em; padding: 1px 6px; border: 1px solid currentColor; border-radius: 4px; }
 .chat-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-form { display: grid; gap: 8px; margin-top: 10px; }
 .chat-input { width: 100%; resize: vertical; }

@@ -2035,36 +2035,55 @@ function askText(title, label, value) {
 const VIEW_TEXT_MAX = 600;
 const CHAT_TEXT_MAX = 4000;
 const CHAT_ITEMS_MAX = 300;
-const clip = (v, n) => { const t = String(v ?? ""); return t.length > n ? t.slice(0, n) + "\u2026" : t; };
+const VIEW_SECTIONS_MAX = 20;
+const VIEW_ITEMS_MAX = 100;
+const VIEW_ACTIONS_MAX = 12;
+const clip = (v, n) => { const t = typeof v === "string" || typeof v === "number" ? String(v) : ""; return t.length > n ? t.slice(0, n) + "\u2026" : t; };
+// objs keeps only the plain objects of a list a plugin supplied (null, strings and nested lists are dropped).
+const objs = (v, max) => (Array.isArray(v) ? v : []).filter((x) => x && typeof x === "object" && !Array.isArray(x)).slice(0, max);
+// chatAuthor is the name a chat line shows. The panel says "you" for the user's own lines itself; a name a plugin
+// gives to anyone else can't pose as the user or as Rubi, or mention a password, passkey or PIN: it becomes "Bot".
+const chatAuthor = (v) => { const t = clip(v, 60).trim(); return !t || PROMPT_FORBIDDEN.test(t) || /\b(you|your|me|user|admin|administrator)\b/i.test(t) ? "Bot" : t; };
 async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
-  currentView = () => pluginViewScreen(ctx, id, name, back, viewArgs);
+  const mine = () => pluginViewScreen(ctx, id, name, back, viewArgs);
+  currentView = mine;
   const err = errorBox();
   const call = (op, args) => ctx.client.call("plugin.panel", { id, op, args });
   let data;
   try {
     data = await call("view", viewArgs);
   } catch (e) {
+    if (currentView !== mine) return;
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
-  const again = () => { if (currentView && currentView.viewId === id) pluginViewScreen(ctx, id, name, back, viewArgs); };
-  const go = (open) => pluginViewScreen(ctx, id, name, back, open && typeof open === "object" ? open : {});
+  if (currentView !== mine) return; // another page was opened while this one loaded
+  if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
+  // The chat's scroll position survives a reload of the same page: the user who scrolled up to read isn't pulled down.
+  const key = JSON.stringify([id, viewArgs]);
+  const oldLog = document.querySelector(".chat-log");
+  const keep = oldLog && chatKey === key ? { top: oldLog.scrollTop, bottom: oldLog.scrollHeight - oldLog.scrollTop - oldLog.clientHeight < 24 } : null;
+  chatKey = key;
+  const again = () => { if (currentView === mine) mine(); };
+  const go = (open) => pluginViewScreen(ctx, id, name, back, open && typeof open === "object" && !Array.isArray(open) ? open : {});
   const act = (a) => async (e) => {
     const btn = e.currentTarget;
+    if (currentView !== mine) return;
     if (a.open && typeof a.open === "object") return go(a.open);
-    if (a.confirm && !confirm(a.confirm)) return;
-    let args = a.args || {};
-    if (a.prompt && a.prompt.arg) {
+    if (a.confirm && !confirm(clip(a.confirm, 300))) return;
+    let args = a.args && typeof a.args === "object" && !Array.isArray(a.args) ? a.args : {};
+    const pr = a.prompt && typeof a.prompt === "object" ? a.prompt : null;
+    if (pr && pr.arg) {
       // The plugin wants text from the user: ask in a panel-drawn box that says whose question it is, and
       // pass the answer (empty is an answer) as args[prompt.arg].
-      const label = String(a.prompt.label || "").slice(0, 200);
+      const label = clip(pr.label, 200);
       if (PROMPT_FORBIDDEN.test(label)) { showError(err, new UserError("This plugin asked for text in a way the panel won't show.")); return; }
-      const v = await askText(`${name} asks:`, label, String(a.prompt.value || "").slice(0, 200));
-      if (v === null) return;
-      args = { ...args, [a.prompt.arg]: v };
+      const v = await askText(`${name} asks:`, label, clip(pr.value, 200));
+      if (v === null || currentView !== mine) return;
+      args = { ...args, [String(pr.arg)]: v };
     }
     btn.disabled = true;
     try {
-      await call(a.op, args);
+      await call(String(a.op || ""), args);
       again();
     } catch (x) {
       btn.disabled = false;
@@ -2074,31 +2093,35 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
   const button = (a) => h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, clip(a.label, 60));
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
   // input {op, args, arg, label, send}: the text the user writes goes to the plugin as args[arg]. Everything the
-  // plugin supplies is drawn as text; a message marked untrusted (or from a sister) carries a visible label.
+  // plugin supplies is drawn as text. A message is marked untrusted when the plugin says so, when its role is sister,
+  // or when it carries a from/sister/sender field, whatever the plugin's flag says; only a "user" line without those
+  // is drawn as the user's own.
   const chatSection = (sec) => {
-    const items = (sec.items || []).slice(-CHAT_ITEMS_MAX);
+    const items = objs(sec.items, CHAT_ITEMS_MAX);
     const log = h("div", { class: "chat-log", role: "log", "aria-live": "polite" }, items.length ? items.map((m) => {
-      const role = ["user", "assistant", "tool", "sister"].includes(m.role) ? m.role : "assistant";
-      const untrusted = !!m.untrusted || role === "sister";
-      const who = role === "tool" ? "tool" : clip(m.author || (role === "user" ? "you" : role), 60);
-      return h("div", { class: "chat-msg chat-" + role + (untrusted ? " untrusted" : "") },
-        h("div", { class: "chat-meta small muted" }, h("strong", {}, who), m.time ? h("span", {}, clip(m.time, 40)) : null,
-          untrusted ? h("span", { class: "chat-flag" }, "untrusted text") : null),
+      let role = ["user", "assistant", "tool", "sister"].includes(m.role) ? m.role : "assistant";
+      const foreign = !!(m.untrusted || m.from || m.sister || m.sender) || role === "sister";
+      if (foreign && role !== "tool") role = "sister";
+      const who = role === "tool" ? "tool" : role === "user" ? "you" : chatAuthor(m.author || m.from || m.sister || m.sender);
+      return h("div", { class: "chat-msg chat-" + role + (foreign ? " untrusted" : "") },
+        h("div", { class: "chat-meta small muted" },
+          foreign ? h("span", { class: "chat-flag" }, "untrusted text") : null,
+          h("strong", {}, who), m.time ? h("span", {}, clip(m.time, 40)) : null),
         h("div", { class: "chat-text" }, clip(m.text, CHAT_TEXT_MAX)));
-    }) : h("p", { class: "muted small" }, sec.empty || "No messages yet."));
-    queueMicrotask(() => { log.scrollTop = log.scrollHeight; });
+    }) : h("p", { class: "muted small" }, clip(sec.empty, 200) || "No messages yet."));
+    queueMicrotask(() => { log.scrollTop = keep && !keep.bottom ? keep.top : log.scrollHeight; });
     let form = null;
-    const inp = sec.input;
+    const inp = sec.input && typeof sec.input === "object" ? sec.input : null;
     if (inp && inp.op && inp.arg) {
       const box = h("textarea", { class: "chat-input", rows: "3", maxlength: "4000", placeholder: clip(inp.label || "Message", 100), "aria-label": clip(inp.label || "Message", 100) });
       const send = h("button", { class: "primary small", type: "submit" }, clip(inp.send || "Send", 30));
       form = h("form", { class: "chat-form", onsubmit: async (e) => {
         e.preventDefault();
         const text = box.value.trim();
-        if (!text) return;
+        if (!text || currentView !== mine) return;
         send.disabled = true;
         try {
-          await call(inp.op, { ...(inp.args || {}), [inp.arg]: text });
+          await call(String(inp.op), { ...(inp.args && typeof inp.args === "object" && !Array.isArray(inp.args) ? inp.args : {}), [String(inp.arg)]: text });
           again();
         } catch (x) {
           send.disabled = false;
@@ -2108,28 +2131,31 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
     }
     return [log, form];
   };
-  const sections = (data.sections || []).map((sec) => h("section", { class: "view-section" },
-    h("h2", {}, clip(sec.title, 120)),
-    sec.note ? h("p", { class: "muted small" }, clip(sec.note, 1500)) : null,
-    (sec.actions || []).length ? h("div", { class: "view-actions view-sec-actions" }, sec.actions.map(button)) : null,
-    sec.kind === "chat" ? chatSection(sec)
-    : (sec.items || []).length ? h("ul", { class: "view-list" }, sec.items.map((it) => h("li", it.warn ? { class: "view-warn" } : {},
-      h("div", { class: "view-text" }, h("strong", {}, clip(it.title, 200)), it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
-      h("div", { class: "view-actions" }, (it.actions || []).map(button)))))
-      : h("p", { class: "muted small" }, sec.empty || "Nothing here.")));
+  const sections = objs(data.sections, VIEW_SECTIONS_MAX).map((sec) => {
+    const secActions = objs(sec.actions, VIEW_ACTIONS_MAX);
+    const list = sec.kind === "chat" ? null : objs(sec.items, VIEW_ITEMS_MAX);
+    return h("section", { class: "view-section" },
+      h("h2", {}, clip(sec.title, 120)),
+      sec.note ? h("p", { class: "muted small" }, clip(sec.note, 1500)) : null,
+      secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions.map(button)) : null,
+      sec.kind === "chat" ? chatSection(sec)
+      : list.length ? h("ul", { class: "view-list" }, list.map((it) => h("li", it.warn ? { class: "view-warn" } : {},
+        h("div", { class: "view-text" }, h("strong", {}, clip(it.title, 200)), it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
+        h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map(button)))))
+        : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here."));
+  });
+  const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
   screen(
     { cls: "wide", focus: false },
     header(ctx.hello),
-    data.up && data.up.open ? backBar(clip(data.up.label || "Back", 40), () => go(data.up.open)) : backBar("Settings", back),
-    h("div", { class: "section-head" }, h("h1", {}, data.title || name)),
-    data.note ? h("p", { class: "muted" }, data.note) : null,
+    up ? backBar(clip(up.label, 40) || "Back", () => go(up.open)) : backBar("Settings", back),
+    h("div", { class: "section-head" }, h("h1", {}, clip(data.title, 120) || name)),
+    data.note ? h("p", { class: "muted" }, clip(data.note, 1500)) : null,
     err,
     ...sections,
   );
-  currentView.viewId = id;
   const refresh = Number(data.refresh) || 0;
   if (refresh > 0) {
-    const mine = currentView;
     const tick = () => {
       if (currentView !== mine) return; // another page has been opened
       if ([...document.querySelectorAll("textarea.chat-input")].some((t) => t.value)) return setTimeout(tick, 2000); // keep the draft
@@ -2138,6 +2164,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
     setTimeout(tick, Math.max(refresh, 2) * 1000);
   }
 }
+let chatKey = ""; // which plugin page the chat on screen belongs to
 
 function noteEditor(ctx, id, n, done) {
   const err = errorBox();
