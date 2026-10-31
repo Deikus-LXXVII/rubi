@@ -418,11 +418,11 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The queue is first in,
   first out, except that an item waiting on a full project, a Bot at its limit, doesn't hold up the items behind
   it: the first item that can run now goes, so a project with a free slot is never stuck behind another project's
-  waiting item. Items of one project keep their order, and when only the computer's cap is reached nothing runs, so
+  waiting item. Items of one project and Bot keep their order (they wait on the same limits; items of different Bots in one project can pass each other when one Bot is at its limit), and when only the computer's cap is reached nothing runs, so
   the oldest waiting item takes the next slot freed. A new item doesn't jump ahead of a queued one that could run.
   Each queued item says why it waits in plain words (`reason`: "waiting: project my-project already has 1
-  session", "waiting: bot bot-a already has 1 session, the limit of its light mode", "waiting: 16 sessions are
-  running on this computer, the limit"). The plugin sees `queue` items (`queued` with the reason, `delivered`,
+  session", "waiting: bot bot-a already has 1 session, the limit of its light mode", "waiting: the computer's
+  session limit is reached"). The plugin sees `queue` items (`queued` with the reason, `delivered`,
   `failed`, `expired`) in `next`. `status` has `slots: [{project, session, bot, busy, background, subagents}]`,
   `limits: {per_project, total}` (total = the computer's cap), `sessions_running`, `usage` (below); `slot` (the first
   busy slot, or an empty one) stays for older plugins; `projects` rows have `slot_busy` (the project's slots are

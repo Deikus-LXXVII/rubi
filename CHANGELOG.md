@@ -4,10 +4,10 @@
 
 - **Rubi Home: Agent SDK sessions run per project, not one at a time.** The single slot ("one top-level query on
   the computer") is now a slot per running top-level session: `agent_max_sessions_per_project` (default 1, at
-  least 1) per project and `agent_max_sessions` (default 4; 0 = no cap) across projects. Subagents and forks
-  inside a session stay unlimited. A start (or a send to a session without a slot) over a limit waits in the
-  disk queue, first in, first out, except that an item waiting on a full project doesn't hold up one behind it
-  for a project with a free slot; each queued item carries a plain `reason`. Every slot keeps the old rules
+  least 1) per project and `agent_max_sessions` (default 16; 0 = no cap) for the whole computer, on top of the per-Bot limits of the usage modes below. Subagents and forks
+  inside a session take no slot (their number is capped separately, below). A start (or a send to a session without a slot) over a limit waits in the
+  disk queue, first in, first out, except that an item waiting on a full project or a Bot at its limit doesn't hold up
+  one behind it that can run (items of one project and Bot keep their order); each queued item carries a plain `reason`. Every slot keeps the old rules
   (busy while a turn or a background subagent runs; freed on idle, close, runner exit or crash; the 30 minute
   idle interrupt, per slot). `claude-agent.status` has `slots` and `limits` (and still `slot`, the first busy
   one, for older plugins); `claude-agent.projects` rows add `sessions_running`, and `slot_busy` means the
