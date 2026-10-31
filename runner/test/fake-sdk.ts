@@ -232,7 +232,10 @@ export class FakeSdk implements Sdk {
     this.forks.push({ id, newId, ...(o.title !== undefined ? { title: o.title } : {}) });
     return { sessionId: newId };
   }
-  async probe(): Promise<ProbeResult> {
+  /** The environment the last probe was given. */
+  probeEnv: Record<string, string> | undefined;
+  async probe(o?: { env: Record<string, string> }): Promise<ProbeResult> {
+    this.probeEnv = o?.env;
     if (this.probeError) throw this.probeError;
     return this.probeResult;
   }

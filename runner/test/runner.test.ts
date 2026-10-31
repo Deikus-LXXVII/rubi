@@ -181,7 +181,7 @@ describe("options of every query", () => {
     assert.equal(o.env.HTTPS_PROXY, "http://proxy.invalid:3128");
     assert.equal(o.env.DISABLE_TELEMETRY, "1");
     assert.equal(o.hooks.PreToolUse[0]!.timeout, 300);
-    assert.deepEqual(o.disallowedTools, disallowedEditTools("/work"));
+    assert.deepEqual(o.disallowedTools, disallowedEditTools("/work", "/rubi-auth"));
     for (const r of ["Edit(//work/.rubi/**)", "Edit(//work/.claude/**)", "Edit(//work/.mcp.json)", "Read(//work/.rubi/**)"]) assert.ok(o.disallowedTools.includes(r), r);
     assert.equal(typeof o.canUseTool, "function");
   });
