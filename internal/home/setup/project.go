@@ -38,11 +38,11 @@ func (s *Setup) refuseFolder(dir string, existing []string) (string, error) {
 		system = s.opt.SystemTrees
 	}
 	for _, t := range system {
-		if real == t || strings.HasPrefix(real, t+string(filepath.Separator)) {
+		if agent.Within(real, t) {
 			return "", errors.New("a system folder can't be a project")
 		}
 	}
-	if slices.Contains(systemExact, real) {
+	if slices.ContainsFunc(systemExact, func(e string) bool { return strings.EqualFold(e, real) }) {
 		return "", errors.New("that folder holds other people's or other disks' folders; choose a folder inside it")
 	}
 	home, _ := os.UserHomeDir()
@@ -56,14 +56,14 @@ func (s *Setup) refuseFolder(dir string, existing []string) (string, error) {
 	if h, err := filepath.EvalSymlinks(helper); err == nil {
 		helper = h
 	}
-	if helper != "" && (real == helper || strings.HasPrefix(real, helper+string(filepath.Separator))) {
+	if helper != "" && agent.Within(real, helper) {
 		return "", errors.New("Rubi Home's own folder (it holds its keys) can't be a project")
 	}
 	if agent.ProtectedDir(real, s.opt.Dir) {
 		return "", errors.New("your home folder, a private folder in it, a folder containing them, or Rubi Home's own folder can't be a project")
 	}
 	for _, e := range existing {
-		if re, err := filepath.EvalSymlinks(filepath.Clean(e)); err == nil && re == real {
+		if re, err := filepath.EvalSymlinks(filepath.Clean(e)); err == nil && strings.EqualFold(re, real) {
 			return "", errors.New("that folder is already a project")
 		}
 	}
@@ -152,16 +152,24 @@ func (s *Setup) RemoveProject(dir string) error {
 	return nil
 }
 
+// cutPrefixFold is strings.CutPrefix ignoring case.
+func cutPrefixFold(s, prefix string) (string, bool) {
+	if len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix) {
+		return s[len(prefix):], true
+	}
+	return s, false
+}
+
 // sharedPlace says why a path is no project because it belongs to someone or something else: the root of a
 // volume (/Volumes/<name>), /Users/Shared, or another user's home folder or anything in it.
 func sharedPlace(real, home string) string {
 	sep := string(filepath.Separator)
-	if rest, ok := strings.CutPrefix(real, "/Volumes"+sep); ok && !strings.Contains(rest, sep) {
+	if rest, ok := cutPrefixFold(real, "/Volumes"+sep); ok && !strings.Contains(rest, sep) {
 		return "the root of a disk can't be a project; choose a folder inside it"
 	}
-	if rest, ok := strings.CutPrefix(real, "/Users"+sep); ok {
+	if rest, ok := cutPrefixFold(real, "/Users"+sep); ok {
 		name, _, _ := strings.Cut(rest, sep)
-		if "/Users"+sep+name != home {
+		if !strings.EqualFold("/Users"+sep+name, home) {
 			return "another user's folder (or the shared folder) can't be a project"
 		}
 	}

@@ -413,6 +413,20 @@ func badMountPath(dir string) bool {
 	return strings.ContainsAny(dir, ",\x00\r\n") || strings.ContainsFunc(dir, unicode.IsControl)
 }
 
+// Within says whether p is root or inside it. The comparison ignores case: the default macOS file system
+// does, so /users/ALICE is /Users/alice there. (On a case-sensitive system this only ever denies more.)
+func Within(p, root string) bool {
+	if root == "" {
+		return false
+	}
+	sep := string(filepath.Separator)
+	root = strings.TrimSuffix(root, sep)
+	if len(p) < len(root) || !strings.EqualFold(p[:len(root)], root) {
+		return false
+	}
+	return len(p) == len(root) || p[len(root)] == filepath.Separator
+}
+
 func (m *Manager) protected(dir string) bool {
 	if ProtectedDir(dir, append([]string{m.opt.Dir}, m.opt.Protected...)...) {
 		return true
@@ -425,7 +439,7 @@ func (m *Manager) protected(dir string) bool {
 		if rp, err := filepath.EvalSymlinks(p); err == nil {
 			p = rp
 		}
-		if dir == p || strings.HasPrefix(dir, p+string(filepath.Separator)) || strings.HasPrefix(p, dir+string(filepath.Separator)) {
+		if Within(dir, p) || Within(p, dir) {
 			return true
 		}
 	}
@@ -438,16 +452,19 @@ func ProtectedDir(dir string, extra ...string) bool {
 	if badMountPath(dir) {
 		return true
 	}
+	if rd, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = rd // a link into a protected place is that place
+	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		if rh, err := filepath.EvalSymlinks(home); err == nil {
 			home = rh
 		}
-		if dir == home || strings.HasPrefix(home, dir+string(filepath.Separator)) {
+		if Within(home, dir) {
 			return true // the home itself, and /Users, /home, /
 		}
 		for _, t := range deniedTrees {
 			tt := filepath.Join(home, t)
-			if dir == tt || strings.HasPrefix(dir, tt+string(filepath.Separator)) || strings.HasPrefix(tt, dir+string(filepath.Separator)) {
+			if Within(dir, tt) || Within(tt, dir) {
 				return true
 			}
 		}
@@ -459,7 +476,7 @@ func ProtectedDir(dir string, extra ...string) bool {
 		if rp, err := filepath.EvalSymlinks(p); err == nil {
 			p = rp
 		}
-		if dir == p || strings.HasPrefix(p, dir+string(filepath.Separator)) {
+		if Within(p, dir) {
 			return true
 		}
 	}

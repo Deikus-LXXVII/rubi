@@ -190,3 +190,32 @@ func TestSharedPlaces(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedPlaceIgnoresCase(t *testing.T) {
+	if sharedPlace("/users/ALICE/x", "/Users/bob") == "" {
+		t.Error("another user's folder in other case was allowed")
+	}
+	if sharedPlace("/users/BOB/x", "/Users/bob") != "" {
+		t.Error("the user's own folder in other case was refused")
+	}
+	if sharedPlace("/VOLUMES/Disk", "/Users/bob") == "" {
+		t.Error("a disk root in other case was allowed")
+	}
+}
+
+func TestProjectAddSystemFoldersByCaseAndLink(t *testing.T) {
+	e := newTestEnv(t, func(o *Options) { o.SystemTrees = nil })
+	link := filepath.Join(t.TempDir(), "etc-link")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Fatal(err)
+	}
+	cands := []string{link}
+	if _, err := os.Stat("/SYSTEM"); err == nil { // case-insensitive file system
+		cands = append(cands, "/SYSTEM", "/users/ALICE")
+	}
+	for _, c := range cands {
+		if _, err := e.s.refuseFolder(c, nil); err == nil {
+			t.Errorf("%s accepted", c)
+		}
+	}
+}

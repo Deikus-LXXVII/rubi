@@ -976,3 +976,37 @@ func TestRPCServesBoundedRequests(t *testing.T) {
 	}
 	close(block)
 }
+
+func TestWithinIgnoresCase(t *testing.T) {
+	for _, c := range []struct {
+		p, root string
+		want    bool
+	}{
+		{"/Users/Alice/work", "/users/alice", true},
+		{"/USERS/ALICE", "/Users/Alice", true},
+		{"/Users/Alice2", "/Users/Alice", false},
+		{"/Users", "/Users/Alice", false},
+		{"/anything", "", false},
+	} {
+		if got := Within(c.p, c.root); got != c.want {
+			t.Errorf("Within(%q, %q) = %v", c.p, c.root, got)
+		}
+	}
+}
+
+func TestProtectedDirCaseAndLinks(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	rh, _ := filepath.EvalSymlinks(home)
+	os.MkdirAll(filepath.Join(rh, ".ssh"), 0o755)
+	if !ProtectedDir(filepath.Join(rh, ".SSH")) {
+		t.Error("a differently cased private folder was allowed")
+	}
+	link := filepath.Join(t.TempDir(), "l")
+	if err := os.Symlink(filepath.Join(rh, ".ssh"), link); err != nil {
+		t.Fatal(err)
+	}
+	if !ProtectedDir(link) {
+		t.Error("a link to a private folder was allowed")
+	}
+}
