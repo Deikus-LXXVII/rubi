@@ -291,7 +291,7 @@ describe("send, queue, steer", () => {
       ctx.result();
     };
     const { id } = await start(h, { prompt: "first" });
-    await h.waitEvent("status", (e) => e.state === "busy");
+    await h.waitEvent("status", (e) => e.status === "busy");
     const r = await h.ok("session.send", { id, text: "second" });
     assert.deepEqual(r, { queued: true, delivered: false });
     await tick(30);
@@ -299,7 +299,7 @@ describe("send, queue, steer", () => {
     h.sdk.last.release();
     await h.waitFor((l) => l.msg.params?.kind === "assistant" && l.msg.params.text === "done second");
     assert.deepEqual(h.sdk.last.received.map((x) => [x.text, x.priority]), [["first", undefined], ["second", undefined]]);
-    await h.waitFor((l) => l.msg.params?.kind === "status" && l.msg.params.state === "idle" && h.events("result").length === 2);
+    await h.waitFor((l) => l.msg.params?.kind === "status" && l.msg.params.status === "idle" && h.events("result").length === 2);
   });
 
   it("several queued messages are released one per turn, in order", async () => {
@@ -531,12 +531,12 @@ describe("events", () => {
     await h.waitEvent("result");
     await tick(20);
     assert.deepEqual(h.statuses(), ["busy"]); // the turn is over, the subagent is not
-    assert.deepEqual(h.events("background")[0]!.tasks, [{ task_id: "t1", subagent_type: "researcher", description: "dig" }]);
+    assert.deepEqual(h.events("background")[0], { session_id: id, kind: "background", agent_id: "t1", subagent_type: "researcher", description: "dig" });
     const l = (await h.ok("session.list")) as { sessions: any[] };
     assert.equal(l.sessions.find((s) => s.id === id).busy, true);
     h.sdk.last.emit({ type: "system", subtype: "task_notification", task_id: "t1", status: "completed" });
     await h.waitFor(() => h.statuses().at(-1) === "idle");
-    assert.deepEqual(h.events("background").at(-1)!.tasks, []);
+    assert.deepEqual(h.events("background").at(-1), { session_id: id, kind: "background", agent_id: "t1", done: true });
   });
 
   it("task_started / task_notification work without the level message", async () => {
@@ -548,7 +548,7 @@ describe("events", () => {
     };
     await start(h);
     await h.waitEvent("result");
-    assert.deepEqual(h.events("background")[0]!.tasks.map((t: any) => t.task_id), ["t9"]);
+    assert.deepEqual(h.events("background").map((e) => e.agent_id), ["t9"]); // the foreground task is not announced
   });
 
   it("a query that ends without a result makes the session idle again, and it can be resumed", async () => {

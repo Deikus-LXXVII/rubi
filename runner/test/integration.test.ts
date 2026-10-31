@@ -156,7 +156,7 @@ describe("real SDK + real claude against the scripted API", { skip: !enabled }, 
     const a = child.asks.find((x) => x.session_id === id && x.agent_id)!;
     assert.ok(a.agent_type);
     assert.equal(fs.existsSync(path.join(work, "marker3.txt")), false);
-    await child.waitFor(() => child.events("status", id).at(-1)?.state === "idle" && child.events("result", id).length >= 1);
+    await child.waitFor(() => child.events("status", id).at(-1)?.status === "idle" && child.events("result", id).length >= 1);
   });
 
   it("AskUserQuestion reaches canUseTool in bypassPermissions mode: an ask event and a perm.ask", async () => {

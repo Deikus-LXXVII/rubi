@@ -15,6 +15,7 @@ const runner = new Runner(process.stdin, process.stdout, {
   env: process.env,
   cwd,
   configDir,
+  credSock: process.env.RUBI_CRED_SOCK || "/tmp/rubi-cred.sock",
   settingSources: process.env.RUBI_SETTING_SOURCES === "none" ? [] : ["project"],
   log: (m) => process.stderr.write(`[runner] ${m}\n`),
   exit: (code) => setImmediate(() => process.exit(code)),

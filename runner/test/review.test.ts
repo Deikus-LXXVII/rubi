@@ -193,7 +193,7 @@ describe("a slow reader", () => {
     });
     const input = new PassThrough();
     const peer = new Peer(input, slow, { onRequest: async () => ({ ok: true }), maxQueuedBytes: 2000 });
-    peer.notify("event", { session_id: "s1", kind: "status", state: "busy" }); // first write blocks
+    peer.notify("event", { session_id: "s1", kind: "status", status: "busy" }); // first write blocks
     for (let i = 0; i < 200; i++) peer.notify("event", { session_id: "s1", kind: "assistant", text: "x".repeat(50), i }, "s1");
     input.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "m", params: {} }) + "\n"); // a response must survive
     await tick(20);

@@ -3,6 +3,8 @@
 // testdata/*.ndjson. UPDATE_FIXTURES=1 rewrites the files. Format: see ../README.md.
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -89,6 +91,45 @@ describe("wire transcripts (testdata/*.ndjson)", () => {
     await h.waitFor(() => h.events("result").length >= 3);
     await tick(30);
     check("queue-and-steer", h);
+  });
+
+  it("background-subagent", async () => {
+    const h = await new Home().up();
+    h.sdk.turn = async (ctx) => {
+      ctx.emit({ type: "system", subtype: "background_tasks_changed", tasks: [{ task_id: "a1", subagent_type: "researcher", description: "dig", task_type: "local_agent" }] });
+      ctx.result();
+    };
+    await h.ok("session.start", { prompt: "delegate", mode: "bypassPermissions" });
+    await h.waitEvent("result");
+    await tick(20);
+    h.sdk.last.emit({ type: "system", subtype: "background_tasks_changed", tasks: [] });
+    await h.waitFor(() => h.statuses().at(-1) === "idle");
+    check("background-subagent", h);
+  });
+
+  it("git-credential", async () => {
+    const sock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "rc-")), "cred.sock");
+    const h = await new Home({ credSock: sock }).up();
+    h.credHandler = () => ({ output: "protocol=https\nhost=git.example.com\nusername=alice\npassword=example-token\n\n" });
+    const ask = (op: string) =>
+      new Promise<string>((resolve) => {
+        const c = net.connect(sock);
+        let out = "";
+        c.on("data", (d) => (out += d));
+        c.on("close", () => resolve(out));
+        c.write(`${op}\nprotocol=https\nhost=git.example.com\npath=alice/my-project.git\n\n`);
+      });
+    await ask("get");
+    h.sdk.turn = async (ctx) => {
+      await ctx.tool("Bash", { command: "git push origin main" });
+      ctx.result();
+    };
+    await h.ok("session.start", { prompt: "push", mode: "bypassPermissions" });
+    await h.waitEvent("result");
+    await ask("get");
+    await tick(20);
+    check("git-credential", h);
+    h.closeStdin(); // closes the credential socket
   });
 
   it("ask-user-question", async () => {

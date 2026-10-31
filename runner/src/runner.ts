@@ -4,6 +4,7 @@
 // forkSession() + resume, steering with priority "now", a permission callback kept installed.
 import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
+import { serveCredentials, type CredServer } from "./cred.js";
 import { Inbox } from "./inbox.js";
 import { ERR, errMsg, Peer, RpcError } from "./protocol.js";
 import {
@@ -35,6 +36,9 @@ export interface RunnerConfig {
   askTimeoutMs?: number; // default 295 s: no answer -> deny (Home itself denies after 280 s)
   maxLineBytes?: number;
   maxQueuedBytes?: number;
+  /** Unix socket for git-credential-rubi; unset = no credential socket. */
+  credSock?: string;
+  credTimeoutMs?: number; // default 295 s (an approval can take minutes)
 }
 
 export const EXIT_NO_TOKEN = 2;
@@ -72,6 +76,8 @@ interface Decision {
 
 const SHORT = 200;
 const MAX_PENDING = 50;
+const PUSH_WINDOW_MS = 120_000;
+const GIT_PUSH_RE = /\bgit\b[^\n]*\bpush\b/;
 const DECIDED_MAX = 100;
 const DECIDED_TTL_MS = 30_000;
 const short = (v: unknown, n = SHORT): string => {
@@ -134,7 +140,7 @@ export function disallowedEditTools(cwd: string): string[] {
 }
 
 export class Runner {
-  private readonly cfg: Required<Omit<RunnerConfig, "maxLineBytes" | "maxQueuedBytes" | "log" | "env" | "sdk" | "exit" | "version">>;
+  private readonly cfg: Required<Omit<RunnerConfig, "maxLineBytes" | "maxQueuedBytes" | "credSock" | "log" | "env" | "sdk" | "exit" | "version">>;
   private readonly sdk: Sdk;
   private readonly env: NodeJS.ProcessEnv;
   private peer!: Peer;
@@ -142,6 +148,8 @@ export class Runner {
   private exited = false;
   private readonly sessions = new Map<string, Session>();
   private readonly childEnv: Record<string, string>;
+  private credServer: CredServer | undefined;
+  private pushUntil = 0;
 
   constructor(
     private readonly input: Readable,
@@ -159,6 +167,7 @@ export class Runner {
       helloTimeoutMs: c.helloTimeoutMs ?? 10_000,
       hookTimeoutSec: c.hookTimeoutSec ?? 300,
       askTimeoutMs: c.askTimeoutMs ?? 295_000,
+      credTimeoutMs: c.credTimeoutMs ?? 295_000,
     };
     this.childEnv = buildChildEnv(c.env, this.cfg.configDir);
   }
@@ -170,6 +179,7 @@ export class Runner {
   private exit(code: number) {
     if (this.exited) return;
     this.exited = true;
+    this.credServer?.close();
     this.shutdownSessions();
     this.c.exit(code);
   }
@@ -202,6 +212,9 @@ export class Runner {
         },
       })) as { ok?: unknown } | null;
       if (r?.ok !== true) throw new Error("hello refused");
+      if (this.c.credSock) {
+        this.credServer = await serveCredentials(this.c.credSock, (op, input) => this.credential(op, input), (m) => this.log(m));
+      }
     } catch (e) {
       this.log(`hello failed: ${errMsg(e)}`);
       this.exit(EXIT_HELLO_FAILED);
@@ -515,7 +528,7 @@ export class Runner {
   }
 
   private onSystem(s: Session, m: SdkMessage) {
-    const before = [...s.tasks.keys()].join();
+    const before = new Map(s.tasks);
     if (m.subtype === "background_tasks_changed") {
       s.tasks.clear();
       for (const t of Array.isArray(m.tasks) ? (m.tasks as Record<string, unknown>[]) : []) {
@@ -529,10 +542,10 @@ export class Runner {
     } else {
       return;
     }
-    if ([...s.tasks.keys()].join() !== before) {
-      this.event(s, "background", { tasks: [...s.tasks.values()] });
-      this.updateStatus(s);
-    }
+    // One event per agent that started or finished: Home counts them to keep its slot busy.
+    for (const [id, t] of s.tasks) if (!before.has(id)) this.event(s, "background", { agent_id: id, ...omitId(t) });
+    for (const id of before.keys()) if (!s.tasks.has(id)) this.event(s, "background", { agent_id: id, done: true });
+    this.updateStatus(s);
   }
 
   private statusOf(s: Session): Status {
@@ -543,7 +556,7 @@ export class Runner {
     const st = this.statusOf(s);
     if (st === s.lastStatus) return;
     s.lastStatus = st;
-    this.event(s, "status", { state: st });
+    this.event(s, "status", { status: st });
   }
 
   private event(s: Session, kind: string, body: Record<string, unknown>) {
@@ -576,7 +589,7 @@ export class Runner {
       this.log(`close failed: ${errMsg(e)}`);
     }
     s.query = undefined;
-    this.event(s, "status", { state: "closed" });
+    this.event(s, "status", { status: "closed" });
   }
 
   private shutdownSessions() {
@@ -591,6 +604,26 @@ export class Runner {
       }
     }
     this.sessions.clear();
+  }
+
+  // ---------------------------------------------------------------- git credentials
+
+  /**
+   * Relays one request of git-credential-rubi to Home. The purpose is "push" only while the runner
+   * knows a push is under way: Home approved a perm.ask for a `git ... push` command a moment ago.
+   * Anything else is "read" (Home gives reads and pushes different credentials).
+   */
+  private async credential(op: string, input: string): Promise<string> {
+    if (!this.authed || this.peer.isClosed) throw new Error("not connected to Rubi Home");
+    const purpose = Date.now() < this.pushUntil ? "push" : "read";
+    const r = (await this.peer.request("git.credential", { op, input, purpose }, { timeoutMs: this.cfg.credTimeoutMs })) as { output?: unknown } | null;
+    return typeof r?.output === "string" ? r.output : "";
+  }
+
+  private notePush(tool: string, input: unknown, d: Decision) {
+    if (d.behavior !== "allow" || tool !== "Bash") return;
+    const cmd = (d.updated_input ?? (input as Record<string, unknown> | null))?.command;
+    if (typeof cmd === "string" && GIT_PUSH_RE.test(cmd)) this.pushUntil = Date.now() + PUSH_WINDOW_MS;
   }
 
   // ---------------------------------------------------------------- permissions
@@ -615,6 +648,7 @@ export class Runner {
         signal,
       );
       this.remember(s, input.tool_use_id, input.tool_name, input.tool_input, d);
+      this.notePush(input.tool_name, input.tool_input, d);
       if (d.behavior === "deny") {
         return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.message ?? "Denied by Rubi" } };
       }
@@ -644,6 +678,7 @@ export class Runner {
         { tool, input, ...(o.toolUseID ? { tool_use_id: o.toolUseID } : {}), ...(o.agentID ? { agent_id: o.agentID } : {}), cwd: this.cfg.cwd, via: "can_use_tool" },
         o.signal,
       );
+      this.notePush(tool, input, d);
       if (d.behavior === "deny") return { behavior: "deny", message: d.message ?? "Denied by Rubi" };
       return { behavior: "allow", updatedInput: d.updated_input ?? input };
     } catch (e) {
@@ -699,6 +734,11 @@ export class Runner {
 
 function hashOf(v: unknown): string {
   return createHash("sha256").update(JSON.stringify(v) ?? "").digest("hex");
+}
+
+function omitId(t: { task_id: string; subagent_type?: string; description?: string }) {
+  const { task_id: _id, ...rest } = t;
+  return rest;
 }
 
 function taskInfo(t: Record<string, unknown>) {

@@ -1,0 +1,9 @@
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"method":"hello","params":{"run_token":"tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt","version":"test"}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"result":{"ok":true}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"method":"session.start","params":{"prompt":"delegate","mode":"bypassPermissions"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","status":"busy"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"result":{"id":"<uuid-1>"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"background","agent_id":"a1","subagent_type":"researcher","description":"dig"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"result","subtype":"success","usage":{"input_tokens":100,"output_tokens":20},"model_usage":{"fake-model":{"inputTokens":100,"outputTokens":20,"costUSD":0.0001}},"total_cost_usd":0.0001,"num_turns":1,"is_error":false}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"background","agent_id":"a1","done":true}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","status":"idle"}}}

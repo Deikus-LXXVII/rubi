@@ -26,13 +26,16 @@ export class Home {
   /** Answers every perm.ask unless a test replaces it. */
   askHandler: (p: Msg) => Promise<Msg> | Msg = () => ({ behavior: "allow" });
   readonly asks: Msg[] = [];
+  /** Answers git.credential requests. */
+  credHandler: (p: Msg) => Promise<Msg> | Msg = () => ({ output: "" });
+  readonly creds: Msg[] = [];
   private nextId = 1;
   private waiters: { pred: (l: Line) => boolean; resolve: (l: Line) => void }[] = [];
   private pendingCalls = new Map<number, (m: Msg) => void>();
   private buf = "";
   helloHandler: (p: Msg) => Msg | null = (p) => (p.run_token === TOKEN ? { ok: true } : null);
 
-  constructor(cfg: Partial<RunnerConfig> & { env?: NodeJS.ProcessEnv; sdk?: FakeSdk; maxLineBytes?: number; maxQueuedBytes?: number } = {}) {
+  constructor(cfg: Partial<RunnerConfig> & { env?: NodeJS.ProcessEnv; sdk?: FakeSdk; maxLineBytes?: number; maxQueuedBytes?: number; credSock?: string } = {}) {
     this.sdk = cfg.sdk ?? new FakeSdk();
     this.fromRunner.on("data", (c: Buffer) => this.onData(c.toString("utf8")));
     this.runner = new Runner(this.toRunner, this.fromRunner, {
@@ -77,6 +80,13 @@ export class Home {
       this.asks.push(msg.params);
       const r = await this.askHandler(msg.params);
       this.reply(msg.id, r);
+    } else if (msg.method === "git.credential") {
+      this.creds.push(msg.params);
+      try {
+        this.reply(msg.id, await this.credHandler(msg.params));
+      } catch (e) {
+        this.sendRaw({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: String(e) } });
+      }
     } else if (msg.id !== undefined && ("result" in msg || "error" in msg)) {
       this.pendingCalls.get(msg.id)?.(msg);
       this.pendingCalls.delete(msg.id);
@@ -139,7 +149,7 @@ export class Home {
     return this.lines.filter((l) => l.from === "runner" && l.msg.method === "event" && (!kind || l.msg.params.kind === kind)).map((l) => l.msg.params);
   }
   statuses(): string[] {
-    return this.events("status").map((e) => e.state);
+    return this.events("status").map((e) => e.status);
   }
   get mark(): number {
     return this.lines.length;

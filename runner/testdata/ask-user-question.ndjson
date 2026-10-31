@@ -1,10 +1,10 @@
 {"from":"runner","msg":{"jsonrpc":"2.0","id":1,"method":"hello","params":{"run_token":"tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt","version":"test"}}}
 {"from":"home","msg":{"jsonrpc":"2.0","id":1,"result":{"ok":true}}}
 {"from":"home","msg":{"jsonrpc":"2.0","id":1,"method":"session.start","params":{"prompt":"ask me","mode":"bypassPermissions"}}}
-{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","state":"busy"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","status":"busy"}}}
 {"from":"runner","msg":{"jsonrpc":"2.0","id":1,"result":{"id":"<uuid-1>"}}}
 {"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"ask","tool_use_id":"toolu_1","input":{"questions":[{"question":"Which one?"}]}}}}
 {"from":"runner","msg":{"jsonrpc":"2.0","id":2,"method":"perm.ask","params":{"ask_id":"<uuid-2>","session_id":"<uuid-1>","tool":"AskUserQuestion","input":{"questions":[{"question":"Which one?"}]},"tool_use_id":"toolu_1","cwd":"/work","via":"can_use_tool","mode":"bypassPermissions"}}}
 {"from":"home","msg":{"jsonrpc":"2.0","id":2,"result":{"behavior":"allow","updated_input":{"questions":[{"question":"Which one?"}],"answers":{"Which one?":"A"}}}}}
 {"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"result","subtype":"success","usage":{"input_tokens":100,"output_tokens":20},"model_usage":{"fake-model":{"inputTokens":100,"outputTokens":20,"costUSD":0.0001}},"total_cost_usd":0.0001,"num_turns":1,"is_error":false}}}
-{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","state":"idle"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","status":"idle"}}}
