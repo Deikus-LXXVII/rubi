@@ -172,7 +172,7 @@ describe("options of every query", () => {
     assert.equal(o.resume, undefined);
     assert.deepEqual(o.settingSources, ["project"]);
     // the project's own settings must not run code outside our gate
-    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "" });
+    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true });
     assert.equal(o.strictMcpConfig, true);
     assert.deepEqual(o.mcpServers, {});
     assert.equal(o.allowDangerouslySkipPermissions, true);

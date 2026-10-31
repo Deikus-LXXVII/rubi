@@ -455,7 +455,9 @@ export class Runner {
       settingSources: this.cfg.settingSources,
       // The project's own settings must not run code outside our PreToolUse gate: no settings hooks,
       // no apiKeyHelper (an empty string beats the project's value), no .mcp.json servers.
-      settings: { disableAllHooks: true, apiKeyHelper: "" },
+      // skipWebFetchPreflight: WebFetch would otherwise ask api.anthropic.com about the domain on its own, outside
+      // the base URL (the auth gateway), fail at the proxy, which does not allow that host, and refuse the fetch.
+      settings: { disableAllHooks: true, apiKeyHelper: "", skipWebFetchPreflight: true },
       strictMcpConfig: true,
       mcpServers: {},
       allowDangerouslySkipPermissions: true,
