@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "pretest": "node check-node.mjs",
     "test": "tsc && node --test \"dist-test/test/*.test.js\"",
     "test:integration": "tsc && RUBI_RUNNER_INTEGRATION=1 node --test --test-timeout=240000 dist-test/test/integration.test.js dist-test/test/roles.integration.test.js",
     "start": "node dist/main.js"
