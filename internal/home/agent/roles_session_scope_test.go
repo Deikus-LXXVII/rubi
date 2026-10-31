@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,5 +90,46 @@ func TestRoleReadsDoNotBootOrKeepTheVMUp(t *testing.T) {
 	re.m.sweepIdle()
 	if re.vm(a).State() != StateStopped {
 		t.Fatalf("a read kept the VM up: %s", re.vm(a).State())
+	}
+}
+
+func TestRoleVMGetsTheShield(t *testing.T) {
+	re := newRoleEnv(t, setLimits(2, 4))
+	a, _ := re.put("role-a", nil)
+	proj := filepath.Join(filepath.Dir(re.dir), "my-project")
+	if err := os.MkdirAll(filepath.Join(proj, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	re.startRole(a, "x")
+	eventually(t, "slot", func() bool { return re.running() == 1 })
+	pj := re.vm(a).Runner().Project
+	if pj.EmptyDir != filepath.Join(re.dir, RoleEmptyDir) || len(pj.ReadOnly) != 1 || pj.ReadOnly[0] != ".claude" {
+		t.Fatalf("role project %+v", pj)
+	}
+	if ents, err := os.ReadDir(pj.EmptyDir); err != nil || len(ents) != 0 {
+		t.Fatalf("the empty directory: %v %v", ents, err)
+	}
+	if _, err := os.Stat(filepath.Join(proj, ".rubi")); err != nil {
+		t.Fatalf("/work/.rubi must exist to be covered: %v", err)
+	}
+	// No .claude in the project, or one that is a symlink: nothing to bind (the tool would create the mount point).
+	if err := os.RemoveAll(filepath.Join(proj, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); len(s.ReadOnly) != 0 || s.EmptyDir == "" {
+		t.Fatalf("no .claude: %+v", s)
+	}
+	if err := os.Symlink("/etc", filepath.Join(proj, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); len(s.ReadOnly) != 0 {
+		t.Fatalf("symlinked .claude: %+v", s)
+	}
+	// Something in the empty directory: no shield, so the start refuses.
+	if err := os.WriteFile(filepath.Join(re.dir, RoleEmptyDir, "x"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := roleShield(proj, filepath.Join(re.dir, RoleEmptyDir)); s.EmptyDir != "" {
+		t.Fatalf("dirty empty dir: %+v", s)
 	}
 }

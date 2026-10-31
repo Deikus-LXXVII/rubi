@@ -612,6 +612,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	}
 	var roleHosts []string
 	var unpin func()
+	var shield Project
 	if p.Role == "" {
 		if err := prepareWorkDir(p.Dir); err != nil {
 			return nil, err
@@ -622,6 +623,13 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			if st, err := os.Stat(d); err != nil || !st.IsDir() {
 				return nil, fmt.Errorf("role %s has no directory %s to mount", clip(p.RoleName, 40), filepath.Base(d))
 			}
+		}
+		if err := prepareWorkDir(p.Dir); err != nil { // /work/.rubi exists to be covered
+			return nil, err
+		}
+		shield = roleShield(p.Dir, filepath.Join(m.opt.Dir, RoleEmptyDir))
+		if shield.EmptyDir == "" {
+			return nil, fmt.Errorf("role %s: can't prepare the empty directory that covers /work/.rubi", clip(p.RoleName, 40))
 		}
 		role, release, err := m.pinRole(p)
 		if err != nil {
@@ -703,7 +711,9 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	if p.Role != "" {
 		env["RUBI_ROLE_DIR"], env["RUBI_CLAUDE_DIR"] = RoleMountDir, RoleClaudeDir
 	}
-	conn, err := p.vm.Start(sctx, StartSpec{Project: p.Project, Env: env, Prepare: prepare})
+	pj := p.Project
+	pj.EmptyDir, pj.ReadOnly = shield.EmptyDir, shield.ReadOnly
+	conn, err := p.vm.Start(sctx, StartSpec{Project: pj, Env: env, Prepare: prepare})
 	if err != nil {
 		if px != nil {
 			px.Close()
@@ -2195,6 +2205,31 @@ func (m *Manager) askOpenLocked(s *slotState) bool {
 // config (which can hold conversation text and tokens) are never committed. /work is shared with the VM
 // and the agent controls its content: nothing is followed through a symlink, and only a real directory and a
 // regular file are accepted. Nothing else on the Mac reads /work for decisions.
+// RoleEmptyDir (under the helper directory) is the empty directory a role VM sees at /work/.rubi, read-only.
+const RoleEmptyDir = "agent-role-empty"
+
+// roleShield decides what covers the project for a role VM: the empty directory over /work/.rubi, and the
+// project's own .claude (when it is a plain directory: a bind of a symlink would follow it) read-only. Only existing
+// directories are mounted; a missing mount point would be created in the project by the container tool. Nothing
+// is read from them. EmptyDir is "" when the empty directory can't be made.
+func roleShield(projectDir, emptyDir string) Project {
+	var s Project
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		return s
+	}
+	if st, err := os.Lstat(emptyDir); err != nil || !st.IsDir() {
+		return s
+	}
+	if ents, err := os.ReadDir(emptyDir); err != nil || len(ents) != 0 {
+		return s // it must stay empty: Home never writes in it, a VM can't (read-only)
+	}
+	s.EmptyDir = emptyDir
+	if st, err := os.Lstat(filepath.Join(projectDir, ".claude")); err == nil && st.IsDir() {
+		s.ReadOnly = []string{".claude"}
+	}
+	return s
+}
+
 func prepareWorkDir(dir string) error {
 	rubi := filepath.Join(dir, ".rubi")
 	st, err := os.Lstat(rubi)

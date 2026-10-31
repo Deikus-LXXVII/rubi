@@ -88,6 +88,21 @@ func TestAppleContainerRoleArgs(t *testing.T) {
 	if !reflect.DeepEqual(run, want) {
 		t.Fatalf("run\n got %v\nwant %v", run, want)
 	}
+	// The shield: the empty directory over /work/.rubi and the project's .claude, read-only, on top of /work.
+	sh := r1
+	sh.EmptyDir, sh.ReadOnly = "/home/alice/rubi-home/agent-role-empty", []string{".claude"}
+	want0 := "--mount type=bind,source=/home/alice/my-project,target=/work" +
+		" --mount type=bind,source=/home/alice/rubi-home/agent-role-empty,target=/work/.rubi,readonly" +
+		" --mount type=bind,source=/home/alice/my-project/.claude,target=/work/.claude,readonly" +
+		" --mount type=bind,source=/home/alice/rubi-home/agent-roles/r_aaaaaaaa/content"
+	if sj := strings.Join(a.RunArgs(sh), " "); !strings.Contains(sj, want0) {
+		t.Errorf("shielded run lacks the nested mounts, in order, in %s", sj)
+	}
+	lsh := legacy
+	lsh.EmptyDir, lsh.ReadOnly = sh.EmptyDir, sh.ReadOnly
+	if lj := strings.Join(a.RunArgs(lsh), " "); strings.Contains(lj, "/work/.rubi") || strings.Contains(lj, "/work/.claude") {
+		t.Errorf("the legacy role is shielded: %s", lj)
+	}
 	for _, bad := range []string{"--ssh", "--publish", "-p", "--privileged", "--cap-add", "--virtualization"} {
 		for _, x := range run {
 			if x == bad {

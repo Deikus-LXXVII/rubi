@@ -223,7 +223,15 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 		"--mount", "type=bind,source=" + p.Dir + ",target=/work"}
 	if p.Role != "" {
 		// A role VM sees its own content (read-only) and its own config directory, nothing of any other role, no
-		// sign-in (the auth gateway holds it) and never the user's SSH agent (no --ssh).
+		// sign-in (the auth gateway holds it) and never the user's SSH agent (no --ssh). The legacy role's state
+		// (/work/.rubi) is covered by an empty read-only directory and the project's own .claude is read-only, so a
+		// role can't rewrite what the other roles load. These binds sit on top of the read-write one of /work.
+		if p.EmptyDir != "" {
+			args = append(args, "--mount", "type=bind,source="+p.EmptyDir+",target=/work/.rubi,readonly")
+		}
+		for _, name := range p.ReadOnly {
+			args = append(args, "--mount", "type=bind,source="+filepath.Join(p.Dir, name)+",target=/work/"+name+",readonly")
+		}
 		args = append(args,
 			"--mount", "type=bind,source="+p.RoleDir+",target="+RoleMountDir+",readonly",
 			"--mount", "type=bind,source="+p.ClaudeDir+",target="+RoleClaudeDir,
@@ -387,11 +395,17 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 		a.setState(StateFailed)
 		return nil, err
 	}
-	if badMountPath(spec.Project.Dir) || badMountPath(spec.Project.RoleDir) || badMountPath(spec.Project.ClaudeDir) {
+	bad := badMountPath(spec.Project.Dir) || badMountPath(spec.Project.RoleDir) || badMountPath(spec.Project.ClaudeDir) || badMountPath(spec.Project.EmptyDir)
+	for _, n := range spec.Project.ReadOnly {
+		bad = bad || badMountPath(n)
+	}
+	if bad {
 		return fail(errors.New("the project path can't be mounted (a comma or control character in it)"))
 	}
 	if r := spec.Project.Role; r != "" && (spec.Project.RoleDir == "" || spec.Project.ClaudeDir == "") {
 		return fail(fmt.Errorf("role %s has no directories to mount", r))
+	} else if r != "" && spec.Project.EmptyDir == "" { // fail closed: a role never gets the legacy role's state read-write
+		return fail(fmt.Errorf("role %s has no empty directory to cover /work/.rubi with", r))
 	}
 	if _, err := exec.LookPath(a.bin()); err != nil && a.run == nil {
 		return fail(errors.New("the container tool isn't installed (https://github.com/apple/container)"))
