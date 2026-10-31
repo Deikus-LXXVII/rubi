@@ -387,3 +387,78 @@ The helper does only what it was built for, whatever Rubi asks:
 
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.
+
+## Agents in a VM (`claude-agent`)
+
+Contract: `docs/design/agent-runner.md`. Code: `internal/home/agent`. Capability `claude-agent`, operations
+`claude-agent.projects | sessions | messages | start | send | rename | fork | interrupt | close | mode | next |
+decide | status`; a plugin that declares `claude-agent` can call only those.
+
+- **Projects** are the directories in config `agent_projects` (absolute, existing, each its own project, id from
+  the directory name). A directory that is `/`, that holds the helper's own directory (its keys) or that is the
+  user's home is skipped. Encrypted per-project volumes (design section 9a) are a later milestone.
+- **VM.** `VM` is an interface; `AppleContainer` shells out to Apple's `container` CLI (1.6.x): `build` of the
+  image from `runner/container/Dockerfile`, a host-only network (`network create --internal`), `run -d` with the
+  project bind-mounted at `/work`, a non-root user, `--cap-drop ALL`, a read-only root, then
+  `exec -i --env-file` for the runner. The run token and proxy settings go in an environment file (0600) that
+  is deleted once the handshake succeeded, never on a command line. `Fake` plays a runner in-process for tests.
+- **Handshake.** Per start Home makes a random `run_token`; the runner's first line must be `hello` with it
+  (constant-time compare), else stdin is closed and the process killed; no hello in 10 s ends it too.
+- **Slot.** One top-level query on the computer. Events decide it: `status busy` takes it, `status idle` frees
+  it only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
+  done:true}` or a `result` with that `agent_id` removes it), `status closed` frees it. A `send` to the session
+  that holds the slot goes straight to the runner; anything else for a busy slot goes to the disk queue
+  (`<helper dir>/agent-queue.json`, 0600, atomic, 24 h, 64 items, 64 KiB each) and is delivered in order when
+  the slot frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The plugin sees
+  `queue` items (`queued`, `delivered`, `failed`, `expired`) in `next`.
+- **Asks.** `perm.ask` from the runner and `cred.ask` from the git helper become `next` items with Home's own
+  `ask_id` and wait for `decide`. No decision in 280 s (`claude_wait_seconds` does not apply here), no `next`
+  poll for 15 s, a cancelled runner or more than 16 pending: deny. Home never decides itself.
+- **Proxy.** One per running project, HTTP CONNECT to port 443 only, host names from the list, TLS not
+  decrypted. Allowed: `api.anthropic.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, the login
+  candidates `claude.ai`, `console.anthropic.com`, `platform.claude.com` (TO CONFIRM with a real login), the
+  hosts in `agent_git_hosts`, the owner's `agent_allowed_hosts`, the forges `github.com`, `gitlab.com`,
+  `bitbucket.org` (unless `agent_no_default_forges`), and hosts the owner approved for that project.
+  **Nothing is derived from the project's files**: `/work` is written by the agent, so a `Package.resolved`,
+  `.gitmodules` or `.git/config` there must not widen the list. A host that is not listed is asked about: the
+  proxy holds the CONNECT and raises a `net.ask {host}` item; the plugin answers with `decide`; an allow is
+  recorded per project in `<helper dir>/agent-net.json` (0600, 100 hosts per project), a denial is
+  remembered for 5 minutes, and with Rubi locked the answer is deny. Datadog and `downloads.claude.ai` are
+  refused even if listed, and are never asked about. The proxy resolves names itself and refuses to connect to
+  an address that is loopback, private (RFC 1918), link-local, ULA, CGNAT (100.64/10), 0.0.0.0/8, multicast,
+  reserved, or an IPv4-mapped/NAT64/6to4 form of those: one such address in the answer refuses the host, and
+  the socket's own address is checked again when it connects. Only `agent_git_hosts` may resolve to private
+  addresses (an owner's own git server). It refuses a wildcard listen address, requires
+  `Proxy-Authorization: Basic` with a per-start token (put into `HTTPS_PROXY` as `http://rubi:<token>@host:port`;
+  not the run token), and ends tunnels idle for 10 minutes. It listens on `agent_proxy_listen` (default
+  `127.0.0.1:0`; a VM cannot reach the Mac's loopback, so a real setup sets it to the Mac's address on the VM
+  network) and tells the VM `agent_proxy_vm_host`.
+- **Network check.** Before every start Home inspects the VM network and refuses to start unless the output says
+  it is internal (host-only); output it cannot read is a refusal. The inspect JSON schema of `container 1.6.x`
+  is not confirmed (a key `internal`, any case, anywhere in the document, must be `true`).
+- **Git credentials.** The helper in the VM (`runner/container/git-credential-rubi`) hands `git credential
+  get|store|erase` to the runner, which sends `git.credential {op, input, purpose}` to Home (the runner side
+  of the relay is part of the runner, not yet in M1). Hosts must be in `agent_git_hosts` and https. `get` for a
+  read is served from the source (file `agent-git-credentials.json`, 0600: `{"git.example.com": {"read":
+  {...}, "push": {...}}}`); `purpose: "push"` raises a `cred.ask {host, path}` (path cleaned and cut at 200)
+  **every time**, so each distinct repository path is asked about again, and gets the separate push credential
+  only on an allow (the mandate check is the plugin's). `store` and `erase` are accepted and ignored. The read
+  credential must be a read-only token. The push credential must be scoped to the repositories the agent
+  may push to and short-lived: once the VM has it, nothing stops it using it until it expires, and the VM can
+  keep it. Home never logs the credential helper's input or output (tested).
+- **Slot watchdog.** A session that holds the slot with no event and no pending ask for 30 minutes
+  (`SlotIdleTTL`) is interrupted and the slot freed (logged, and the plugin sees a `status closed` event).
+- **Modes.** `agent_allow_bypass` (default `true`) allows `start` and `mode` with `bypassPermissions` or
+  `dontAsk`; set it `false` to refuse them. The plugin still decides every tool call and approves loosening a
+  mode with a passkey.
+- **Projects and `/work`.** A project directory is refused if it is `/`, the home, a parent of the home
+  (`/Users`), a parent of the helper's directory, `~/.ssh`, `~/Library`, `~/.gnupg`, `~/.aws`, `~/.config`,
+  `~/.kube` or inside them, or has a `,` or control character in its path (it would break the `--mount`
+  option). `/work` is the same directory the user sees on the Mac: what the agent writes there (git hooks,
+  `.vscode/tasks.json`, build scripts, `.envrc`) runs with the user's rights the next time they use an editor or
+  git there, so review it like code from a stranger. On the first start Home creates `/work/.rubi/` and a
+  `.gitignore` containing `*` in it (never through a symlink; an existing file is left alone), because the
+  runner's sessions and config live there. Home reads nothing else from `/work` and makes no decision from it.
+- **Resource limits.** The runner serves at most 64 requests at once; more are answered with an error.
+- **Not in M2.** The plugin (M4), encrypted volumes, a cap on running VMs, the `git.credential` relay inside
+  the runner.

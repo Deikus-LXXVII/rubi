@@ -72,7 +72,9 @@ type Manifest struct {
 	// "claude-sessions" (v0.12.0: its Claude Code sessions and messages to and from them:
 	// claude-sessions.list, .send, .next, .bound; it can't approve anything) and
 	// "claude-start" (claude-start.create: starts a new Claude Code session with a first message; in sessions that
-	// skip permission prompts, Claude can run any command there). It may only call those operations.
+	// skip permission prompts, Claude can run any command there) and
+	// "claude-agent" (the claude-agent.* operations: Claude agents (Agent SDK) in a VM on that computer: projects,
+	// sessions, start, send, next, decide, status; it decides each tool call and git push). It may only call those operations.
 	// Shown to the user before install.
 	Home []string `json:"home,omitempty"`
 }

@@ -138,3 +138,11 @@ paths outside `/work`, edits of `.rubi`/`.claude`, tags/releases) -> passkey app
 than bypass the existing `pt_`/`md_`/`classify.go` rules; else in bypass -> allow. Mode changes: to a stricter
 mode no approval, to a looser one strong (passkey). Sisters: bind/send/replies as v0.3, delivery via
 `claude-agent.send`; `rubi_reply`/`rubi_ask` become runner-side in-process MCP tools that emit events.
+
+## Home-side additions (M2)
+
+Runner -> Home request `git.credential {op: get|store|erase, input, purpose?: "push"}` -> `{output}` (the runner relays
+the in-VM `git-credential-rubi`). Home -> plugin `next` items besides `perm.ask`: `cred.ask {host, path, op:"push"}` (a push
+credential), `net.ask {host}` (a host not on the proxy's list), `queue {action, queue_id}`; all answered with `decide`.
+Slot events: `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
+`docs/design/rubi-home.md` ("Agents in a VM").

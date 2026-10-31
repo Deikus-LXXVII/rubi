@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **Rubi Home: `claude-agent.*` operations and the Mac side of the Agent SDK runner (milestone M2).** A new Home
+  capability, `claude-agent` (shown on the install screen as running Claude agents in a virtual machine on
+  that computer, deciding each tool call and allowing git pushes). Operations: `projects`, `sessions`,
+  `messages`, `start`, `send`, `rename`, `fork`, `interrupt`, `close`, `mode`, `next`, `decide`, `status`.
+  Behind them (`internal/home/agent`): a `VM` interface with an Apple `container` implementation (argv-tested
+  here, not run) and a fake for tests; the runner client with a per-start `run_token` handshake; one top-level
+  query on the computer at a time (the slot; background subagents keep it busy), with a disk queue
+  (`agent-queue.json`, 0600, 24 h) for starts and sends that find it busy; tool-call questions from the runner
+  reach the plugin through `next` and wait for `decide`: no answer in 280 s, or no `next` poll for 15 s, is a
+  denial; an allow-list CONNECT proxy (no TLS decryption) and a git credential helper (reads always, a push
+  only after the plugin approves). Configuration: `agent_projects`, `agent_git_hosts`, `agent_proxy_listen`,
+  `agent_proxy_vm_host`, `agent_runner_dir`, `agent_allowed_hosts`, `agent_no_default_forges`,
+  `agent_allow_bypass`. The proxy takes its hosts only from this configuration and from approvals (`net.ask`),
+  never from a project's files; refuses non-public addresses; and needs a per-start proxy password. Nothing starts a VM until a project is configured and an
+  operation uses it.
+
 ## v0.13.0 (2026-10-31)
 
 - **claude-code plugin: names for Claude Code sessions (`claude_code_rename`).** Claude Code has no documented

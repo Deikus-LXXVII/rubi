@@ -189,6 +189,8 @@ func run(h *home.Helper) {
 			log.Printf("Claude Code requests: %v", err)
 		}
 	}()
+	h.Agent.Resume() // deliver what the agent queue still holds from an earlier run
+	defer h.Agent.Close()
 	rpc := &homeproto.Server{Key: h.ID.Box, Handle: h.Handle}
 	relays := h.Relays()
 	last := -1

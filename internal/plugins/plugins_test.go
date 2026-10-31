@@ -40,7 +40,7 @@ func TestCheck(t *testing.T) {
 	if err := Check(&ok); err != nil {
 		t.Fatal(err)
 	}
-	home := manifest(t, `{"home":["hue","shortcuts","claude"]}`)
+	home := manifest(t, `{"home":["hue","shortcuts","claude","claude-agent"]}`)
 	if err := Check(&home); err != nil {
 		t.Fatalf("Rubi Home capabilities: %v", err)
 	}
