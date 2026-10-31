@@ -131,7 +131,7 @@ describe("rubi-claude-token", () => {
     try {
       await r.done;
       assert.equal(r.code, 1);
-      assert.equal(r.lines.at(-1), "FAILED the sign-in ended without a token");
+      assert.equal(r.lines.at(-1), "FAILED the sign-in ended without finishing");
       assert.equal(existsSync(join(r.authDir, "token", "oauth-token")), false);
     } finally {
       clean(r);

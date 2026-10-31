@@ -127,70 +127,96 @@ func defaultNet(t *testing.T) string {
 	return readFile(t, "../agent/testdata/container-1.6.1-network-default.json")
 }
 
-// fakeAgents has projects and a scripted sign-in.
+// fakeAgents has projects, a self-test and the shared sign-in.
 type fakeAgents struct {
 	mu       sync.Mutex
 	projects []agent.Project
-	running  map[string]bool
 	box      *fakeBox
 	selftest *fakeSelfTest
-	sandboxN int
+	// the shared sign-in: what the volume holds, and the sign-in container
+	token     bool // a token is stored (the fake never has its text)
+	expires   time.Time
+	statusErr error
+	statusN   int
+	signOutN  int
+	sess      *fakeAuth
+	startErr  error
+	sessions  []*fakeAuth
 }
 
 func (a *fakeAgents) Projects() []agent.Project { return a.projects }
-func (a *fakeAgents) VMRunning(id string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.running[id]
-}
-func (a *fakeAgents) Sandbox(ctx context.Context, id string) (Box, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.sandboxN++
-	return a.box, nil
-}
 func (a *fakeAgents) BeginSelfTest(id string) (SelfTestRun, error) {
 	if a.selftest == nil {
-		return nil, errors.New("an agent session is running or waiting")
+		return nil, errors.New("an agent session of this project is running or waiting")
 	}
 	return a.selftest, nil
 }
+func (a *fakeAgents) AuthStatus(ctx context.Context) (agent.AuthStatus, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.statusN++
+	return agent.AuthStatus{SignedIn: a.token, Expires: a.expires}, a.statusErr
+}
+func (a *fakeAgents) AuthSignOut(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.signOutN++
+	a.token = false
+	return nil
+}
+func (a *fakeAgents) StartAuth(ctx context.Context) (AuthSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.startErr != nil {
+		return nil, a.startErr
+	}
+	s := &fakeAuth{ag: a, login: a.sess.login}
+	a.sessions = append(a.sessions, s)
+	return s, nil
+}
 
-// fakeBox runs scripted processes in the "VM".
+// fakeAuth is the sign-in container: the helper's side of the line protocol is played by login.
+type fakeAuth struct {
+	ag     *fakeAgents
+	login  func(c *fakeConn, a *fakeAuth)
+	mu     sync.Mutex
+	closed bool
+	argv   []string
+	env    map[string]string
+	conn   *fakeConn
+}
+
+func (f *fakeAuth) Exec(ctx context.Context, argv []string, extra map[string]string) (agent.Conn, error) {
+	c := newFakeConn()
+	f.mu.Lock()
+	f.argv, f.env, f.conn = argv, extra, c
+	f.mu.Unlock()
+	go f.login(c, f)
+	return c, nil
+}
+func (f *fakeAuth) Close() { f.mu.Lock(); f.closed = true; f.mu.Unlock() }
+func (f *fakeAuth) isClosed() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closed
+}
+
+// fakeBox runs scripted processes in a project's "VM" (the self-test's isolation probe).
 type fakeBox struct {
-	mu        sync.Mutex
-	loggedIn  bool
-	login     func(c *fakeConn) // plays `claude auth login`
-	probeOut  string
-	execs     [][]string
-	envs      []map[string]string
-	lastLogin *fakeConn
+	mu       sync.Mutex
+	probeOut string
+	execs    [][]string
+	envs     []map[string]string
 }
 
 func (b *fakeBox) Exec(ctx context.Context, argv []string, extra map[string]string) (agent.Conn, error) {
 	b.mu.Lock()
 	b.execs = append(b.execs, argv)
 	b.envs = append(b.envs, extra)
+	out := b.probeOut
 	b.mu.Unlock()
 	c := newFakeConn()
-	switch {
-	case len(argv) >= 3 && argv[0] != "node" && argv[1] == "auth" && argv[2] == "status":
-		b.mu.Lock()
-		in := b.loggedIn
-		b.mu.Unlock()
-		out := `{"loggedIn":false}`
-		if in {
-			out = `{"loggedIn":true,"authMethod":"claude.ai"}`
-		}
-		go func() { c.out.Write([]byte(out)); c.finish() }()
-	case len(argv) >= 4 && argv[0] == "timeout" && argv[3] == "auth" || len(argv) >= 3 && argv[1] == "auth" && argv[2] == "login":
-		b.mu.Lock()
-		b.lastLogin = c
-		b.mu.Unlock()
-		go b.login(c)
-	case len(argv) >= 1 && argv[0] == "node":
-		go func() { c.out.Write([]byte(b.probeOut)); c.finish() }()
-	}
+	go func() { c.out.Write([]byte(out)); c.finish() }()
 	return c, nil
 }
 
@@ -245,6 +271,7 @@ func (c *fakeConn) stdinText() string {
 }
 
 type fakeSelfTest struct {
+	hold  chan struct{} // when set, Turn waits for it (or for the context)
 	box   *fakeBox
 	turn  agent.TurnResult
 	err   error
@@ -254,6 +281,13 @@ type fakeSelfTest struct {
 
 func (f *fakeSelfTest) Sandbox(ctx context.Context) (Box, error) { return f.box, nil }
 func (f *fakeSelfTest) Turn(ctx context.Context, prompt string, d time.Duration) (agent.TurnResult, error) {
+	if f.hold != nil {
+		select {
+		case <-f.hold:
+		case <-ctx.Done():
+			return agent.TurnResult{}, ctx.Err()
+		}
+	}
 	return f.turn, f.err
 }
 func (f *fakeSelfTest) End() { f.mu.Lock(); f.ended = true; f.mu.Unlock() }
@@ -273,7 +307,7 @@ type testEnv struct {
 func newTestEnv(t *testing.T, mods ...func(*Options)) *testEnv {
 	t.Helper()
 	root := t.TempDir()
-	e := &testEnv{t: t, m: &machine{}, ag: &fakeAgents{running: map[string]bool{}, box: &fakeBox{}}, dir: filepath.Join(root, "helper"), appDir: filepath.Join(root, "app")}
+	e := &testEnv{t: t, m: &machine{}, ag: &fakeAgents{box: &fakeBox{}, sess: &fakeAuth{}}, dir: filepath.Join(root, "helper"), appDir: filepath.Join(root, "app")}
 	if err := os.MkdirAll(e.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

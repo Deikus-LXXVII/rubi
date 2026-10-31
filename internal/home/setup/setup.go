@@ -59,6 +59,7 @@ type Settings struct {
 	ProxyListen string   // agent_proxy_listen
 	ProxyVMHost string   // agent_proxy_vm_host
 	RunnerDir   string   // agent_runner_dir
+	AuthVolume  string   // agent_auth_volume
 }
 
 // Box is a project's running VM, to run commands in.
@@ -73,12 +74,21 @@ type SelfTestRun interface {
 	End()
 }
 
-// Agents is what setup needs from the agent manager.
+// AuthSession is the running sign-in container (agent.AuthSession).
+type AuthSession interface {
+	Exec(ctx context.Context, argv []string, extra map[string]string) (agent.Conn, error)
+	Close()
+}
+
+// Agents is what setup needs from the agent manager and the container tool.
 type Agents interface {
 	Projects() []agent.Project
-	VMRunning(id string) bool
-	Sandbox(ctx context.Context, id string) (Box, error)
 	BeginSelfTest(id string) (SelfTestRun, error)
+	// AuthStatus probes the shared sign-in (it never reads the token), AuthSignOut deletes it and StartAuth
+	// starts the container the sign-in runs in.
+	AuthStatus(ctx context.Context) (agent.AuthStatus, error)
+	AuthSignOut(ctx context.Context) error
+	StartAuth(ctx context.Context) (AuthSession, error)
 }
 
 // Options configures a Setup.
@@ -111,12 +121,12 @@ type Options struct {
 type Setup struct {
 	opt Options
 
-	mu        sync.Mutex
-	job       *job
-	last      map[string]result // a finished job's outcome, per step (or step|project dir)
-	tests     map[string]result // self-test outcomes, per project dir (memory only)
-	loginSeen map[string]bool   // the last sign-in probe, per project dir
-	choosing  bool              // a folder chooser is open
+	mu       sync.Mutex
+	job      *job
+	last     map[string]result // a finished job's outcome, per step (or step|project dir)
+	tests    map[string]result // self-test outcomes, per project dir (memory only)
+	auth     authCache         // the last probe of the shared sign-in
+	choosing bool              // a folder chooser is open
 }
 
 type outcome struct {
@@ -161,7 +171,7 @@ func New(opt Options) *Setup {
 	if len(opt.RedirectHosts) == 0 {
 		opt.RedirectHosts = []string{"objects.githubusercontent.com", "release-assets.githubusercontent.com"}
 	}
-	return &Setup{opt: opt, last: map[string]result{}, tests: map[string]result{}, loginSeen: map[string]bool{}}
+	return &Setup{opt: opt, last: map[string]result{}, tests: map[string]result{}}
 }
 
 func (s *Setup) mac() bool { return s.opt.GOOS == "darwin" }
@@ -194,7 +204,7 @@ func (s *Setup) begin(step string, p agent.Project) (*job, context.Context, erro
 }
 
 func key(step, project string) string {
-	if step == StepLogin || step == StepSelfTest {
+	if step == StepSelfTest {
 		return step + "|" + project
 	}
 	return step
@@ -251,17 +261,20 @@ func (s *Setup) Cancel() bool {
 	return true
 }
 
-// Run starts a step as a job. project is a project id (login, selftest, all; the first project when
-// empty for all); method is "console" or "claudeai" for login (empty: only check); option is
-// "auto-address" for the network step.
+// StepSignOut is the job that deletes the shared sign-in (it is no row of the status).
+const StepSignOut = "signout"
+
+// Run starts a step as a job. project is a project id (selftest, all; the first project when empty for
+// all; the sign-in is one for the whole computer and ignores it); method is "claudeai" (a Claude
+// subscription) for login (empty: only check); option is "auto-address" for the network step.
 func (s *Setup) Run(ctx context.Context, step, project, method, option string) error {
 	switch step {
-	case StepContainer, StepService, StepNetwork, StepImage, StepLogin, StepSelfTest, "all":
+	case StepContainer, StepService, StepNetwork, StepImage, StepLogin, StepSignOut, StepSelfTest, "all":
 	default:
 		return fmt.Errorf("unknown step %q", clip(step, 32))
 	}
-	if method != "" && method != "console" && method != "claudeai" {
-		return errors.New(`method must be "console" or "claudeai"`)
+	if method != "" && method != "claudeai" {
+		return errors.New(`method must be "claudeai" (a Claude subscription); a console account signs in with claude auth login in a project`)
 	}
 	if option != "" && (option != optAutoAddress || step != StepNetwork) {
 		return errors.New("unknown option")
@@ -270,7 +283,7 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 		return errBusy
 	}
 	var p agent.Project
-	if step == StepLogin || step == StepSelfTest || step == "all" && project != "" {
+	if step == StepSelfTest || step == "all" && project != "" {
 		var ok bool
 		if p, ok = s.findProject(project); !ok {
 			if project == "" {
@@ -288,7 +301,7 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 		}
 	}
 	if step == StepSelfTest {
-		if st := s.loginState(ctx, p); st.State != Done {
+		if st, errText, known := s.authProbe(ctx, true); !known || errText != "" || !st.SignedIn || st.Expired(s.opt.Now()) {
 			return fmt.Errorf("needs step %d first", 6)
 		}
 	}
@@ -308,7 +321,9 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 		case StepImage:
 			s.record(jctx, step, "", j, s.runImage(jctx, j))
 		case StepLogin:
-			s.record(jctx, step, p.Dir, j, s.runLogin(jctx, j, p, method, false))
+			s.record(jctx, step, "", j, s.runLogin(jctx, j, method, false))
+		case StepSignOut:
+			s.record(jctx, step, "", j, s.runSignOut(jctx, j))
 		case StepSelfTest:
 			s.record(jctx, step, p.Dir, j, s.runSelfTest(jctx, j, p))
 		default:
@@ -334,7 +349,9 @@ func needs(step string) int {
 		return 2
 	case StepImage:
 		return 3
-	case StepLogin, StepSelfTest:
+	case StepLogin, StepSignOut:
+		return 4
+	case StepSelfTest:
 		return 5
 	}
 	return 0
@@ -414,9 +431,9 @@ func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method stri
 		}
 		p = ps[0]
 	}
-	s.setStep(j, StepLogin, p)
-	out := s.runLogin(ctx, j, p, method, true)
-	s.record(ctx, StepLogin, p.Dir, j, out)
+	s.setStep(j, StepLogin, agent.Project{})
+	out := s.runLogin(ctx, j, method, true)
+	s.record(ctx, StepLogin, "", j, out)
 	if out.State != Done || !gate(4) {
 		return
 	}

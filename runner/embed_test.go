@@ -43,3 +43,21 @@ func TestHashDependsOnPathsAndContents(t *testing.T) {
 		t.Error("empty")
 	}
 }
+
+// Only the sign-in's token is shared between projects: the image keeps the config directory per project
+// (/work is each project's own) and bakes no credential in.
+func TestImageKeepsTheConfigDirPerProjectAndHasNoCredential(t *testing.T) {
+	b, err := fs.ReadFile(FS(), "container/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := string(b)
+	if !strings.Contains(d, "CLAUDE_CONFIG_DIR=/work/.rubi/claude") {
+		t.Error("the config directory isn't the project's own")
+	}
+	for _, bad := range []string{"CLAUDE_CODE_OAUTH_TOKEN", "sk-ant", "/rubi-auth"} {
+		if strings.Contains(d, bad) {
+			t.Errorf("Dockerfile mentions %q", bad)
+		}
+	}
+}

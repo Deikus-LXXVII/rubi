@@ -15,7 +15,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
 
-// Step is one row of the status.
+// Step is one row of the status. The sign-in (login) is one row for the whole computer: it has no project rows.
 type Step struct {
 	ID       string   `json:"id"`
 	Title    string   `json:"title"`
@@ -23,13 +23,15 @@ type Step struct {
 	Reason   string   `json:"reason"`
 	Progress []string `json:"progress,omitempty"`
 	// Action is the one button the row offers: install, upgrade, start, create, use_auto_address, build,
-	// add, cancel (while it works).
+	// add, check, login, login_again, cancel (while it works).
 	Action string `json:"action,omitempty"`
+	// Action2 is the second button, when there is one (sign_out beside login_again).
+	Action2 string `json:"action2,omitempty"`
 	// Projects are the rows of the project steps (projects, login, selftest).
 	Projects []Row `json:"projects,omitempty"`
 }
 
-// Row is a project's row. Action is remove (projects), or check, login, login_again, selftest.
+// Row is a project's row. Action is remove (projects) or selftest.
 type Row struct {
 	ID       string   `json:"id"`
 	Dir      string   `json:"dir"`
@@ -48,7 +50,6 @@ type JobInfo struct {
 
 // LoginInfo is the sign-in that runs: URL is there while it waits for the browser.
 type LoginInfo struct {
-	Project   string `json:"project"`
 	URL       string `json:"url,omitempty"`
 	WantsCode bool   `json:"wants_code"`
 }
@@ -74,7 +75,7 @@ func (s *Setup) Status(ctx context.Context) Status {
 		jb = &cp
 		st.Job = &JobInfo{Step: jb.step, Project: jb.project.ID, Started: jb.started}
 		if l := s.job.login; l != nil {
-			st.Login = &LoginInfo{Project: l.project.ID, URL: l.url, WantsCode: l.wantsCode}
+			st.Login = &LoginInfo{URL: l.url, WantsCode: l.wantsCode}
 		}
 	}
 	last := map[string]result{}
@@ -83,38 +84,108 @@ func (s *Setup) Status(ctx context.Context) Status {
 	}
 	s.mu.Unlock()
 
-	allDone := true
-	for _, r := range raw {
+	base := true // steps 1 to 4: what the sign-in container needs
+	for i, r := range raw {
 		s.overlay(&r, jb, last)
-		if r.State != Done {
-			allDone = false
+		if r.State != Done && i < 4 {
+			base = false
 		}
 		st.Steps = append(st.Steps, r)
 	}
-	for _, id := range []string{StepLogin, StepSelfTest} {
-		step := Step{ID: id, Title: stepTitles[id]}
-		projs := s.opt.Agents.Projects()
-		if !allDone {
-			step.State, step.Reason = Todo, fmt.Sprintf("Needs step %d first", firstNotDone(st.Steps)+1)
-			st.Steps = append(st.Steps, step)
-			continue
+	projectsDone := st.Steps[4].State == Done
+	// The sign-in is one for the whole computer.
+	login := Step{ID: StepLogin, Title: stepTitles[StepLogin]}
+	switch {
+	case !base:
+		login.State, login.Reason = Todo, fmt.Sprintf("Needs step %d first", firstNotDone(st.Steps)+1)
+	default:
+		login = s.loginStep(ctx, login, jb, last)
+	}
+	st.Steps = append(st.Steps, login)
+	// The self-test is per project and uses the shared sign-in.
+	test := Step{ID: StepSelfTest, Title: stepTitles[StepSelfTest]}
+	projs := s.opt.Agents.Projects()
+	switch {
+	case !base || !projectsDone:
+		test.State, test.Reason = Todo, fmt.Sprintf("Needs step %d first", firstNotDone(st.Steps[:5])+1)
+	default:
+		for _, p := range projs {
+			test.Projects = append(test.Projects, s.selfTestRow(p, jb, login.State == Done))
 		}
-		loginDone := map[string]bool{}
-		if id == StepSelfTest {
-			for _, r := range st.Steps[5].Projects {
-				loginDone[r.ID] = r.State == Done
+		test.State, test.Reason = aggregate(test.Projects)
+	}
+	st.Steps = append(st.Steps, test)
+	return st
+}
+
+// loginStep is the row of the shared sign-in: probed (a throwaway container that tests the token file
+// without reading it), cached for a minute, never probed while a job runs.
+func (s *Setup) loginStep(ctx context.Context, r Step, jb *job, last map[string]result) Step {
+	if jb != nil && (jb.step == StepLogin || jb.step == "signout") {
+		r.State, r.Reason, r.Action, r.Progress = Working, "Working...", "cancel", jb.prog.snapshot()
+		return r
+	}
+	st, errText, known := s.authProbe(ctx, jb == nil)
+	now := s.opt.Now()
+	switch {
+	case !known:
+		r.State, r.Reason, r.Action = Todo, "Not checked yet.", "check"
+	case errText != "":
+		r.State, r.Reason, r.Action = Todo, "Couldn't check the sign-in: "+errText, "check"
+	case !st.SignedIn:
+		r.State, r.Reason, r.Action = Todo, "Not signed in.", "login"
+	case st.Expired(now):
+		r.State, r.Reason, r.Action, r.Action2 = Todo, "The sign-in expired on "+st.Expires.Format("2006-01-02")+". Sign in again.", "login_again", "sign_out"
+	case st.Expires.IsZero():
+		r.State, r.Reason, r.Action, r.Action2 = Done, "Signed in (one sign-in for every project).", "login_again", "sign_out"
+	default:
+		r.State, r.Reason, r.Action, r.Action2 = Done, "Signed in until "+st.Expires.Format("2006-01-02")+" (one sign-in for every project).", "login_again", "sign_out"
+	}
+	if l, ok := last[key(StepLogin, "")]; ok && r.State != Done {
+		r.State, r.Reason, r.Progress = l.State, l.Reason, l.Progress
+	}
+	return r
+}
+
+// authTTL is how long a probe of the sign-in is reused.
+const authTTL = time.Minute
+
+// authProbe returns the sign-in state, probing when the cached one is older than a minute (and probing is
+// allowed). errText is the reason a probe failed, known says there is any answer.
+func (s *Setup) authProbe(ctx context.Context, allowed bool) (agent.AuthStatus, string, bool) {
+	s.mu.Lock()
+	c := s.auth
+	s.mu.Unlock()
+	if allowed && (!c.known || s.opt.Now().Sub(c.at) > authTTL) {
+		pctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		st, err := s.opt.Agents.AuthStatus(pctx)
+		cancel()
+		c = authCache{known: true, at: s.opt.Now(), st: st}
+		if err != nil {
+			c.err = safeText(err.Error())
+			if c.err == "" {
+				c.err = "the check failed"
 			}
 		}
-		for _, p := range projs {
-			step.Projects = append(step.Projects, s.projectRow(ctx, id, p, jb, last, loginDone))
-		}
-		step.State, step.Reason = aggregate(step.Projects)
-		if len(projs) == 0 {
-			step.State, step.Reason = Todo, "Needs step 5 first"
-		}
-		st.Steps = append(st.Steps, step)
+		s.mu.Lock()
+		s.auth = c
+		s.mu.Unlock()
 	}
-	return st
+	return c.st, c.err, c.known
+}
+
+// forgetAuth drops the cached sign-in state (after a sign-in or sign-out).
+func (s *Setup) forgetAuth() {
+	s.mu.Lock()
+	s.auth = authCache{}
+	s.mu.Unlock()
+}
+
+type authCache struct {
+	known bool
+	at    time.Time
+	st    agent.AuthStatus
+	err   string
 }
 
 func firstNotDone(steps []Step) int {
@@ -158,30 +229,14 @@ func (s *Setup) overlay(r *Step, jb *job, last map[string]result) {
 	}
 }
 
-func (s *Setup) projectRow(ctx context.Context, step string, p agent.Project, jb *job, last map[string]result, loginDone map[string]bool) Row {
+func (s *Setup) selfTestRow(p agent.Project, jb *job, loggedIn bool) Row {
 	row := Row{ID: p.ID, Dir: p.Dir}
-	if jb != nil && jb.step == step && jb.project.Dir == p.Dir {
+	if jb != nil && jb.step == StepSelfTest && jb.project.Dir == p.Dir {
 		row.State, row.Reason, row.Action, row.Progress = Working, "Working...", "cancel", jb.prog.snapshot()
 		return row
 	}
-	if step == StepLogin {
-		o := s.loginState(ctx, p, jb)
-		row.State, row.Reason = o.State, o.Reason
-		switch {
-		case o.State == Done:
-			row.Action = "login_again"
-		case o.Reason == reasonUnchecked:
-			row.Action = "check"
-		default:
-			row.Action = "login"
-		}
-		if l, ok := last[key(step, p.Dir)]; ok && o.State != Done {
-			row.State, row.Reason, row.Progress = l.State, l.Reason, l.Progress
-		}
-		return row
-	}
 	row.Action = "selftest"
-	if !loginDone[p.ID] {
+	if !loggedIn {
 		row.State, row.Reason, row.Action = Todo, "Needs step 6 first", ""
 		return row
 	}
@@ -195,8 +250,6 @@ func (s *Setup) projectRow(ctx context.Context, step string, p agent.Project, jb
 	}
 	return row
 }
-
-const reasonUnchecked = "Not checked yet: the project's VM isn't running."
 
 // rawAll probes steps 1 to 5 (a step whose earlier step isn't done isn't probed).
 func (s *Setup) rawAll(ctx context.Context) []Step {
@@ -398,50 +451,4 @@ func (s *Setup) probeProjects() Step {
 		st.Action = ""
 	}
 	return st
-}
-
-// ---- sign-in state ----
-
-// signedIn runs `claude auth status` in the VM.
-func (s *Setup) signedIn(ctx context.Context, box Box) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	conn, err := box.Exec(ctx, []string{claudeBin, "auth", "status"}, nil)
-	if err != nil {
-		return false, err
-	}
-	defer conn.Close()
-	_ = conn.CloseWrite()
-	b := readAll(ctx, conn, 64<<10)
-	var v struct {
-		LoggedIn bool `json:"loggedIn"`
-	}
-	if json.Unmarshal(b, &v) != nil {
-		return false, nil
-	}
-	return v.LoggedIn, nil
-}
-
-// loginState is the sign-in state of a project: probed when its VM runs, else the last probe in memory.
-func (s *Setup) loginState(ctx context.Context, p agent.Project, jb ...*job) outcome {
-	busy := len(jb) > 0 && jb[0] != nil && jb[0].project.Dir == p.Dir
-	if !busy && s.opt.Agents.VMRunning(p.ID) {
-		if box, err := s.opt.Agents.Sandbox(ctx, p.ID); err == nil {
-			if ok, err := s.signedIn(ctx, box); err == nil {
-				s.mu.Lock()
-				s.loginSeen[p.Dir] = ok
-				s.mu.Unlock()
-			}
-		}
-	}
-	s.mu.Lock()
-	ok, seen := s.loginSeen[p.Dir]
-	s.mu.Unlock()
-	switch {
-	case !seen:
-		return outcome{Todo, reasonUnchecked}
-	case ok:
-		return outcome{Done, "Signed in."}
-	}
-	return outcome{Todo, "Not signed in."}
 }

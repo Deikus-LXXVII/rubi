@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -32,15 +33,6 @@ func TestLoginURLAllowList(t *testing.T) {
 			t.Errorf("%q accepted", bad)
 		}
 	}
-	if got := findURL("If the browser didn't open, visit: " + claudeURL); got != claudeURL {
-		t.Errorf("findURL: %q", got)
-	}
-	if got := findURL("\x1b[1mvisit: " + claudeURL + ".\x1b[0m"); got != claudeURL {
-		t.Errorf("findURL with escapes: %q", got)
-	}
-	if findURL("no link here") != "" {
-		t.Error("found a link in nothing")
-	}
 }
 
 func TestValidCode(t *testing.T) {
@@ -57,25 +49,35 @@ func TestValidCode(t *testing.T) {
 	}
 }
 
-// scriptedLogin plays `claude auth login` without a terminal: the link, a prompt with no newline, then it
-// waits for the code on stdin and ends.
-func scriptedLogin(box *fakeBox, link string, gotCode chan string) func(c *fakeConn) {
-	return func(c *fakeConn) {
-		c.out.Write([]byte("If the browser didn't open, visit: " + link + "\n"))
-		c.out.Write([]byte("Paste code here if prompted >"))
+// scriptedHelper plays rubi-claude-token: the link, the prompt, then the code on stdin, then the token is
+// stored (the fake never has a token's text) and SAVED.
+func scriptedHelper(link string, gotCode chan string) func(c *fakeConn, a *fakeAuth) {
+	return func(c *fakeConn, a *fakeAuth) {
+		c.out.Write([]byte("URL " + link + "\n"))
+		c.out.Write([]byte("CODE?\n"))
 		for i := 0; i < 500; i++ {
 			if s := c.stdinText(); strings.HasSuffix(s, "\n") {
 				gotCode <- strings.TrimSpace(s)
-				box.mu.Lock()
-				box.loggedIn = true
-				box.mu.Unlock()
-				c.out.Write([]byte("\nLogin successful\n"))
+				a.ag.mu.Lock()
+				a.ag.token, a.ag.expires = true, time.Now().Add(365*24*time.Hour)
+				a.ag.mu.Unlock()
+				c.out.Write([]byte("SAVED\n"))
 				c.finish()
 				return
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 		c.finish()
+	}
+}
+
+// holdHelper prints what it is given, then waits until it is closed.
+func holdHelper(out string) func(c *fakeConn, a *fakeAuth) {
+	return func(c *fakeConn, a *fakeAuth) {
+		c.out.Write([]byte(out))
+		for !c.isClosed() {
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 }
 
@@ -90,13 +92,32 @@ func waitFor(t *testing.T, what string, f func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func TestLoginFlow(t *testing.T) {
+// readyForLogin is a Mac whose steps 1 to 4 are done, with one project.
+func readyForLogin(t *testing.T) *testEnv {
 	e := newTestEnv(t)
 	e.ready()
-	p := e.addProject("my-project")
+	e.addProject("my-project")
+	return e
+}
+
+func (e *testEnv) lastAuth() *fakeAuth {
+	e.ag.mu.Lock()
+	defer e.ag.mu.Unlock()
+	if len(e.ag.sessions) == 0 {
+		return nil
+	}
+	return e.ag.sessions[len(e.ag.sessions)-1]
+}
+
+func TestLoginFlow(t *testing.T) {
+	e := readyForLogin(t)
 	got := make(chan string, 1)
-	e.ag.box.login = scriptedLogin(e.ag.box, claudeURL, got)
-	if _, err := e.op("run", map[string]any{"step": "login", "project": p.ID, "method": "claudeai"}); err != nil {
+	e.ag.sess.login = scriptedHelper(claudeURL, got)
+	if st := e.step("login"); st.State != Todo || st.Action != "login" || st.Reason != "Not signed in." || len(st.Projects) != 0 {
+		t.Fatalf("before: %+v", st)
+	}
+	// no project is needed, and the one given is ignored
+	if _, err := e.op("run", map[string]any{"step": "login", "method": "claudeai", "project": "whatever"}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "the link", func() bool {
@@ -104,38 +125,31 @@ func TestLoginFlow(t *testing.T) {
 		return st.Login != nil && st.Login.URL != "" && st.Login.WantsCode
 	})
 	st := e.s.Status(context.Background())
-	if st.Login.Project != p.ID || st.Login.URL != claudeURL || st.Job.Step != "login" {
+	if st.Login.URL != claudeURL || st.Job.Step != "login" || st.Job.Project != "" {
 		t.Errorf("login: %+v job %+v", st.Login, st.Job)
 	}
+	if row := st.Steps[5]; row.State != Working || row.Action != "cancel" {
+		t.Errorf("row while it works: %+v", row)
+	}
 	// the link is shown as text, never in the progress lines
-	for _, s := range st.Steps {
-		for _, l := range s.Progress {
-			if strings.Contains(l, "https://") || strings.Contains(l, "oauth") {
-				t.Errorf("link in progress: %q", l)
-			}
+	raw, _ := json.Marshal(st.Steps)
+	if strings.Contains(string(raw), "oauth") || strings.Contains(string(raw), "https://") {
+		t.Errorf("link in a progress line: %s", raw)
+	}
+	a := e.lastAuth()
+	if len(a.argv) != 1 || a.argv[0] != agent.AuthHelper || a.env["CLAUDE_CONFIG_DIR"] != "/tmp/claude-signin" {
+		t.Errorf("exec: %v %v", a.argv, a.env)
+	}
+	// the code: validated, written only when valid
+	for _, bad := range []string{"has space", "", "new\nline"} {
+		if _, err := e.op("login.code", map[string]any{"code": bad}); err == nil {
+			t.Errorf("code %q accepted", bad)
 		}
-		for _, r := range s.Projects {
-			for _, l := range r.Progress {
-				if strings.Contains(l, "https://") {
-					t.Errorf("link in progress: %q", l)
-				}
-			}
-		}
 	}
-	if x := e.ag.box.execs[0]; len(x) != 6 || x[0] != "timeout" || x[3] != "auth" || x[5] != "--claudeai" {
-		t.Errorf("exec: %v", e.ag.box.execs)
-	}
-	// the code: validation, project match
-	if _, err := e.op("login.code", map[string]any{"project": p.ID, "code": "has space"}); err == nil {
-		t.Error("code with a space accepted")
-	}
-	if _, err := e.op("login.code", map[string]any{"project": "other", "code": "abc123"}); err == nil {
-		t.Error("code for another project accepted")
-	}
-	if e.ag.box.lastLogin.stdinText() != "" {
+	if a.conn.stdinText() != "" {
 		t.Error("something was written before a valid code")
 	}
-	res, err := e.op("login.code", map[string]any{"project": p.ID, "code": "AbC-123_xyz"})
+	res, err := e.op("login.code", map[string]any{"project": "ignored", "code": "AbC-123_xyz"})
 	if err != nil || res["sent"] != true {
 		t.Fatalf("code: %v %v", res, err)
 	}
@@ -143,149 +157,261 @@ func TestLoginFlow(t *testing.T) {
 		t.Errorf("stdin got %q", c)
 	}
 	e.wait()
-	if st := e.step("login"); st.State != Done || st.Projects[0].Reason != "Signed in." {
-		t.Errorf("after: %+v", st)
+	if !a.isClosed() {
+		t.Error("the sign-in container wasn't ended")
 	}
-	if _, err := e.op("login.code", map[string]any{"project": p.ID, "code": "abc"}); err == nil {
+	e.s.forgetAuth()
+	st2 := e.step("login")
+	if st2.State != Done || !strings.Contains(st2.Reason, "Signed in until "+time.Now().Add(365*24*time.Hour).Format("2006-01-02")) || st2.Action != "login_again" || st2.Action2 != "sign_out" {
+		t.Errorf("after: %+v", st2)
+	}
+	if _, err := e.op("login.code", map[string]any{"code": "abc"}); err == nil {
 		t.Error("code accepted with no sign-in waiting")
+	}
+	// the project VMs are not touched by the sign-in
+	if len(e.ag.box.execs) != 0 {
+		t.Errorf("a project VM was used: %v", e.ag.box.execs)
 	}
 }
 
-func TestLoginMethods(t *testing.T) {
-	for method, flag := range map[string]string{"console": "--console", "claudeai": "--claudeai"} {
-		e := newTestEnv(t)
-		e.ready()
-		p := e.addProject("my-project")
-		e.ag.box.login = func(c *fakeConn) { c.finish() }
-		e.op("run", map[string]any{"step": "login", "project": p.ID, "method": method})
-		e.wait()
-		found := false
-		for _, x := range e.ag.box.execs {
-			found = found || len(x) == 6 && x[0] == "timeout" && x[3] == "auth" && x[4] == "login" && x[5] == flag
-		}
-		if !found {
-			t.Errorf("%s: %v", method, e.ag.box.execs)
-		}
-		// the process ended without a link: failed, not stuck
-		if st := e.step("login"); st.State != Failed || !strings.Contains(st.Projects[0].Reason, "without showing a link") {
-			t.Errorf("%s: %+v", method, st)
-		}
+func TestLoginMethodsAndCheckOnly(t *testing.T) {
+	e := readyForLogin(t)
+	if _, err := e.op("run", map[string]any{"step": "login", "method": "console"}); err == nil || !strings.Contains(err.Error(), "claudeai") {
+		t.Errorf("console: %v", err)
+	}
+	// without a method: only a check, no container
+	e.ag.sess.login = func(c *fakeConn, a *fakeAuth) { t.Error("a sign-in started"); c.finish() }
+	e.op("run", map[string]any{"step": "login"})
+	e.wait()
+	if st := e.step("login"); st.State != NeedsUser || len(e.ag.sessions) != 0 {
+		t.Errorf("%+v", st)
+	}
+	e.ag.token, e.ag.expires = true, time.Now().Add(time.Hour)
+	e.op("run", map[string]any{"step": "login"})
+	e.wait()
+	if st := e.step("login"); st.State != Done || len(e.ag.sessions) != 0 {
+		t.Errorf("%+v", st)
+	}
+}
+
+func TestLoginStates(t *testing.T) {
+	e := readyForLogin(t)
+	e.ag.token, e.ag.expires = true, time.Now().Add(-48*time.Hour)
+	st := e.step("login")
+	if st.State != Todo || !strings.Contains(st.Reason, "expired on") || st.Action != "login_again" || st.Action2 != "sign_out" {
+		t.Errorf("expired: %+v", st)
+	}
+	e.s.forgetAuth()
+	e.ag.expires = time.Time{}
+	if st := e.step("login"); st.State != Done || st.Action != "login_again" {
+		t.Errorf("unknown expiry: %+v", st)
+	}
+	e.s.forgetAuth()
+	e.ag.statusErr = errors.New("the container tool is busy")
+	if st := e.step("login"); st.State != Todo || !strings.Contains(st.Reason, "Couldn't check") || st.Action != "check" {
+		t.Errorf("probe failed: %+v", st)
+	}
+	// a probe is reused for a minute, and not made while steps 1 to 4 aren't done
+	e.s.forgetAuth()
+	e.ag.statusErr = nil
+	n := e.ag.statusN
+	e.step("login")
+	e.step("login")
+	if e.ag.statusN != n+1 {
+		t.Errorf("probes: %d", e.ag.statusN-n)
+	}
+	e.m.image = false
+	e.s.forgetAuth()
+	n = e.ag.statusN
+	if st := e.step("login"); st.Reason != "Needs step 4 first" || e.ag.statusN != n {
+		t.Errorf("login needs 4: %+v (probes %d)", st, e.ag.statusN-n)
+	}
+	// the self-test row waits for the sign-in, not for a per-project one
+	e.m.image = true
+	e.s.forgetAuth()
+	e.ag.token, e.ag.expires = false, time.Time{}
+	if st := e.step("selftest"); st.Projects[0].Reason != "Needs step 6 first" {
+		t.Errorf("selftest without sign-in: %+v", st)
+	}
+	e.s.forgetAuth()
+	e.ag.token = true
+	if st := e.step("selftest"); st.Projects[0].Action != "selftest" || st.Projects[0].State != Todo {
+		t.Errorf("selftest with sign-in: %+v", st)
 	}
 }
 
 func TestLoginRefusesAnUnexpectedLink(t *testing.T) {
-	e := newTestEnv(t)
-	e.ready()
-	p := e.addProject("my-project")
-	e.ag.box.login = func(c *fakeConn) {
-		c.out.Write([]byte("visit: https://claude.com.evil.example.com/oauth/authorize?code=true\n"))
-		for i := 0; i < 100 && !c.isClosed(); i++ {
-			time.Sleep(5 * time.Millisecond)
-		}
-		c.finish()
-	}
-	e.op("run", map[string]any{"step": "login", "project": p.ID, "method": "claudeai"})
+	e := readyForLogin(t)
+	e.ag.sess.login = holdHelper("URL https://claude.com.evil.example.com/oauth/authorize?x=1\n")
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
 	e.wait()
 	st := e.step("login")
-	if st.State != Failed || !strings.Contains(st.Projects[0].Reason, "doesn't point to a Claude or Anthropic") {
+	if st.State != Failed || !strings.Contains(st.Reason, "doesn't point to a Claude or Anthropic") {
 		t.Errorf("%+v", st)
 	}
 	if e.s.Status(context.Background()).Login != nil {
 		t.Error("login info kept after the job")
 	}
-	// and it can't be opened
-	if err := e.s.LoginOpen(context.Background(), p.ID); err == nil {
+	if err := e.s.LoginOpen(context.Background()); err == nil {
 		t.Error("opened a link after the job")
+	}
+	if !e.lastAuth().isClosed() {
+		t.Error("container left running")
 	}
 }
 
-func TestLoginTimesOut(t *testing.T) {
-	old := loginLimit
-	loginLimit = 150 * time.Millisecond
-	defer func() { loginLimit = old }()
-	e := newTestEnv(t)
-	e.ready()
-	p := e.addProject("my-project")
-	e.ag.box.login = func(c *fakeConn) {
-		c.out.Write([]byte("visit: " + claudeURL + "\n"))
-		for !c.isClosed() {
-			time.Sleep(5 * time.Millisecond)
-		}
+func TestLoginHelperFailureAndMissingToken(t *testing.T) {
+	e := readyForLogin(t)
+	e.ag.sess.login = func(c *fakeConn, a *fakeAuth) {
+		c.out.Write([]byte("FAILED the sign-in ended without finishing\n"))
+		c.finish()
 	}
-	e.op("run", map[string]any{"step": "login", "project": p.ID, "method": "claudeai"})
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
 	e.wait()
-	if st := e.step("login"); st.State != Failed || !strings.Contains(st.Projects[0].Reason, "waited") {
+	if st := e.step("login"); st.State != Failed || !strings.Contains(st.Reason, "ended without finishing") {
+		t.Errorf("%+v", st)
+	}
+	// SAVED, but nothing is stored: not trusted
+	e.ag.sess.login = func(c *fakeConn, a *fakeAuth) { c.out.Write([]byte("SAVED\n")); c.finish() }
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
+	e.wait()
+	if st := e.step("login"); st.State != Failed || !strings.Contains(st.Reason, "no token is stored") {
+		t.Errorf("%+v", st)
+	}
+	// the helper ends silently
+	e.ag.sess.login = func(c *fakeConn, a *fakeAuth) { c.finish() }
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
+	e.wait()
+	if st := e.step("login"); st.State != Failed || !strings.Contains(st.Reason, "without showing a link") {
+		t.Errorf("%+v", st)
+	}
+	// the container can't start
+	e.ag.startErr = errors.New("no network")
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
+	e.wait()
+	if st := e.step("login"); st.State != Failed || !strings.Contains(st.Reason, "sign-in container") {
 		t.Errorf("%+v", st)
 	}
 }
 
-// endedInVM says whether the cleanup of `claude auth login` was run in the VM.
-func (b *fakeBox) endedInVM() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, x := range b.execs {
-		if len(x) == 3 && x[0] == "node" && strings.Contains(x[2], "SIGTERM") && strings.Contains(x[2], "/proc") {
-			return true
-		}
-	}
-	return false
-}
-
-func TestLoginEndsInsideTheVMAfterTimeoutAndCancel(t *testing.T) {
+func TestLoginTimesOutAndCancelEndTheContainer(t *testing.T) {
 	old := loginLimit
 	loginLimit = 150 * time.Millisecond
 	defer func() { loginLimit = old }()
-	for _, how := range []string{"timeout", "cancel"} {
-		e := newTestEnv(t)
-		e.ready()
-		p := e.addProject("my-project")
-		e.ag.box.login = func(c *fakeConn) {
-			c.out.Write([]byte("visit: " + claudeURL + "\n"))
-			for !c.isClosed() {
-				time.Sleep(5 * time.Millisecond)
-			}
-		}
-		if how == "cancel" {
-			loginLimit = time.Minute
-		}
-		e.op("run", map[string]any{"step": "login", "project": p.ID, "method": "claudeai"})
-		if how == "cancel" {
-			waitFor(t, "the link", func() bool { st := e.s.Status(context.Background()); return st.Login != nil && st.Login.URL != "" })
-			e.s.Cancel()
-		}
-		e.wait()
-		if !e.ag.box.endedInVM() {
-			t.Errorf("%s: no cleanup ran in the VM; execs %v", how, e.ag.box.execs)
-		}
-		// the backstop inside the VM outlives the Mac's own limit
-		if x := e.ag.box.execs[0]; x[0] != "timeout" {
-			t.Errorf("%s: %v", how, x)
-		}
+	e := readyForLogin(t)
+	e.ag.sess.login = holdHelper("URL " + claudeURL + "\n")
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
+	e.wait()
+	if st := e.step("login"); st.State != Failed || !strings.Contains(st.Reason, "waited") {
+		t.Errorf("%+v", st)
+	}
+	if !e.lastAuth().isClosed() {
+		t.Error("timeout: the container (with claude in it) wasn't ended")
+	}
+	loginLimit = time.Minute
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
+	waitFor(t, "the link", func() bool { st := e.s.Status(context.Background()); return st.Login != nil && st.Login.URL != "" })
+	e.s.Cancel()
+	e.wait()
+	if !e.lastAuth().isClosed() {
+		t.Error("cancel: the container wasn't ended")
+	}
+	if st := e.step("login"); st.State != Todo {
+		t.Errorf("after cancel the probe decides: %+v", st)
 	}
 	loginLimit = 150 * time.Millisecond
 }
 
+func TestConcurrentSignInsAreSerialized(t *testing.T) {
+	e := readyForLogin(t)
+	e.ag.sess.login = holdHelper("URL " + claudeURL + "\n")
+	if _, err := e.op("run", map[string]any{"step": "login", "method": "claudeai"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{"login", "signout", "image", "all"} {
+		if _, err := e.op("run", map[string]any{"step": step, "method": "claudeai"}); err == nil || !strings.HasPrefix(err.Error(), "busy") {
+			t.Errorf("%s while a sign-in runs: %v", step, err)
+		}
+	}
+	e.s.Cancel()
+	e.wait()
+	if len(e.ag.sessions) != 1 {
+		t.Errorf("%d sign-in containers", len(e.ag.sessions))
+	}
+}
+
+func TestSignOutRemovesItForEveryProject(t *testing.T) {
+	e := readyForLogin(t)
+	e.addProject("other-project")
+	e.ag.token, e.ag.expires = true, time.Now().Add(time.Hour)
+	if st := e.step("login"); st.State != Done {
+		t.Fatal(st)
+	}
+	if _, err := e.op("run", map[string]any{"step": "signout"}); err != nil {
+		t.Fatal(err)
+	}
+	e.wait()
+	if e.ag.signOutN != 1 {
+		t.Errorf("sign-out ran %d times", e.ag.signOutN)
+	}
+	e.s.forgetAuth()
+	st := e.step("login")
+	if st.State != Todo || st.Reason != "Not signed in." || st.Action != "login" {
+		t.Errorf("after: %+v", st)
+	}
+	for _, p := range e.step("selftest").Projects {
+		if p.Reason != "Needs step 6 first" {
+			t.Errorf("%s: %+v", p.ID, p)
+		}
+	}
+	// the job says what a sign-out does and doesn't do
+	e.s.mu.Lock()
+	e.s.last[key(StepLogin, "")] = result{}
+	e.s.mu.Unlock()
+	j, ctx, _ := e.s.begin(StepSignOut, agent.Project{})
+	out := e.s.runSignOut(ctx, j)
+	e.s.release(j)
+	if out.State != Done || !strings.Contains(out.Reason, "claude.ai") {
+		t.Errorf("%+v", out)
+	}
+	e.m.image = false
+	if _, err := e.op("run", map[string]any{"step": "signout"}); err == nil || err.Error() != "needs step 4 first" {
+		t.Errorf("signout needs the image: %v", err)
+	}
+}
+
+func TestNothingOfTheSignInReachesStatusOrProgress(t *testing.T) {
+	e := readyForLogin(t)
+	// a helper that misbehaves: it prints token-like lines of every kind
+	e.ag.sess.login = holdHelper("URL " + claudeURL + "\nsk-ant-oat01-LEAKLEAKLEAKLEAKLEAKLEAK\nBearer abc\nFAILED code=zzzzzz sk-ant-oat01-LEAK2LEAK2LEAK2LEAK2\n")
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
+	waitFor(t, "the link", func() bool { st := e.s.Status(context.Background()); return st.Login != nil && st.Login.URL != "" })
+	e.s.Cancel()
+	e.wait()
+	raw, _ := json.Marshal(e.s.Status(context.Background()))
+	for _, bad := range []string{"LEAK", "Bearer", "code=", "sk-ant"} {
+		if strings.Contains(string(raw), bad) {
+			t.Errorf("%q in the status: %s", bad, raw)
+		}
+	}
+}
+
 func TestLoginOpen(t *testing.T) {
-	e := newTestEnv(t)
-	e.ready()
-	p := e.addProject("my-project")
-	if _, err := e.op("login.open", map[string]any{"project": p.ID}); err == nil {
+	e := readyForLogin(t)
+	if _, err := e.op("login.open", nil); err == nil {
 		t.Error("opened with no sign-in")
 	}
 	got := make(chan string, 1)
-	e.ag.box.login = scriptedLogin(e.ag.box, claudeURL, got)
+	e.ag.sess.login = scriptedHelper(claudeURL, got)
 	e.m.extra = func(argv []string) ([]byte, error, bool) {
 		if argv[0] == "/usr/bin/open" {
 			return nil, nil, true
 		}
 		return nil, nil, false
 	}
-	e.op("run", map[string]any{"step": "login", "project": p.ID, "method": "claudeai"})
+	e.op("run", map[string]any{"step": "login", "method": "claudeai"})
 	waitFor(t, "the link", func() bool { st := e.s.Status(context.Background()); return st.Login != nil && st.Login.URL != "" })
-	if _, err := e.op("login.open", map[string]any{"project": "other"}); err == nil {
-		t.Error("opened the link of another project")
-	}
-	res, err := e.op("login.open", map[string]any{"project": p.ID})
+	res, err := e.op("login.open", map[string]any{"project": "ignored"})
 	if err != nil || res["opened"] != true {
 		t.Fatalf("%v %v", res, err)
 	}
@@ -301,27 +427,8 @@ func TestLoginOpen(t *testing.T) {
 	e.s.Cancel()
 	e.wait()
 	e.s.opt.GOOS = "linux"
-	if err := e.s.LoginOpen(context.Background(), p.ID); err == nil {
+	if err := e.s.LoginOpen(context.Background()); err == nil {
 		t.Error("opened on a non-Mac")
-	}
-}
-
-func TestLoginSkipsWhenSignedInInAllAndChecksOnlyWithoutMethod(t *testing.T) {
-	e := newTestEnv(t)
-	e.ready()
-	p := e.addProject("my-project")
-	e.ag.box.login = func(c *fakeConn) { t.Error("login started"); c.finish() }
-	// no method: check only, not signed in -> needs_user
-	e.op("run", map[string]any{"step": "login", "project": p.ID})
-	e.wait()
-	if st := e.step("login"); st.State != NeedsUser {
-		t.Errorf("%+v", st)
-	}
-	e.ag.box.loggedIn = true
-	e.op("run", map[string]any{"step": "login", "project": p.ID})
-	e.wait()
-	if st := e.step("login"); st.State != Done {
-		t.Errorf("%+v", st)
 	}
 }
 
@@ -378,8 +485,7 @@ func TestSelfTestJob(t *testing.T) {
 	e := newTestEnv(t)
 	e.ready()
 	p := e.addProject("my-project")
-	e.ag.running[p.ID] = true
-	e.ag.box.loggedIn = true
+	e.ag.token = true
 	e.ag.box.probeOut = goodProbe
 	st := &fakeSelfTest{box: e.ag.box, turn: goodTurn}
 	e.ag.selftest = st
@@ -415,8 +521,7 @@ func TestSelfTestProbesTheDefaultNetworkGatewayWhenKnown(t *testing.T) {
 		e := newTestEnv(t)
 		e.ready()
 		p := e.addProject("my-project")
-		e.ag.running[p.ID] = true
-		e.ag.box.loggedIn = true
+		e.ag.token = true
 		e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn}
 		probe := goodProbe
 		if !known {

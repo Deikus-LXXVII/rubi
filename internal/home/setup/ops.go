@@ -30,12 +30,12 @@ func (s *Setup) Handle(ctx context.Context, op string, args json.RawMessage) (an
 		}
 		return map[string]any{"started": true}, nil
 	case "login.code":
-		if err := s.LoginCode(in.Project, in.Code); err != nil {
+		if err := s.LoginCode(in.Code); err != nil {
 			return nil, err
 		}
 		return map[string]any{"sent": true}, nil
 	case "login.open":
-		if err := s.LoginOpen(ctx, in.Project); err != nil {
+		if err := s.LoginOpen(ctx); err != nil {
 			return nil, err
 		}
 		return map[string]any{"opened": true}, nil

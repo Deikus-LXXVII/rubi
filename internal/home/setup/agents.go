@@ -7,15 +7,14 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
 
-// ManagerAgents adapts the agent manager to Agents.
-type ManagerAgents struct{ M *agent.Manager }
+// ManagerAgents adapts the agent manager, and the container tool for the shared sign-in, to Agents.
+type ManagerAgents struct {
+	M *agent.Manager
+	// Auth makes the container definition the shared sign-in uses (network, image, volume).
+	Auth func() *agent.AppleContainer
+}
 
 func (a ManagerAgents) Projects() []agent.Project { return a.M.Projects() }
-func (a ManagerAgents) VMRunning(id string) bool  { return a.M.VMRunning(id) }
-
-func (a ManagerAgents) Sandbox(ctx context.Context, id string) (Box, error) {
-	return a.M.Sandbox(ctx, id)
-}
 
 func (a ManagerAgents) BeginSelfTest(id string) (SelfTestRun, error) {
 	t, err := a.M.BeginSelfTest(id)
@@ -23,6 +22,20 @@ func (a ManagerAgents) BeginSelfTest(id string) (SelfTestRun, error) {
 		return nil, err
 	}
 	return selfTest{t}, nil
+}
+
+func (a ManagerAgents) AuthStatus(ctx context.Context) (agent.AuthStatus, error) {
+	return a.Auth().AuthStatus(ctx)
+}
+
+func (a ManagerAgents) AuthSignOut(ctx context.Context) error { return a.Auth().AuthSignOut(ctx) }
+
+func (a ManagerAgents) StartAuth(ctx context.Context) (AuthSession, error) {
+	s, err := a.Auth().StartAuth(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 type selfTest struct{ t *agent.SelfTest }

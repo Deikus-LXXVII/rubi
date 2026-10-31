@@ -35,7 +35,8 @@ func TestRunArguments(t *testing.T) {
 		"unknown step":  {"step": "bogus"},
 		"no step":       {},
 		"bad method":    {"step": "login", "project": "my-project", "method": "password"},
-		"unknown proj":  {"step": "login", "project": "nope", "method": "claudeai"},
+		"unknown proj":  {"step": "selftest", "project": "nope"},
+		"console":       {"step": "login", "method": "console"},
 		"bad option":    {"step": "network", "option": "rm-rf"},
 		"option, step":  {"step": "image", "option": "auto-address"},
 		"projects step": {"step": "projects"},
@@ -70,7 +71,7 @@ func TestRunNeedsEarlierSteps(t *testing.T) {
 		t.Errorf("image: %v", err)
 	}
 	e.addProject("my-project")
-	if _, err := e.op("run", map[string]any{"step": "login", "project": "my-project"}); err == nil || err.Error() != "needs step 3 first" {
+	if _, err := e.op("run", map[string]any{"step": "login"}); err == nil || err.Error() != "needs step 3 first" {
 		t.Errorf("login: %v", err)
 	}
 	e.m.network = internalNet(t)
@@ -296,8 +297,8 @@ func allEnv(t *testing.T) *testEnv {
 	e.m.image = false
 	e.m.sysJSON = ""
 	p := e.addProject("my-project")
-	e.ag.running[p.ID] = true
-	e.ag.box.loggedIn = true // signed in already: the sign-in step is skipped
+	e.ag.token, e.ag.expires = true, time.Now().Add(time.Hour) // signed in already: the sign-in step is skipped
+	_ = p
 	e.ag.box.probeOut = goodProbe
 	e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn}
 	e.m.extra = func(argv []string) ([]byte, error, bool) {
@@ -475,8 +476,12 @@ func TestStatusJSONShape(t *testing.T) {
 	if _, ok := res["login"]; ok {
 		t.Error("login present while idle")
 	}
-	row := steps[5].(map[string]any)["projects"].([]any)[0].(map[string]any)
-	if row["id"] != "my-project" || row["dir"] == "" || row["state"] != "todo" || row["action"] != "check" {
+	login := steps[5].(map[string]any)
+	if _, ok := login["projects"]; ok || login["action"] != "check" && login["action"] != "login" {
+		t.Errorf("login row: %v", login)
+	}
+	row := steps[6].(map[string]any)["projects"].([]any)[0].(map[string]any)
+	if row["id"] != "my-project" || row["dir"] == "" || row["state"] != "todo" || row["reason"] != "Needs step 6 first" {
 		t.Errorf("row: %v", row)
 	}
 }

@@ -66,6 +66,9 @@ type Config struct {
 	// to pin a port or to use another address.
 	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
+	// AgentAuthVolume is the container volume that holds the sign-in shared by all projects
+	// ("rubi-agent-auth" by default); every project VM mounts it read-only outside /work.
+	AgentAuthVolume string `json:"agent_auth_volume,omitempty"`
 	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
 	AgentRunnerDir string `json:"agent_runner_dir,omitempty"`
 	// AgentAllowedHosts are extra hosts (port 443) the agents' proxy allows for every project, for example
@@ -181,7 +184,8 @@ func (h *Helper) newAgent() *agent.Manager {
 		Projects:  func() []string { return h.Fresh().AgentProjects },
 		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
 		NewVM: func(p agent.Project) agent.VM {
-			return &agent.AppleContainer{RunnerDir: h.Fresh().AgentRunnerDir, Network: h.Fresh().AgentNetwork, EnvDir: h.Dir}
+			c := h.Fresh()
+			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthVolume: c.AgentAuthVolume}
 		},
 		AllowedHosts:    func() []string { return h.Fresh().AgentAllowedHosts },
 		NoDefaultForges: func() bool { return h.Fresh().AgentNoDefaultForges },
@@ -207,12 +211,15 @@ func (h *Helper) newAgent() *agent.Manager {
 // newSetup makes the agent setup; it reads and changes the agent_* configuration like the CLI does.
 func (h *Helper) newSetup() *setup.Setup {
 	return setup.New(setup.Options{
-		Dir:    h.Dir,
-		Agents: setup.ManagerAgents{M: h.Agent},
+		Dir: h.Dir,
+		Agents: setup.ManagerAgents{M: h.Agent, Auth: func() *agent.AppleContainer {
+			c := h.Fresh()
+			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, Network: c.AgentNetwork, EnvDir: h.Dir, AuthVolume: c.AgentAuthVolume}
+		}},
 		Settings: func() setup.Settings {
 			c := h.Fresh()
 			return setup.Settings{Projects: c.AgentProjects, Network: c.AgentNetwork, ProxyListen: c.AgentProxyListen,
-				ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir}
+				ProxyVMHost: c.AgentProxyVMHost, RunnerDir: c.AgentRunnerDir, AuthVolume: c.AgentAuthVolume}
 		},
 		Update: func(fn func(*setup.Settings)) error {
 			return h.Update(func(c *Config) {

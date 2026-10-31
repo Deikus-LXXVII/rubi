@@ -1,23 +1,18 @@
 package setup
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/url"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
-
-// claudeBin is the Claude Code binary the Agent SDK bundles in the runner image (a Linux arm64 VM).
-const claudeBin = "/opt/rubi-runner/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude"
 
 // loginHosts are the hosts a sign-in link may point to (and that login.open opens).
 var loginHosts = []string{"claude.com", "claude.ai", "platform.claude.com", "console.anthropic.com"}
@@ -26,17 +21,11 @@ var loginHosts = []string{"claude.com", "claude.ai", "platform.claude.com", "con
 var loginLimit = 15 * time.Minute
 
 type loginState struct {
-	project   agent.Project
 	url       string
 	wantsCode bool
 	codeSent  bool
 	conn      agent.Conn
 }
-
-var (
-	urlRE  = regexp.MustCompile(`https://[^\s"'<>]+`)
-	ansiRE = regexp.MustCompile(`\x1b(\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\))`)
-)
 
 // loginURL validates a sign-in link: https, one of loginHosts, no user info, no port.
 func loginURL(raw string) (string, error) {
@@ -45,12 +34,6 @@ func loginURL(raw string) (string, error) {
 		return "", errors.New("the sign-in link doesn't point to a Claude or Anthropic sign-in page")
 	}
 	return raw, nil
-}
-
-// findURL returns the first https link in a line of the login's output.
-func findURL(line string) string {
-	m := urlRE.FindString(ansiRE.ReplaceAllString(line, ""))
-	return strings.TrimRight(m, ".,;:)")
 }
 
 // ValidCode says whether text can be a sign-in code: 1 to 512 printable ASCII characters, no spaces.
@@ -83,132 +66,98 @@ func readAll(ctx context.Context, c agent.Conn, limit int64) []byte {
 	}
 }
 
-// endLoginScript ends every `claude auth login` in the VM (closing the exec from the Mac does not always
-// end the process inside): it looks through /proc, so it needs no pkill in the image.
-const endLoginScript = `const fs = require("fs");
-for (const p of fs.readdirSync("/proc")) {
-  if (!/^\d+$/.test(p) || +p === process.pid) continue;
-  try {
-    const c = fs.readFileSync("/proc/" + p + "/cmdline", "utf8").split("\0");
-    if (c.some(a => a.endsWith("/claude")) && c.includes("auth") && c.includes("login")) process.kill(+p, "SIGTERM");
-  } catch (e) {}
-}`
-
-// endLogin runs the cleanup; the sign-in is over whether it works or not.
-func (s *Setup) endLogin(box Box) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	c, err := box.Exec(ctx, []string{"node", "-e", endLoginScript}, nil)
-	if err != nil {
-		return
-	}
-	defer c.Close()
-	_ = c.CloseWrite()
-	readAll(ctx, c, 4<<10)
-}
-
 func (s *Setup) setLogin(j *job, l *loginState) {
 	s.mu.Lock()
 	j.login = l
 	s.mu.Unlock()
 }
 
-// runLogin signs a project in: it runs `claude auth login` in the project's VM with pipes, shows the link
-// and waits for the user (and for a pasted code if Claude asks) until claude ends. Without a method it only
-// checks the sign-in. skipIfSignedIn leaves a project that already is signed in alone.
-func (s *Setup) runLogin(ctx context.Context, j *job, p agent.Project, method string, skipIfSignedIn bool) outcome {
+// loginEnv: the config of the sign-in's claude lives in the container's tmpfs, not in the shared volume.
+var loginEnv = map[string]string{"CLAUDE_CONFIG_DIR": "/tmp/claude-signin"}
+
+// runLogin signs the computer in, once for all projects: it starts the sign-in container (no project, the
+// shared volume read-write, a proxy that allows only the sign-in hosts) and runs the image's helper in it,
+// which runs `claude setup-token` under a terminal and tells Home on stdout only `URL <link>`, `CODE?`,
+// `SAVED` or `FAILED <reason>`. Home shows the link, passes the code the user pastes to the helper's stdin and
+// never sees the token. Without a method it only checks the sign-in; skipIfSignedIn leaves a valid one alone.
+func (s *Setup) runLogin(ctx context.Context, j *job, method string, skipIfSignedIn bool) outcome {
 	log := j.log(s)
-	log("Starting the project's VM...")
-	box, err := s.opt.Agents.Sandbox(ctx, p.ID)
-	if err != nil {
-		if ctx.Err() != nil {
-			return outcome{Todo, "Cancelled."}
-		}
-		return outcome{Failed, "Couldn't start the project's VM: " + safeText(err.Error())}
-	}
+	defer s.forgetAuth()
 	if method == "" || skipIfSignedIn {
-		ok, err := s.signedIn(ctx, box)
-		if err == nil {
-			s.mu.Lock()
-			s.loginSeen[p.Dir] = ok
-			s.mu.Unlock()
+		st, err := s.opt.Agents.AuthStatus(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return outcome{Todo, "Cancelled."}
+			}
+			return outcome{Failed, "Couldn't check the sign-in: " + safeText(err.Error())}
 		}
-		if ok {
+		if st.SignedIn && !st.Expired(s.opt.Now()) {
 			return outcome{Done, "Signed in."}
 		}
 		if method == "" {
 			return outcome{NeedsUser, "Not signed in. Choose how to sign in."}
 		}
 	}
-	flag := "--claudeai"
-	if method == "console" {
-		flag = "--console"
+	log("Starting the sign-in container...")
+	sess, err := s.opt.Agents.StartAuth(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return outcome{Todo, "Cancelled."}
+		}
+		return outcome{Failed, "Couldn't start the sign-in container: " + safeText(err.Error())}
 	}
+	defer sess.Close() // ends the helper, claude and the proxy, whatever happens
 	lctx, cancel := context.WithTimeout(ctx, loginLimit)
 	defer cancel()
-	// `timeout` is the backstop inside the VM; endLogin is the cleanup when the sign-in ends or is cancelled.
-	secs := strconv.Itoa(int(loginLimit.Seconds()) + 60)
-	conn, err := box.Exec(lctx, []string{"timeout", secs, claudeBin, "auth", "login", flag}, nil)
+	conn, err := sess.Exec(lctx, []string{agent.AuthHelper}, loginEnv)
 	if err != nil {
 		return outcome{Failed, "Couldn't start the sign-in: " + safeText(err.Error())}
 	}
-	defer s.endLogin(box)
 	defer conn.Close()
-	st := &loginState{project: p, conn: conn}
+	st := &loginState{conn: conn}
 	s.setLogin(j, st)
 	defer s.setLogin(j, nil)
 	log("Waiting for the sign-in link...")
 
-	var bad bool
+	var bad, saved bool
+	var failure string
 	read := make(chan struct{})
 	go func() {
 		defer close(read)
-		buf := make([]byte, 4096)
-		var carry []byte
-		for {
-			n, err := conn.Read(buf)
-			carry = append(carry, buf[:n]...)
-			for {
-				i := bytes.IndexAny(carry, "\r\n")
-				if i < 0 {
-					break
-				}
-				line := string(carry[:i])
-				carry = carry[i+1:]
-				if strings.Contains(line, "https://") {
-					s.mu.Lock()
-					first := st.url == ""
-					s.mu.Unlock()
-					if !first {
-						continue
-					}
-					u, verr := loginURL(findURL(line))
-					s.mu.Lock()
-					if verr != nil {
-						bad = true
-					} else {
-						st.url = u
-					}
-					s.mu.Unlock()
-					if verr != nil {
-						_ = conn.Close()
-						return
-					}
-					log("The sign-in link is ready.") // the link itself is never logged
-					continue
-				}
-				log(line)
-			}
-			if len(carry) > 8192 {
-				carry = carry[len(carry)-4096:]
-			}
-			if bytes.Contains(bytes.ToLower(carry), []byte("paste code")) {
+		sc := bufio.NewScanner(conn)
+		sc.Buffer(make([]byte, 0, 4096), 16<<10)
+		for sc.Scan() {
+			line := strings.TrimSpace(sc.Text())
+			switch {
+			case strings.HasPrefix(line, "URL "):
+				u, verr := loginURL(strings.TrimSpace(line[4:]))
 				s.mu.Lock()
-				st.wantsCode = !st.codeSent
+				if verr != nil {
+					bad = true
+				} else if st.url == "" {
+					st.url = u
+				}
 				s.mu.Unlock()
-			}
-			if err != nil {
-				return
+				if verr != nil {
+					_ = conn.Close()
+					return
+				}
+				log("The sign-in link is ready.") // the link itself is never logged
+			case line == "CODE?":
+				s.mu.Lock()
+				st.wantsCode = true
+				s.mu.Unlock()
+			case line == "SAVED":
+				s.mu.Lock()
+				saved = true
+				s.mu.Unlock()
+			case strings.HasPrefix(line, "FAILED"):
+				s.mu.Lock()
+				failure = safeText(strings.TrimSpace(strings.TrimPrefix(line, "FAILED")))
+				if failure == "" {
+					failure = "no details"
+				}
+				s.mu.Unlock()
 			}
 		}
 	}()
@@ -223,7 +172,7 @@ func (s *Setup) runLogin(ctx context.Context, j *job, p agent.Project, method st
 	case <-time.After(5 * time.Second):
 	}
 	s.mu.Lock()
-	gotURL := st.url != ""
+	gotURL, wasSaved, why := st.url != "", saved, failure
 	s.mu.Unlock()
 	switch {
 	case ctx.Err() != nil:
@@ -232,35 +181,53 @@ func (s *Setup) runLogin(ctx context.Context, j *job, p agent.Project, method st
 		return outcome{Failed, "The sign-in link doesn't point to a Claude or Anthropic sign-in page, so it wasn't shown."}
 	case lctx.Err() != nil:
 		return outcome{Failed, fmt.Sprintf("The sign-in waited %d minutes and was stopped.", int(loginLimit.Minutes()))}
+	case !wasSaved:
+		switch {
+		case why != "":
+			return outcome{Failed, "The sign-in failed: " + why + "."}
+		case !gotURL:
+			return outcome{Failed, "The sign-in ended without showing a link."}
+		}
+		return outcome{Failed, "The sign-in ended without a token."}
 	}
-	ok, _ := s.signedIn(ctx, box)
-	s.mu.Lock()
-	s.loginSeen[p.Dir] = ok
-	s.mu.Unlock()
-	switch {
-	case ok:
-		return outcome{Done, "Signed in."}
-	case !gotURL:
-		return outcome{Failed, "The sign-in ended without showing a link."}
+	// The helper says it saved; look for the token the way every status does, without reading it.
+	if got, err := s.opt.Agents.AuthStatus(ctx); err != nil || !got.SignedIn {
+		return outcome{Failed, "The sign-in finished, but no token is stored."}
 	}
-	return outcome{Failed, "The sign-in ended, but the project isn't signed in."}
+	return outcome{Done, "Signed in."}
 }
 
-// LoginCode writes the code Claude asked for to the running sign-in of the project (a project id). Nothing
-// is kept or logged.
-func (s *Setup) LoginCode(project, code string) error {
+// runSignOut deletes the shared token for every project. It can't revoke it: that is done at claude.ai.
+func (s *Setup) runSignOut(ctx context.Context, j *job) outcome {
+	defer s.forgetAuth()
+	j.log(s)("Deleting the stored sign-in...")
+	if err := s.opt.Agents.AuthSignOut(ctx); err != nil {
+		if ctx.Err() != nil {
+			return outcome{Todo, "Cancelled."}
+		}
+		return outcome{Failed, "Couldn't delete the sign-in: " + safeText(err.Error())}
+	}
+	if got, err := s.opt.Agents.AuthStatus(ctx); err != nil || got.SignedIn {
+		return outcome{Failed, "The sign-in is still stored."}
+	}
+	return outcome{Done, "Signed out on this computer. To revoke the token everywhere, also remove it in your Claude account settings at claude.ai."}
+}
+
+// LoginCode writes the code Claude asked for to the running sign-in. The sign-in is one for the whole
+// computer, so the project argument of the operation is ignored. Nothing is kept or logged.
+func (s *Setup) LoginCode(code string) error {
 	if !ValidCode(code) {
 		return errors.New("the code must be 1 to 512 visible characters without spaces")
 	}
 	s.mu.Lock()
 	var st *loginState
-	if s.job != nil && s.job.step == StepLogin && s.job.login != nil && s.job.login.project.ID == project && s.job.login.url != "" {
+	if s.job != nil && s.job.step == StepLogin && s.job.login != nil && s.job.login.url != "" {
 		st = s.job.login
 		st.wantsCode, st.codeSent = false, true
 	}
 	s.mu.Unlock()
 	if st == nil {
-		return errors.New("no sign-in for that project is waiting for a code")
+		return errors.New("no sign-in is waiting for a code")
 	}
 	if _, err := st.conn.Write([]byte(code + "\n")); err != nil {
 		return errors.New("the sign-in isn't accepting a code any more")
@@ -269,18 +236,18 @@ func (s *Setup) LoginCode(project, code string) error {
 }
 
 // LoginOpen opens the running sign-in's link in the Mac's default browser.
-func (s *Setup) LoginOpen(ctx context.Context, project string) error {
+func (s *Setup) LoginOpen(ctx context.Context) error {
 	if !s.mac() {
 		return errNotMac
 	}
 	s.mu.Lock()
 	raw := ""
-	if s.job != nil && s.job.login != nil && s.job.login.project.ID == project {
+	if s.job != nil && s.job.login != nil {
 		raw = s.job.login.url
 	}
 	s.mu.Unlock()
 	if raw == "" {
-		return errors.New("no sign-in for that project is waiting")
+		return errors.New("no sign-in is waiting")
 	}
 	u, err := loginURL(raw)
 	if err != nil {

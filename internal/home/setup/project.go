@@ -148,7 +148,6 @@ func (s *Setup) RemoveProject(dir string) error {
 	}
 	s.mu.Lock()
 	delete(s.tests, dir)
-	delete(s.loginSeen, dir)
 	s.mu.Unlock()
 	return nil
 }

@@ -156,9 +156,12 @@ func TestProjectRemove(t *testing.T) {
 	}
 	// not while a job works on it
 	e.ready()
-	e.ag.running[b.ID] = true
-	e.ag.box.login = func(c *fakeConn) { <-c.done }
-	e.op("run", map[string]any{"step": "login", "project": b.ID, "method": "claudeai"})
+	e.ag.token = true
+	e.ag.box.probeOut = goodProbe
+	e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn, hold: make(chan struct{})}
+	if _, err := e.op("run", map[string]any{"step": "selftest", "project": b.ID}); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, "the job", func() bool { return e.s.Status(context.Background()).Job != nil })
 	if _, err := e.op("project.remove", map[string]any{"dir": b.Dir}); err == nil || !strings.HasPrefix(err.Error(), "busy") {
 		t.Errorf("removed during a job: %v", err)

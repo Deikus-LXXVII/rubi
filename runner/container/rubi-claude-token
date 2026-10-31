@@ -88,7 +88,7 @@ function main() {
     try {
       save(t[0]);
     } catch {
-      finish("FAILED could not save the token", 1);
+      finish("FAILED could not save the credential", 1);
       return true;
     }
     finish("SAVED", 0);
@@ -117,7 +117,7 @@ function main() {
   });
   child.on("close", () => {
     if (!finished && tryToken(true)) return;
-    if (!finished) finish("FAILED the sign-in ended without a token", 1);
+    if (!finished) finish("FAILED the sign-in ended without finishing", 1);
   });
   // The code (a line) goes to claude as Enter-terminated input; a terminal's Enter is \r.
   process.stdin.on("data", (d) => {
