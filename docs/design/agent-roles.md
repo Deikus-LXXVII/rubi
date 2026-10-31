@@ -601,6 +601,13 @@ seam to the Manager). The wire contract and the `ssh.scan/register/list/remove/a
   `ssh.register` refuses a tombstoned name unless the call carries `reuse:true`, which the plugin sends only after a
   strong approval that says which roles still list the name.
 
+### 9.5.2 As built (R12, runner and image)
+
+The wrapper, its framing, the socket and the relay rules are in `agent-runner.md` ("In the VM: the `ssh` wrapper and the runner
+socket"). Decisions: the wrapper is a node script (no netcat, no ssh client in the image); `ssh` is a symlink first in `PATH`
+(`/usr/local/rubi/bin`); git over ssh is switched off (`protocol.ssh.allow never`); `tool_use_id` is passed on only when the
+session has exactly one running `Bash` call that mentions `ssh`; backpressure is end to end (Home acks only what the wrapper wrote).
+
 ### 9.6 Deliberate difference from the addendum
 
 There is no proxy allow-list entry for the target's `host:port`. The VM never reaches the target; Home is the client.

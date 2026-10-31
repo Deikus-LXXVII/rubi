@@ -29,13 +29,16 @@ export class Home {
   /** Answers git.credential requests. */
   credHandler: (p: Msg) => Promise<Msg> | Msg = () => ({ output: "" });
   readonly creds: Msg[] = [];
+  /** Answers ssh.open requests: {stream} or throws (-> JSON-RPC error with the message). */
+  sshOpenHandler: (p: Msg) => Promise<Msg> | Msg = () => ({ stream: "s1" });
+  readonly sshOpens: Msg[] = [];
   private nextId = 1;
   private waiters: { pred: (l: Line) => boolean; resolve: (l: Line) => void }[] = [];
   private pendingCalls = new Map<number, (m: Msg) => void>();
   private buf = "";
   helloHandler: (p: Msg) => Msg | null = (p) => (p.run_token === TOKEN ? { ok: true } : null);
 
-  constructor(cfg: Partial<RunnerConfig> & { env?: NodeJS.ProcessEnv; sdk?: FakeSdk; maxLineBytes?: number; maxQueuedBytes?: number; credSock?: string } = {}) {
+  constructor(cfg: Partial<RunnerConfig> & { env?: NodeJS.ProcessEnv; sdk?: FakeSdk; maxLineBytes?: number; maxQueuedBytes?: number; credSock?: string; sshSock?: string } = {}) {
     this.sdk = cfg.sdk ?? new FakeSdk();
     this.fromRunner.on("data", (c: Buffer) => this.onData(c.toString("utf8")));
     this.runner = new Runner(this.toRunner, this.fromRunner, {
@@ -86,6 +89,13 @@ export class Home {
         this.reply(msg.id, await this.credHandler(msg.params));
       } catch (e) {
         this.sendRaw({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: String(e) } });
+      }
+    } else if (msg.method === "ssh.open") {
+      this.sshOpens.push(msg.params);
+      try {
+        this.reply(msg.id, await this.sshOpenHandler(msg.params));
+      } catch (e) {
+        this.sendRaw({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: e instanceof Error ? e.message : String(e) } });
       }
     } else if (msg.id !== undefined && ("result" in msg || "error" in msg)) {
       this.pendingCalls.get(msg.id)?.(msg);
@@ -157,3 +167,8 @@ export class Home {
 }
 
 export { EXIT_HELLO_FAILED };
+
+/** Runner -> Home notifications of one method, in order. */
+export function sent(h: Home, method: string): Msg[] {
+  return h.lines.filter((l) => l.from === "runner" && l.msg.method === method).map((l) => l.msg.params);
+}

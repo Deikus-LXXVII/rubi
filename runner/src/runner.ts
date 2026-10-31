@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { serveCredentials, type CredServer } from "./cred.js";
 import { Inbox } from "./inbox.js";
+import { serveSsh, type SshServer } from "./ssh.js";
 import { loadRole, roleQueryParts, RoleError, type Role } from "./role.js";
 import { ERR, errMsg, Peer, RpcError } from "./protocol.js";
 import {
@@ -50,6 +51,9 @@ export interface RunnerConfig {
   /** Unix socket for git-credential-rubi; unset = no credential socket. */
   credSock?: string;
   credTimeoutMs?: number; // default 295 s (an approval can take minutes)
+  /** Unix socket for the `ssh` wrapper (rubi-ssh); unset = no SSH relay. */
+  sshSock?: string;
+  sshOpenTimeoutMs?: number; // default 330 s: an approval (295 s) plus the dial
 }
 
 export const EXIT_NO_TOKEN = 2;
@@ -91,6 +95,8 @@ interface Session {
   gateWaiters: (() => void)[];
   /** The count last reported in a `subagents` event. */
   lastSub: number;
+  /** Bash calls that passed the gate, mention `ssh` and have not ended; one of them is the caller of an ssh.open. */
+  sshCalls: Set<string>;
 }
 
 interface Decision {
@@ -103,6 +109,7 @@ const SHORT = 200;
 const MAX_PENDING = 50;
 const PUSH_WINDOW_MS = 120_000;
 const GIT_PUSH_RE = /\bgit\b[^\n]*\bpush\b/;
+const SSH_RE = /\bssh\b/;
 const DECIDED_MAX = 100;
 const DECIDED_TTL_MS = 30_000;
 const SUBAGENT_MATCHER = "^(Agent|Task)$";
@@ -171,7 +178,7 @@ export function disallowedEditTools(cwd: string): string[] {
 }
 
 export class Runner {
-  private readonly cfg: Required<Omit<RunnerConfig, "roleDir" | "maxLineBytes" | "maxQueuedBytes" | "credSock" | "log" | "env" | "sdk" | "exit" | "version">>;
+  private readonly cfg: Required<Omit<RunnerConfig, "roleDir" | "maxLineBytes" | "maxQueuedBytes" | "credSock" | "sshSock" | "sshOpenTimeoutMs" | "log" | "env" | "sdk" | "exit" | "version">>;
   private readonly sdk: Sdk;
   private readonly env: NodeJS.ProcessEnv;
   private peer!: Peer;
@@ -181,6 +188,7 @@ export class Runner {
   private readonly childEnv: Record<string, string>;
   private readonly roleDir: string | undefined;
   private credServer: CredServer | undefined;
+  private sshServer: SshServer | undefined;
   private pushUntil = 0;
 
   constructor(
@@ -216,6 +224,7 @@ export class Runner {
     if (this.exited) return;
     this.exited = true;
     this.credServer?.close();
+    this.sshServer?.close();
     this.shutdownSessions();
     this.c.exit(code);
   }
@@ -234,6 +243,9 @@ export class Runner {
       ...(this.c.maxQueuedBytes !== undefined ? { maxQueuedBytes: this.c.maxQueuedBytes } : {}),
       log: (m) => this.log(m),
       onRequest: (method, params) => this.onRequest(method, params),
+      onNotification: (method, params) => {
+        if (method.startsWith("ssh.")) this.sshServer?.notification(method, params);
+      },
       onClose: () => {
         this.log("stdin closed; exiting");
         this.exit(this.authed ? 0 : EXIT_HELLO_FAILED);
@@ -250,6 +262,19 @@ export class Runner {
       if (r?.ok !== true) throw new Error("hello refused");
       if (this.c.credSock) {
         this.credServer = await serveCredentials(this.c.credSock, (op, input) => this.credential(op, input), (m) => this.log(m));
+      }
+      if (this.c.sshSock) {
+        this.sshServer = await serveSsh(this.c.sshSock, {
+          request: (method, params, o) => this.peer.request(method, params, o),
+          notify: (method, params) => this.peer.notify(method, params),
+          log: (m) => this.log(m),
+          knownSession: (id) => this.sessions.has(id),
+          toolUseId: (id) => {
+            const calls = this.sessions.get(id)?.sshCalls;
+            return calls && calls.size === 1 ? [...calls][0] : undefined;
+          },
+          openTimeoutMs: this.c.sshOpenTimeoutMs ?? 330_000,
+        });
       }
     } catch (e) {
       this.log(`hello failed: ${errMsg(e)}`);
@@ -294,6 +319,8 @@ export class Runner {
         const s = this.get(uuid(p, "id"));
         s.pending = []; // held-back messages are dropped: the user wants the work to stop
         s.stopSeq++; // subagent calls waiting for a place give up too
+        s.sshCalls.clear();
+        this.sshServer?.closeStreams(s.id);
         this.updateSubagents(s);
         for (const a of [...s.asking]) a.abort(); // pending asks are given up (perm.cancel) and denied
         if (s.query) await s.query.interrupt();
@@ -347,6 +374,7 @@ export class Runner {
       stopSeq: 0,
       gateWaiters: [],
       lastSub: 0,
+      sshCalls: new Set(),
     };
     this.sessions.set(s.id, s);
     return s;
@@ -495,7 +523,7 @@ export class Runner {
       mcpServers: {},
       allowDangerouslySkipPermissions: true,
       permissionMode: s.mode,
-      env: this.childEnv,
+      env: this.c.sshSock ? { ...this.childEnv, RUBI_SSH_SOCK: this.c.sshSock, RUBI_SESSION_ID: s.id } : this.childEnv,
       disallowedTools: disallowedEditTools(this.cfg.cwd),
       abortController: abort,
       // The hook runs for the main session, subagents and forks, in every mode (M0 exp 2-4).
@@ -611,6 +639,7 @@ export class Runner {
         for (const b of Array.isArray(content) ? (content as Record<string, unknown>[]) : []) {
           if (b.type !== "tool_result" || typeof b.tool_use_id !== "string") continue;
           if (s.calls.delete(b.tool_use_id)) ended = true;
+          s.sshCalls.delete(b.tool_use_id);
           const g = s.gating.get(b.tool_use_id);
           if (g) g.cancelled = true; // the call ended while its gate still waited
         }
@@ -816,6 +845,8 @@ export class Runner {
     s.closed = true;
     this.sessions.delete(s.id);
     s.pending = [];
+    s.sshCalls.clear();
+    this.sshServer?.closeStreams(s.id);
     this.updateSubagents(s); // wakes the subagent calls waiting for a place; they see the session is closed
     s.inbox?.end();
     s.abort?.abort();
@@ -856,6 +887,13 @@ export class Runner {
     return typeof r?.output === "string" ? r.output : "";
   }
 
+  /** Remembers an allowed Bash call that mentions `ssh`, so the ssh.open it causes can name it. */
+  private noteSsh(s: Session, tool: string, input: unknown, id: string, d: Decision) {
+    if (d.behavior !== "allow" || tool !== "Bash" || !id) return;
+    const cmd = (d.updated_input ?? (input as Record<string, unknown> | null))?.command;
+    if (typeof cmd === "string" && SSH_RE.test(cmd) && s.sshCalls.size < 50) s.sshCalls.add(id);
+  }
+
   private notePush(tool: string, input: unknown, d: Decision) {
     if (d.behavior !== "allow" || tool !== "Bash") return;
     const cmd = (d.updated_input ?? (input as Record<string, unknown> | null))?.command;
@@ -886,6 +924,7 @@ export class Runner {
       );
       this.remember(s, input.tool_use_id, input.tool_name, input.tool_input, d);
       this.notePush(input.tool_name, input.tool_input, d);
+      this.noteSsh(s, input.tool_name, input.tool_input, input.tool_use_id, d);
       if (d.behavior === "deny") {
         if (subagent) this.dropSubagentCall(s, input.tool_use_id);
         return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.message ?? "Denied by Rubi" } };

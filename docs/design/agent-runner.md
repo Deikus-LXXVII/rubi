@@ -274,6 +274,39 @@ Notifications, `stream` always the id from `ssh.open` (bytes are standard base64
   tool_use_id, host, op:"ssh", input:{target, host, port, user, command}}` (command redacted, at most 1000 characters),
   answered with `decide`. It is sent only for targets registered with `ask_each_time`.
 
+### In the VM: the `ssh` wrapper and the runner socket (R12)
+
+The image has no ssh client. `/usr/local/bin/rubi-ssh` (a small node script, `runner/container/rubi-ssh`) is also linked as
+`ssh` in `/usr/local/rubi/bin`, which comes first in `PATH`. Usage: `ssh <target> <command...>`. It refuses every option
+(anything starting with `-` before the target: `-o -i -p -L -R -D -A -W -J -t ...`), `user@host`, anything that is not a
+target name and a missing command (exit 2); there is no TTY. Git over ssh is not supported (`protocol.ssh.allow never`
+in the image's system config; use https remotes with the credential helper). Stdin is relayed (EOF included); stdout and
+stderr are Home's; the exit status is the command's (255 when the stream ended with a `reason`, when Home refused, or when
+the relay is not there; 141 when its own stdout was closed by a reader such as `head`, after which the stream is closed).
+
+The wrapper talks to the runner on a unix socket, `RUBI_SSH_SOCK` (default `/tmp/rubi-ssh.sock`, mode 0600, removed on
+exit; the runner puts the variable and `RUBI_SESSION_ID` into the environment of each query's `claude` child). Frames:
+type byte, 4-byte big-endian length, payload; wrapper -> runner `OPEN` (JSON `{target, command, session_id?}`), `STDIN`,
+`EOF`, `ACK` (bytes the wrapper has written to its stdout or stderr); runner -> wrapper `ERR` (text), `STDOUT`, `STDERR`,
+`EXIT` (JSON `{code, reason?}`). The runner:
+
+- sends `ssh.open {target, command, session_id, tool_use_id?}`. `session_id` is the wrapper's `RUBI_SESSION_ID` when it
+  names a session the runner holds, else `""`. `tool_use_id` is set only when the session has exactly one allowed `Bash`
+  call that mentions `ssh` and has not ended; with several the runner cannot tell which one ran the wrapper and omits it
+  (the approval and audit then correlate by session only). Home's error text goes to the wrapper's stderr;
+- relays input as `ssh.data` fd 0 in pieces of at most 32 KiB, never more than 8 MiB unacknowledged by Home; the rest waits
+  in a queue (the socket is paused above 256 KiB), EOF after the data;
+- passes output to the wrapper and sends `ssh.ack` to Home only when the wrapper acknowledges it, so a reader that stops
+  stops Home's reading of the command (the acknowledgement is clamped to what was handed over);
+- sends `ssh.close` when the wrapper disconnects (also if it left while Home was still deciding, once the answer arrives),
+  and cuts the session's streams (wrapper told `the connection was closed by Rubi`) on `session.interrupt` and
+  `session.close`; at exit it cuts all of them and removes the socket. A stream that Home overfills past the window is cut;
+- logs only `ssh.open: target <name>` (and the session id) and `ssh.exit: code N (reason)`: never a command, input or
+  output.
+
+The plugin's Bash classifier treats `ssh <target>` as a remote operation (asks unless a mandate covers it): the call is
+gated by `perm.ask` first, then Home checks the grant and `ssh.ask` again (two independent checks).
+
 Plugin operations (`claude-agent.*`, the plugin gates them; strict arguments, an unknown field is an error):
 
 | Op | Arguments | Result |
