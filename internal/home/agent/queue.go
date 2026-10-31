@@ -39,7 +39,8 @@ type QueueItem struct {
 	ID      string    `json:"id"`
 	Op      string    `json:"op"` // "start" or "send"
 	Project string    `json:"project"`
-	Bot     string    `json:"bot,omitempty"` // the Bot that sent it ("" = the user)
+	Role    string    `json:"role,omitempty"` // an isolated role's id; "" = the project's legacy role
+	Bot     string    `json:"bot,omitempty"`  // the Bot that sent it ("" = the user)
 	Session string    `json:"session,omitempty"`
 	Text    string    `json:"text"`
 	Name    string    `json:"name,omitempty"`
@@ -47,6 +48,14 @@ type QueueItem struct {
 	Mode    string    `json:"mode,omitempty"`
 	Steer   bool      `json:"steer,omitempty"`
 	At      time.Time `json:"at"`
+}
+
+// rk is the key of the item's role: its id, or the project id for the legacy role.
+func (it QueueItem) rk() string {
+	if it.Role != "" {
+		return it.Role
+	}
+	return it.Project
 }
 
 type queueDisk struct {

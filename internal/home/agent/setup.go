@@ -133,7 +133,7 @@ func (m *Manager) BeginSelfTest(id string) (*SelfTest, error) {
 		return nil, errors.New("an agent session of this project is running or waiting; try the self-test when it is done")
 	}
 	st := &selfTest{project: p.ID, result: make(chan TurnResult, 1)}
-	slot := &slotState{project: p.ID, turn: true, last: m.opt.Now()}
+	slot := &slotState{project: p.ID, role: p.ID, turn: true, last: m.opt.Now()}
 	m.self = st
 	m.slots = append(m.slots, slot)
 	return &SelfTest{m: m, p: p, st: st, slot: slot}, nil

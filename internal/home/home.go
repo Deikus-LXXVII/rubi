@@ -93,6 +93,9 @@ type Config struct {
 	// AgentMaxSessions caps top-level agent sessions running at once on the computer, whatever the Bots'
 	// modes allow (0 = no cap; default 4: a Bot on maximum is bounded only by this).
 	AgentMaxSessions *int `json:"agent_max_sessions,omitempty"`
+	// AgentRoleVMIdleMinutes is how long an isolated role's VM may run with no session and nothing queued before
+	// Home stops it (default 15; it starts again on the next use). The project's legacy-role VM is not stopped.
+	AgentRoleVMIdleMinutes int `json:"agent_role_vm_idle_minutes,omitempty"`
 	// AgentMaxSubagentsPerSession caps subagents running at once in one session for every Bot (0 = no cap;
 	// unset: each Bot's mode decides). A session over it waits; nothing is denied.
 	AgentMaxSubagentsPerSession *int `json:"agent_max_subagents_per_session,omitempty"`
@@ -202,8 +205,9 @@ func (h *Helper) newAgent() *agent.Manager {
 			b := h.Fresh().AgentAllowBypass
 			return b == nil || *b
 		},
-		Usage:    func() agent.UsageConfig { return h.Fresh().agentUsage() },
-		SetUsage: func(ch agent.UsageChange) error { return h.Update(func(c *Config) { c.applyUsageChange(ch) }) },
+		RoleVMIdle: func() time.Duration { return time.Duration(h.Fresh().AgentRoleVMIdleMinutes) * time.Minute },
+		Usage:      func() agent.UsageConfig { return h.Fresh().agentUsage() },
+		SetUsage:   func(ch agent.UsageChange) error { return h.Update(func(c *Config) { c.applyUsageChange(ch) }) },
 		SeeBot: func(id string) {
 			_ = h.Update(func(c *Config) {
 				if _, ok := c.AgentBotModes[id]; !ok && len(c.AgentBotModes) < agent.MaxBots {

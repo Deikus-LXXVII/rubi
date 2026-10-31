@@ -81,6 +81,9 @@ type Options struct {
 	// the library exists) and RoleMaxTotal is role_max_total (0: 50). The roles live in Dir/agent-roles.
 	RoleVerifier roles.Verifier
 	RoleMaxTotal int
+	// RoleVMIdle is how long a role's VM may run with no slot and no queued item before it is stopped
+	// (agent_role_vm_idle_minutes; nil or not positive: DefaultRoleVMIdle). The legacy role's VM is never stopped for it.
+	RoleVMIdle func() time.Duration
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
 	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it. An
@@ -104,6 +107,7 @@ type Item struct {
 	AgentType string          `json:"agent_type,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
+	Role      string          `json:"role,omitempty"` // the role (id; the legacy role's is its project id)
 	Via       string          `json:"via,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Cwd       string          `json:"cwd,omitempty"`
@@ -124,6 +128,7 @@ type Item struct {
 type slotState struct {
 	bot     string // the Bot that started the session ("" = the user, from the panel)
 	project string
+	role    string          // the role's key: its id, or the project id for the legacy role
 	session string          // "" while a start hasn't got its session id yet
 	turn    bool            // a turn is running
 	last    time.Time       // the last sign of life (event, ask, delivery)
@@ -134,6 +139,7 @@ type slotState struct {
 type pendingAsk struct {
 	item      Item
 	project   string
+	role      string // key
 	delivered bool
 	answer    chan AskResult
 }
@@ -146,14 +152,35 @@ type projState struct {
 	proxy   *Proxy
 	gateway *Gateway // the auth gateway of this start (gateway.go); guarded by Manager.mu like runner
 	hosts   []string
+	// lastUse is the last time something used a role's VM (guarded by Manager.mu); pins hold the role versions
+	// this VM may be reading, released when it stops.
+	lastUse time.Time
+	pins    []func()
 	// proxyEnv is the proxy variables the runner was started with (the proxy password is in them: never
 	// logged); guarded by Manager.mu like runner.
 	proxyEnv map[string]string
 }
 
+// key identifies the VM: the role's id, or the project id for the legacy role.
+func (p *projState) key() string {
+	if p.Role != "" {
+		return p.Role
+	}
+	return p.ID
+}
+
+// netKey is where this VM's approved hosts are kept.
+func (p *projState) netKey() string {
+	if p.Role != "" {
+		return roleNetKey(p.Role)
+	}
+	return p.Dir
+}
+
 // extraHosts are the hosts besides the base and git hosts: the owner's list, the forges, and what the
-// owner approved for this project.
-func (m *Manager) extraHosts(p *projState) []string {
+// owner approved for this project (or this role: an isolated role has its own approvals and its own hosts,
+// added to its list only).
+func (m *Manager) extraHosts(p *projState, roleHosts []string) []string {
 	var out []string
 	if m.opt.AllowedHosts != nil {
 		out = append(out, m.opt.AllowedHosts()...)
@@ -161,7 +188,8 @@ func (m *Manager) extraHosts(p *projState) []string {
 	if m.opt.NoDefaultForges == nil || !m.opt.NoDefaultForges() {
 		out = append(out, ForgeHosts...)
 	}
-	return append(out, m.net.hosts(p.Dir)...)
+	out = append(out, roleHosts...)
+	return append(out, m.net.hosts(p.netKey())...)
 }
 
 // Manager is the Mac side of the agent: projects, the slots, the queue, asks.
@@ -172,6 +200,8 @@ type Manager struct {
 	// roles is the role store (Dir/agent-roles); nil with rolesErr when it couldn't be opened.
 	roles    *roles.Store
 	rolesErr error
+	nameMu   sync.Mutex
+	names    map[string]string // role id -> name, for messages (dropped when the role is put)
 
 	mu    sync.Mutex
 	projs map[string]*projState
@@ -288,6 +318,7 @@ func (m *Manager) shutdown(p *projState) {
 	p.runner = nil
 	px, gw := p.proxy, p.gateway
 	p.proxy, p.gateway = nil, nil
+	m.unpinLocked(p)
 	m.mu.Unlock()
 	if r != nil {
 		_ = r.Close()
@@ -417,23 +448,144 @@ func ProtectedDir(dir string, extra ...string) bool {
 	return false
 }
 
-func (m *Manager) project(id string) (*projState, error) {
-	for _, p := range m.projects() {
-		if p.ID == id {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if ps := m.projs[id]; ps != nil && ps.Dir == p.Dir {
-				return ps, nil
+// project is the project's legacy-role VM.
+func (m *Manager) project(id string) (*projState, error) { return m.projectFor(id, "") }
+
+// roleSel is what an operation's "role" argument names. id is "" for the project's legacy role.
+type roleSel struct {
+	id       string
+	name     string
+	archived bool
+}
+
+// selectRole resolves the role argument of an operation: missing (or the project's id, the legacy role's) is the
+// legacy role; otherwise the role must exist and belong to the project.
+func (m *Manager) selectRole(project, role string) (roleSel, error) {
+	if role == "" || role == project {
+		return roleSel{name: "default"}, nil
+	}
+	if !roles.IsID(role) {
+		return roleSel{}, errors.New("bad role id")
+	}
+	if m.roles == nil {
+		return roleSel{}, errors.New("roles aren't available here")
+	}
+	r, err := m.roles.Get(role, 0)
+	if err != nil {
+		return roleSel{}, fmt.Errorf("unknown role %q", clip(role, 64))
+	}
+	if r.Project != project {
+		return roleSel{}, fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(project, 64))
+	}
+	m.nameMu.Lock()
+	if m.names == nil {
+		m.names = map[string]string{}
+	}
+	m.names[role] = r.Name
+	m.nameMu.Unlock()
+	return roleSel{id: role, name: r.Name, archived: r.Status == "archived"}, nil
+}
+
+// roleName is a role's name for messages and rows ("default" for the legacy role; the id when it can't be read).
+func (m *Manager) roleName(project, id string) string {
+	if id == "" || id == project {
+		return "default"
+	}
+	m.nameMu.Lock()
+	n, ok := m.names[id]
+	m.nameMu.Unlock()
+	if ok {
+		return n
+	}
+	if m.roles != nil {
+		if r, err := m.roles.Get(id, 0); err == nil {
+			m.nameMu.Lock()
+			if m.names == nil {
+				m.names = map[string]string{}
 			}
-			if m.opt.NewVM == nil {
-				return nil, errors.New("no VM is configured")
-			}
-			ps := &projState{Project: p, vm: m.opt.NewVM(p)}
-			m.projs[id] = ps
-			return ps, nil
+			m.names[id] = r.Name
+			m.nameMu.Unlock()
+			return r.Name
 		}
 	}
+	return id
+}
+
+// projectFor is the VM state of one role of a project (role "" or the project's id: the legacy role), made on
+// first use. Role names are not trusted by the VM layer beyond the container's name.
+func (m *Manager) projectFor(id, role string) (*projState, error) {
+	sel, err := m.selectRole(id, role)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range m.projects() {
+		if p.ID != id {
+			continue
+		}
+		key := id
+		if sel.id != "" {
+			if m.opt.Dir == "" {
+				return nil, errors.New("roles aren't available here")
+			}
+			key = sel.id
+			base := filepath.Join(m.opt.Dir, RolesDir, sel.id)
+			p.Role, p.RoleName = sel.id, sel.name
+			p.RoleDir, p.ClaudeDir = filepath.Join(base, "content"), filepath.Join(base, "claude")
+		}
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if ps := m.projs[key]; ps != nil && ps.Dir == p.Dir {
+			return ps, nil
+		}
+		if m.opt.NewVM == nil {
+			return nil, errors.New("no VM is configured")
+		}
+		ps := &projState{Project: p, vm: m.opt.NewVM(p)}
+		m.projs[key] = ps
+		return ps, nil
+	}
 	return nil, fmt.Errorf("unknown project %q", clip(id, 64))
+}
+
+// unpinLocked releases the role versions this VM held.
+func (m *Manager) unpinLocked(p *projState) {
+	for _, release := range p.pins {
+		release()
+	}
+	p.pins = nil
+}
+
+// pinRole reads the role and marks its current version as in use by the VM about to start (the runner reads
+// `current` at each query start, so every version put while the VM runs is pinned too, until it stops). The caller
+// releases the pin if the start fails, else hands it to the VM (m.mu must not be held).
+func (m *Manager) pinRole(p *projState) (*roles.Role, func(), error) {
+	if m.roles == nil {
+		return nil, nil, errors.New("roles aren't available here")
+	}
+	r, err := m.roles.Get(p.Role, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("role %q: %w", clip(p.Role, 64), err)
+	}
+	if r.Project != p.ID {
+		return nil, nil, fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(p.ID, 64))
+	}
+	return r, m.roles.Pin(p.Role, r.Version), nil
+}
+
+// rolePut is called after a role.put went through: the name may have changed and a running VM may read the new version.
+func (m *Manager) rolePut(res any) {
+	pr, ok := res.(*roles.PutResult)
+	if !ok || pr == nil {
+		return
+	}
+	m.nameMu.Lock()
+	delete(m.names, pr.ID)
+	m.nameMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p := m.projs[pr.ID]; p != nil && p.runner != nil {
+		p.pins = append(p.pins, m.roles.Pin(pr.ID, pr.Version))
+	}
 }
 
 // ensure starts the project's VM and runner if they aren't running.
@@ -451,11 +603,33 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		select {
 		case <-r.Done():
 		default:
+			m.touch(p)
 			return r, nil
 		}
 	}
-	if err := prepareWorkDir(p.Dir); err != nil {
-		return nil, err
+	var roleHosts []string
+	var unpin func()
+	if p.Role == "" {
+		if err := prepareWorkDir(p.Dir); err != nil {
+			return nil, err
+		}
+	} else {
+		// An isolated role writes nothing under /work/.rubi: its config directory is outside the project.
+		for _, d := range []string{p.RoleDir, p.ClaudeDir} {
+			if st, err := os.Stat(d); err != nil || !st.IsDir() {
+				return nil, fmt.Errorf("role %s has no directory %s to mount", clip(p.RoleName, 40), filepath.Base(d))
+			}
+		}
+		role, release, err := m.pinRole(p)
+		if err != nil {
+			return nil, err
+		}
+		roleHosts, unpin = role.Hosts, release
+		defer func() {
+			if unpin != nil {
+				unpin() // the start failed
+			}
+		}()
 	}
 	// A VM start can take minutes (the image); it must not die with the request that asked for it.
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
@@ -468,7 +642,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	hosts := AllowList(m.opt.GitHosts(), m.extraHosts(p))
+	hosts := AllowList(m.opt.GitHosts(), m.extraHosts(p, roleHosts))
 	// The proxy starts once the VM is up: the Mac's address on a host-only network (its gateway) exists only
 	// while a VM is attached to it.
 	var px *Proxy
@@ -523,6 +697,9 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		return penv, nil
 	}
 	env := map[string]string{"RUBI_RUN_TOKEN": token, "GIT_TERMINAL_PROMPT": "0"}
+	if p.Role != "" {
+		env["RUBI_ROLE_DIR"], env["RUBI_CLAUDE_DIR"] = RoleMountDir, RoleClaudeDir
+	}
 	conn, err := p.vm.Start(sctx, StartSpec{Project: p.Project, Env: env, Prepare: prepare})
 	if err != nil {
 		if px != nil {
@@ -542,7 +719,15 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	}
 	m.mu.Lock()
 	p.runner, p.proxy, p.gateway, p.hosts, p.proxyEnv = r, px, gw, hosts, penv
+	p.lastUse = m.opt.Now()
+	if unpin != nil {
+		p.pins = append(p.pins, unpin)
+		unpin = nil
+	}
 	m.mu.Unlock()
+	if p.Role != "" {
+		m.ensureLoop() // the loop stops an idle role VM
+	}
 	go func() {
 		<-r.Done()
 		m.runnerGone(p, r)
@@ -559,8 +744,9 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 	p.runner = nil
 	px, gw := p.proxy, p.gateway
 	p.proxy, p.gateway = nil, nil
-	if m.dropProjectSlotsLocked(p.ID) {
-		m.pushLocked(Item{Type: "event", Project: p.ID, Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"runner ended"}`)})
+	m.unpinLocked(p)
+	if m.dropRoleSlotsLocked(p.key()) {
+		m.pushLocked(Item{Type: "event", Project: p.ID, Role: p.key(), Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"runner ended"}`)})
 	}
 	m.mu.Unlock()
 	if px != nil {
@@ -610,7 +796,7 @@ func deny(msg string) AskResult { return AskResult{Behavior: "deny", Message: ms
 // waitDecision queues the ask item and waits; anything but a decision from the plugin is a denial.
 func (m *Manager) waitDecision(ctx context.Context, project string, it Item) AskResult {
 	m.mu.Lock()
-	if st := m.self; st != nil && st.project == project {
+	if st := m.self; st != nil && st.project == project { // the whole project, whatever the role
 		// A self-test (setup.go) denies everything itself: the question never reaches the plugin, so no
 		// decision of the plugin's can answer it.
 		if it.Type == "perm.ask" {
@@ -631,7 +817,11 @@ func (m *Manager) waitDecision(ctx context.Context, project string, it Item) Ask
 	it.AskID = id
 	exp := m.opt.Now().Add(m.opt.Wait).UTC()
 	it.ExpiresAt = &exp
-	pa := &pendingAsk{item: it, project: project, answer: make(chan AskResult, 1)}
+	rk := it.Role
+	if rk == "" {
+		rk = project
+	}
+	pa := &pendingAsk{item: it, project: project, role: rk, answer: make(chan AskResult, 1)}
 	m.asks[id] = pa
 	m.pushLocked(it)
 	m.mu.Unlock()
@@ -772,7 +962,7 @@ type handler struct {
 
 func (h *handler) Cancel(askID string) {
 	h.m.mu.Lock()
-	cancel := h.m.cancels[h.p.ID+"|"+askID]
+	cancel := h.m.cancels[h.p.key()+"|"+askID]
 	h.m.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -782,7 +972,7 @@ func (h *handler) Cancel(askID string) {
 func (h *handler) Ask(ctx context.Context, a AskParams) AskResult {
 	// The runner gives a call up with perm.cancel {ask_id}: that ends the wait and drops the item.
 	ctx, cancel := context.WithCancel(ctx)
-	key := h.p.ID + "|" + a.AskID
+	key := h.p.key() + "|" + a.AskID
 	h.m.mu.Lock()
 	if h.m.cancels == nil {
 		h.m.cancels = map[string]context.CancelFunc{}
@@ -798,7 +988,7 @@ func (h *handler) Ask(ctx context.Context, a AskParams) AskResult {
 	if len(a.Input) > maxInput {
 		return deny("Rubi: the tool input is too large to review, so the call was denied.")
 	}
-	it := Item{Type: "perm.ask", Project: h.p.ID, SessionID: a.SessionID, AgentID: a.AgentID, AgentType: a.AgentType,
+	it := Item{Type: "perm.ask", Project: h.p.ID, Role: h.p.key(), SessionID: a.SessionID, AgentID: a.AgentID, AgentType: a.AgentType,
 		Tool: a.Tool, ToolUseID: a.ToolUseID, Via: a.Via, Input: RedactCredentials(a.Input), Cwd: a.Cwd, Mode: a.Mode}
 	return h.m.waitDecision(ctx, h.p.ID, it)
 }
@@ -836,7 +1026,7 @@ func (m *Manager) credential(ctx context.Context, p *projState, c CredParams) (C
 		return CredResult{}, errors.New("no git credential source is configured")
 	}
 	if c.Purpose == "push" {
-		it := Item{Type: "cred.ask", Project: p.ID, Host: host, Path: clip(strings.TrimSpace(kv["path"]), 200), Op: "push"}
+		it := Item{Type: "cred.ask", Project: p.ID, Role: p.key(), Host: host, Path: clip(strings.TrimSpace(kv["path"]), 200), Op: "push"}
 		if r := m.waitDecision(ctx, p.ID, it); r.Behavior != "allow" {
 			msg := r.Message
 			if msg == "" {
@@ -883,12 +1073,14 @@ func botName(bot string) string {
 // the project has its sessions already, the Bot has (its mode's limit), or the computer has. A start also
 // waits while another start of the project hasn't got its session id, so an event is never matched to the
 // wrong one.
-func (m *Manager) fullLocked(c UsageConfig, project, bot string, start bool) string {
+func (m *Manager) fullLocked(c UsageConfig, project, rk, bot string, start bool) string {
 	l := c.For(bot)
 	n, nb, pending := 0, 0, false
 	for _, s := range m.slots {
 		if s.project == project {
 			n++
+		}
+		if s.role == rk {
 			pending = pending || s.session == ""
 		}
 		if s.bot == bot {
@@ -911,9 +1103,9 @@ func (m *Manager) fullLocked(c UsageConfig, project, bot string, start bool) str
 }
 
 // exactLocked is the slot of a known session.
-func (m *Manager) exactLocked(project, session string) *slotState {
+func (m *Manager) exactLocked(rk, session string) *slotState {
 	for _, s := range m.slots {
-		if s.project == project && session != "" && s.session == session {
+		if s.role == rk && session != "" && s.session == session {
 			return s
 		}
 	}
@@ -923,13 +1115,13 @@ func (m *Manager) exactLocked(project, session string) *slotState {
 // ownerLocked is the slot an event of the session belongs to: the session's own, else the project's slot
 // that hasn't got its id yet (a start in flight), else, for an event without a session, the project's only one.
 func (m *Manager) ownerLocked(p *projState, session string) *slotState {
-	if s := m.exactLocked(p.ID, session); s != nil {
+	if s := m.exactLocked(p.key(), session); s != nil {
 		return s
 	}
 	var found *slotState
 	n := 0
 	for _, s := range m.slots {
-		if s.project != p.ID {
+		if s.role != p.key() {
 			continue
 		}
 		n++
@@ -947,11 +1139,11 @@ func (m *Manager) ownerLocked(p *projState, session string) *slotState {
 // holds a slot already runs (owner is its slot).
 func (m *Manager) reasonLocked(c UsageConfig, it QueueItem) (reason string, owner *slotState) {
 	if it.Op == "send" {
-		if s := m.exactLocked(it.Project, it.Session); s != nil {
+		if s := m.exactLocked(it.rk(), it.Session); s != nil {
 			return "", s
 		}
 	}
-	return m.fullLocked(c, it.Project, it.Bot, it.Op == "start"), nil
+	return m.fullLocked(c, it.Project, it.rk(), it.Bot, it.Op == "start"), nil
 }
 
 // runnableLocked says whether some queued item could be delivered now (a drain is then due).
@@ -971,14 +1163,24 @@ func (m *Manager) releaseLocked(s *slotState) {
 			break
 		}
 	}
+	if p := m.projs[s.role]; p != nil {
+		p.lastUse = m.opt.Now() // the idle clock of a role VM starts when its last session ends
+	}
 	m.wake()
 }
 
-// dropProjectSlotsLocked frees every slot of the project (its runner ended) and says whether there was one.
-func (m *Manager) dropProjectSlotsLocked(project string) bool {
+// touch notes that something used the VM now.
+func (m *Manager) touch(p *projState) {
+	m.mu.Lock()
+	p.lastUse = m.opt.Now()
+	m.mu.Unlock()
+}
+
+// dropRoleSlotsLocked frees every slot of the role (its runner ended) and says whether there was one.
+func (m *Manager) dropRoleSlotsLocked(rk string) bool {
 	keep := m.slots[:0:0]
 	for _, s := range m.slots {
-		if s.project != project {
+		if s.role != rk {
 			keep = append(keep, s)
 		}
 	}
@@ -1013,7 +1215,7 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if st := m.self; st != nil && st.project == p.ID {
+	if st := m.self; st != nil && st.project == p.ID && p.Role == "" {
 		st.event(ev, f.Result, f.IsError, f.Status) // the self-test's own events stay with it
 		return
 	}
@@ -1029,11 +1231,11 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 				// A session that runs without a slot (the runner resumed it, or Home restarted): it is booked, charged to
 				// the Bot that started it when Home remembers which, else to the user's own. It is booked even over a limit,
 				// and logged, so that it is visible and counted; the limits then hold back new work until it ends.
-				bot := m.sessionBot[p.ID+"|"+ev.SessionID]
-				if why := m.fullLocked(uc, p.ID, bot, false); why != "" {
+				bot := m.sessionBot[p.key()+"|"+ev.SessionID]
+				if why := m.fullLocked(uc, p.ID, p.key(), bot, false); why != "" {
 					log.Printf("agent: session %q of project %q is running over the limits (%s); counted against %s", clip(ev.SessionID, 64), clip(p.ID, 64), strings.TrimPrefix(why, "waiting: "), botName(bot))
 				}
-				m.slots = append(m.slots, &slotState{bot: bot, project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()})
+				m.slots = append(m.slots, &slotState{bot: bot, project: p.ID, role: p.key(), session: ev.SessionID, turn: true, last: m.opt.Now()})
 			} else {
 				s.turn = true
 				if s.session == "" {
@@ -1091,7 +1293,7 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 	if len(raw) > maxItemBytes {
 		raw, _ = json.Marshal(map[string]any{"kind": ev.Kind, "session_id": ev.SessionID, "truncated": true})
 	}
-	m.pushLocked(Item{Type: "event", Project: p.ID, SessionID: ev.SessionID, AgentID: ev.AgentID, Event: raw})
+	m.pushLocked(Item{Type: "event", Project: p.ID, Role: p.key(), SessionID: ev.SessionID, AgentID: ev.AgentID, Event: raw})
 }
 
 // maybeReleaseLocked frees the slot when no turn runs and no background subagent is left.
@@ -1121,7 +1323,7 @@ func (m *Manager) addUsageLocked(session string, in, out int64, cost float64) {
 // ---- submit, deliver, drain ----
 
 func (m *Manager) emitQueue(action string, it QueueItem, extra func(*Item)) {
-	n := Item{Type: "queue", Action: action, QueueID: it.ID, Project: it.Project, SessionID: it.Session, Op: it.Op}
+	n := Item{Type: "queue", Action: action, QueueID: it.ID, Project: it.Project, Role: it.rk(), SessionID: it.Session, Op: it.Op}
 	if extra != nil {
 		extra(&n)
 	}
@@ -1133,7 +1335,7 @@ func (m *Manager) emitQueue(action string, it QueueItem, extra func(*Item)) {
 // submit delivers a start or send now when a slot allows, otherwise queues it on disk. The result is
 // what the op returns.
 func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, error) {
-	p, err := m.project(it.Project)
+	p, err := m.projectFor(it.Project, it.Role)
 	if err != nil {
 		return nil, err
 	}
@@ -1183,13 +1385,18 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 
 // takeSlotLocked books a slot for a start or a send (the caller checked there is room).
 func (m *Manager) takeSlotLocked(it QueueItem) *slotState {
-	s := &slotState{bot: it.Bot, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+	s := &slotState{bot: it.Bot, project: it.Project, role: it.rk(), session: it.Session, turn: true, last: m.opt.Now()}
 	m.slots = append(m.slots, s)
 	return s
 }
 
 // deliver hands the item to the runner; slot is the slot a start booked (nil for a send to a running session).
 func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot *slotState) (map[string]any, error) {
+	if it.Op == "start" && p.Role != "" {
+		if sel, err := m.selectRole(p.ID, p.Role); err != nil || sel.archived {
+			return nil, archivedErr(p.RoleName, err)
+		}
+	}
 	r, err := m.ensure(ctx, p)
 	if err != nil {
 		return nil, err
@@ -1208,7 +1415,7 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 		if slot != nil && slot.session == "" {
 			slot.session = res.ID
 		}
-		m.rememberBotLocked(p.ID, res.ID, it.Bot, true)
+		m.rememberBotLocked(p.key(), res.ID, it.Bot, true)
 		m.mu.Unlock()
 		return map[string]any{"id": res.ID}, nil
 	default:
@@ -1219,7 +1426,7 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 			return nil, err
 		}
 		m.mu.Lock()
-		m.rememberBotLocked(p.ID, it.Session, it.Bot, false)
+		m.rememberBotLocked(p.key(), it.Session, it.Bot, false)
 		m.mu.Unlock()
 		return map[string]any{}, nil
 	}
@@ -1254,9 +1461,66 @@ func (m *Manager) loop() {
 		case <-m.kick:
 		case <-tick.C:
 			m.checkSlot()
+			m.sweepIdle()
 		case <-m.stop:
 			return
 		}
+	}
+}
+
+// DefaultRoleVMIdle is how long a role's VM may run with no session and nothing queued (agent_role_vm_idle_minutes).
+const DefaultRoleVMIdle = 15 * time.Minute
+
+func (m *Manager) roleIdle() time.Duration {
+	if m.opt.RoleVMIdle != nil {
+		if d := m.opt.RoleVMIdle(); d > 0 {
+			return d
+		}
+	}
+	return DefaultRoleVMIdle
+}
+
+// roleBusyLocked says whether the role has a slot or a queued item.
+func (m *Manager) roleBusyLocked(rk string) bool {
+	for _, s := range m.slots {
+		if s.role == rk {
+			return true
+		}
+	}
+	for _, it := range m.q.list() {
+		if it.rk() == rk {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) idleLocked(p *projState, idle time.Duration) bool {
+	return p.Role != "" && p.runner != nil && m.opt.Now().Sub(p.lastUse) >= idle && !m.roleBusyLocked(p.key()) && !m.closed
+}
+
+// sweepIdle stops the VM of every role that has had no slot and no queued item for the idle time. The legacy
+// role's VM stays up. A VM stopped here starts again on the next use.
+func (m *Manager) sweepIdle() {
+	idle := m.roleIdle() // read before the lock: it may read the configuration file
+	m.mu.Lock()
+	var cands []*projState
+	for _, p := range m.projs {
+		if m.idleLocked(p, idle) {
+			cands = append(cands, p)
+		}
+	}
+	m.mu.Unlock()
+	for _, p := range cands {
+		p.startMu.Lock() // no start in flight; a use after this waits for the VM to be gone, then starts it again
+		m.mu.Lock()
+		ok := m.idleLocked(p, idle)
+		m.mu.Unlock()
+		if ok {
+			log.Printf("agent: the VM of role %q (project %q) was idle for %v; stopping it", clip(p.RoleName, 40), clip(p.ID, 64), idle)
+			m.shutdown(p)
+		}
+		p.startMu.Unlock()
 	}
 }
 
@@ -1299,7 +1563,7 @@ func (m *Manager) drain() {
 		m.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 		var err error
-		p, perr := m.project(it.Project)
+		p, perr := m.projectFor(it.Project, it.Role)
 		if perr != nil {
 			err = perr
 		} else {
@@ -1352,10 +1616,15 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 			}
 			return nil, errors.New("roles aren't available here")
 		}
-		return m.roles.Handle(strings.TrimPrefix(op, "claude-agent."), args)
+		res, err := m.roles.Handle(strings.TrimPrefix(op, "claude-agent."), args)
+		if err == nil && strings.TrimPrefix(op, "claude-agent.") == "role.put" {
+			m.rolePut(res)
+		}
+		return res, err
 	}
 	var in struct {
 		Project     string          `json:"project"`
+		Role        string          `json:"role"` // a role id; missing = the project's legacy role
 		ID          string          `json:"id"`
 		Limit       int             `json:"limit"`
 		Prompt      string          `json:"prompt"`
@@ -1419,12 +1688,12 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		m.wake() // a raised limit may let the queue go
 		return m.opStatus(ctx, false), nil
 	case "sessions":
-		return m.forward(ctx, in.Project, "session.list", map[string]any{})
+		return m.forward(ctx, in.Project, in.Role, "session.list", map[string]any{})
 	case "messages":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		return m.forward(ctx, in.Project, "session.messages", map[string]any{"id": in.ID, "limit": min(max(in.Limit, 0), 500)})
+		return m.forward(ctx, in.Project, in.Role, "session.messages", map[string]any{"id": in.ID, "limit": min(max(in.Limit, 0), 500)})
 	case "start":
 		if strings.TrimSpace(in.Prompt) == "" {
 			return nil, errors.New("the prompt is empty")
@@ -1436,8 +1705,15 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if !okBot(in.Bot) {
 			return nil, errors.New("bad bot id")
 		}
+		sel, err := m.selectRole(in.Project, in.Role)
+		if err != nil {
+			return nil, err
+		}
+		if sel.archived {
+			return nil, archivedErr(sel.name, nil)
+		}
 		m.seeBot(in.Bot)
-		return m.submit(ctx, QueueItem{Op: "start", Bot: in.Bot, Project: in.Project, Text: in.Prompt, Name: in.Name, From: in.From, Mode: mode})
+		return m.submit(ctx, QueueItem{Op: "start", Bot: in.Bot, Project: in.Project, Role: sel.id, Text: in.Prompt, Name: in.Name, From: in.From, Mode: mode})
 	case "send":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
@@ -1448,31 +1724,35 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if !okBot(in.Bot) {
 			return nil, errors.New("bad bot id")
 		}
+		sel, err := m.selectRole(in.Project, in.Role)
+		if err != nil {
+			return nil, err
+		}
 		m.seeBot(in.Bot)
-		return m.submit(ctx, QueueItem{Op: "send", Bot: in.Bot, Project: in.Project, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
+		return m.submit(ctx, QueueItem{Op: "send", Bot: in.Bot, Project: in.Project, Role: sel.id, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
 	case "rename":
 		if !okID(in.ID) || strings.TrimSpace(in.Name) == "" {
 			return nil, errors.New("a session id and a name are needed")
 		}
-		return m.forward(ctx, in.Project, "session.rename", map[string]any{"id": in.ID, "name": in.Name})
+		return m.forward(ctx, in.Project, in.Role, "session.rename", map[string]any{"id": in.ID, "name": in.Name})
 	case "fork":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		return m.forward(ctx, in.Project, "session.fork", map[string]any{"id": in.ID, "name": in.Name})
+		return m.forward(ctx, in.Project, in.Role, "session.fork", map[string]any{"id": in.ID, "name": in.Name})
 	case "interrupt":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		return m.forward(ctx, in.Project, "session.interrupt", map[string]any{"id": in.ID})
+		return m.forward(ctx, in.Project, in.Role, "session.interrupt", map[string]any{"id": in.ID})
 	case "close":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		res, err := m.forward(ctx, in.Project, "session.close", map[string]any{"id": in.ID})
+		res, err := m.forward(ctx, in.Project, in.Role, "session.close", map[string]any{"id": in.ID})
 		if err == nil {
 			m.mu.Lock()
-			if sl := m.exactLocked(in.Project, in.ID); sl != nil {
+			if sl := m.exactLocked(m.roleKey(in.Project, in.Role), in.ID); sl != nil {
 				m.releaseLocked(sl)
 			}
 			m.mu.Unlock()
@@ -1483,7 +1763,7 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if err != nil || !okID(in.ID) || in.Mode == "" {
 			return nil, errors.New("a session id and a valid mode are needed")
 		}
-		return m.forward(ctx, in.Project, "session.mode", map[string]any{"id": in.ID, "mode": mode})
+		return m.forward(ctx, in.Project, in.Role, "session.mode", map[string]any{"id": in.ID, "mode": mode})
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
 }
@@ -1501,8 +1781,23 @@ func (m *Manager) checkMode(s string) (string, error) {
 	return s, nil
 }
 
-func (m *Manager) forward(ctx context.Context, project, method string, params any) (any, error) {
-	p, err := m.project(project)
+// roleKey is the key of the slots of the role an operation names (a bad role names no slot).
+func (m *Manager) roleKey(project, role string) string {
+	if sel, err := m.selectRole(project, role); err == nil && sel.id != "" {
+		return sel.id
+	}
+	return project
+}
+
+func archivedErr(name string, err error) error {
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("role %s is archived; it can't start sessions", clip(name, 40))
+}
+
+func (m *Manager) forward(ctx context.Context, project, role, method string, params any) (any, error) {
+	p, err := m.projectFor(project, role)
 	if err != nil {
 		return nil, err
 	}
@@ -1526,33 +1821,68 @@ func (m *Manager) opProjects() any {
 	type row struct {
 		ID       string `json:"id"`
 		Dir      string `json:"dir"`
+		Role     string `json:"role"`      // the role's id (the legacy role's is the project id)
+		RoleName string `json:"role_name"` // "default" for the legacy role
 		VMState  State  `json:"vm_state"`
 		SlotBusy bool   `json:"slot_busy"`
 		Queue    int    `json:"queue"`
 		Running  int    `json:"sessions_running"`
 	}
 	queued := map[string]int{}
+	qroles := map[string]map[string]bool{} // project -> role ids with something queued
 	for _, it := range m.q.list() {
-		queued[it.Project]++
+		queued[it.rk()]++
+		if it.Role != "" {
+			if qroles[it.Project] == nil {
+				qroles[it.Project] = map[string]bool{}
+			}
+			qroles[it.Project][it.Role] = true
+		}
 	}
 	per := m.usageNow().For("").PerProject // once, outside the lock
 	rows := []row{}
 	for _, p := range m.projects() {
-		r := row{ID: p.ID, Dir: p.Dir, VMState: StateStopped, Queue: queued[p.ID]}
+		// One row for the legacy role, then one for each isolated role that has a VM, a session or a queued item.
+		keys := []string{p.ID}
 		m.mu.Lock()
-		if ps := m.projs[p.ID]; ps != nil && ps.Dir == p.Dir && ps.vm != nil {
-			r.VMState = ps.vm.State()
-		}
-		for _, s := range m.slots {
-			if s.project == p.ID {
-				r.Running++
+		extra := map[string]bool{}
+		for k, ps := range m.projs {
+			if ps.ID == p.ID && ps.Role != "" && ps.Dir == p.Dir {
+				extra[k] = true
 			}
 		}
-		r.SlotBusy = r.Running >= per // the project's slots are full
+		for _, s := range m.slots {
+			if s.project == p.ID && s.role != p.ID {
+				extra[s.role] = true
+			}
+		}
 		m.mu.Unlock()
-		rows = append(rows, r)
+		for id := range qroles[p.ID] {
+			extra[id] = true
+		}
+		var ids []string
+		for id := range extra {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return m.roleName(p.ID, ids[i]) < m.roleName(p.ID, ids[j]) })
+		keys = append(keys, ids...)
+		for _, k := range keys {
+			r := row{ID: p.ID, Dir: p.Dir, Role: k, RoleName: m.roleName(p.ID, k), VMState: StateStopped, Queue: queued[k]}
+			m.mu.Lock()
+			if ps := m.projs[k]; ps != nil && ps.Dir == p.Dir && ps.vm != nil {
+				r.VMState = ps.vm.State()
+			}
+			for _, s := range m.slots {
+				if s.role == k {
+					r.Running++
+				}
+			}
+			r.SlotBusy = r.Running >= per // the role's slots are full
+			m.mu.Unlock()
+			rows = append(rows, r)
+		}
 	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
 	return map[string]any{"projects": rows}
 }
 
@@ -1564,7 +1894,7 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 	m.mu.Lock()
 	slots := []map[string]any{}
 	for _, s := range m.slots {
-		slots = append(slots, map[string]any{"project": s.project, "session": s.session, "busy": true, "background": len(s.bg), "subagents": s.sub, "bot": s.bot})
+		slots = append(slots, map[string]any{"project": s.project, "role": s.role, "role_name": m.roleName(s.project, s.role), "session": s.session, "busy": true, "background": len(s.bg), "subagents": s.sub, "bot": s.bot})
 	}
 	slot := map[string]any{"busy": false, "project": "", "session": "", "background": 0} // for older plugins: the first
 	if len(slots) > 0 {
@@ -1586,7 +1916,7 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 	m.mu.Unlock()
 	queue := []map[string]any{}
 	for i, it := range waiting {
-		queue = append(queue, map[string]any{"id": it.ID, "op": it.Op, "project": it.Project, "session": it.Session,
+		queue = append(queue, map[string]any{"id": it.ID, "op": it.Op, "project": it.Project, "role": it.rk(), "role_name": m.roleName(it.Project, it.rk()), "session": it.Session,
 			"from": it.From, "at": it.At, "position": i + 1, "reason": reasons[it.ID]})
 	}
 	if len(login) == 0 {
@@ -1660,7 +1990,7 @@ type netFlight struct {
 // answers with decide. An allow is recorded for the project (agent-net.json) and the proxy adds it. One
 // question per host at a time; a denial is remembered for a few minutes.
 func (m *Manager) askHost(ctx context.Context, p *projState, host string) bool {
-	key := p.ID + "|" + host
+	key := p.key() + "|" + host
 	m.mu.Lock()
 	if t, ok := m.netDenied[key]; ok && m.opt.Now().Sub(t) < netDenyFor {
 		m.mu.Unlock()
@@ -1682,8 +2012,8 @@ func (m *Manager) askHost(ctx context.Context, p *projState, host string) bool {
 	}
 	m.netFlights[key] = f
 	m.mu.Unlock()
-	r := m.waitDecision(ctx, p.ID, Item{Type: "net.ask", Project: p.ID, Host: host, Op: "connect"})
-	f.ok = r.Behavior == "allow" && m.net.add(p.Dir, host)
+	r := m.waitDecision(ctx, p.ID, Item{Type: "net.ask", Project: p.ID, Role: p.key(), Host: host, Op: "connect"})
+	f.ok = r.Behavior == "allow" && m.net.add(p.netKey(), host)
 	m.mu.Lock()
 	delete(m.netFlights, key)
 	if !f.ok && len(m.netDenied) < 1024 {
@@ -1715,12 +2045,12 @@ func (m *Manager) checkSlot() {
 			continue
 		}
 		var r *Runner
-		if p := m.projs[s.project]; p != nil {
+		if p := m.projs[s.role]; p != nil {
 			r = p.runner
 		}
 		out = append(out, stale{s.project, s.session, r})
 		m.releaseLocked(s)
-		m.pushLocked(Item{Type: "event", Project: s.project, SessionID: s.session,
+		m.pushLocked(Item{Type: "event", Project: s.project, Role: s.role, SessionID: s.session,
 			Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"no activity; the slot was released"}`)})
 	}
 	m.mu.Unlock()
@@ -1738,7 +2068,7 @@ func (m *Manager) checkSlot() {
 // names no session counts for all of its slots).
 func (m *Manager) askOpenLocked(s *slotState) bool {
 	for _, a := range m.asks {
-		if a.project == s.project && (a.item.SessionID == "" || a.item.SessionID == s.session) {
+		if a.role == s.role && (a.item.SessionID == "" || a.item.SessionID == s.session) {
 			return true
 		}
 	}
