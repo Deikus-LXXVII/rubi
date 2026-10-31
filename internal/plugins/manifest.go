@@ -112,7 +112,7 @@ func Check(m *Manifest) error {
 		}
 	}
 	for _, h := range m.Home {
-		if h != "hue" && h != "shortcuts" && h != "claude" && h != "claude-sessions" && h != "claude-start" && h != "claude-agent" {
+		if h != "hue" && h != "shortcuts" && h != "claude" && h != "claude-sessions" && h != "claude-start" && h != "claude-agent" && h != "agent-setup" {
 			return fmt.Errorf("unknown Rubi Home capability %q", h)
 		}
 	}

@@ -74,7 +74,9 @@ type Manifest struct {
 	// "claude-start" (claude-start.create: starts a new Claude Code session with a first message; in sessions that
 	// skip permission prompts, Claude can run any command there) and
 	// "claude-agent" (the claude-agent.* operations: Claude agents (Agent SDK) in a VM on that computer: projects,
-	// sessions, start, send, next, decide, status; it decides each tool call and git push). It may only call those operations.
+	// sessions, start, send, next, decide, status; it decides each tool call and git push) and
+	// "agent-setup" (the agent-setup.* operations: the first-time setup of the agent path on that computer: status,
+	// run a step, sign-in link and code, project folders). It may only call those operations.
 	// Shown to the user before install.
 	Home []string `json:"home,omitempty"`
 }
