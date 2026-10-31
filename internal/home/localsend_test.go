@@ -69,6 +69,10 @@ func TestClaudeSendWakesIdleSessionAndReplyComesBack(t *testing.T) {
 	if strings.Contains(r.stderr, "sister") {
 		t.Fatalf("a local message is framed as a Bot's: %s", r.stderr)
 	}
+	// The waiter exits as soon as it has written "ok"; the helper counts the wake delivered a moment later
+	// (commitWake notes the sender and marks the session busy, last). A Stop before that finds nothing
+	// delivered and its answer goes to nobody, so wait for the session to be in its turn.
+	waitFor(t, "the wake to be committed", func() bool { return c.reg.stateOf("s1") == "busy" })
 	c.Hook(hook("Stop", "s1", map[string]any{"last_assistant_message": "All 42 pass."}))
 	res := gotSend(t, sent)
 	if res.code != 0 || strings.TrimSpace(res.out) != "All 42 pass." || !strings.Contains(res.err, "queued cm_") {
