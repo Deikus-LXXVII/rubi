@@ -1,0 +1,214 @@
+#!/usr/bin/env node
+// rubi-netpipe: the only way out of a VM that has no network (docs/design/agent-roles.md section 10, option D).
+// It listens on 127.0.0.1:3128 (Rubi Home's CONNECT proxy) and 127.0.0.1:3129 (the auth gateway) inside the VM and
+// carries every TCP connection as a stream, multiplexed over its own stdin and stdout, which Rubi Home attached with
+// `container exec -i`. Home hands each stream to the proxy or the gateway; nothing on the Mac listens for the VM.
+// Frames: 1 byte type, 4 bytes stream id, 4 bytes length (big endian), payload, as in internal/home/agent/netpipe:
+//   HELLO(1) payload [version], sent once when both ports are listening; OPEN(2) payload [service], 1 proxy, 2 gateway;
+//   DATA(3); CLOSE(4) no more data from the sender (half close); RESET(5) the stream is dead; ACK(6) payload u32, bytes
+//   the reader has handed on. Each direction of a stream starts with WINDOW bytes of credit; DATA spends it, ACK gives
+//   it back, so a slow reader stops its sender. Only this side opens streams. A frame that doesn't parse ends the
+//   program (exit 2); stdin closing ends it (exit 0). stdout is the channel: this program never prints to it otherwise.
+"use strict";
+// getBuiltinModule works whether node reads this extensionless file as CommonJS (the image) or as ESM (a
+// package.json with "type": "module" above it, as in a checkout).
+const net = process.getBuiltinModule("node:net");
+
+const HELLO = 1, OPEN = 2, DATA = 3, CLOSE = 4, RESET = 5, ACK = 6;
+const VERSION = 1, HEADER = 9, MAX_PAYLOAD = 32768, WINDOW = 262144, MAX_STREAMS = 64;
+const SVC_PROXY = 1, SVC_GATEWAY = 2;
+
+function parseArgs(argv) {
+  const o = { host: "127.0.0.1", proxy: 3128, gateway: 3129 };
+  for (let i = 0; i < argv.length; i += 2) {
+    const k = argv[i], v = argv[i + 1];
+    const n = Number(v);
+    if (k === "--proxy-port" && Number.isInteger(n) && n >= 0 && n < 65536) o.proxy = n;
+    else if (k === "--gateway-port" && Number.isInteger(n) && n >= 0 && n < 65536) o.gateway = n;
+    else if (k === "--host" && v === "127.0.0.1") o.host = v;
+    else {
+      process.stderr.write("usage: rubi-netpipe [--proxy-port N] [--gateway-port N]\n");
+      process.exit(2);
+    }
+  }
+  return o;
+}
+
+const log = (msg) => process.stderr.write("rubi-netpipe: " + msg + "\n");
+
+function frame(type, id, payload) {
+  const p = payload === undefined ? Buffer.alloc(0) : payload;
+  const h = Buffer.alloc(HEADER);
+  h[0] = type;
+  h.writeUInt32BE(id, 1);
+  h.writeUInt32BE(p.length, 5);
+  return p.length ? Buffer.concat([h, p]) : h;
+}
+
+function main() {
+  const opt = parseArgs(process.argv.slice(2));
+  const streams = new Map();
+  let nextId = 0;
+  let ending = false;
+
+  const die = (code, msg) => {
+    if (ending) return;
+    ending = true;
+    if (msg) log(msg);
+    for (const st of streams.values()) st.sock.destroy();
+    streams.clear();
+    process.exitCode = code;
+    // let the stderr line out, then go even if a server or socket still holds the loop
+    process.stderr.write("", () => process.exit(code));
+  };
+
+  const send = (type, id, payload) => {
+    if (ending) return;
+    process.stdout.write(frame(type, id, payload));
+  };
+  process.stdout.on("error", () => die(1));
+
+  const finished = (st) => {
+    if (st.wfin && st.rfin) streams.delete(st.id);
+  };
+
+  // Local socket -> channel, within the credit.
+  const pump = (st) => {
+    while (st.q.length > 0 && st.credit > 0) {
+      const b = st.q[0];
+      const n = Math.min(b.length, st.credit, MAX_PAYLOAD);
+      send(DATA, st.id, b.subarray(0, n));
+      st.credit -= n;
+      if (n === b.length) st.q.shift();
+      else st.q[0] = b.subarray(n);
+    }
+    if (st.q.length === 0) {
+      if (st.sockEnded && !st.wfin) {
+        st.wfin = true;
+        send(CLOSE, st.id);
+        finished(st);
+      } else if (st.paused && !st.sockEnded) {
+        st.paused = false;
+        st.sock.resume();
+      }
+    } else if (!st.paused) {
+      st.paused = true;
+      st.sock.pause();
+    }
+  };
+
+  const reset = (st) => {
+    if (streams.get(st.id) === st) {
+      streams.delete(st.id);
+      send(RESET, st.id);
+    }
+    st.sock.destroy();
+  };
+
+  const onConnection = (svc) => (sock) => {
+    if (ending) return sock.destroy();
+    if (streams.size >= MAX_STREAMS) return sock.destroy();
+    const id = ++nextId;
+    sock.setNoDelay(true);
+    const st = { id, sock, credit: WINDOW, q: [], paused: false, sockEnded: false, wfin: false, rfin: false, outstanding: 0, consumed: 0 };
+    streams.set(id, st);
+    send(OPEN, id, Buffer.from([svc]));
+    sock.on("data", (d) => {
+      st.q.push(d);
+      pump(st);
+    });
+    sock.on("end", () => {
+      st.sockEnded = true;
+      pump(st);
+    });
+    sock.on("error", () => sock.destroy());
+    sock.on("close", () => {
+      // a socket that went away before both directions had finished: tell Home
+      if (streams.get(id) === st) {
+        streams.delete(id);
+        send(RESET, id);
+      }
+    });
+  };
+
+  const handle = (type, id, p) => {
+    switch (type) {
+      case HELLO:
+      case OPEN:
+        // Only this side opens streams and Home sends no HELLO; refuse politely rather than guess.
+        if (type === OPEN && id !== 0) send(RESET, id);
+        return true;
+      case DATA: case CLOSE: case RESET: case ACK:
+        break;
+      default:
+        return false;
+    }
+    if (id === 0 || (type === ACK && p.length !== 4) || ((type === CLOSE || type === RESET) && p.length !== 0)) return false;
+    const st = streams.get(id);
+    if (!st) return true; // closed meanwhile
+    if (type === DATA) {
+      // Home's credit is WINDOW minus what it has sent and we have not acknowledged
+      st.outstanding += p.length;
+      if (st.rfin || st.outstanding > WINDOW) {
+        reset(st);
+        return true;
+      }
+      st.sock.write(p, () => {
+        st.consumed += p.length;
+        if (st.consumed >= WINDOW / 4 && !ending) {
+          const n = Buffer.alloc(4);
+          n.writeUInt32BE(st.consumed, 0);
+          st.outstanding -= st.consumed;
+          st.consumed = 0;
+          if (streams.get(id) === st) send(ACK, id, n);
+        }
+      });
+    } else if (type === CLOSE) {
+      st.rfin = true;
+      st.sock.end();
+      finished(st);
+    } else if (type === RESET) {
+      streams.delete(id);
+      st.sock.destroy();
+    } else {
+      const n = p.readUInt32BE(0);
+      if (n === 0 || st.credit + n > WINDOW) {
+        reset(st);
+        return true;
+      }
+      st.credit += n;
+      pump(st);
+    }
+    return true;
+  };
+
+  // Channel -> streams.
+  let chunks = [];
+  process.stdin.on("data", (d) => {
+    chunks.push(d);
+    let buf = chunks.length === 1 ? chunks[0] : Buffer.concat(chunks);
+    while (buf.length >= HEADER) {
+      const len = buf.readUInt32BE(5);
+      if (len > MAX_PAYLOAD) return die(2, "malformed frame: length " + len);
+      if (buf.length < HEADER + len) break;
+      const ok = handle(buf[0], buf.readUInt32BE(1), buf.subarray(HEADER, HEADER + len));
+      if (!ok) return die(2, "malformed frame: type " + buf[0]);
+      buf = buf.subarray(HEADER + len);
+    }
+    chunks = buf.length ? [buf] : [];
+  });
+  process.stdin.on("end", () => die(0));
+  process.stdin.on("error", () => die(1));
+
+  // Listeners; HELLO says they are up.
+  let up = 0;
+  for (const [port, svc] of [[opt.proxy, SVC_PROXY], [opt.gateway, SVC_GATEWAY]]) {
+    const srv = net.createServer({ allowHalfOpen: true }, onConnection(svc));
+    srv.on("error", (e) => die(1, "can't listen on " + opt.host + ":" + port + ": " + e.code));
+    srv.listen(port, opt.host, () => {
+      if (++up === 2) send(HELLO, 0, Buffer.from([VERSION]));
+    });
+  }
+}
+
+main();
