@@ -197,7 +197,7 @@ Reasons:
 
 ## 3. VM per role
 
-One VM per active role (container `rubi-agent-<role-slug>-<hash(dir|role)>`). Reasons:
+One VM per active role (container `rubi-agent-<role-id>-<64 bits of hash(dir|role)>`; the name never follows a rename, and a start also removes containers of the older naming). Reasons:
 - The proxy allow-list (`hosts`) and SSH grants are per role. One VM per project would let role A's Bash read role B's
   proxy credential from `/proc` (same user in the VM).
 - Mounts are per role: only its own content and config dir.
@@ -211,6 +211,20 @@ Mounts of a role VM (the legacy role keeps today's):
 | `/rubi-role` | `<helper>/agent-roles/<id>/content/` | ro | `current -> v<n>`; each `v<n>/` holds `role.json` and `plugin/` (`.claude-plugin/plugin.json` named `role`, `skills/<name>/SKILL.md`, `agents/<name>.md`) |
 | `/rubi-claude` | `<helper>/agent-roles/<id>/claude/` | rw | `CLAUDE_CONFIG_DIR`: sessions, `.claude.json`, backups. No credentials (auth gateway). Nothing in it is loaded (#5). |
 
+- **The project is shielded from a role.** Nested binds on top of the read-write `/work` work with container 1.6.1
+  (checked live): `/work/.rubi` is covered by an empty read-only directory (`<helper>/agent-role-empty`, so a role never
+  sees or rewrites the legacy role's state) and the project's own `.claude` is bound read-only when it is a plain
+  directory (a symlink or a missing one is not bound: the tool would create the mount point in the project). A single
+  file can't be bound (the tool refuses a file as source, and a directory over a file), so **`/work/CLAUDE.md` stays
+  writable by a role, as does a `.claude` that doesn't exist yet**: a residual, known. A role bound to a different
+  directory than the one its project id names now (ids come from directory names) is refused, and a role records the
+  hash of its project's directory when it is made, never from the caller.
+- **Session ids stay inside the role.** Home refuses send, messages, rename, fork, interrupt, close and mode for a session
+  that is neither in the role's slots nor in its runner's session list, and the runner resumes from disk only ids its own
+  config directory lists. Reads (`sessions`, `messages`) of a role whose VM is stopped answer empty with `vm_state:
+  "stopped"`: they never start a VM or keep one up.
+- **Revocation.** A put replaces the running VM's proxy allow-list (tunnels to removed hosts are closed). Archiving
+  stops the VM when nothing runs; a turn that runs continues; an archived role takes no new start or send.
 - **Outside `/work`.** Today's `/work/.rubi/claude` is visible to every VM that mounts the project. A second role could
   read or tamper with another role's transcripts there, and a resumed session would read the tampered history.
 - **`current` is a relative symlink inside the read-only mount.** Home writes `v<n+1>/`, then atomically renames a new

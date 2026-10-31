@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Agent roles: security review fixes (R4-R7).** Session operations of a role are refused for a session that isn't the
+  role's own (not in its slots, not in its runner's list), and the runner resumes from disk only sessions its config
+  directory lists. Reads of a role whose VM is stopped answer empty (`vm_state: "stopped"`) instead of starting it, and no
+  read keeps a VM from its idle stop. A role VM sees `/work/.rubi` as an empty read-only directory and the project's
+  `.claude` read-only (`/work/CLAUDE.md` can't be bound and stays writable). A role is bound to the hash of its project's
+  directory and refused when the project id names another one. A VM's version pins are one per version and cover the boot
+  window. A role's container is named by its id and 64 bits of hash (old-style leftovers are removed on start). Removing a
+  host from a role cuts it off on the running VM; archiving stops an idle VM and blocks new sends. Items to the plugin
+  carry `role_name`.
 - **Rubi Home: one VM per role (agent roles, R4).** `claude-agent.start/send/sessions/messages/rename/fork/interrupt/close/mode`
   take an optional `role` (a role id; missing means the project's legacy role, which keeps its VM, mounts and environment
   exactly). An isolated role runs in its own container (`rubi-agent-<role>-<hash of dir|role>`) with the project at `/work`,
