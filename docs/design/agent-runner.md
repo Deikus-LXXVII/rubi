@@ -1,8 +1,8 @@
 # Claude through the Agent SDK: runner, Rubi Home and plugin contract
 
-Status: working contract for milestones M1-M6 (branch `citri/agent-sdk`). Background and reasons: the
-owner's design notes (agent-sdk v2) and the M0 spike (`spike/agent-sdk/README.md` on `citri/agent-sdk-m0`).
-Everything here runs only on the owner's Mac; Rubi core never starts a runner and never talks to Anthropic.
+Status: working contract for milestones M1-M6. Background and reasons: the Agent SDK design notes (v2) and
+the M0 spike (`spike/agent-sdk/README.md` on the M0 spike branch).
+Everything here runs only on the user's Mac; Rubi core never starts a runner and never talks to Anthropic.
 
 ## Pieces
 
