@@ -296,3 +296,30 @@ func TestArchivingStopsAnIdleVMAndBlocksSends(t *testing.T) {
 		t.Fatalf("an archived role's idle VM: %s", re.vm(b).State())
 	}
 }
+
+func TestAsksCarryTheRoleAndItsName(t *testing.T) {
+	re := newRoleEnv(t, setLimits(2, 4))
+	a, _ := re.put("role-a", nil)
+	pl := startPoller(t, re.m)
+	pa, err := re.m.projectFor("my-project", a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pl2, _ := re.m.projectFor("my-project", "")
+	for _, c := range []struct {
+		p          *projState
+		role, name string
+	}{{pa, a, "role-a"}, {pl2, "my-project", "default"}} {
+		done := make(chan bool, 1)
+		go func() { done <- re.m.askHost(re.ctx, c.p, "asked.example.net") }()
+		it := pl.wait(t, "net.ask")
+		if it.Role != c.role || it.RoleName != c.name || it.Project != "my-project" || it.Host != "asked.example.net" {
+			t.Fatalf("net.ask item %+v", it)
+		}
+		_ = re.m.Decide(it.AskID, "deny", "no", nil)
+		<-done
+		re.m.mu.Lock()
+		delete(re.m.netDenied, c.p.key()+"|asked.example.net")
+		re.m.mu.Unlock()
+	}
+}

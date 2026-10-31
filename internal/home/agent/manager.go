@@ -109,7 +109,8 @@ type Item struct {
 	AgentType string          `json:"agent_type,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Role      string          `json:"role,omitempty"` // the role (id; the legacy role's is its project id)
+	Role      string          `json:"role,omitempty"`      // the role (id; the legacy role's is its project id)
+	RoleName  string          `json:"role_name,omitempty"` // its name, for the text shown to the user ("default" for the legacy role)
 	Via       string          `json:"via,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Cwd       string          `json:"cwd,omitempty"`
@@ -519,6 +520,19 @@ func (m *Manager) selectRole(project, role string) (roleSel, error) {
 	return roleSel{id: role, name: r.Name, archived: r.Status == "archived"}, nil
 }
 
+// cachedRoleName is roleName without reading the store (for code that holds m.mu): the id when the name isn't known.
+func (m *Manager) cachedRoleName(project, id string) string {
+	if id == "" || id == project {
+		return "default"
+	}
+	m.nameMu.Lock()
+	defer m.nameMu.Unlock()
+	if n, ok := m.names[id]; ok {
+		return n
+	}
+	return id
+}
+
 // roleName is a role's name for messages and rows ("default" for the legacy role; the id when it can't be read).
 func (m *Manager) roleName(project, id string) string {
 	if id == "" || id == project {
@@ -854,6 +868,9 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 // pushLocked adds an item for the plugin; when full the oldest event goes (asks are bounded elsewhere).
 func (m *Manager) pushLocked(it Item) {
 	it.At = m.opt.Now().UTC()
+	if it.RoleName == "" && it.Role != "" {
+		it.RoleName = m.cachedRoleName(it.Project, it.Role)
+	}
 	if len(m.out) >= maxOutbox {
 		for i, o := range m.out {
 			if o.Type == "event" || o.Type == "queue" {
@@ -886,6 +903,9 @@ func deny(msg string) AskResult { return AskResult{Behavior: "deny", Message: ms
 
 // waitDecision queues the ask item and waits; anything but a decision from the plugin is a denial.
 func (m *Manager) waitDecision(ctx context.Context, project string, it Item) AskResult {
+	if it.RoleName == "" && it.Role != "" {
+		it.RoleName = m.roleName(project, it.Role) // may read the role: before the lock
+	}
 	m.mu.Lock()
 	if st := m.self; st != nil && st.project == project { // the whole project, whatever the role
 		// A self-test (setup.go) denies everything itself: the question never reaches the plugin, so no
