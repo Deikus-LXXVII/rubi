@@ -265,7 +265,7 @@ func (s *Setup) verifySignature(ctx context.Context, pkg string) error {
 // <pkg> <sha256> <team> <uid>`, uid being 0. It copies the package into a fresh directory under
 // /private/var/tmp (TMPDIR is dropped: it is not root's to trust), checks that the directory is a real
 // directory of that uid with mode 700, so a process of the user can't swap the file after it was checked,
-// checks the SHA-256 and the signature of the copy, installs it and removes the copy.
+// copies it with cp -P (never following a link), checks the copy is a plain file, checks the SHA-256 and the signature of the copy (not of the original), installs it and removes the copy.
 const installScript = `set -eu
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
@@ -280,7 +280,8 @@ if [ -L "$dir" ] || [ ! -d "$dir" ] || [ "$(stat -f %u "$dir")" != "$uid" ] || [
   echo "the scratch directory is not private" >&2; exit 13
 fi
 pkg=$dir/container.pkg
-cp "$src" "$pkg"
+cp -P "$src" "$pkg"
+if [ -L "$pkg" ] || [ ! -f "$pkg" ]; then echo "the copy is not a plain file" >&2; exit 10; fi
 got=$(shasum -a 256 "$pkg" | cut -d' ' -f1)
 if [ "$got" != "$want" ]; then echo "the package changed after it was checked" >&2; exit 11; fi
 sig=$(pkgutil --check-signature "$pkg") || { echo "the signature check failed" >&2; exit 12; }

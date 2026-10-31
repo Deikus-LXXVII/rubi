@@ -415,6 +415,13 @@ func TestInstallScriptRefusals(t *testing.T) {
 	if !strings.Contains(installScript, "mktemp -d /private/var/tmp/rubi-container.XXXXXX") || !strings.Contains(installScript, "unset TMPDIR") {
 		t.Error("the scratch directory isn't the fixed private one")
 	}
+	// the copy never follows a link, is re-checked as a plain file, and only then hashed
+	iCp := strings.Index(installScript, `cp -P "$src" "$pkg"`)
+	iChk := strings.Index(installScript, `[ -L "$pkg" ] || [ ! -f "$pkg" ]`)
+	iSum := strings.Index(installScript, `shasum -a 256 "$pkg"`)
+	if iCp < 0 || iChk < iCp || iSum < iChk {
+		t.Errorf("copy/check/hash order wrong: %d %d %d", iCp, iChk, iSum)
+	}
 }
 
 func TestCancelledMapping(t *testing.T) {
