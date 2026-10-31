@@ -5,7 +5,10 @@ import { RUNNER_VERSION } from "./version.js";
 
 console.log = console.error; // stdout belongs to the protocol
 const cwd = process.env.RUBI_WORK_DIR || "/work";
-const configDir = `${cwd}/.rubi/claude`;
+// Role mode (docs/design/agent-roles.md): the role comes from a read-only mount and the sessions live in a
+// per-role config dir outside /work. Without RUBI_ROLE_DIR everything is as before.
+const roleDir = process.env.RUBI_ROLE_DIR || undefined;
+const configDir = roleDir ? process.env.RUBI_CLAUDE_DIR || "/rubi-claude" : `${cwd}/.rubi/claude`;
 // listSessions/forkSession/... run in this process and read sessions from the config dir of THIS
 // process's environment; the claude children get the same dir through their explicit env.
 process.env.CLAUDE_CONFIG_DIR = configDir;
@@ -15,6 +18,7 @@ const runner = new Runner(process.stdin, process.stdout, {
   env: process.env,
   cwd,
   configDir,
+  ...(roleDir ? { roleDir } : {}),
   credSock: process.env.RUBI_CRED_SOCK || "/tmp/rubi-cred.sock",
   settingSources: process.env.RUBI_SETTING_SOURCES === "none" ? [] : ["project"],
   log: (m) => process.stderr.write(`[runner] ${m}\n`),

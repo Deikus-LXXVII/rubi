@@ -62,6 +62,11 @@ export interface QueryOptions {
   hooks: { PreToolUse: { matcher?: string; timeout: number; hooks: HookFn[] }[] };
   canUseTool: CanUseToolFn;
   stderr?: (data: string) => void;
+  /** Role mode only (see role.ts). */
+  plugins?: { type: "local"; path: string; skipMcpDiscovery?: boolean }[];
+  skills?: string[];
+  tools?: string[];
+  systemPrompt?: { type: "preset"; preset: "claude_code"; append: string };
 }
 
 export interface SdkQuery extends AsyncIterable<SdkMessage> {
