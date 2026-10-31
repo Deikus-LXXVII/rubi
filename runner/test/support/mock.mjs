@@ -32,6 +32,7 @@ function pick(messages, scripts) {
 
 export function startMock(scripts, log = () => {}) {
   const requests = [];
+  const others = [];
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
@@ -44,6 +45,7 @@ export function startMock(scripts, log = () => {}) {
       }
       if (!(req.method === "POST" && url.endsWith("/v1/messages"))) {
         log("MOCK other request", req.method, url);
+        others.push(`${req.method} ${url}`);
         res.writeHead(404, { "content-type": "application/json" });
         res.end(JSON.stringify({ type: "error", error: { type: "not_found_error", message: "mock" } }));
         return;
@@ -72,7 +74,7 @@ export function startMock(scripts, log = () => {}) {
       }
       const stop = blocks.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn";
       const usage = { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-      requests.push({ system: sys0, ctx: msgs.map((m) => textOf(m.content)).join("\n"), model: j.model, script: name, step, stream: !!j.stream, tools_offered: toolNames.length, reply: blocks.map((b) => b.type === "tool_use" ? `tool_use:${b.name}` : "text"), saw_tool_results: results });
+      requests.push({ raw: body, path: url, auth: req.headers.authorization, tools: toolNames, system: sys0, ctx: msgs.map((m) => textOf(m.content)).join("\n"), model: j.model, script: name, step, stream: !!j.stream, tools_offered: toolNames.length, reply: blocks.map((b) => b.type === "tool_use" ? `tool_use:${b.name}` : "text"), saw_tool_results: results });
       if (process.env.MOCK_DUMP && toolNames.length === 0) require_fs().appendFileSync(process.env.MOCK_DUMP, JSON.stringify({ system: j.system, last: msgs[msgs.length - 1], nmsgs: msgs.length, keys: Object.keys(j) }).slice(0, 6000) + "\n");
       const sys = Array.isArray(j.system) ? j.system.map((b) => b.text || "").join(" ") : String(j.system || "");
       log("MOCK /v1/messages", { model: j.model, max_tokens: j.max_tokens, tools: toolNames.length, system_head: sys.slice(0, 70), script: name, step, reply: blocks.map((b) => b.type === "tool_use" ? `tool_use:${b.name}` : `text:${b.text.slice(0, 40)}`), saw_tool_results: results });
@@ -101,6 +103,6 @@ export function startMock(scripts, log = () => {}) {
     });
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => {
-    resolve({ url: `http://127.0.0.1:${server.address().port}`, requests, close: () => server.close() });
+    resolve({ url: `http://127.0.0.1:${server.address().port}`, requests, others, close: () => server.close() });
   }));
 }

@@ -40,6 +40,8 @@ scripted Messages API on 127.0.0.1 through `ANTHROPIC_BASE_URL` with a placehold
 | `HTTPS_PROXY` | the allow-list proxy; passed on to `claude` |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `NO_PROXY`, `PATH`, `HOME`, ... | passed through to `claude` (small explicit allow-list; nothing else from the runner's environment) |
 
+Role mode (docs/design/agent-roles.md, docs/design/agent-runner.md "Role mode"): `RUBI_ROLE_DIR` (read-only role directory; unset = legacy mode) and `RUBI_CLAUDE_DIR` (the role's config dir, default `/rubi-claude`).
+
 Also: `RUBI_CRED_SOCK` (git credential socket, default `/tmp/rubi-cred.sock`), `RUBI_SETTING_SOURCES=none` (ignore the project's `.claude`).
 
 Exit codes: 0 stdin closed after a good handshake; 2 no token; 3 hello refused, unanswered in 10 s, or stdin closed before it.

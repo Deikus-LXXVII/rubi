@@ -105,6 +105,57 @@ proxy; no `HTTP_PROXY` is set), plus `PATH HOME USER LOGNAME SHELL TMPDIR LANG L
 setups only, `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` if present in the runner's env; nothing else. One long-lived
 query per session fed by a queue (pattern from T3 Code, MIT, noted in the spike).
 
+## Role mode (agent roles, R1)
+
+Set `RUBI_ROLE_DIR` (e.g. `/rubi-role`, a read-only mount written by Rubi Home) to switch the runner into role mode;
+unset (or empty) is the legacy mode described above, unchanged. Design and reasons: `agent-roles.md` (sections 1 and 4).
+`RUBI_CLAUDE_DIR` (default `/rubi-claude`) is then the config dir (`CLAUDE_CONFIG_DIR`, for the runner process and its
+children): sessions, `session.list`, `.messages`, `.fork` and `.rename` use it, nothing is written under `/work/.rubi`.
+
+At the start of every query (`session.start`, a resume after `session.send` to a session the runner does not hold, a
+restart of a dead query) the runner resolves `<RUBI_ROLE_DIR>/current` with `realpath`, requires the result to be a
+directory strictly inside `RUBI_ROLE_DIR` (a `current` that points out via `../`, an absolute path or at the role dir
+itself is refused), and pins that version for the query. A new version applies at the next query start; a running query
+keeps its version. A missing or bad role refuses the call with error `-32603` ("role unusable, session not started: ...");
+the runner never falls back to legacy mode and registers no session.
+
+`<ver>/role.json` (written by Home; at most 64 KiB; `lstat`: a symlink or a non-regular file is refused; opened with
+`O_NOFOLLOW`; unknown keys ignored):
+
+| Key | Type | Rule |
+|---|---|---|
+| `role` | string | required, non-empty (the role id; logged) |
+| `version` | integer | required, >= 1 |
+| `tools` | string[] | required (may be empty); every name in the runner's known list (`Agent AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep ListAgents Monitor NotebookEdit Read ReportFindings ScheduleWakeup SendMessage Skill TaskStop TodoWrite ToolSearch WebFetch WebSearch Workflow Write`); the safe subset is Home's and the plugin's policy, not the runner's |
+| `skills` | string[] | default `[]`; names match `^[a-z0-9][a-z0-9-]{0,47}$`, at most 100 |
+| `deny` | string[] | default `[]`; permission rules appended to `disallowedTools`; non-empty, at most 256 characters, no control characters, at most 200 |
+| `mcp` | object | default `{}`; at most 32 servers named `[A-Za-z0-9_-]{1,48}`; `{type:"http"\|"sse", url (http/https), headers?}` or `{type:"stdio" (default), command, args?, env?}`; other keys of a server are dropped |
+| `instructions` | string | default `""`, at most 8 KiB |
+| `project_instructions` | boolean | default `false` |
+| `default_mode` | string | default `"default"`; one of the permission modes |
+
+`<ver>/plugin/` must be a plain directory (not a symlink): an SDK local plugin named `role`
+(`.claude-plugin/plugin.json`, `skills/<name>/SKILL.md`, `agents/<name>.md`).
+
+Query options in role mode: `settingSources:[]` (the repository's `.claude` is never loaded; its `env` no longer applies;
+`RUBI_SETTING_SOURCES` is ignored), `plugins:[{type:"local", path:"<ver>/plugin", skipMcpDiscovery:true}]`,
+`skills:["role:<name>",...]` (`[]` when none), `tools:` the role's list without `Skill` and the plan tools, plus `Skill`
+only when the role has skills, `AskUserQuestion` always, `EnterPlanMode`/`ExitPlanMode` when the session's mode is `plan`
+at query start; `disallowedTools`: the usual four rules, `Edit(<claude dir>/**)`, `Read(<claude dir>/**)`, then the
+role's `deny`; `strictMcpConfig:true` with `mcpServers` from `role.mcp`; `systemPrompt:{type:"preset",
+preset:"claude_code", append: <instructions block>}`. The instructions block is the role's `instructions`, then, when
+`project_instructions` is true, `/work/CLAUDE.md` and `/work/.claude/CLAUDE.md` under a heading that says the text was
+written in the repository (each read with `lstat`, a symlink or a non-regular file is left out, 64 KiB together; `@import`
+lines and CLAUDE.md files in subdirectories are not followed). Unchanged: `settings:{disableAllHooks:true, apiKeyHelper:"",
+skipWebFetchPreflight:true}`, the `PreToolUse` gate and subagent gate, `canUseTool`, redaction, the child env
+(`ANTHROPIC_BASE_URL`, the `CLAUDE_CODE_OAUTH_TOKEN` placeholder, `NO_PROXY`, the proxy).
+
+Modes: the session mode Home passes in `session.start` always wins. In role mode `mode` is optional there; when Home gives
+none, the role's `default_mode` is used (also for a session the runner resumes without a mode). A mode set later with
+`session.mode` is not reflected in `tools`: the plan tools are decided when the query opens.
+
+Checked against the real SDK and `claude` by `runner/test/roles.integration.test.ts` (`npm run test:integration`).
+
 Behaviour of held-back messages: at most 50 per session (more: error `-32006` and an `error` event). If the query
 dies, the first held-back message goes into a resumed query (at most 3 restarts without a `result`), the rest follow
 turn by turn. A turn the SDK started itself (a background task woke the model) counts as active, so a message sent then

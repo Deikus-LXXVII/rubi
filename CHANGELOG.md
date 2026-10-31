@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Runner: role mode (agent roles, R1).** With `RUBI_ROLE_DIR` set, the runner loads a role written by Rubi Home
+  (`current -> v<n>/{role.json,plugin/}` on a read-only mount) instead of the repository's `.claude`: `settingSources: []`,
+  the role's skills and subagents as one SDK local plugin, a `skills` allowlist, a `tools` base set, the role's MCP servers
+  only (`strictMcpConfig`), extra deny rules, and the role's instructions plus the repo's `CLAUDE.md` through the system
+  prompt. `current` is resolved with `realpath` at each query start, must stay inside the role directory, and is pinned for
+  the query; `role.json` (64 KiB, no symlink, unknown keys ignored, tool names from a known list) is validated, and a
+  missing or bad role refuses `session.start`, never falling back to legacy mode. Sessions live in `RUBI_CLAUDE_DIR`. The
+  permission gate, subagent gate and auth gateway env are unchanged; without `RUBI_ROLE_DIR` nothing changes. A new
+  integration suite (`roles.integration.test.ts`) runs two roles on one repository against the real SDK.
 - **SDK: `sdk/skillscan`, a deterministic skill scanner (agent roles, R2).** `skillscan.Scan(name, content, allowedHosts)`
   checks a `SKILL.md` and returns a verdict (pass, flag, reject), the rule hits (id, line, an excerpt of at most 80
   characters with secrets masked), the frontmatter keys it stripped, the scanner version and a normalized file whose

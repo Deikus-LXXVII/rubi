@@ -6,6 +6,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { serveCredentials, type CredServer } from "./cred.js";
 import { Inbox } from "./inbox.js";
+import { loadRole, roleQueryParts, RoleError, type Role } from "./role.js";
 import { ERR, errMsg, Peer, RpcError } from "./protocol.js";
 import {
   PERMISSION_MODES,
@@ -28,7 +29,13 @@ export interface RunnerConfig {
   exit: (code: number) => void;
   log?: (msg: string) => void;
   cwd?: string; // default /work
-  configDir?: string; // default <cwd>/.rubi/claude
+  configDir?: string; // default <cwd>/.rubi/claude (role mode: required, the role's own config dir, e.g. /rubi-claude)
+  /**
+   * Role mode (docs/design/agent-roles.md): a read-only directory with `current -> v<n>/{role.json,plugin/}`, written by
+   * Rubi Home. Unset = legacy mode, exactly as before. In role mode settingSources is always [] and `mode` in
+   * session.start is optional (the role's default_mode is used when Home passes none).
+   */
+  roleDir?: string;
   settingSources?: string[]; // default ["project"] (CLAUDE.md, skills); [] ignores the project's .claude entirely
   defaultMode?: PermissionMode; // mode of a session the runner did not start itself
   helloTimeoutMs?: number; // default 10 s
@@ -164,7 +171,7 @@ export function disallowedEditTools(cwd: string): string[] {
 }
 
 export class Runner {
-  private readonly cfg: Required<Omit<RunnerConfig, "maxLineBytes" | "maxQueuedBytes" | "credSock" | "log" | "env" | "sdk" | "exit" | "version">>;
+  private readonly cfg: Required<Omit<RunnerConfig, "roleDir" | "maxLineBytes" | "maxQueuedBytes" | "credSock" | "log" | "env" | "sdk" | "exit" | "version">>;
   private readonly sdk: Sdk;
   private readonly env: NodeJS.ProcessEnv;
   private peer!: Peer;
@@ -172,6 +179,7 @@ export class Runner {
   private exited = false;
   private readonly sessions = new Map<string, Session>();
   private readonly childEnv: Record<string, string>;
+  private readonly roleDir: string | undefined;
   private credServer: CredServer | undefined;
   private pushUntil = 0;
 
@@ -183,6 +191,7 @@ export class Runner {
     this.sdk = c.sdk;
     this.env = c.env;
     const cwd = c.cwd ?? "/work";
+    this.roleDir = c.roleDir || undefined;
     this.cfg = {
       cwd,
       configDir: c.configDir ?? `${cwd}/.rubi/claude`,
@@ -368,11 +377,12 @@ export class Runner {
   private sessionStart(p: Record<string, unknown>) {
     const prompt = str(p, "prompt");
     const name = optStr(p, "name");
-    const mode = modeOf(p, "mode");
+    const role = this.pinRole();
+    const mode = role && (p.mode === undefined || p.mode === null) ? role.default_mode : modeOf(p, "mode");
     const id = randomUUID();
     const s = this.register({ id, mode, maxSubagents: maxSubagentsOf(p), ...(name !== undefined ? { name } : {}) });
     try {
-      this.openQuery(s, "new", name);
+      this.openQuery(s, "new", name, role);
       this.deliver(s, this.userMessage(prompt, optStr(p, "from")), false);
     } catch (e) {
       this.dropSession(s); // a failed start leaves no half-registered session
@@ -388,7 +398,7 @@ export class Runner {
     let s = this.sessions.get(id);
     const fresh = !s;
     const cap = maxSubagentsOf(p);
-    if (!s) s = this.register({ id, mode: this.cfg.defaultMode, maxSubagents: cap }); // idle session from disk: resumed below
+    if (!s) s = this.register({ id, mode: this.roleDir ? (this.pinRole()?.default_mode ?? this.cfg.defaultMode) : this.cfg.defaultMode, maxSubagents: cap }); // idle session from disk: resumed below
     else if (!s.turnActive && s.tasks.size === 0 && s.calls.size === 0) s.maxSubagents = cap; // a running session keeps its cap
     try {
       const delivered = this.deliver(s, this.userMessage(text, optStr(p, "from")), steer);
@@ -446,13 +456,27 @@ export class Runner {
 
   // ---------------------------------------------------------------- the query of a session
 
-  private openQuery(s: Session, how: "new" | "resume", title?: string) {
+  /** Role mode: the version of the role for the query about to start; a missing or bad role refuses the call. */
+  private pinRole(): Role | undefined {
+    if (!this.roleDir) return undefined;
+    try {
+      return loadRole(this.roleDir);
+    } catch (e) {
+      if (!(e instanceof RoleError)) throw e;
+      this.log(`role refused: ${e.message}`);
+      throw new RpcError(ERR.internal, `role unusable, session not started: ${e.message}`);
+    }
+  }
+
+  private openQuery(s: Session, how: "new" | "resume", title?: string, pinned?: Role) {
+    const role = this.roleDir ? (pinned ?? this.pinRole()) : undefined;
+    if (role) this.log(`session ${s.id}: role ${role.role} version ${role.version}`);
     const inbox = new Inbox<SdkUserMessage>();
     const abort = new AbortController();
     const options: QueryOptions = {
       cwd: this.cfg.cwd,
       ...(how === "new" ? { sessionId: s.id, ...(title !== undefined ? { title } : {}) } : { resume: s.id }),
-      settingSources: this.cfg.settingSources,
+      settingSources: role ? [] : this.cfg.settingSources,
       // The project's own settings must not run code outside our PreToolUse gate: no settings hooks,
       // no apiKeyHelper (an empty string beats the project's value), no .mcp.json servers.
       // skipWebFetchPreflight: WebFetch would otherwise ask api.anthropic.com about the domain on its own, outside
@@ -478,6 +502,7 @@ export class Runner {
       canUseTool: (tool, input, o) => this.canUseTool(s, tool, input, o),
       stderr: (d) => this.log(`claude: ${short(d.trim(), 400)}`),
     };
+    if (role) Object.assign(options, roleQueryParts(role, { cwd: this.cfg.cwd, claudeDir: this.cfg.configDir, mode: s.mode, base: options.disallowedTools }));
     const q = this.sdk.query({ prompt: inbox, options });
     s.query = q;
     s.inbox = inbox;
