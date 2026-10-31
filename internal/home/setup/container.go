@@ -290,7 +290,10 @@ func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
 	}
 	rel := s.opt.Release
 	want, _ := parseVersion([]byte("version " + rel.Version))
-	if v, ok, present := s.installed(ctx); present && ok && v.cmp(want) >= 0 {
+	if v, ok, present := s.installed(ctx); present && !ok {
+		// a tool that runs but whose version can't be read is never installed over
+		return outcome{Failed, "Unknown container version; not reinstalling."}
+	} else if present && v.cmp(want) >= 0 {
 		return outcome{Done, "Version " + v.String() + " is installed."} // never reinstall, never downgrade
 	}
 	pkg, err := s.download(ctx, filepath.Join(s.opt.Dir, "setup"), log)

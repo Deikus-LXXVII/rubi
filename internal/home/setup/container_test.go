@@ -574,3 +574,24 @@ func TestContainerUpgradeAndNeverDowngrade(t *testing.T) {
 		t.Error("touched a newer installation")
 	}
 }
+
+func TestContainerUnreadableVersionIsNeverInstalledOver(t *testing.T) {
+	for _, step := range []string{"container", "all"} {
+		c := newContainerEnv(t)
+		prev := c.m.extra
+		c.m.extra = func(argv []string) ([]byte, error, bool) {
+			if strings.Join(argv, " ") == "container --version" {
+				return []byte("container: something unexpected\n"), nil, true
+			}
+			return prev(argv)
+		}
+		if err := c.s.Run(context.Background(), step, "", "", ""); err != nil {
+			t.Fatal(err)
+		}
+		c.wait()
+		st := c.step("container")
+		if st.State != Failed || !strings.Contains(st.Reason, "not reinstalling") || len(c.osaCalls) != 0 || c.cmd.ran("/usr/sbin/pkgutil") != 0 {
+			t.Errorf("%s: %+v osascript %v", step, st, c.osaCalls)
+		}
+	}
+}
