@@ -392,7 +392,8 @@ the install screen shows them.
 
 Contract: `docs/design/agent-runner.md`. Code: `internal/home/agent`. Capability `claude-agent`, operations
 `claude-agent.projects | sessions | messages | start | send | rename | fork | interrupt | close | mode | next |
-decide | status`; a plugin that declares `claude-agent` can call only those.
+decide | status | role.list | role.get | role.history | role.diff | role.put`; a plugin that declares
+`claude-agent` can call only those.
 
 - **Projects** are the directories in config `agent_projects` (absolute, existing, each its own project, id from
   the directory name). A directory that is `/`, that holds the helper's own directory (its keys) or that is the
@@ -449,6 +450,51 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   because both arrive through the paired plugin, so the plugin must expose it only as a panel button, never as a
   Bot tool, and a Bot has no way to reach it. A change applies to new starts only: nothing running is killed;
   when a mode is lowered the excess finishes and new work queues; when raised, waiting work goes at once.
+- **Roles (`role.*`).** Design: `agent-roles.md`. Code: `internal/home/agent/roles`. Home keeps agent roles per
+  device in `<helper dir>/agent-roles/<id>/` (0700; ids `r_` + 8 of `[a-z0-9]`, made by Home). The VM per role and
+  its mounts (R4) and the slots per role (R5) are not built yet; this is the store and its operations.
+  - **On disk.** `versions/<n>.json` (0600, never rewritten; the commit point), `index.json` (a cache, rebuilt from
+    `versions/`), `blobs/<sha256>` (ad-hoc skill text, named by the hash Home computed; read back, it must match its
+    name), `content/v<n>/` (`role.json`, `plugin/.claude-plugin/plugin.json` named `role`,
+    `plugin/skills/<name>/SKILL.md` normalized by `sdk/skillscan`, `plugin/agents/<name>.md` rebuilt from fields),
+    `content/current` (relative symlink `v<n>`) and `claude/` (empty; the future `/rubi-claude`).
+  - **Operations.** `role.list {project?}` returns `{roles: [{id, project, name, description, status, version,
+    changed_by, changed_at, legacy?}]}`; every project also has an implicit legacy role `default` (id = the project
+    id, `legacy: true`, not stored, cannot be put). `role.get {id, version?}` returns the stored version record
+    (the current one when `version` is 0), including each skill's scan result. `role.history {id, limit}` returns
+    `{id, current, versions: [{version, parent, changed_by, changed_at, name, status, change}]}`, newest first (limit
+    default 20, at most 100). `role.diff {id, from, to}` returns `{changes: [{field, key?, kind: added|removed|changed,
+    from?, to?}], skill_text: [{name, from_sha256, to_sha256, diff, clipped?}]}`; the diffs are unified, 3 lines of
+    context, clipped to 200 lines and 16 KiB. `role.put {id?, base_version, spec, blobs, by?, change?}` returns `{id,
+    version, skills: [{name, state, verdict}]}`; `spec` is the role record of section 2.1 (fields Home sets are
+    ignored), `blobs` maps sha256 to skill text, `by` is the Bot or user the plugin acts for and `change` is
+    `{op, tier, approval, summary}`, kept in the version. Arguments are strict (an unknown key is refused). Archive,
+    rename and revert are puts; a revert sends an old version's record as the spec.
+  - **Concurrency and conflicts.** One writer per role. A put whose `base_version` is not the current version is
+    refused (`the role changed: base_version 1, current version 2`) and writes nothing; a new role has
+    `base_version` 0. Names are unique per project among active roles (`default` is reserved), at most
+    `role_max_total` (50) roles exist, at most 1000 versions per role.
+  - **Validation (all reasons are returned).** Name, description (300), instructions (8 KiB), status, default mode
+    (not `dontAsk`); tools from the known list (`roles.KnownTools`, which must match the runner's list); at most 64
+    deny rules; MCP servers only with an `approval` id, https URL without credentials or a stdio command; Claude
+    plugins only with an `approval` id; hosts and SSH target names by pattern; subagents with `tools` cut to the
+    role's tools (a subagent whose tools are all outside the role's is refused) and `model` in inherit, sonnet, haiku,
+    opus; at most 20 skills, 10 of them ad-hoc, names `[a-z0-9-]` so none can name a path. A blob is hashed again
+    by Home and must be the sha256 it is sent under and be used by a skill. A library skill is accepted only if the
+    configured `Verifier` says its signature is valid; until the library exists (R8) the stub refuses every one.
+  - **Scan.** Every skill goes through `sdk/skillscan`. Reject: the put is refused with the rule ids and lines.
+    Flag: the skill is stored with `state: held`, is not in `role.json` and is not materialized, until a put carries
+    every flagged rule id in the skill's `accepted` list (the plugin sets it after the user taps accept); a flagged
+    library skill is active (the curator acknowledged its flags). Pass: `active`. The frontmatter keys other than
+    `name` and `description` are removed and listed in the stored scan (`stripped`).
+  - **Crash safety.** A put writes the blobs, builds `content/v<n>` aside and renames it, links `versions/<n>.json`
+    into place (the commit point, which can't replace a file), renames a new symlink over `current`, and writes
+    `index.json`, syncing each file and directory. Opening the store and every put reconcile the role from its
+    highest version file (rebuild a missing `content/v<n>`, fix `current` and `index.json`, drop temp files and
+    content above the committed version). `current` never names a directory that is not complete.
+  - **GC.** After each put Home removes `content/v<n>` except the newest 5, the current one and any version marked
+    in use with `Store.Pin(id, version)` (in memory), and blobs that no version record names. Version records and
+    the blobs they name stay, so history, diffs and reverts keep working.
 - **Asks.** `perm.ask` from the runner and `cred.ask` from the git helper become `next` items with Home's own
   `ask_id` and wait for `decide`. No decision in 280 s (`claude_wait_seconds` does not apply here), no `next`
   poll for 15 s, a cancelled runner or more than 16 pending: deny. Home never decides itself.
