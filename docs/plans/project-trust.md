@@ -1,7 +1,7 @@
 # B8: one trust per project
 
-Task from the user ("Да, давай одно доверие на проект целиком"). Branches: core `citri/project-trust` (docs
-only, plus whatever Rubi Home must give the plugin), plugin `citri/project-trust`. Not pushed.
+Task from the user ("yes, one trust for the whole project"). Branches: core `feature/project-trust` (docs
+only, plus whatever Rubi Home must give the plugin), plugin `feature/project-trust`. Not pushed.
 
 ## Problem
 The 2-hour trust (`md_…`) is per session and per directory. A Bot that works in a project with several
@@ -32,7 +32,7 @@ the session has no `repo_key`, the root isn't absolute, has fewer than three pat
 - **Branch rule** (only with a project trust): a command that switches to or creates a branch (`git switch X`,
   `switch -c X`, `checkout X`, `checkout -b/-B X`, `branch X`, `branch -m/-c/-d` names, `worktree add -b X` or
   the branch/dir name `worktree add` makes, `stash branch X`, `rebase UP X`) is allowed only when X matches the
-  pattern (`path.Match`, default `citri/*`). Everything else is the existing check: push and every remote op,
+  pattern (`path.Match`, default `agent/*`). Everything else is the existing check: push and every remote op,
   `--force`, sudo, network, installs, writes outside root, `git tag` (not on the git list) still ask.
 - **Effect on the Bot bound to a session of the project.** `claude_code_start` for a cwd inside root runs
   without a new approval (all the input checks and rate limits still apply; the helper's own checks too, and
@@ -57,7 +57,7 @@ without approval, outside root and for another Bot asks; send/status never ask; 
 pt_ coexist and revoke independently.
 
 e2e (`e2e/_driver`, Case 9): one approval with `trust_project` -> three different sessions run commands and a
-`citri/*` branch switch without questions; outside root, push, tag, other branches and writes outside ask; the
+`agent/*` branch switch without questions; outside root, push, tag, other branches and writes outside ask; the
 Bot starts a session in the project and binds to another with no approval (a start outside still asks); the
 trust holds over a Rubi Home restart; ends on revoke; the Bot's own `claude_code_trust_project` (a tap is
 refused) grants one that ends at its time; a live trust does not beat a locked Rubi (Case 4c).

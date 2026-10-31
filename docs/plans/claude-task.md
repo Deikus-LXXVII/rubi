@@ -1,6 +1,6 @@
 # B7: claude.task, a session when none exists
 
-Branches: core `citri/claude-task` (from `citri/claude-sister-tools`), plugin `citri/claude-task`. Not pushed.
+Branches: core `feature/claude-task` (from `feature/claude-sister-tools`), plugin `feature/claude-task`. Not pushed.
 
 ## Problem
 A Bot can only talk to a Claude Code session that already exists (claude_code_sessions, claude_code_bind,

@@ -1,7 +1,7 @@
 # B11: project trust until revoked
 
-Task from the user (approved). Branches: core `citri/trust-unlimited` (docs only), plugin `citri/trust-unlimited`
-(both from `citri/project-trust`). Not pushed. Builds on B8 (`docs/plans/project-trust.md`); every B8 guard stays.
+Task from the user (approved). Branches: core `feature/trust-unlimited` (docs only), plugin `feature/trust-unlimited`
+(both from `feature/project-trust`). Not pushed. Builds on B8 (`docs/plans/project-trust.md`); every B8 guard stays.
 
 ## Design (plugin only; Rubi Home and Rubi core need no change)
 - A second mode of `pt_…`: `unlimited` (saved as `"unlimited": true`, `Expires` zero, `MaxUses` 0). Live until revoked.

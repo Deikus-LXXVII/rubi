@@ -1,7 +1,7 @@
 # B10: rename Claude Code sessions
 
-Branches: core `citri/session-rename` (docs plus one generic panel feature), plugin `citri/session-rename`
-(both stacked on `citri/project-trust`). Not pushed.
+Branches: core `feature/session-rename` (docs plus one generic panel feature), plugin `feature/session-rename`
+(both stacked on `feature/project-trust`). Not pushed.
 
 ## Does Claude Code have a documented way an outside process can use?
 Checked on 2026-10-30 (https://code.claude.com/docs/en/cli-reference, /commands, /sessions, /desktop):
