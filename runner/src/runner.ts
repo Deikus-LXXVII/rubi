@@ -273,7 +273,7 @@ export class Runner {
       case "session.start":
         return this.sessionStart(p);
       case "session.send":
-        return this.sessionSend(p);
+        return await this.sessionSend(p);
       case "session.rename": {
         const id = uuid(p, "id");
         const name = str(p, "name");
@@ -391,10 +391,16 @@ export class Runner {
     return { id };
   }
 
-  private sessionSend(p: Record<string, unknown>) {
+  private async sessionSend(p: Record<string, unknown>) {
     const id = uuid(p, "id");
     const text = str(p, "text");
     const steer = p.steer === true;
+    if (!this.sessions.has(id)) {
+      // An id this runner doesn't hold is resumed from disk only if its own config directory lists it: a send never
+      // opens an arbitrary transcript by id.
+      const infos = await this.sdk.listSessions({ dir: this.cfg.cwd });
+      if (!infos.some((i) => i.sessionId === id)) throw new RpcError(ERR.sessionNotFound, "no such session in this config directory");
+    }
     let s = this.sessions.get(id);
     const fresh = !s;
     const cap = maxSubagentsOf(p);

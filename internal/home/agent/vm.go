@@ -31,6 +31,12 @@ type Project struct {
 	RoleName  string
 	RoleDir   string
 	ClaudeDir string
+	// Shield protects the project from a role VM (set by Home for each start): EmptyDir is a host directory that is
+	// mounted read-only over /work/.rubi (the legacy role's state), and ReadOnly names directories of the project
+	// (".claude") that are mounted read-only over their place in /work. A single file can't be bound, so
+	// /work/CLAUDE.md stays writable (docs/design/agent-roles.md section 3).
+	EmptyDir string
+	ReadOnly []string
 }
 
 // RoleMountDir and RoleClaudeDir are where a role VM sees its content and its config directory.

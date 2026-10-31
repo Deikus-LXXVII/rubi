@@ -22,6 +22,9 @@ type Options struct {
 	Dir string
 	// Projects lists the agent project ids on this device (nil: any well-formed id is accepted).
 	Projects func() []string
+	// ProjectDir is the real directory of an agent project id ("" when unknown or nil: roles then carry no
+	// directory binding). A new role records its hash; the caller of a put never sets it.
+	ProjectDir func(project string) string
 	// BaseHosts are the hosts every role may reach (config agent_allowed_hosts); the scan flags URLs outside them
 	// and the role's own hosts.
 	BaseHosts func() []string

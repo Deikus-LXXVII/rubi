@@ -344,6 +344,7 @@ describe("send, queue, steer", () => {
   it("send to a session the runner does not hold resumes it by id", async () => {
     const h = await new Home().up();
     const id = "11111111-2222-3333-4444-555555555555";
+    h.sdk.sessions.push({ sessionId: id, summary: "on disk", lastModified: 1 });
     const r = await h.ok("session.send", { id, text: "welcome back" });
     assert.deepEqual(r, { queued: true, delivered: true });
     const q = h.sdk.last;
@@ -353,11 +354,22 @@ describe("send, queue, steer", () => {
     await h.waitFor((l) => l.msg.params?.kind === "result" && l.msg.params.session_id === id);
   });
 
+  it("send to an id this config directory doesn't list is refused and opens nothing", async () => {
+    const h = await new Home().up();
+    const id = "11111111-2222-3333-4444-666666666666";
+    const r = await h.call("session.send", { id, text: "who are you" });
+    assert.equal(r.error.code, -32004);
+    assert.equal(h.sdk.queries.length, 0);
+    const l = (await h.ok("session.list")) as { sessions: unknown[] };
+    assert.deepEqual(l.sessions, []);
+  });
+
   it("resumes after a close: the next send opens a new query with resume", async () => {
     const h = await new Home().up();
     const { id } = await start(h);
     await h.waitEvent("result");
     await h.ok("session.close", { id });
+    h.sdk.sessions.push({ sessionId: id, summary: "on disk", lastModified: 1 });
     await h.ok("session.send", { id, text: "again" });
     assert.equal(h.sdk.queries.length, 2);
     assert.equal(h.sdk.last.options.resume, id);
@@ -419,6 +431,7 @@ describe("fork, rename, interrupt, mode, close, list, messages", () => {
     assert.equal(h.asks.at(-1)!.mode, "plan");
     assert.equal((await h.call("session.mode", { id, mode: "bogus" })).error.code, -32602);
     await h.ok("session.close", { id });
+    h.sdk.sessions.push({ sessionId: id, summary: "on disk", lastModified: 1 });
     await h.ok("session.send", { id, text: "after close" });
     assert.equal(h.sdk.last.options.permissionMode, "default"); // closed = forgotten; Home sets the mode again
   });

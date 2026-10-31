@@ -111,18 +111,58 @@ func (a *AppleContainer) network() string {
 var nameUnsafe = regexp.MustCompile(`[^a-z0-9-]+`)
 
 // containerName is the container's id for a project: stable, so a leftover from a crash is found and
-// removed by the next start.
+// removed by the next start. A role's carries its id (never its name, which can change) and 64 bits of a hash of
+// dir|role.
 func containerName(p Project) string {
-	key, name := p.Dir, p.ID
-	if p.Role != "" { // one VM per role: the name carries the role's slug and a hash of dir|role
-		key, name = p.Dir+"|"+p.Role, p.RoleName
+	if p.Role != "" {
+		sum := sha256.Sum256([]byte(p.Dir + "|" + p.Role))
+		id := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(p.Role), "-"), "-")
+		if len(id) > 24 {
+			id = id[:24]
+		}
+		return "rubi-agent-" + id + "-" + hex.EncodeToString(sum[:8])
 	}
-	sum := sha256.Sum256([]byte(key))
-	slug := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(name), "-"), "-")
+	sum := sha256.Sum256([]byte(p.Dir))
+	slug := strings.Trim(nameUnsafe.ReplaceAllString(strings.ToLower(p.ID), "-"), "-")
 	if len(slug) > 24 {
 		slug = slug[:24]
 	}
 	return "rubi-agent-" + slug + "-" + hex.EncodeToString(sum[:4])
+}
+
+// oldRoleSuffix is the end of the names the first builds gave role containers (rubi-agent-<role name>-<8 hex of
+// dir|role>): the name could change, the suffix could not.
+func oldRoleSuffix(p Project) string {
+	sum := sha256.Sum256([]byte(p.Dir + "|" + p.Role))
+	return "-" + hex.EncodeToString(sum[:4])
+}
+
+// leftoverNames are the containers of this project and role that an earlier run or an earlier naming left behind:
+// the current name, and for a role the old-style names, whatever the role was called then.
+func (a *AppleContainer) leftoverNames(ctx context.Context, p Project) []string {
+	names := []string{containerName(p)}
+	if p.Role == "" {
+		return names
+	}
+	out, err := a.do(ctx, []string{a.bin(), "ls", "--all", "--format", "json"})
+	if err != nil {
+		return names
+	}
+	var rows []struct {
+		Configuration struct {
+			ID string `json:"id"`
+		} `json:"configuration"`
+	}
+	if json.Unmarshal(out, &rows) != nil {
+		return names
+	}
+	suffix := oldRoleSuffix(p)
+	for _, r := range rows {
+		if id := r.Configuration.ID; id != names[0] && strings.HasPrefix(id, "rubi-agent-") && strings.HasSuffix(id, suffix) {
+			names = append(names, id)
+		}
+	}
+	return names
 }
 
 // ImageTag is the tag of the runner image this VM runs.
@@ -223,7 +263,15 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 		"--mount", "type=bind,source=" + p.Dir + ",target=/work"}
 	if p.Role != "" {
 		// A role VM sees its own content (read-only) and its own config directory, nothing of any other role, no
-		// sign-in (the auth gateway holds it) and never the user's SSH agent (no --ssh).
+		// sign-in (the auth gateway holds it) and never the user's SSH agent (no --ssh). The legacy role's state
+		// (/work/.rubi) is covered by an empty read-only directory and the project's own .claude is read-only, so a
+		// role can't rewrite what the other roles load. These binds sit on top of the read-write one of /work.
+		if p.EmptyDir != "" {
+			args = append(args, "--mount", "type=bind,source="+p.EmptyDir+",target=/work/.rubi,readonly")
+		}
+		for _, name := range p.ReadOnly {
+			args = append(args, "--mount", "type=bind,source="+filepath.Join(p.Dir, name)+",target=/work/"+name+",readonly")
+		}
 		args = append(args,
 			"--mount", "type=bind,source="+p.RoleDir+",target="+RoleMountDir+",readonly",
 			"--mount", "type=bind,source="+p.ClaudeDir+",target="+RoleClaudeDir,
@@ -387,11 +435,17 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 		a.setState(StateFailed)
 		return nil, err
 	}
-	if badMountPath(spec.Project.Dir) || badMountPath(spec.Project.RoleDir) || badMountPath(spec.Project.ClaudeDir) {
+	bad := badMountPath(spec.Project.Dir) || badMountPath(spec.Project.RoleDir) || badMountPath(spec.Project.ClaudeDir) || badMountPath(spec.Project.EmptyDir)
+	for _, n := range spec.Project.ReadOnly {
+		bad = bad || badMountPath(n)
+	}
+	if bad {
 		return fail(errors.New("the project path can't be mounted (a comma or control character in it)"))
 	}
 	if r := spec.Project.Role; r != "" && (spec.Project.RoleDir == "" || spec.Project.ClaudeDir == "") {
 		return fail(fmt.Errorf("role %s has no directories to mount", r))
+	} else if r != "" && spec.Project.EmptyDir == "" { // fail closed: a role never gets the legacy role's state read-write
+		return fail(fmt.Errorf("role %s has no empty directory to cover /work/.rubi with", r))
 	}
 	if _, err := exec.LookPath(a.bin()); err != nil && a.run == nil {
 		return fail(errors.New("the container tool isn't installed (https://github.com/apple/container)"))
@@ -408,7 +462,9 @@ func (a *AppleContainer) Start(ctx context.Context, spec StartSpec) (Conn, error
 	if err != nil {
 		return fail(err) // fail closed: a VM on a network that reaches the Internet defeats the proxy
 	}
-	_, _ = a.do(ctx, a.deleteArgs(spec.Project)) // a leftover of a crash
+	for _, n := range a.leftoverNames(ctx, spec.Project) { // a leftover of a crash, or of an older name
+		_, _ = a.do(ctx, []string{a.bin(), "delete", "--force", n})
+	}
 	if _, err := a.do(ctx, a.RunArgs(spec.Project)); err != nil {
 		return fail(err)
 	}

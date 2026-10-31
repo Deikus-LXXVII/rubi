@@ -109,7 +109,8 @@ type Item struct {
 	AgentType string          `json:"agent_type,omitempty"`
 	Tool      string          `json:"tool,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Role      string          `json:"role,omitempty"` // the role (id; the legacy role's is its project id)
+	Role      string          `json:"role,omitempty"`      // the role (id; the legacy role's is its project id)
+	RoleName  string          `json:"role_name,omitempty"` // its name, for the text shown to the user ("default" for the legacy role)
 	Via       string          `json:"via,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	Cwd       string          `json:"cwd,omitempty"`
@@ -157,7 +158,10 @@ type projState struct {
 	// lastUse is the last time something used a role's VM (guarded by Manager.mu); pins hold the role versions
 	// this VM may be reading, released when it stops.
 	lastUse time.Time
-	pins    []func()
+	// pins is one pin per role version this VM may be reading (deduplicated: at most the versions put while it runs);
+	// starting is set from before the role is read until the runner is up, so a put in that window is pinned too.
+	pins     map[int]func()
+	starting bool
 	// proxyEnv is the proxy variables the runner was started with (the proxy password is in them: never
 	// logged); guarded by Manager.mu like runner.
 	proxyEnv map[string]string
@@ -272,6 +276,7 @@ func New(opt Options) *Manager {
 				}
 				return ids
 			},
+			ProjectDir: m.projectDir,
 			BaseHosts: func() []string {
 				if opt.AllowedHosts == nil {
 					return nil
@@ -451,6 +456,32 @@ func ProtectedDir(dir string, extra ...string) bool {
 	return false
 }
 
+// projectDir is the real directory of an agent project id ("" when it isn't one).
+func (m *Manager) projectDir(id string) string {
+	for _, p := range m.projects() {
+		if p.ID == id {
+			return p.Dir
+		}
+	}
+	return ""
+}
+
+// roleBoundTo refuses a role made for another directory than the one the project id names now (the ids come from
+// the directories' names and shift when the list changes): its sessions, instructions and approvals are not for that
+// directory.
+func (m *Manager) roleBoundTo(r *roles.Role, project string) error {
+	if r.Project != project {
+		return fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(project, 64))
+	}
+	if r.DirHash == "" {
+		return fmt.Errorf("role %s has no recorded project directory; make it again", clip(r.Name, 40))
+	}
+	if dir := m.projectDir(project); dir == "" || roles.DirHash(dir) != r.DirHash {
+		return fmt.Errorf("role %s was made for another directory than project %q is now; it isn't used here", clip(r.Name, 40), clip(project, 64))
+	}
+	return nil
+}
+
 // project is the project's legacy-role VM.
 func (m *Manager) project(id string) (*projState, error) { return m.projectFor(id, "") }
 
@@ -477,8 +508,8 @@ func (m *Manager) selectRole(project, role string) (roleSel, error) {
 	if err != nil {
 		return roleSel{}, fmt.Errorf("unknown role %q", clip(role, 64))
 	}
-	if r.Project != project {
-		return roleSel{}, fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(project, 64))
+	if err := m.roleBoundTo(r, project); err != nil {
+		return roleSel{}, err
 	}
 	m.nameMu.Lock()
 	if m.names == nil {
@@ -487,6 +518,19 @@ func (m *Manager) selectRole(project, role string) (roleSel, error) {
 	m.names[role] = r.Name
 	m.nameMu.Unlock()
 	return roleSel{id: role, name: r.Name, archived: r.Status == "archived"}, nil
+}
+
+// cachedRoleName is roleName without reading the store (for code that holds m.mu): the id when the name isn't known.
+func (m *Manager) cachedRoleName(project, id string) string {
+	if id == "" || id == project {
+		return "default"
+	}
+	m.nameMu.Lock()
+	defer m.nameMu.Unlock()
+	if n, ok := m.names[id]; ok {
+		return n
+	}
+	return id
 }
 
 // roleName is a role's name for messages and rows ("default" for the legacy role; the id when it can't be read).
@@ -558,21 +602,37 @@ func (m *Manager) unpinLocked(p *projState) {
 	p.pins = nil
 }
 
+// pinLocked pins a role version for the VM once.
+func (m *Manager) pinLocked(p *projState, version int) {
+	if p.pins == nil {
+		p.pins = map[int]func(){}
+	}
+	if _, ok := p.pins[version]; !ok {
+		p.pins[version] = m.roles.Pin(p.Role, version)
+	}
+}
+
 // pinRole reads the role and marks its current version as in use by the VM about to start (the runner reads
-// `current` at each query start, so every version put while the VM runs is pinned too, until it stops). The caller
-// releases the pin if the start fails, else hands it to the VM (m.mu must not be held).
-func (m *Manager) pinRole(p *projState) (*roles.Role, func(), error) {
+// `current` at each query start, so every version put while the VM runs is pinned too, until it stops: see rolePut).
+// p.starting must be set already. The pins are released when the VM stops or the start fails (m.mu must not be held).
+func (m *Manager) pinRole(p *projState) (*roles.Role, error) {
 	if m.roles == nil {
-		return nil, nil, errors.New("roles aren't available here")
+		return nil, errors.New("roles aren't available here")
 	}
 	r, err := m.roles.Get(p.Role, 0)
 	if err != nil {
-		return nil, nil, fmt.Errorf("role %q: %w", clip(p.Role, 64), err)
+		return nil, fmt.Errorf("role %q: %w", clip(p.Role, 64), err)
 	}
-	if r.Project != p.ID {
-		return nil, nil, fmt.Errorf("role %s doesn't belong to project %q", clip(r.Name, 40), clip(p.ID, 64))
+	if err := m.roleBoundTo(r, p.ID); err != nil {
+		return nil, err
 	}
-	return r, m.roles.Pin(p.Role, r.Version), nil
+	if roles.DirHash(p.Dir) != r.DirHash { // the VM about to mount p.Dir
+		return nil, fmt.Errorf("role %s was made for another directory than the one this VM would mount", clip(r.Name, 40))
+	}
+	m.mu.Lock()
+	m.pinLocked(p, r.Version)
+	m.mu.Unlock()
+	return r, nil
 }
 
 // rolePut is called after a role.put went through: the name may have changed and a running VM may read the new version.
@@ -585,9 +645,40 @@ func (m *Manager) rolePut(res any) {
 	delete(m.names, pr.ID)
 	m.nameMu.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if p := m.projs[pr.ID]; p != nil && p.runner != nil {
-		p.pins = append(p.pins, m.roles.Pin(pr.ID, pr.Version))
+	p := m.projs[pr.ID]
+	var px *Proxy
+	if p != nil && (p.runner != nil || p.starting) {
+		m.pinLocked(p, pr.Version)
+		px = p.proxy
+	}
+	m.mu.Unlock()
+	if p == nil {
+		return
+	}
+	r, err := m.roles.Get(pr.ID, pr.Version)
+	if err != nil {
+		return
+	}
+	// Revocation: what the new version no longer lists is refused at once (its open tunnels are closed), and an
+	// archived role with nothing running loses its VM. A turn that is running continues; archived roles take no
+	// new start or send.
+	if px != nil {
+		hosts := AllowList(m.opt.GitHosts(), m.extraHosts(p, r.Hosts))
+		px.SetHosts(hosts)
+		m.mu.Lock()
+		if p.proxy == px {
+			p.hosts = hosts
+		}
+		m.mu.Unlock()
+	}
+	if r.Status == "archived" {
+		m.mu.Lock()
+		idle := p.runner != nil && !m.roleBusyLocked(p.key())
+		m.mu.Unlock()
+		if idle {
+			log.Printf("agent: role %q (project %q) was archived with nothing running; stopping its VM", clip(r.Name, 40), clip(p.ID, 64))
+			m.shutdown(p)
+		}
 	}
 }
 
@@ -611,7 +702,7 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		}
 	}
 	var roleHosts []string
-	var unpin func()
+	var shield Project
 	if p.Role == "" {
 		if err := prepareWorkDir(p.Dir); err != nil {
 			return nil, err
@@ -623,16 +714,29 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 				return nil, fmt.Errorf("role %s has no directory %s to mount", clip(p.RoleName, 40), filepath.Base(d))
 			}
 		}
-		role, release, err := m.pinRole(p)
+		if err := prepareWorkDir(p.Dir); err != nil { // /work/.rubi exists to be covered
+			return nil, err
+		}
+		shield = roleShield(p.Dir, filepath.Join(m.opt.Dir, RoleEmptyDir))
+		if shield.EmptyDir == "" {
+			return nil, fmt.Errorf("role %s: can't prepare the empty directory that covers /work/.rubi", clip(p.RoleName, 40))
+		}
+		m.mu.Lock()
+		p.starting = true // from here a put is pinned, so no version the runner may read is collected
+		m.mu.Unlock()
+		defer func() {
+			m.mu.Lock()
+			p.starting = false
+			if p.runner == nil {
+				m.unpinLocked(p) // the start failed
+			}
+			m.mu.Unlock()
+		}()
+		role, err := m.pinRole(p)
 		if err != nil {
 			return nil, err
 		}
-		roleHosts, unpin = role.Hosts, release
-		defer func() {
-			if unpin != nil {
-				unpin() // the start failed
-			}
-		}()
+		roleHosts = role.Hosts
 	}
 	// A VM start can take minutes (the image); it must not die with the request that asked for it.
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
@@ -703,7 +807,9 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	if p.Role != "" {
 		env["RUBI_ROLE_DIR"], env["RUBI_CLAUDE_DIR"] = RoleMountDir, RoleClaudeDir
 	}
-	conn, err := p.vm.Start(sctx, StartSpec{Project: p.Project, Env: env, Prepare: prepare})
+	pj := p.Project
+	pj.EmptyDir, pj.ReadOnly = shield.EmptyDir, shield.ReadOnly
+	conn, err := p.vm.Start(sctx, StartSpec{Project: pj, Env: env, Prepare: prepare})
 	if err != nil {
 		if px != nil {
 			px.Close()
@@ -723,10 +829,6 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	m.mu.Lock()
 	p.runner, p.proxy, p.gateway, p.hosts, p.proxyEnv = r, px, gw, hosts, penv
 	p.lastUse = m.opt.Now()
-	if unpin != nil {
-		p.pins = append(p.pins, unpin)
-		unpin = nil
-	}
 	m.mu.Unlock()
 	if p.Role != "" {
 		m.ensureLoop() // the loop stops an idle role VM
@@ -766,6 +868,9 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 // pushLocked adds an item for the plugin; when full the oldest event goes (asks are bounded elsewhere).
 func (m *Manager) pushLocked(it Item) {
 	it.At = m.opt.Now().UTC()
+	if it.RoleName == "" && it.Role != "" {
+		it.RoleName = m.cachedRoleName(it.Project, it.Role)
+	}
 	if len(m.out) >= maxOutbox {
 		for i, o := range m.out {
 			if o.Type == "event" || o.Type == "queue" {
@@ -798,6 +903,9 @@ func deny(msg string) AskResult { return AskResult{Behavior: "deny", Message: ms
 
 // waitDecision queues the ask item and waits; anything but a decision from the plugin is a denial.
 func (m *Manager) waitDecision(ctx context.Context, project string, it Item) AskResult {
+	if it.RoleName == "" && it.Role != "" {
+		it.RoleName = m.roleName(project, it.Role) // may read the role: before the lock
+	}
 	m.mu.Lock()
 	if st := m.self; st != nil && st.project == project { // the whole project, whatever the role
 		// A self-test (setup.go) denies everything itself: the question never reaches the plugin, so no
@@ -1398,7 +1506,7 @@ func (m *Manager) takeSlotLocked(it QueueItem) *slotState {
 
 // deliver hands the item to the runner; slot is the slot a start booked (nil for a send to a running session).
 func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot *slotState) (map[string]any, error) {
-	if it.Op == "start" && p.Role != "" {
+	if p.Role != "" { // an archived role takes no new start or send; a turn that is running continues
 		if sel, err := m.selectRole(p.ID, p.Role); err != nil || sel.archived {
 			return nil, archivedErr(p.RoleName, err)
 		}
@@ -1425,6 +1533,11 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 		m.mu.Unlock()
 		return map[string]any{"id": res.ID}, nil
 	default:
+		if slot != nil { // not a session this role is already running: it must be one of its own
+			if err := m.ownsSession(ctx, r, p, it.Session, slot); err != nil {
+				return nil, err
+			}
+		}
 		var res json.RawMessage
 		err := r.Call(ctx, "session.send", map[string]any{"id": it.Session, "text": it.Text, "from": it.From, "steer": it.Steer,
 			"max_subagents": m.usageNow().For(it.Bot).Subagents}, &res)
@@ -1717,12 +1830,12 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		m.wake() // a raised limit may let the queue go
 		return m.opStatus(ctx, false), nil
 	case "sessions":
-		return m.forward(ctx, in.Project, in.Role, "session.list", map[string]any{})
+		return m.forwardAs(ctx, fwdRead, in.Project, in.Role, "session.list", map[string]any{})
 	case "messages":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		return m.forward(ctx, in.Project, in.Role, "session.messages", map[string]any{"id": in.ID, "limit": min(max(in.Limit, 0), 500)})
+		return m.forwardAs(ctx, fwdRead, in.Project, in.Role, "session.messages", map[string]any{"id": in.ID, "limit": min(max(in.Limit, 0), 500)})
 	case "start":
 		if strings.TrimSpace(in.Prompt) == "" {
 			return nil, errors.New("the prompt is empty")
@@ -1757,6 +1870,9 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if err != nil {
 			return nil, err
 		}
+		if sel.archived {
+			return nil, archivedErr(sel.name, nil)
+		}
 		m.seeBot(in.Bot)
 		return m.submit(ctx, QueueItem{Op: "send", Bot: in.Bot, Project: in.Project, Role: sel.id, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
 	case "rename":
@@ -1773,12 +1889,12 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		return m.forward(ctx, in.Project, in.Role, "session.interrupt", map[string]any{"id": in.ID})
+		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.interrupt", map[string]any{"id": in.ID})
 	case "close":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
-		res, err := m.forward(ctx, in.Project, in.Role, "session.close", map[string]any{"id": in.ID})
+		res, err := m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.close", map[string]any{"id": in.ID})
 		if err == nil {
 			m.mu.Lock()
 			if sl := m.exactLocked(m.roleKey(in.Project, in.Role), in.ID); sl != nil {
@@ -1792,7 +1908,7 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if err != nil || !okID(in.ID) || in.Mode == "" {
 			return nil, errors.New("a session id and a valid mode are needed")
 		}
-		return m.forward(ctx, in.Project, in.Role, "session.mode", map[string]any{"id": in.ID, "mode": mode})
+		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.mode", map[string]any{"id": in.ID, "mode": mode})
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
 }
@@ -1822,17 +1938,99 @@ func archivedErr(name string, err error) error {
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("role %s is archived; it can't start sessions", clip(name, 40))
+	return fmt.Errorf("role %s is archived; it takes no new sessions or messages", clip(name, 40))
 }
 
+// How a forwarded call treats a role's VM: fwdRead only looks (a stopped VM answers empty and is not started, a
+// running one is not kept up by it), fwdLive acts on a running VM only, and fwdBoot starts the VM if needed.
+const (
+	fwdBoot = iota
+	fwdRead
+	fwdLive
+)
+
 func (m *Manager) forward(ctx context.Context, project, role, method string, params any) (any, error) {
+	return m.forwardAs(ctx, fwdBoot, project, role, method, params)
+}
+
+// runningRunner is the project's runner if it is up now (no start, no touch).
+func (m *Manager) runningRunner(p *projState) *Runner {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r := p.runner; r != nil {
+		select {
+		case <-r.Done():
+		default:
+			return r
+		}
+	}
+	return nil
+}
+
+// stoppedAnswer is what a read or a live-only call gets from a role whose VM is stopped.
+func stoppedAnswer(method string, name string) (any, error) {
+	switch method {
+	case "session.list":
+		return map[string]any{"sessions": []any{}, "vm_state": string(StateStopped)}, nil
+	case "session.messages":
+		return map[string]any{"messages": []any{}, "vm_state": string(StateStopped)}, nil
+	case "session.close":
+		return map[string]any{"ok": true, "vm_state": string(StateStopped)}, nil
+	}
+	return nil, fmt.Errorf("role %s has no running VM; nothing to do", clip(name, 40))
+}
+
+// ownsSession refuses a session id that isn't one of the role's own: neither one of its slots nor in its runner's
+// session list. An isolated role never touches a transcript that lives elsewhere. The legacy role has no sibling
+// to confuse it with.
+func (m *Manager) ownsSession(ctx context.Context, r *Runner, p *projState, id string, self *slotState) error {
+	if p.Role == "" || id == "" {
+		return nil
+	}
+	m.mu.Lock()
+	sl := m.exactLocked(p.key(), id)
+	known := sl != nil && sl != self // self is the slot a send just booked for this very id
+	m.mu.Unlock()
+	if known {
+		return nil
+	}
+	var res struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := r.Call(cctx, "session.list", map[string]any{}, &res); err != nil {
+		return fmt.Errorf("role %s: can't check that session %s is its own: %w", clip(p.RoleName, 40), clip(id, 40), err)
+	}
+	for _, s := range res.Sessions {
+		if s.ID == id {
+			return nil
+		}
+	}
+	return fmt.Errorf("session %s doesn't belong to role %s", clip(id, 40), clip(p.RoleName, 40))
+}
+
+func (m *Manager) forwardAs(ctx context.Context, how int, project, role, method string, params any) (any, error) {
 	p, err := m.projectFor(project, role)
 	if err != nil {
 		return nil, err
 	}
-	r, err := m.ensure(ctx, p)
-	if err != nil {
+	var r *Runner
+	if p.Role != "" && how != fwdBoot {
+		if r = m.runningRunner(p); r == nil {
+			return stoppedAnswer(method, p.RoleName)
+		}
+	} else if r, err = m.ensure(ctx, p); err != nil {
 		return nil, err
+	}
+	if pm, ok := params.(map[string]any); ok {
+		if id, _ := pm["id"].(string); id != "" {
+			if err := m.ownsSession(ctx, r, p, id, nil); err != nil {
+				return nil, err
+			}
+		}
 	}
 	var res json.RawMessage
 	cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -2108,6 +2306,31 @@ func (m *Manager) askOpenLocked(s *slotState) bool {
 // config (which can hold conversation text and tokens) are never committed. /work is shared with the VM
 // and the agent controls its content: nothing is followed through a symlink, and only a real directory and a
 // regular file are accepted. Nothing else on the Mac reads /work for decisions.
+// RoleEmptyDir (under the helper directory) is the empty directory a role VM sees at /work/.rubi, read-only.
+const RoleEmptyDir = "agent-role-empty"
+
+// roleShield decides what covers the project for a role VM: the empty directory over /work/.rubi, and the
+// project's own .claude (when it is a plain directory: a bind of a symlink would follow it) read-only. Only existing
+// directories are mounted; a missing mount point would be created in the project by the container tool. Nothing
+// is read from them. EmptyDir is "" when the empty directory can't be made.
+func roleShield(projectDir, emptyDir string) Project {
+	var s Project
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		return s
+	}
+	if st, err := os.Lstat(emptyDir); err != nil || !st.IsDir() {
+		return s
+	}
+	if ents, err := os.ReadDir(emptyDir); err != nil || len(ents) != 0 {
+		return s // it must stay empty: Home never writes in it, a VM can't (read-only)
+	}
+	s.EmptyDir = emptyDir
+	if st, err := os.Lstat(filepath.Join(projectDir, ".claude")); err == nil && st.IsDir() {
+		s.ReadOnly = []string{".claude"}
+	}
+	return s
+}
+
 func prepareWorkDir(dir string) error {
 	rubi := filepath.Join(dir, ".rubi")
 	st, err := os.Lstat(rubi)

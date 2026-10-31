@@ -174,9 +174,10 @@ describe("start and send failures leave nothing behind", () => {
     h.sdk.query = () => {
       throw new Error("cannot spawn claude");
     };
+    h.sdk.sessions.push({ sessionId: Z, summary: "on disk", lastModified: 1 });
     assert.equal((await h.call("session.send", { id: Z, text: "x" })).error.code, -32603);
-    const l = (await h.ok("session.list")) as { sessions: unknown[] };
-    assert.deepEqual(l.sessions, []);
+    const l = (await h.ok("session.list")) as { sessions: { id: string }[] };
+    assert.deepEqual(l.sessions.map((x) => x.id), [Z]); // only the disk listing, no registration
   });
 });
 

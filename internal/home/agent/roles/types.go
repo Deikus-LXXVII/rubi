@@ -58,8 +58,9 @@ const (
 // Role is one version of a role (section 2.1). Fields marked "set by Home" are overwritten on Put whatever the
 // spec says.
 type Role struct {
-	ID                  string   `json:"id"`      // set by Home
-	Project             string   `json:"project"` // an agent project id on this device
+	ID                  string   `json:"id"`                 // set by Home
+	Project             string   `json:"project"`            // an agent project id on this device
+	DirHash             string   `json:"dir_hash,omitempty"` // set by Home: sha256 of the project's real directory when the role was made
 	Name                string   `json:"name"`
 	Description         string   `json:"description"`
 	Status              string   `json:"status"`  // active or archived
