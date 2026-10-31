@@ -1,0 +1,8 @@
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"method":"hello","params":{"run_token":"tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt","version":"test"}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"result":{"ok":true}}}
+{"from":"home","raw":"this is not json"}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}}}
+{"from":"home","raw":"{\"jsonrpc\":\"2.0\",\"id\":50,\"method\":\"no.such.method\"}"}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":50,"error":{"code":-32601,"message":"unknown method no.such.method"}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"method":"session.list","params":{}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"result":{"sessions":[]}}}

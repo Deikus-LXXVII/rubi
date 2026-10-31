@@ -1,0 +1,14 @@
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"method":"hello","params":{"run_token":"tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt","version":"test"}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"result":{"ok":true}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"method":"session.start","params":{"prompt":"do it","mode":"bypassPermissions"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","status":"busy"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"result":{"id":"<uuid-1>"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":2,"method":"perm.ask","params":{"ask_id":"<uuid-2>","session_id":"<uuid-1>","tool":"Bash","input":{"command":"ls"},"tool_use_id":"toolu_1","cwd":"/work","via":"hook","mode":"bypassPermissions"}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":2,"result":{"behavior":"allow"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"assistant","text":"starting"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"tool","name":"Bash","summary":"ls","tool_use_id":"toolu_1"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":3,"method":"perm.ask","params":{"ask_id":"<uuid-3>","session_id":"<uuid-1>","tool":"Bash","input":{"command":"git push"},"tool_use_id":"toolu_2","agent_id":"agent-1","agent_type":"pusher","cwd":"/work","via":"hook","mode":"bypassPermissions"}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":3,"result":{"behavior":"deny","message":"subagents may not push"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"tool","name":"Bash","summary":"git push","tool_use_id":"toolu_2","parent_tool_use_id":"toolu_parent"}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"result","subtype":"success","usage":{"input_tokens":100,"output_tokens":20},"model_usage":{"fake-model":{"inputTokens":100,"outputTokens":20,"costUSD":0.0001}},"total_cost_usd":0.0001,"num_turns":1,"is_error":false}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"status","status":"idle"}}}

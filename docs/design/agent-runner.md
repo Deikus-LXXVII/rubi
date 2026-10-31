@@ -33,8 +33,8 @@ Home -> runner (requests):
 |---|---|---|
 | `session.list` | `{}` | `{sessions:[{id, name, created, last_activity, mode, busy}]}` (SDK `listSessions`, cwd `/work`) |
 | `session.messages` | `{id, limit?}` | `{messages:[...]}` (SDK `getSessionMessages`) |
-| `session.start` | `{prompt, name?, from?, mode}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option) |
-| `session.send` | `{id, text, from?, steer?}` | `{queued:true}`: into the live query's input queue; `steer:true` = `priority:"now"`; idle session -> `resume` |
+| `session.start` | `{prompt, name?, from?, mode}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option); `name` becomes the SDK `title` (no automatic title request) |
+| `session.send` | `{id, text, from?, steer?}` | `{queued:true, delivered}`: into the live query's input queue; `steer:true` = `priority:"now"`, `delivered:true`; without `steer` while a turn runs the runner holds the message and hands it to the SDK at the turn's `result` (`delivered:false`; the SDK never answers a mid-turn message of default priority); a session the runner does not hold -> `resume` |
 | `session.rename` | `{id, name}` | `{ok}` (`renameSession`) |
 | `session.fork` | `{id, name?}` | `{id}` (`forkSession`, then idle until sent to) |
 | `session.interrupt` | `{id}` | `{ok}` |
@@ -46,44 +46,78 @@ Runner -> Home (requests the runner waits on):
 
 | Method | Params | Result |
 |---|---|---|
-| `perm.ask` | `{ask_id, session_id, agent_id?, agent_type?, tool, input, cwd, mode}` | `{behavior:"allow"\|"deny", message?, updated_input?}` |
+| `perm.ask` | `{ask_id, session_id, agent_id?, agent_type?, tool, tool_use_id?, via, input, cwd, mode}` | `{behavior:"allow"\|"deny", message?, updated_input?}` |
+| `git.credential` | `{op:"get"\|"store"\|"erase", input, purpose:"read"\|"push"}` | `{output}` (git's text; empty for store/erase) |
 
 `perm.ask` is sent from the `PreToolUse` hook for **every** tool call in every mode (the hook is installed for
 the main session, subagents and forks; M0 showed deny works in bypass and inside subagents/forks). The hook's
 own timeout is 300 s; no answer -> the SDK blocks the call (M0 exp 5). The runner also installs `canUseTool`
 (for `AskUserQuestion` and modes stricter than bypass) and routes it through `perm.ask` with `tool` set.
 
+Additions in M1: `via` is `"hook"` or `"can_use_tool"`; `tool_use_id` correlates the asks of one call. If the hook
+already got a decision for a `tool_use_id`, `canUseTool` for the same call returns that decision without a second
+`perm.ask`. `AskUserQuestion` is not asked by the hook, only by `canUseTool` (the real SDK calls it even in bypass),
+after an `ask` event with the questions; `updated_input` carries the answers back. Anything but an explicit `allow`
+is a deny. The runner stops waiting after 295 s (Home denies at 280 s) and denies. A `message` is shown to the model.
+
 Runner -> Home (notifications, no reply): `event {session_id, kind, ...}` with `kind` one of
 `assistant` (text), `tool` (name + short input summary), `result` (`{usage, model_usage, total_cost_usd,
 num_turns, is_error}`), `ask` (`AskUserQuestion` payload), `rate_limit` (from `rate_limit_event` or
-`api_error_params.rate_limit_info`), `background` (a subagent kept running after the turn: the slot stays busy
-until its own result), `status` (`idle`/`busy`/`closed`), `error`.
+`api_error_params.rate_limit_info`), `background`, `status`, `error`. Field names (M1): `status` is
+`{status:"busy"|"idle"|"closed"}` (busy while a turn runs or a background subagent lives; `closed` once, after
+`session.close`); `background` is `{agent_id, subagent_type?, description?}` when a subagent keeps running after the
+turn (the slot stays busy) and `{agent_id, done:true}` when it ends; `error` is `{message}` (also sent when held-back
+messages or events had to be dropped, with `dropped:n` for events). `session_id` is always the id `session.start` returned.
 
-Runner options for every query: `cwd:"/work"`, `settingSources:["project"]`, `allowDangerouslySkipPermissions:
-true`, `permissionMode` from Home, `env` with `CLAUDE_CONFIG_DIR=/work/.rubi/claude`, `DISABLE_TELEMETRY=1`,
-`DISABLE_ERROR_REPORTING=1`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `HTTPS_PROXY` = Home's proxy;
-`disallowedTools` for edits under `/work/.rubi/**`; one long-lived query per session fed by a queue (pattern
-from T3 Code, MIT, noted in the spike).
+Runner -> Home notification, not an event: `perm.cancel {ask_id, session_id}`, sent when the runner gives up on a
+`perm.ask` (its own timeout, the SDK hook timeout, `session.interrupt`, `session.close`); Home drops the pending
+item. The call is denied on the runner side. Not sent when Home is gone.
 
-## Rubi Home ops (relay, capability `claude-agent`)
+Git credentials: the runner listens on a unix socket in the VM (`RUBI_CRED_SOCK`, default `/tmp/rubi-cred.sock`,
+mode 0600, removed on exit). `git-credential-rubi` (runner/container) writes the operation on the first line, then git's
+`key=value` text up to the blank line (at most 8 KiB); the runner relays it as `git.credential` and writes `output`
+back, then closes. On an error, a refusal or no answer within 295 s it closes with no output (git fails without
+prompting). `purpose` is `"push"` only for 120 s after Home approved a `perm.ask` for a Bash command that contains
+`git ... push`; otherwise `"read"`. Any process of the runner's VM user can connect to the socket; Home must treat the
+purpose as the runner's claim and keep separate read and push credentials. The runner neither stores nor logs them.
 
-| Op | Params | Result |
-|---|---|---|
-| `claude-agent.projects` | `{}` | `{projects:[{id, dir, vm_state, slot_busy, queue}]}` |
-| `claude-agent.sessions` | `{project}` | runner `session.list` + names, sisters' markers |
-| `claude-agent.messages` | `{project, id, limit?}` | runner `session.messages` |
-| `claude-agent.start` | `{project, prompt, name?, from?, mode}` | `{id}` or `{queued:true, position}` when the slot is busy |
-| `claude-agent.send` | `{project, id, text, from?, steer?}` | `{queued:true, position, delivered?}` |
-| `claude-agent.rename` / `.fork` / `.interrupt` / `.close` | `{project, id, ...}` | as runner |
-| `claude-agent.mode` | `{project, id, mode}` | `{ok}` (plugin decides; Home forwards) |
-| `claude-agent.next` | `{wait_seconds}` | `{items:[...]}`: `perm.ask` (with Home's `ask_id`), `event`s, queue changes |
-| `claude-agent.decide` | `{ask_id, behavior, message?, updated_input?}` | `{ok}` |
-| `claude-agent.status` | `{}` | `{login, slot:{busy, project, session}, queue:[...], usage_today}` |
+Runner process: environment `RUBI_RUN_TOKEN` (required), `RUBI_WORK_DIR` (working directory, default `/work`;
+sessions and config under `<dir>/.rubi/claude`), `HTTPS_PROXY`. The runner sets `CLAUDE_CONFIG_DIR` for itself too,
+because `listSessions`/`forkSession` read the sessions of its own environment. `from` in `session.start`/`send` is
+written as a first line `[message from <from>]` in the text. A session the runner does not hold (after a restart or a
+close) is resumed in mode `default` until `session.mode` is sent; a fork inherits the mode of its source. Wire
+transcripts for client tests: `runner/testdata/*.ndjson`, format in `runner/README.md`.
 
-Rules in Home: exactly one top-level query on the Mac at a time (the slot); subagents/forks inside it are
-unlimited; background subagents keep the slot busy. Starts/sends for a busy slot wait in a disk queue
-(`<helper dir>/agent-queue.json`, 0600, survives restarts, TTL 24 h). A `perm.ask` with no decision in 280 s,
-or while Rubi is locked (no poll for 15 s), is answered `deny`. Home never decides a `perm.ask` itself.
+Runner options for every query: `cwd` (`/work`), `permissionMode` from Home, `allowDangerouslySkipPermissions:true`,
+`settingSources:["project"]` (CLAUDE.md and skills; `RUBI_SETTING_SOURCES=none` ignores the project's `.claude` entirely),
+and, so that a project cannot run code outside the `PreToolUse` gate (checked against the real SDK in M1):
+`settings:{disableAllHooks:true, apiKeyHelper:""}` (flag-layer settings beat the project's files: no hooks from
+`.claude/settings.json`, no project `apiKeyHelper`), `strictMcpConfig:true` with `mcpServers:{}` (no `.mcp.json` server),
+and `disallowedTools` `Edit(/work/.rubi/**)`, `Edit(/work/.claude/**)`, `Edit(/work/.mcp.json)`, `Read(/work/.rubi/**)`
+(`Edit(...)` covers Write and the other editing tools; a `Write(...)` rule does not block; deny rules run before hooks and a
+hook's allow cannot override them; Bash can still write there, that goes through `perm.ask`). Known gap: `env` in the
+project's `.claude/settings.json` still applies (it cannot be switched off key-wide); use `RUBI_SETTING_SOURCES=none` for
+untrusted repositories. The hook never returns a permission `allow`: it returns a deny, or `updatedInput` without a decision
+(the SDK applies it), or `{}`; the SDK's own rules and `canUseTool` still run afterwards. Exceptions in the hook or in
+`canUseTool` deny. Child `env`: `CLAUDE_CONFIG_DIR=/work/.rubi/claude`, `DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1`,
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `HTTPS_PROXY`/`https_proxy` copied from the runner's env (Home's CONNECT
+proxy; no `HTTP_PROXY` is set), plus `PATH HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM NO_PROXY` and, for tests and API-key
+setups only, `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` if present in the runner's env; nothing else. One long-lived
+query per session fed by a queue (pattern from T3 Code, MIT, noted in the spike).
+
+Behaviour of held-back messages: at most 50 per session (more: error `-32006` and an `error` event). If the query
+dies, the first held-back message goes into a resumed query (at most 3 restarts without a `result`), the rest follow
+turn by turn. A turn the SDK started itself (a background task woke the model) counts as active, so a message sent then
+is held back too. `session.interrupt` drops held-back messages. Session ids in params must be UUIDs. Slow reader: when
+Home reads slower than the runner writes and more than 8 MiB wait, the oldest `assistant` and `tool` events are dropped
+and one `error` event with `dropped:n` follows; requests, responses and other events are never dropped.
+
+The run token protects the handshake against a wrong peer, not against the VM's own user: any process of that user can
+read it from the runner's environment, and then could only talk to the runner it already shares a VM with. It is not a
+secret from the VM. Home's proxy and the exec channel, not the token, keep other VMs and hosts out.
+
+Build: `npm run build` writes `runner/dist/main.js` (the image's entry point, Node >= 22; an older Node, or a missing
+`node_modules`, ends with a plain message and exit 1). Tests compile to `dist-test/`.
 
 ## Network and git
 
@@ -92,7 +126,8 @@ or while Rubi is locked (no poll for 15 s), is answered `deny`. Home never decid
   `claude.ai`, `console.anthropic.com`, `platform.claude.com` are the candidates), the project's git host(s),
   `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, SwiftPM package hosts from `Package.resolved`.
   Everything else: refused and logged. Telemetry hosts (Datadog, downloads.claude.ai) are refused.
-- Git credential helper (`git-credential-rubi`, over the exec channel to Home): `get` for read always; for a push
+- Git credential helper (`git-credential-rubi` in the VM, through the runner's credential socket and the `git.credential`
+  request, see above): `get` for read always; for a push
   only while a matching mandate (`md_` with push scope) is live in the plugin (Home asks the plugin via
   `claude-agent.next` item `cred.ask`, plugin answers through `claude-agent.decide`).
 
