@@ -205,6 +205,47 @@ func TestDownload(t *testing.T) {
 			}
 		}
 	})
+	t.Run("stalls", func(t *testing.T) {
+		old := stallLimit
+		stallLimit = 300 * time.Millisecond
+		defer func() { stallLimit = old }()
+		d := newDownload(t, body, func(w http.ResponseWriter, r *http.Request) {
+			w.Write(body[:100])
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+		})
+		e := newTestEnv(t, d.opts)
+		dir := t.TempDir()
+		start := time.Now()
+		if _, err := e.s.download(context.Background(), dir, func(string) {}); err == nil || !strings.Contains(err.Error(), "stalled") {
+			t.Errorf("err %v", err)
+		}
+		if time.Since(start) > 3*time.Second {
+			t.Error("the stall wasn't noticed in time")
+		}
+		if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+			t.Errorf("left behind: %v", ents)
+		}
+	})
+	t.Run("overall limit", func(t *testing.T) {
+		old := downloadLimit
+		downloadLimit = 300 * time.Millisecond
+		defer func() { downloadLimit = old }()
+		d := newDownload(t, body, func(w http.ResponseWriter, r *http.Request) {
+			for i := 0; i < 100 && r.Context().Err() == nil; i++ { // a trickle, so it never stalls
+				w.Write(body[:1])
+				w.(http.Flusher).Flush()
+				time.Sleep(50 * time.Millisecond)
+			}
+		})
+		e := newTestEnv(t, d.opts)
+		if _, err := e.s.download(context.Background(), t.TempDir(), func(string) {}); err == nil || !strings.Contains(err.Error(), "too long") {
+			t.Errorf("err %v", err)
+		}
+	})
 	t.Run("server error", func(t *testing.T) {
 		d := newDownload(t, body, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "no", 500) })
 		e := newTestEnv(t, d.opts)

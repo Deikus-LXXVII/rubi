@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,6 +41,12 @@ var Pinned = Release{
 func (r Release) fileName() string { return "container-" + r.Version + "-installer-signed.pkg" }
 
 // ---- download ----
+
+// downloadLimit bounds the whole download; stallLimit is how long it may go without a byte.
+var (
+	downloadLimit = 20 * time.Minute
+	stallLimit    = 60 * time.Second
+)
 
 var errDownload = errors.New("the download doesn't match the pinned release")
 
@@ -77,14 +84,37 @@ func (s *Setup) download(ctx context.Context, dir string, log func(string)) (str
 		}
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rel.URL, nil)
+	ctx, cancelDl := context.WithTimeoutCause(ctx, downloadLimit, errors.New("the download took too long"))
+	defer cancelDl()
+	var lastByte atomic.Int64
+	lastByte.Store(time.Now().UnixNano())
+	stalled, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	dctx, cancelStall := context.WithCancelCause(ctx)
+	defer cancelStall(nil)
+	go func() { // no byte for stallLimit ends the download
+		t := time.NewTicker(max(stallLimit/10, time.Millisecond))
+		defer t.Stop()
+		for {
+			select {
+			case <-stalled.Done():
+				return
+			case <-t.C:
+				if time.Since(time.Unix(0, lastByte.Load())) > stallLimit {
+					cancelStall(errors.New("the download stalled"))
+					return
+				}
+			}
+		}
+	}()
+	req, err := http.NewRequestWithContext(dctx, http.MethodGet, rel.URL, nil)
 	if err != nil {
 		return "", err
 	}
 	log("Downloading " + rel.fileName())
 	resp, err := c.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("download failed: %s", safeText(err.Error()))
+		return "", fmt.Errorf("download failed: %s", downloadCause(dctx, ctx, err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -105,6 +135,7 @@ func (s *Setup) download(ctx context.Context, dir string, log func(string)) (str
 	for {
 		m, rerr := resp.Body.Read(buf)
 		if m > 0 {
+			lastByte.Store(time.Now().UnixNano())
 			n += int64(m)
 			if n > rel.Size {
 				f.Close()
@@ -125,7 +156,7 @@ func (s *Setup) download(ctx context.Context, dir string, log func(string)) (str
 		}
 		if rerr != nil {
 			f.Close()
-			return "", fmt.Errorf("download failed: %s", safeText(rerr.Error()))
+			return "", fmt.Errorf("download failed: %s", downloadCause(dctx, ctx, rerr))
 		}
 	}
 	if err := f.Close(); err != nil {
@@ -142,6 +173,17 @@ func (s *Setup) download(ctx context.Context, dir string, log func(string)) (str
 	}
 	log("The download matches the pinned size and SHA-256.")
 	return final, nil
+}
+
+// downloadCause names why a download ended: a stall or the time limit, else the error.
+func downloadCause(dctx, ctx context.Context, err error) string {
+	if c := context.Cause(dctx); c != nil && !errors.Is(c, context.Canceled) {
+		return c.Error()
+	}
+	if c := context.Cause(ctx); c != nil && !errors.Is(c, context.Canceled) {
+		return c.Error()
+	}
+	return safeText(err.Error())
 }
 
 // fileMatches checks an existing file against the release; a mismatch deletes it.
