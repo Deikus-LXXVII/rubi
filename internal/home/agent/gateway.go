@@ -300,7 +300,7 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 	out.ContentLength = int64(len(body))
 	out.Header.Set("Authorization", "Bearer "+token)
 	// Only the betas on the list are passed on (see betaPrefixes), plus the OAuth beta.
-	out.Header.Set("Anthropic-Beta", filterBeta(out.Header.Values("Anthropic-Beta")))
+	out.Header.Set("Anthropic-Beta", filterBeta(out.Header.Values("Anthropic-Beta"), g.cfg.AllowWebSearch))
 	resp, err := g.client.Do(out)
 	if err != nil {
 		g.refuse(w, http.StatusBadGateway, "upstream", "api_error", "Rubi: the agent gateway couldn't reach the Claude API.")

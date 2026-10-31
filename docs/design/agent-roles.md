@@ -252,20 +252,26 @@ allow-list refuses. The gateway therefore checks each `POST /v1/messages` and `/
 - **Body** (JSON object, within the 64 MiB cap, else 413; not JSON or an object with a repeated or differently
   cased key, else 403): `mcp_servers` and `container` are refused (403 `permission_error`, nothing forwarded). Every
   `tools[]` entry must be a plain client tool (no `type`, or `custom`) or one of the typed tools that run on the
-  client: `bash_*`, `text_editor_*`, `computer_*`, `memory_*` (a date suffix, e.g. `bash_20250124`) and
-  `tool_search_tool_*` (looks only at the request's own tool list). `web_search_*` is allowed only when the session
+  client: `bash_*`, `text_editor_*`, `computer_*`, `memory_*` (a date suffix, e.g. `bash_20250124`),
+  `advisor_<date>` and `tool_search_tool_*` (looks only at the request's own tool list). `web_search_*` is allowed only when the session
   allows WebSearch: always for the legacy role (Claude Code's default tools), and for a role only if its tools
   include `WebSearch` and it has no deny rule `WebSearch`; the policy is read when the VM starts, so a role
   version that adds WebSearch applies at the next start. Everything else (`web_fetch_*`, `code_execution_*`,
   `mcp_toolset`, and any type added later) is refused: the list is an allow-list.
-- **`anthropic-beta`**: split on commas, and only values starting with `claude-code-`, `oauth-`,
-  `interleaved-thinking-`, `context-1m-`, `fine-grained-tool-streaming-`, `token-efficient-tools-`,
-  `context-management-`, `prompt-caching-`, `structured-outputs-`, `effort-`, `advanced-tool-use-`,
-  `tool-search-tool-`, `fast-mode-`, `task-budgets-`, `redact-thinking-`, `extended-cache-ttl-` or `output-128k-`
-  are kept (once each, plus the OAuth beta). Others are dropped, not refused, so a new Claude Code beta only
-  loses its feature until it is listed. `mcp-client-*`, `code-execution-*`, `web-fetch-*`, `web-search-*`,
-  `computer-use-*` and `files-api-*` are never passed on. The lists are the betas Claude Code is known to send;
-  the bundled CLI was not available to read when they were written, so check them against a live turn.
+- **`anthropic-beta`**: split on commas; a value is kept (once each, plus the OAuth beta) if it starts with the
+  name of a beta the bundled Claude Code CLI knows, without its date (`claude-code-`, `oauth-`, `advanced-tool-use-`,
+  `advisor-tool-`, `context-1m-`, `context-management-`, `effort-`, `interleaved-thinking-`, `mid-conversation-*`,
+  `prompt-caching-*`, `structured-outputs-`, `thinking-*`, `tool-search-tool-`, and so on; the full list is
+  `betaPrefixes` in `gateway_policy.go`). The list is the CLI's whole set because dropping a beta whose body field is
+  still sent (context management, mid-conversation system messages, thinking controls) can make the API answer 400.
+  Left out on purpose: `mcp-servers-*`, `mcp-tunnels-*`, `mcp-client-*`, `files-api-*`, `code-execution-*`,
+  `web-fetch-*`, `managed-agents-*`, `environments-*`, `ccr-*`, `oidc-federation-*`, `message-batches-*`,
+  `user-profiles-*`, the Bedrock and Vertex versions, `computer-use-*`, and `dangerous-tool-use-*` (what it unlocks is
+  not documented; add it once it is known if a turn needs it). `web-search-*` is kept only when WebSearch is
+  allowed. Unknown values are dropped, not refused, so a new Claude Code beta only loses its feature until it is listed.
+  The advisor tool (`advisor_<date>`, beta `advisor-tool-*`) is allowed: it makes the server ask another model and
+  has no network access of its own. `context_management.edits` (`clear_thinking_*`, `clear_tool_uses_*`, `compact_*`)
+  are body fields, not tools, and are not touched.
 
 What remains: the model still sees whatever the agent puts in the prompt, and the web search tool, when allowed,
 lets the model search the web through Anthropic (results come back as text; no fetch of a chosen URL). Tool

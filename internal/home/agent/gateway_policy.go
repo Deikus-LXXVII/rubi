@@ -23,25 +23,36 @@ var (
 	clientToolType = regexp.MustCompile(`^(bash|text_editor|computer|memory)_[0-9]{8}$`)
 	// toolSearchType is Anthropic's tool search: it looks only at the tools of the request itself.
 	toolSearchType = regexp.MustCompile(`^tool_search_tool_[a-z_]+_[0-9]{8}$`)
+	// advisorType is the advisor tool: the server asks another model; it has no network access of its own.
+	advisorType = regexp.MustCompile(`^advisor_[0-9]{8}$`)
 	// webSearchType is the server-side web search. It is allowed only when the session may use WebSearch.
 	webSearchType = regexp.MustCompile(`^web_search_[0-9]{8}$`)
 )
 
 // betaPrefixes are the anthropic-beta values that are passed on (a value matches when it starts with one; the
-// dated suffix changes from release to release). They are the features Claude Code turns on for a model turn:
-// its own marker and OAuth, thinking, long context, tool streaming, caching, context management, structured
-// output, effort, tool search and the like. Any other value is dropped (the request still goes through); in
-// particular mcp-client-*, code-execution-*, web-fetch-*, web-search-*, computer-use-* and files-api-* are never
-// passed on, so a server tool can't be switched on by a header either.
+// dated suffix changes from release to release). They are the names found in the bundled Claude Code binary, less
+// the ones that switch on a feature that reaches outside (or that Rubi doesn't use): mcp-servers-*, mcp-tunnels-*,
+// mcp-client-*, files-api-*, code-execution-*, web-fetch-*, managed-agents-*, environments-*, ccr-*,
+// oidc-federation-*, message-batches-*, user-profiles-*, bedrock-*, vertex-*, and dangerous-tool-use-* (what it
+// unlocks is not documented; it is not passed on until it is known). Dropping a beta whose body field is still sent
+// can make the API answer 400, which is why the list is the CLI's whole set and not a short one.
+// web-search-* is kept only when the session may use WebSearch (betaWebSearch). advisor-tool-* is kept: the
+// advisor tool asks another model on the server and has no network access of its own.
 var betaPrefixes = []string{
-	"claude-code-", "oauth-", "interleaved-thinking-", "context-1m-", "fine-grained-tool-streaming-",
-	"token-efficient-tools-", "context-management-", "prompt-caching-", "structured-outputs-", "effort-",
-	"advanced-tool-use-", "tool-search-tool-", "fast-mode-", "task-budgets-", "redact-thinking-",
-	"extended-cache-ttl-", "output-128k-",
+	"claude-code-", "oauth-", "advanced-tool-use-", "advisor-tool-", "afk-mode-", "agent-memory-", "auto-mode-classifier-",
+	"cache-diagnosis-", "cache-keepalive-", "context-1m-", "context-hint-", "context-management-", "dreaming-",
+	"effort-", "extended-cache-ttl-", "fallback-credit-", "fast-mode-", "fine-grained-tool-streaming-", "inline-tools-",
+	"interleaved-thinking-", "memory-", "message-threads-", "mid-conversation-system-", "mid-conversation-tool-changes-",
+	"output-128k-", "per-turn-control-", "prompt-caching-", "redact-thinking-", "server-side-fallback-",
+	"structured-outputs-", "task-budgets-", "thinking-binding-controls-", "thinking-display-updates-",
+	"thinking-resumption-", "thinking-token-count-", "timing-", "token-counting-", "token-efficient-tools-",
+	"tool-search-tool-",
 }
 
+const betaWebSearch = "web-search-"
+
 // filterBeta keeps the allowed values of the anthropic-beta lines, once each, and adds the OAuth beta.
-func filterBeta(lines []string) string {
+func filterBeta(lines []string, allowWebSearch bool) string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(v string) {
@@ -53,8 +64,15 @@ func filterBeta(lines []string) string {
 	for _, l := range lines {
 		for _, v := range strings.Split(l, ",") {
 			v = strings.TrimSpace(v)
+			if len(v) >= 100 || strings.ContainsAny(v, " \t\r\n") {
+				continue
+			}
+			if allowWebSearch && strings.HasPrefix(v, betaWebSearch) {
+				add(v)
+				continue
+			}
 			for _, p := range betaPrefixes {
-				if strings.HasPrefix(v, p) && len(v) < 100 && !strings.ContainsAny(v, " \t\r\n") {
+				if strings.HasPrefix(v, p) {
 					add(v)
 					break
 				}
@@ -141,7 +159,7 @@ func checkBody(body []byte, allowWebSearch bool) (reason string) {
 		if err := json.Unmarshal(tr, &typ); err != nil {
 			return "a tool has a type that can't be checked"
 		}
-		if typ == nil || *typ == "custom" || clientToolType.MatchString(*typ) || toolSearchType.MatchString(*typ) {
+		if typ == nil || *typ == "custom" || clientToolType.MatchString(*typ) || toolSearchType.MatchString(*typ) || advisorType.MatchString(*typ) {
 			continue
 		}
 		if webSearchType.MatchString(*typ) && allowWebSearch {

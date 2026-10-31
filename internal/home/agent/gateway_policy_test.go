@@ -117,3 +117,46 @@ func TestRoleAllowsWebSearch(t *testing.T) {
 		}
 	}
 }
+
+// The betas the bundled CLI knows, less the ones that reach outside, all pass; the others are dropped.
+func TestGatewayKeepsEveryBetaTheCLIKnows(t *testing.T) {
+	known := []string{"claude-code-20250219", "oauth-2025-04-20", "advanced-tool-use-2025-11-20", "advisor-tool-2026-03-01",
+		"afk-mode-2026-01-31", "agent-memory-2026-07-22", "auto-mode-classifier-2026-07-16", "cache-diagnosis-2026-04-07",
+		"cache-keepalive-2026-09-03", "context-1m-2025-08-07", "context-hint-2026-04-09", "context-management-2025-06-27",
+		"dreaming-2026-04-21", "effort-2025-11-24", "extended-cache-ttl-2025-04-11", "fallback-credit-2026-06-01",
+		"fast-mode-2026-02-01", "fine-grained-tool-streaming-2025-05-14", "inline-tools-2026-09-15",
+		"interleaved-thinking-2025-05-14", "memory-2026-07-22", "message-threads-2026-08-12",
+		"mid-conversation-system-2026-04-07", "mid-conversation-system-clear-at-2026-08-21",
+		"mid-conversation-tool-changes-2026-07-01", "per-turn-control-2026-07-01", "prompt-caching-evict-2026-05-12",
+		"prompt-caching-scope-2026-01-05", "redact-thinking-2026-02-12", "server-side-fallback-2026-06-01",
+		"server-side-fallback-2026-07-01", "structured-outputs-2025-12-15", "task-budgets-2026-03-13",
+		"thinking-binding-controls-2026-08-01", "thinking-display-updates-2026-08-18", "thinking-resumption-2026-07-17",
+		"thinking-token-count-2026-05-13", "timing-2026-09-09", "token-counting-2024-11-01", "tool-search-tool-2025-10-19"}
+	egress := []string{"mcp-servers-2025-12-04", "mcp-tunnels-2026-06-22", "mcp-client-2025-11-20", "files-api-2025-04-14",
+		"code-execution-2025-08-25", "web-fetch-2025-09-10", "managed-agents-2026-04-01", "environments-2025-11-01",
+		"ccr-byoc-2025-07-29", "ccr-triggers-2026-01-30", "oidc-federation-2026-04-01", "message-batches-2024-09-24",
+		"user-profiles-2026-08-18", "bedrock-2023-05-31", "vertex-2023-10-16", "computer-use-2025-01-24", "made-up-2030-01-01"}
+	want := strings.Join(append(append([]string{}, known...), "x"), ",")
+	want = strings.TrimSuffix(want, ",x")
+	if got := filterBeta([]string{strings.Join(known, ",")}, false); got != want {
+		t.Errorf("a known beta was dropped or reordered:\n%s\n%s", got, want)
+	}
+	all := append(append([]string{}, egress...), known...)
+	got := filterBeta([]string{strings.Join(all, ",")}, false)
+	for _, e := range egress {
+		if strings.Contains(got, e) {
+			t.Errorf("%s was passed on", e)
+		}
+	}
+	for _, k := range known {
+		if !strings.Contains(got, k) {
+			t.Errorf("%s was dropped", k)
+		}
+	}
+	if strings.Contains(filterBeta([]string{"web-search-2025-03-05"}, false), "web-search") {
+		t.Error("web-search beta passed without the policy")
+	}
+	if !strings.Contains(filterBeta([]string{"web-search-2025-03-05"}, true), "web-search-2025-03-05") {
+		t.Error("web-search beta dropped with the policy")
+	}
+}
