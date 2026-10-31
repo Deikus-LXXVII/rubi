@@ -247,14 +247,14 @@ func (s *Setup) verifySignature(ctx context.Context, pkg string) error {
 	}
 	out, err := s.opt.Cmd.Run(ctx, []string{"/usr/sbin/pkgutil", "--check-signature", pkg})
 	if err != nil {
-		return fmt.Errorf("the signature check failed: %s", safeText(string(out)))
+		return errors.New("the signature check failed")
 	}
 	if err := checkSignature(string(out), s.opt.Release.Team); err != nil {
 		return err
 	}
 	out, err = s.opt.Cmd.Run(ctx, []string{"/usr/sbin/spctl", "--assess", "--type", "install", "-vv", pkg})
 	if err != nil {
-		return fmt.Errorf("macOS rejected the package: %s", safeText(string(out)))
+		return errors.New("macOS rejected the package")
 	}
 	return checkAssessment(string(out), s.opt.Release.Team)
 }
@@ -265,7 +265,7 @@ func (s *Setup) verifySignature(ctx context.Context, pkg string) error {
 // <pkg> <sha256> <team> <uid>`, uid being 0. It copies the package into a fresh directory under
 // /private/var/tmp (TMPDIR is dropped: it is not root's to trust), checks that the directory is a real
 // directory of that uid with mode 700, so a process of the user can't swap the file after it was checked,
-// checks the SHA-256 and the signature of the copy, installs it and removes the copy.
+// copies it with cp -P (never following a link), checks the copy is a plain file, checks the SHA-256 and the signature of the copy (not of the original), installs it and removes the copy.
 const installScript = `set -eu
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
@@ -280,7 +280,8 @@ if [ -L "$dir" ] || [ ! -d "$dir" ] || [ "$(stat -f %u "$dir")" != "$uid" ] || [
   echo "the scratch directory is not private" >&2; exit 13
 fi
 pkg=$dir/container.pkg
-cp "$src" "$pkg"
+cp -P "$src" "$pkg"
+if [ -L "$pkg" ] || [ ! -f "$pkg" ]; then echo "the copy is not a plain file" >&2; exit 10; fi
 got=$(shasum -a 256 "$pkg" | cut -d' ' -f1)
 if [ "$got" != "$want" ]; then echo "the package changed after it was checked" >&2; exit 11; fi
 sig=$(pkgutil --check-signature "$pkg") || { echo "the signature check failed" >&2; exit 12; }
@@ -289,6 +290,25 @@ printf '%s\n' "$sig" | grep -q 'Notarization: trusted by the Apple notary servic
 printf '%s\n' "$sig" | grep -Eq "^ +1\. Developer ID Installer: .*\($team\)\$" || { echo "wrong signing team" >&2; exit 12; }
 installer -pkg "$pkg" -target /
 `
+
+// installFailure is a fixed line for the reason the install script gave. Only the script's own messages are
+// recognised; the rest of the output (the installer's, which may echo anything) is never shown.
+func installFailure(out string) string {
+	for _, m := range []string{
+		"not running as the expected user",
+		"the package is not a plain file",
+		"the scratch directory is not private",
+		"the copy is not a plain file",
+		"the package changed after it was checked",
+		"the signature check failed",
+		"wrong signing team",
+	} {
+		if strings.Contains(out, m) {
+			return "The script said: " + m + "."
+		}
+	}
+	return "The installer gave no usable reason."
+}
 
 // shellQuote quotes one word for sh.
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
@@ -370,9 +390,9 @@ func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
 		case ictx.Err() != nil:
 			return outcome{Failed, "The installer didn't finish in " + installLimit.String() + " and was stopped; the installation may be half done."}
 		case ctx.Err() != nil:
-			return outcome{Failed, "Cancel came too late: the installer had started and ended with an error. " + safeText(string(out))}
+			return outcome{Failed, "Cancel came too late: the installer had started and ended with an error. " + installFailure(string(out))}
 		}
-		return outcome{Failed, "The installer failed: " + safeText(string(out))}
+		return outcome{Failed, "The installer failed. " + installFailure(string(out))}
 	}
 	_ = os.Remove(pkg)
 	if v, ok, present := s.installed(ctx); !present || !ok || v.cmp(want) < 0 {

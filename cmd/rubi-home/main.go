@@ -49,6 +49,16 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/watch"
 )
 
+// mustDir is Rubi Home's folder, or exits with a clear message when there is none.
+func mustDir() string {
+	d, err := home.DefaultDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
+		os.Exit(1)
+	}
+	return d
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -61,7 +71,7 @@ func main() {
 	if os.Args[1] == "claude-hook" {
 		// Only talks to the running helper; never opens or changes its files. Always prints a decision
 		// and exits 0, so Claude Code reads the answer (a denial whenever anything goes wrong).
-		if err := home.RunClaudeHook(os.Stdin, os.Stdout, home.ClaudeSocketPath(home.DefaultDir()), claudeHookLimit); err != nil {
+		if err := home.RunClaudeHook(os.Stdin, os.Stdout, home.ClaudeSocketPath(mustDir()), claudeHookLimit); err != nil {
 			os.Exit(1) // couldn't even print: Claude Code's onFailure "block" denies
 		}
 		return
@@ -69,7 +79,7 @@ func main() {
 	switch os.Args[1] {
 	case "claude-mcp": // Claude Code's MCP server: talks to the helper on its socket, reads no configuration
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		err := home.RunClaudeMCP(ctx, home.ClaudeSocketPath(home.DefaultDir()))
+		err := home.RunClaudeMCP(ctx, home.ClaudeSocketPath(mustDir()))
 		stop()
 		if err != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "rubi-home claude-mcp: %v\n", err)
@@ -77,14 +87,21 @@ func main() {
 		}
 		return
 	case "claude-send": // a local process's message for a session: talks to the helper on its socket, reads no configuration
-		os.Exit(home.RunClaudeSend(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, home.ClaudeSocketPath(home.DefaultDir())))
+		os.Exit(home.RunClaudeSend(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, home.ClaudeSocketPath(mustDir())))
 	case "version": // reads and creates nothing: the installer and status run it on any copy
 		fmt.Println(version.Version)
 		return
 	case "install-hook": // needs no configuration either
 		os.Exit(runInstallHook(os.Args[2:]))
 	}
-	h, err := home.Open(home.DefaultDir())
+	dir := mustDir()
+	var h *home.Helper
+	var err error
+	if os.Args[1] == "status" { // read-only: creates nothing
+		h, err = home.OpenExisting(dir)
+	} else {
+		h, err = home.Open(dir)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -157,7 +174,7 @@ func runWait() (code int) {
 			code = 0
 		}
 	}()
-	return home.RunClaudeWait(os.Stdin, os.Stderr, home.ClaudeSocketPath(home.DefaultDir()), waitLimit(os.Args[2:]))
+	return home.RunClaudeWait(os.Stdin, os.Stderr, home.ClaudeSocketPath(mustDir()), waitLimit(os.Args[2:]))
 }
 
 // waitLimit is the waiter's --wait-limit in seconds (home.ClaudeWaitLimit when missing or not a positive

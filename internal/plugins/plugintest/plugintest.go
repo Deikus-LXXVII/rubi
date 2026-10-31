@@ -177,7 +177,7 @@ func (r *Registry) build(pubKey string) string {
 
 func tarGz(t *testing.T, files map[string][]byte) []byte {
 	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
+	gz, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed) // the archive holds a whole executable: speed over size
 	tw := tar.NewWriter(gz)
 	for name, b := range files {
 		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(b)), Typeflag: tar.TypeReg}); err != nil {

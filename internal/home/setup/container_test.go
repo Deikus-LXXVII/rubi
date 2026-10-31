@@ -415,6 +415,13 @@ func TestInstallScriptRefusals(t *testing.T) {
 	if !strings.Contains(installScript, "mktemp -d /private/var/tmp/rubi-container.XXXXXX") || !strings.Contains(installScript, "unset TMPDIR") {
 		t.Error("the scratch directory isn't the fixed private one")
 	}
+	// the copy never follows a link, is re-checked as a plain file, and only then hashed
+	iCp := strings.Index(installScript, `cp -P "$src" "$pkg"`)
+	iChk := strings.Index(installScript, `[ -L "$pkg" ] || [ ! -f "$pkg" ]`)
+	iSum := strings.Index(installScript, `shasum -a 256 "$pkg"`)
+	if iCp < 0 || iChk < iCp || iSum < iChk {
+		t.Errorf("copy/check/hash order wrong: %d %d %d", iCp, iChk, iSum)
+	}
 }
 
 func TestCancelledMapping(t *testing.T) {
@@ -700,5 +707,15 @@ func TestInstallTimeoutSaysSo(t *testing.T) {
 	c.runJob()
 	if st := c.step("container"); st.State != Failed || !strings.Contains(st.Reason, "half done") {
 		t.Errorf("%+v", st)
+	}
+}
+
+func TestInstallFailureShowsOnlyFixedLines(t *testing.T) {
+	if got := installFailure("0:1: execution error: the package changed after it was checked (11)"); !strings.Contains(got, "the package changed after it was checked") {
+		t.Errorf("known reason lost: %q", got)
+	}
+	got := installFailure("installer: token=sk-abcdef0123456789abcdef0123456789 leaked")
+	if strings.Contains(got, "sk-") || strings.Contains(got, "leaked") {
+		t.Errorf("unknown output shown: %q", got)
 	}
 }

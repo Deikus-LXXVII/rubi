@@ -64,7 +64,7 @@ func waitHit(t *testing.T, ch chan hookHit, typ string) hookHit {
 
 func noHit(t *testing.T, ch chan hookHit, typ string) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(pastGrace)
 	for {
 		select {
 		case h := <-ch:
@@ -304,7 +304,7 @@ func TestPluginConfigAndTargets(t *testing.T) {
 		t.Fatal("a locked level was lowered")
 	}
 
-	time.Sleep(time.Second) // earlier pings went to the default Bot; drop them
+	time.Sleep(250 * time.Millisecond) // earlier pings went to the default Bot; drop them
 	for len(mainCh) > 0 {
 		<-mainCh
 	}
