@@ -709,7 +709,7 @@ func TestProjectFilesDoNotWidenAllowList(t *testing.T) {
 	os.WriteFile(filepath.Join(e.proj, ".git", "config"), []byte("[remote \"origin\"]\n\turl = https://evil.example.org/x\n"), 0o600)
 	e.op("sessions", map[string]any{"project": "my-project"})
 	h := projHosts(e)
-	for _, want := range []string{"api.anthropic.com", "git.example.com", "packages.example.net", "github.com", "gitlab.com", "bitbucket.org"} {
+	for _, want := range []string{"registry.npmjs.org", "git.example.com", "packages.example.net", "github.com", "gitlab.com", "bitbucket.org"} {
 		if !h[want] {
 			t.Errorf("missing %s: %v", want, h)
 		}
@@ -719,7 +719,7 @@ func TestProjectFilesDoNotWidenAllowList(t *testing.T) {
 	}
 	e2 := newEnv(t, func(o *Options) { o.NoDefaultForges = func() bool { return true } })
 	e2.op("sessions", map[string]any{"project": "my-project"})
-	if h := projHosts(e2); h["github.com"] || !h["api.anthropic.com"] {
+	if h := projHosts(e2); h["github.com"] || !h["registry.npmjs.org"] || h["api.anthropic.com"] {
 		t.Fatalf("forges not dropped: %v", h)
 	}
 }

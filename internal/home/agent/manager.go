@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -50,8 +51,11 @@ type Options struct {
 	Dir       string
 	Protected []string
 	// AuthDir is the shared sign-in's directory (Dir/agent-auth by default): no project may be, contain or be
-	// inside it.
+	// inside it. The auth gateway reads the token in it; a VM never sees it.
 	AuthDir string
+	// GatewayUpstream and GatewayClient replace https://api.anthropic.com for the auth gateway. For tests only.
+	GatewayUpstream string
+	GatewayClient   *http.Client
 	// Projects returns the directories agents may work in (config agent_projects); GitHosts the git hosts
 	// the proxy and the credential helper serve (config agent_git_hosts).
 	Projects func() []string
@@ -137,6 +141,7 @@ type projState struct {
 	vm      VM
 	runner  *Runner // guarded by Manager.mu
 	proxy   *Proxy
+	gateway *Gateway // the auth gateway of this start (gateway.go); guarded by Manager.mu like runner
 	hosts   []string
 	// proxyEnv is the proxy variables the runner was started with (the proxy password is in them: never
 	// logged); guarded by Manager.mu like runner.
@@ -254,14 +259,17 @@ func (m *Manager) shutdown(p *projState) {
 	m.mu.Lock()
 	r := p.runner
 	p.runner = nil
-	px := p.proxy
-	p.proxy = nil
+	px, gw := p.proxy, p.gateway
+	p.proxy, p.gateway = nil, nil
 	m.mu.Unlock()
 	if r != nil {
 		_ = r.Close()
 	}
 	if px != nil {
 		px.Close()
+	}
+	if gw != nil {
+		gw.Close()
 	}
 	if p.vm != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -438,6 +446,15 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	// while a VM is attached to it.
 	var px *Proxy
 	var penv map[string]string
+	var gw *Gateway
+	gwSecret, err := NewToken()
+	if err != nil {
+		return nil, err
+	}
+	authDir := m.opt.AuthDir
+	if authDir == "" {
+		authDir = AuthDirOf(m.opt.Dir)
+	}
 	prepare := func(ctx context.Context, gateway string) (map[string]string, error) {
 		listen := m.opt.ProxyListen
 		if listen == "" && gateway != "" {
@@ -456,7 +473,19 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			host, _, _ = net.SplitHostPort(px.Addr())
 		}
 		proxyURL := "http://rubi:" + proxyToken + "@" + net.JoinHostPort(host, port)
-		penv = map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL}
+		// The auth gateway: the VM talks to the model API only through it, with a secret that is good for this start.
+		// It listens on the proxy's host; claude is told not to send it through the CONNECT proxy (NO_PROXY).
+		lhost, _, _ := net.SplitHostPort(px.Addr())
+		gw, err = StartGateway(GatewayConfig{Listen: net.JoinHostPort(lhost, "0"), Secret: gwSecret, TokenFile: TokenFileOf(authDir),
+			Upstream: m.opt.GatewayUpstream, Client: m.opt.GatewayClient, Logf: log.Printf})
+		if err != nil {
+			px.Close()
+			return nil, fmt.Errorf("gateway: %w", err)
+		}
+		_, gport, _ := net.SplitHostPort(gw.Addr())
+		penv = map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL,
+			"ANTHROPIC_BASE_URL": "http://" + net.JoinHostPort(host, gport), "CLAUDE_CODE_OAUTH_TOKEN": gwSecret,
+			"NO_PROXY": host, "no_proxy": host}
 		return penv, nil
 	}
 	env := map[string]string{"RUBI_RUN_TOKEN": token, "GIT_TERMINAL_PROMPT": "0"}
@@ -465,16 +494,20 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		if px != nil {
 			px.Close()
 		}
+		if gw != nil {
+			gw.Close()
+		}
 		return nil, fmt.Errorf("starting the VM: %w", err)
 	}
 	r, err = Connect(sctx, conn, token, &handler{m: m, p: p})
 	if err != nil {
 		px.Close()
+		gw.Close()
 		_ = p.vm.Stop(sctx)
 		return nil, err
 	}
 	m.mu.Lock()
-	p.runner, p.proxy, p.hosts, p.proxyEnv = r, px, hosts, penv
+	p.runner, p.proxy, p.gateway, p.hosts, p.proxyEnv = r, px, gw, hosts, penv
 	m.mu.Unlock()
 	go func() {
 		<-r.Done()
@@ -490,14 +523,17 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 		return
 	}
 	p.runner = nil
-	px := p.proxy
-	p.proxy = nil
+	px, gw := p.proxy, p.gateway
+	p.proxy, p.gateway = nil, nil
 	if m.dropProjectSlotsLocked(p.ID) {
 		m.pushLocked(Item{Type: "event", Project: p.ID, Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"runner ended"}`)})
 	}
 	m.mu.Unlock()
 	if px != nil {
 		px.Close()
+	}
+	if gw != nil {
+		gw.Close() // the per-start secret dies with the runner
 	}
 	m.wake()
 }

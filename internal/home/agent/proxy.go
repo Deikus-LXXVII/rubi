@@ -20,8 +20,9 @@ import (
 // The allow-list proxy: HTTP CONNECT only, to port 443, to hosts on a list. TLS is not decrypted: the
 // proxy sees the host name and nothing else. Everything else is refused and logged.
 
-// BaseHosts are always allowed: the model API and the registries the runner's tools use.
-var BaseHosts = []string{"api.anthropic.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"}
+// BaseHosts are always allowed: the registries the runner's tools use. The model API is not among them: the
+// runner reaches it only through the auth gateway (gateway.go), which is the only holder of the Claude token.
+var BaseHosts = []string{"registry.npmjs.org", "pypi.org", "files.pythonhosted.org"}
 
 // LoginHosts are the candidates for signing in and refreshing the login. TO CONFIRM with a real login
 // (the M0 spike's login had expired, so none was observed); they are allowed until then so a login can
