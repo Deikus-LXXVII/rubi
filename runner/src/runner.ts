@@ -2,7 +2,7 @@
 // Contract: docs/design/agent-runner.md. Patterns from T3 Code (MIT, see ../LICENSE-T3):
 // one long-lived query per session fed by a queue, session id chosen up front, fork via
 // forkSession() + resume, steering with priority "now", a permission callback kept installed.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import { Inbox } from "./inbox.js";
 import { ERR, errMsg, Peer, RpcError } from "./protocol.js";
@@ -28,11 +28,13 @@ export interface RunnerConfig {
   log?: (msg: string) => void;
   cwd?: string; // default /work
   configDir?: string; // default <cwd>/.rubi/claude
+  settingSources?: string[]; // default ["project"] (CLAUDE.md, skills); [] ignores the project's .claude entirely
   defaultMode?: PermissionMode; // mode of a session the runner did not start itself
   helloTimeoutMs?: number; // default 10 s
   hookTimeoutSec?: number; // default 300 (SDK hook timeout)
   askTimeoutMs?: number; // default 295 s: no answer -> deny (Home itself denies after 280 s)
   maxLineBytes?: number;
+  maxQueuedBytes?: number;
 }
 
 export const EXIT_NO_TOKEN = 2;
@@ -55,7 +57,9 @@ interface Session {
   lastStatus: Status;
   closed: boolean;
   /** Decisions the hook got, by tool_use_id, so canUseTool for the same call does not ask again. */
-  decided: Map<string, Decision>;
+  decided: Map<string, { d: Decision; tool: string; hashes: string[]; at: number }>;
+  /** Restarts of a dead query without a result in between (bounded, so a crash loop ends). */
+  respawns: number;
   /** Asks in flight, so an interrupt can cancel them. */
   asking: Set<AbortController>;
 }
@@ -67,6 +71,9 @@ interface Decision {
 }
 
 const SHORT = 200;
+const MAX_PENDING = 50;
+const DECIDED_MAX = 100;
+const DECIDED_TTL_MS = 30_000;
 const short = (v: unknown, n = SHORT): string => {
   const s = typeof v === "string" ? v : (JSON.stringify(v) ?? "");
   return s.length > n ? s.slice(0, n) + "..." : s;
@@ -116,13 +123,18 @@ export function buildChildEnv(env: NodeJS.ProcessEnv, configDir: string): Record
   return out;
 }
 
+/**
+ * Deny rules (checked before any hook; a hook allow cannot override them, M1 experiment):
+ * `Edit(...)` covers every file-editing tool including Write (a `Write(...)` rule did not block);
+ * `Read(...)` keeps the login in the config dir unreadable.
+ */
 export function disallowedEditTools(cwd: string): string[] {
-  const p = `//${cwd.replace(/^\/+/, "")}/.rubi/**`; // "//abs" is the SDK's absolute-path rule syntax
-  return ["Edit", "Write", "MultiEdit", "NotebookEdit"].map((t) => `${t}(${p})`);
+  const abs = `//${cwd.replace(/^\/+/, "")}`; // "//abs" is the SDK's absolute-path rule syntax
+  return [`Edit(${abs}/.rubi/**)`, `Edit(${abs}/.claude/**)`, `Edit(${abs}/.mcp.json)`, `Read(${abs}/.rubi/**)`];
 }
 
 export class Runner {
-  private readonly cfg: Required<Omit<RunnerConfig, "maxLineBytes" | "log" | "env" | "sdk" | "exit" | "version">>;
+  private readonly cfg: Required<Omit<RunnerConfig, "maxLineBytes" | "maxQueuedBytes" | "log" | "env" | "sdk" | "exit" | "version">>;
   private readonly sdk: Sdk;
   private readonly env: NodeJS.ProcessEnv;
   private peer!: Peer;
@@ -143,6 +155,7 @@ export class Runner {
       cwd,
       configDir: c.configDir ?? `${cwd}/.rubi/claude`,
       defaultMode: c.defaultMode ?? "default",
+      settingSources: c.settingSources ?? ["project"],
       helloTimeoutMs: c.helloTimeoutMs ?? 10_000,
       hookTimeoutSec: c.hookTimeoutSec ?? 300,
       askTimeoutMs: c.askTimeoutMs ?? 295_000,
@@ -172,6 +185,7 @@ export class Runner {
     }
     this.peer = new Peer(this.input, this.output, {
       ...(this.c.maxLineBytes !== undefined ? { maxLineBytes: this.c.maxLineBytes } : {}),
+      ...(this.c.maxQueuedBytes !== undefined ? { maxQueuedBytes: this.c.maxQueuedBytes } : {}),
       log: (m) => this.log(m),
       onRequest: (method, params) => this.onRequest(method, params),
       onClose: () => {
@@ -229,6 +243,7 @@ export class Runner {
       }
       case "session.interrupt": {
         const s = this.get(uuid(p, "id"));
+        s.pending = []; // held-back messages are dropped: the user wants the work to stop
         for (const a of [...s.asking]) a.abort(); // pending asks are given up (perm.cancel) and denied
         if (s.query) await s.query.interrupt();
         return { ok: true };
@@ -272,6 +287,7 @@ export class Runner {
       lastStatus: "idle",
       closed: false,
       decided: new Map(),
+      respawns: 0,
       asking: new Set(),
     };
     this.sessions.set(s.id, s);
@@ -306,8 +322,13 @@ export class Runner {
     const mode = modeOf(p, "mode");
     const id = randomUUID();
     const s = this.register({ id, mode, ...(name !== undefined ? { name } : {}) });
-    this.openQuery(s, "new", name);
-    this.deliver(s, this.userMessage(prompt, optStr(p, "from")), false);
+    try {
+      this.openQuery(s, "new", name);
+      this.deliver(s, this.userMessage(prompt, optStr(p, "from")), false);
+    } catch (e) {
+      this.dropSession(s); // a failed start leaves no half-registered session
+      throw e;
+    }
     return { id };
   }
 
@@ -316,9 +337,15 @@ export class Runner {
     const text = str(p, "text");
     const steer = p.steer === true;
     let s = this.sessions.get(id);
+    const fresh = !s;
     if (!s) s = this.register({ id, mode: this.cfg.defaultMode }); // idle session from disk: resumed below
-    const delivered = this.deliver(s, this.userMessage(text, optStr(p, "from")), steer);
-    return { queued: true, delivered };
+    try {
+      const delivered = this.deliver(s, this.userMessage(text, optStr(p, "from")), steer);
+      return { queued: true, delivered };
+    } catch (e) {
+      if (fresh) this.dropSession(s);
+      throw e;
+    }
   }
 
   private userMessage(text: string, from?: string): SdkUserMessage {
@@ -335,6 +362,10 @@ export class Runner {
     if (!s.query) this.openQuery(s, "resume");
     s.lastActivity = Date.now();
     if (s.turnActive && !steer) {
+      if (s.pending.length >= MAX_PENDING) {
+        this.event(s, "error", { message: `message queue full (${MAX_PENDING}); message dropped` });
+        throw new RpcError(ERR.queueFull, `too many held-back messages for this session (${MAX_PENDING})`);
+      }
       s.pending.push(msg);
       return false;
     }
@@ -370,7 +401,12 @@ export class Runner {
     const options: QueryOptions = {
       cwd: this.cfg.cwd,
       ...(how === "new" ? { sessionId: s.id, ...(title !== undefined ? { title } : {}) } : { resume: s.id }),
-      settingSources: ["project"],
+      settingSources: this.cfg.settingSources,
+      // The project's own settings must not run code outside our PreToolUse gate: no settings hooks,
+      // no apiKeyHelper (an empty string beats the project's value), no .mcp.json servers.
+      settings: { disableAllHooks: true, apiKeyHelper: "" },
+      strictMcpConfig: true,
+      mcpServers: {},
       allowDangerouslySkipPermissions: true,
       permissionMode: s.mode,
       env: this.childEnv,
@@ -407,6 +443,23 @@ export class Runner {
     s.abort = undefined;
     s.turnActive = false;
     s.tasks.clear();
+    s.decided.clear();
+    // Held-back messages go into a resumed query, in order, unless it keeps dying without a result.
+    const next = s.pending.shift();
+    if (next && !s.closed && s.respawns < 3) {
+      s.respawns++;
+      try {
+        this.openQuery(s, "resume");
+        s.turnActive = true;
+        (s as Session).inbox?.push(next);
+      } catch (e) {
+        this.event(s, "error", { message: `could not resume the session: ${short(errMsg(e), 300)}` });
+        s.pending = [];
+      }
+    } else if (next) {
+      this.event(s, "error", { message: "the session's query keeps ending; held-back messages dropped" });
+      s.pending = [];
+    }
     this.updateStatus(s);
   }
 
@@ -414,6 +467,12 @@ export class Runner {
     s.lastActivity = Date.now();
     switch (m.type) {
       case "assistant": {
+        // A top-level assistant message nobody asked for is a turn the SDK started itself (a finished
+        // background task woke the model): messages sent now must wait for its result like any other.
+        if (!s.turnActive && (m.parent_tool_use_id === null || m.parent_tool_use_id === undefined)) {
+          s.turnActive = true;
+          this.updateStatus(s);
+        }
         const msg = (m.message ?? {}) as { content?: unknown };
         const parent = typeof m.parent_tool_use_id === "string" ? { parent_tool_use_id: m.parent_tool_use_id } : {};
         for (const b of Array.isArray(msg.content) ? (msg.content as Record<string, unknown>[]) : []) {
@@ -425,6 +484,7 @@ export class Runner {
         break;
       }
       case "result":
+        s.respawns = 0;
         this.event(s, "result", {
           subtype: m.subtype,
           usage: m.usage,
@@ -487,7 +547,20 @@ export class Runner {
   }
 
   private event(s: Session, kind: string, body: Record<string, unknown>) {
-    this.peer.notify("event", { session_id: s.id, kind, ...body });
+    this.peer.notify("event", { session_id: s.id, kind, ...body }, kind === "assistant" || kind === "tool" ? s.id : undefined);
+  }
+
+  private dropSession(s: Session) {
+    s.closed = true;
+    this.sessions.delete(s.id);
+    s.inbox?.end();
+    s.abort?.abort();
+    try {
+      s.query?.close();
+    } catch {
+      // already gone
+    }
+    s.query = undefined;
   }
 
   private closeSession(s: Session) {
@@ -523,52 +596,78 @@ export class Runner {
   // ---------------------------------------------------------------- permissions
 
   private async preToolUse(s: Session, input: PreToolUseInput, signal: AbortSignal): Promise<HookOutput> {
-    if (input.hook_event_name !== "PreToolUse") return {};
-    // AskUserQuestion is decided in canUseTool (it carries the answers back); asking twice would
-    // show the same question twice.
-    if (input.tool_name === "AskUserQuestion") return {};
-    const d = await this.askHome(
-      s,
-      {
-        tool: input.tool_name,
-        input: input.tool_input,
-        tool_use_id: input.tool_use_id,
-        ...(input.agent_id ? { agent_id: input.agent_id } : {}),
-        ...(input.agent_type ? { agent_type: input.agent_type } : {}),
-        cwd: input.cwd,
-        via: "hook",
-      },
-      signal,
-    );
-    if (input.tool_use_id) {
-      s.decided.set(input.tool_use_id, d);
-      if (s.decided.size > 500) s.decided.delete(s.decided.keys().next().value as string);
+    try {
+      if (input.hook_event_name !== "PreToolUse") return {};
+      // AskUserQuestion is decided in canUseTool (it carries the answers back); asking twice would
+      // show the same question twice.
+      if (input.tool_name === "AskUserQuestion") return {};
+      const d = await this.askHome(
+        s,
+        {
+          tool: input.tool_name,
+          input: input.tool_input,
+          tool_use_id: input.tool_use_id,
+          ...(input.agent_id ? { agent_id: input.agent_id } : {}),
+          ...(input.agent_type ? { agent_type: input.agent_type } : {}),
+          cwd: input.cwd,
+          via: "hook",
+        },
+        signal,
+      );
+      this.remember(s, input.tool_use_id, input.tool_name, input.tool_input, d);
+      if (d.behavior === "deny") {
+        return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.message ?? "Denied by Rubi" } };
+      }
+      // An allow is never returned from the hook: the SDK's own rules and canUseTool still apply
+      // after it. A changed input goes back without a decision (M1 experiment: the SDK applies it).
+      if (d.updated_input) return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: d.updated_input } };
+      return {};
+    } catch (e) {
+      this.log(`PreToolUse hook failed: ${errMsg(e)}; denying`);
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Rubi could not check this call, so it was denied." } };
     }
-    if (d.behavior === "deny") {
-      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.message ?? "Denied by Rubi" } };
-    }
-    if (d.updated_input) {
-      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: d.updated_input } };
-    }
-    return {};
   }
 
   private async canUseTool(s: Session, tool: string, input: Record<string, unknown>, o: { signal: AbortSignal; toolUseID?: string; agentID?: string }): Promise<CanUseToolResult> {
-    if (tool === "AskUserQuestion") this.event(s, "ask", { tool_use_id: o.toolUseID, input });
-    else if (o.toolUseID && s.decided.has(o.toolUseID)) {
-      // The hook already got Home's decision for this very call: no second question.
-      const prev = s.decided.get(o.toolUseID)!;
-      s.decided.delete(o.toolUseID);
-      if (prev.behavior === "deny") return { behavior: "deny", message: prev.message ?? "Denied by Rubi" };
-      return { behavior: "allow", updatedInput: prev.updated_input ?? input };
+    try {
+      if (tool === "AskUserQuestion") this.event(s, "ask", { tool_use_id: o.toolUseID, input });
+      else {
+        const prev = this.recall(s, o.toolUseID, tool, input);
+        if (prev) {
+          // The hook already got Home's decision for this very call: no second question.
+          if (prev.behavior === "deny") return { behavior: "deny", message: prev.message ?? "Denied by Rubi" };
+          return { behavior: "allow", updatedInput: prev.updated_input ?? input };
+        }
+      }
+      const d = await this.askHome(
+        s,
+        { tool, input, ...(o.toolUseID ? { tool_use_id: o.toolUseID } : {}), ...(o.agentID ? { agent_id: o.agentID } : {}), cwd: this.cfg.cwd, via: "can_use_tool" },
+        o.signal,
+      );
+      if (d.behavior === "deny") return { behavior: "deny", message: d.message ?? "Denied by Rubi" };
+      return { behavior: "allow", updatedInput: d.updated_input ?? input };
+    } catch (e) {
+      this.log(`canUseTool failed: ${errMsg(e)}; denying`);
+      return { behavior: "deny", message: "Rubi could not check this call, so it was denied." };
     }
-    const d = await this.askHome(
-      s,
-      { tool, input, ...(o.toolUseID ? { tool_use_id: o.toolUseID } : {}), ...(o.agentID ? { agent_id: o.agentID } : {}), cwd: this.cfg.cwd, via: "can_use_tool" },
-      o.signal,
-    );
-    if (d.behavior === "deny") return { behavior: "deny", message: d.message ?? "Denied by Rubi" };
-    return { behavior: "allow", updatedInput: d.updated_input ?? input };
+  }
+
+  /** Decisions the hook got, keyed by tool_use_id and matched by tool name and input hash. */
+  private remember(s: Session, id: string | undefined, tool: string, input: unknown, d: Decision) {
+    if (!id) return;
+    const now = Date.now();
+    for (const [k, v] of s.decided) if (now - v.at > DECIDED_TTL_MS) s.decided.delete(k);
+    s.decided.set(id, { d, tool, hashes: [hashOf(input), ...(d.updated_input ? [hashOf(d.updated_input)] : [])], at: now });
+    while (s.decided.size > DECIDED_MAX) s.decided.delete(s.decided.keys().next().value as string);
+  }
+
+  private recall(s: Session, id: string | undefined, tool: string, input: unknown): Decision | undefined {
+    if (!id) return undefined;
+    const e = s.decided.get(id);
+    if (!e) return undefined;
+    s.decided.delete(id);
+    if (e.tool !== tool || Date.now() - e.at > DECIDED_TTL_MS || !e.hashes.includes(hashOf(input))) return undefined;
+    return e.d;
   }
 
   /** Sends perm.ask and waits. Anything but an explicit allow is a deny. */
@@ -596,6 +695,10 @@ export class Runner {
       s.asking.delete(own);
     }
   }
+}
+
+function hashOf(v: unknown): string {
+  return createHash("sha256").update(JSON.stringify(v) ?? "").digest("hex");
 }
 
 function taskInfo(t: Record<string, unknown>) {

@@ -63,6 +63,7 @@ export function startMock(scripts, log = () => {}) {
       const sysTxt = Array.isArray(j.system) ? j.system.map((b) => b.text || "").join(" ") : String(j.system || "");
       if (toolNames.length === 0 && /naming a coding session/.test(sysTxt)) { steps = null; name = `title-gen(${name})`; }
       let plan = steps && steps[step] ? steps[step] : { text: name?.startsWith("title-gen") ? "mock session" : name ? `done (${name})` : "ok" };
+      const sys0 = Array.isArray(j.system) ? j.system.map((b) => b.text || "").join("\n") : String(j.system || "");
       const blocks = [];
       if (plan.text) blocks.push({ type: "text", text: plan.text });
       for (const t of plan.tools || []) {
@@ -71,7 +72,7 @@ export function startMock(scripts, log = () => {}) {
       }
       const stop = blocks.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn";
       const usage = { input_tokens: 100, output_tokens: 20, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
-      requests.push({ model: j.model, script: name, step, stream: !!j.stream, tools_offered: toolNames.length, reply: blocks.map((b) => b.type === "tool_use" ? `tool_use:${b.name}` : "text"), saw_tool_results: results });
+      requests.push({ system: sys0, ctx: msgs.map((m) => textOf(m.content)).join("\n"), model: j.model, script: name, step, stream: !!j.stream, tools_offered: toolNames.length, reply: blocks.map((b) => b.type === "tool_use" ? `tool_use:${b.name}` : "text"), saw_tool_results: results });
       if (process.env.MOCK_DUMP && toolNames.length === 0) require_fs().appendFileSync(process.env.MOCK_DUMP, JSON.stringify({ system: j.system, last: msgs[msgs.length - 1], nmsgs: msgs.length, keys: Object.keys(j) }).slice(0, 6000) + "\n");
       const sys = Array.isArray(j.system) ? j.system.map((b) => b.text || "").join(" ") : String(j.system || "");
       log("MOCK /v1/messages", { model: j.model, max_tokens: j.max_tokens, tools: toolNames.length, system_head: sys.slice(0, 70), script: name, step, reply: blocks.map((b) => b.type === "tool_use" ? `tool_use:${b.name}` : `text:${b.text.slice(0, 40)}`), saw_tool_results: results });

@@ -50,6 +50,10 @@ export interface QueryOptions {
   resume?: string;
   title?: string;
   settingSources: string[];
+  /** Flag-layer settings: they win over the project's settings files. */
+  settings: Record<string, unknown>;
+  strictMcpConfig: boolean;
+  mcpServers: Record<string, unknown>;
   allowDangerouslySkipPermissions: boolean;
   permissionMode: PermissionMode;
   env: Record<string, string>;

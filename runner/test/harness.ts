@@ -32,7 +32,7 @@ export class Home {
   private buf = "";
   helloHandler: (p: Msg) => Msg | null = (p) => (p.run_token === TOKEN ? { ok: true } : null);
 
-  constructor(cfg: Partial<RunnerConfig> & { env?: NodeJS.ProcessEnv; sdk?: FakeSdk; maxLineBytes?: number } = {}) {
+  constructor(cfg: Partial<RunnerConfig> & { env?: NodeJS.ProcessEnv; sdk?: FakeSdk; maxLineBytes?: number; maxQueuedBytes?: number } = {}) {
     this.sdk = cfg.sdk ?? new FakeSdk();
     this.fromRunner.on("data", (c: Buffer) => this.onData(c.toString("utf8")));
     this.runner = new Runner(this.toRunner, this.fromRunner, {

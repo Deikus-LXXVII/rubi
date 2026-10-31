@@ -15,6 +15,7 @@ const runner = new Runner(process.stdin, process.stdout, {
   env: process.env,
   cwd,
   configDir,
+  settingSources: process.env.RUBI_SETTING_SOURCES === "none" ? [] : ["project"],
   log: (m) => process.stderr.write(`[runner] ${m}\n`),
   exit: (code) => setImmediate(() => process.exit(code)),
 });

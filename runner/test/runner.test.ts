@@ -171,6 +171,10 @@ describe("options of every query", () => {
     assert.equal(o.sessionId, id);
     assert.equal(o.resume, undefined);
     assert.deepEqual(o.settingSources, ["project"]);
+    // the project's own settings must not run code outside our gate
+    assert.deepEqual(o.settings, { disableAllHooks: true, apiKeyHelper: "" });
+    assert.equal(o.strictMcpConfig, true);
+    assert.deepEqual(o.mcpServers, {});
     assert.equal(o.allowDangerouslySkipPermissions, true);
     assert.equal(o.permissionMode, "acceptEdits");
     assert.equal(o.env.CLAUDE_CONFIG_DIR, "/work/.rubi/claude");
@@ -178,8 +182,7 @@ describe("options of every query", () => {
     assert.equal(o.env.DISABLE_TELEMETRY, "1");
     assert.equal(o.hooks.PreToolUse[0]!.timeout, 300);
     assert.deepEqual(o.disallowedTools, disallowedEditTools("/work"));
-    assert.ok(o.disallowedTools.includes("Write(//work/.rubi/**)"));
-    assert.ok(o.disallowedTools.includes("Edit(//work/.rubi/**)"));
+    for (const r of ["Edit(//work/.rubi/**)", "Edit(//work/.claude/**)", "Edit(//work/.mcp.json)", "Read(//work/.rubi/**)"]) assert.ok(o.disallowedTools.includes(r), r);
     assert.equal(typeof o.canUseTool, "function");
   });
 

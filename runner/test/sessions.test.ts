@@ -50,7 +50,8 @@ describe("perm.ask from the PreToolUse hook", () => {
     };
     await start(h);
     await h.waitEvent("result");
-    assert.deepEqual(hookOut, { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: { command: "ls -la" } } });
+    // never a hook "allow": the SDK's deny rules and canUseTool still apply after the hook
+    assert.deepEqual(hookOut, { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: "ls -la" } } });
   });
 
   it("every tool call of a subagent is asked with agent_id and agent_type, and deny applies there", async () => {

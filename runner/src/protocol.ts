@@ -17,6 +17,7 @@ export const ERR = {
   closed: -32003, // the peer went away / the request was cancelled
   sessionNotFound: -32004,
   lineTooLong: -32005,
+  queueFull: -32006,
 } as const;
 
 export class RpcError extends Error {
@@ -35,6 +36,8 @@ export type RequestHandler = (method: string, params: Record<string, unknown>) =
 
 export interface PeerOptions {
   maxLineBytes?: number;
+  /** Bytes allowed to wait for a slow reader before droppable notifications are discarded. */
+  maxQueuedBytes?: number;
   onRequest: RequestHandler;
   onNotification?: (method: string, params: Record<string, unknown>) => void;
   /** Called once when the input stream ends or errors. */
@@ -68,6 +71,11 @@ export class Peer {
   private nextId = 1;
   private readonly pending = new Map<number | string, Pending>();
   private closed = false;
+  private blocked = false;
+  private outq: { line: string; drop: string | undefined }[] = [];
+  private queuedBytes = 0;
+  private readonly maxQueuedBytes: number;
+  private readonly dropped = new Map<string, number>();
 
   constructor(
     input: Readable,
@@ -75,6 +83,7 @@ export class Peer {
     private readonly opts: PeerOptions,
   ) {
     this.maxLineBytes = opts.maxLineBytes ?? DEFAULT_MAX_LINE_BYTES;
+    this.maxQueuedBytes = opts.maxQueuedBytes ?? 8 * 1024 * 1024;
     input.on("data", (c: Buffer | string) => this.onData(typeof c === "string" ? Buffer.from(c) : c));
     input.on("end", () => this.shutdown());
     input.on("close", () => this.shutdown());
@@ -249,16 +258,67 @@ export class Peer {
     });
   }
 
-  notify(method: string, params: Record<string, unknown>) {
-    this.writeRaw({ jsonrpc: "2.0", method, params });
+  /**
+   * `droppable` names a session: when the reader is too slow (the output buffer is full and more than
+   * maxQueuedBytes wait), the oldest droppable notifications are discarded and, once the reader catches
+   * up, one `event` of kind "error" per session says how many were lost. Requests and responses are never dropped.
+   */
+  notify(method: string, params: Record<string, unknown>, droppable?: string) {
+    this.writeRaw({ jsonrpc: "2.0", method, params }, droppable);
   }
 
-  private writeRaw(msg: unknown) {
+  private writeRaw(msg: unknown, drop?: string) {
     if (this.output.destroyed || this.output.writableEnded) return;
+    let line: string;
     try {
-      this.output.write(JSON.stringify(msg) + "\n");
+      line = JSON.stringify(msg) + "\n";
+    } catch (e) {
+      this.log(`serialize failed: ${errMsg(e)}`);
+      return;
+    }
+    if (this.blocked) {
+      this.outq.push({ line, drop });
+      this.queuedBytes += line.length;
+      this.trimQueue();
+      return;
+    }
+    this.writeNow(line);
+  }
+
+  private writeNow(line: string) {
+    try {
+      if (!this.output.write(line)) {
+        this.blocked = true;
+        this.output.once("drain", () => this.onDrain());
+      }
     } catch (e) {
       this.log(`write failed: ${errMsg(e)}`);
+    }
+  }
+
+  private trimQueue() {
+    for (let i = 0; this.queuedBytes > this.maxQueuedBytes && i < this.outq.length; ) {
+      const e = this.outq[i]!;
+      if (e.drop === undefined) {
+        i++;
+        continue;
+      }
+      this.outq.splice(i, 1);
+      this.queuedBytes -= e.line.length;
+      this.dropped.set(e.drop, (this.dropped.get(e.drop) ?? 0) + 1);
+    }
+  }
+
+  private onDrain() {
+    this.blocked = false;
+    for (const [sid, n] of this.dropped) {
+      this.outq.push({ line: JSON.stringify({ jsonrpc: "2.0", method: "event", params: { session_id: sid, kind: "error", message: `${n} events were dropped because Home read too slowly`, dropped: n } }) + "\n", drop: undefined });
+    }
+    this.dropped.clear();
+    while (this.outq.length > 0 && !this.blocked) {
+      const e = this.outq.shift()!;
+      this.queuedBytes -= e.line.length;
+      this.writeNow(e.line);
     }
   }
 }
