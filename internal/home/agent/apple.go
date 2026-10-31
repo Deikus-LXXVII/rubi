@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/netip"
 	"os"
@@ -19,6 +20,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/Deikus-LXXVII/rubi/runner"
 )
 
 // AppleContainer runs a project in a VM of Apple's container tool (github.com/apple/container, 1.6.x),
@@ -27,8 +30,9 @@ import (
 type AppleContainer struct {
 	// Bin is the container CLI ("container" when empty, looked up in PATH).
 	Bin string
-	// Image is the runner image's tag; RunnerDir the directory with runner/ (its container/Dockerfile) to
-	// build it from when the image is missing; "" means it must exist already.
+	// Image is the runner image's tag (DefaultImage when empty); RunnerDir the directory with runner/ (its
+	// container/Dockerfile) to build it from when the image is missing. When RunnerDir is empty the runner
+	// bundled in this binary (package runner) is written to EnvDir/runner-build/<hash> and built from there.
 	Image     string
 	RunnerDir string
 	// Network is the host-only network the container joins (created with --internal on first use;
@@ -52,14 +56,16 @@ type AppleContainer struct {
 }
 
 const (
-	// DefaultImage is the runner image's tag.
-	DefaultImage   = "rubi-agent-runner:1"
 	DefaultNetwork = "rubi-agent"
 	// runnerUID is the non-root user inside the image (see runner/container/Dockerfile).
 	runnerUID = "10001"
 	// RunnerCmd is how the image starts the runner (the exec in the VM).
 	runnerMain = "/opt/rubi-runner/dist/main.js"
 )
+
+// DefaultImage is the runner image's tag: it names the bundled runner (the first 12 hex digits of its
+// hash), so a Rubi Home with a changed runner builds and uses a new image.
+var DefaultImage = "rubi-agent-runner:" + runner.Hash()[:12]
 
 func (a *AppleContainer) bin() string {
 	if a.Bin != "" {
@@ -95,10 +101,66 @@ func containerName(p Project) string {
 	return "rubi-agent-" + slug + "-" + hex.EncodeToString(sum[:4])
 }
 
-// BuildArgs is the image build: the context is the runner directory.
-func (a *AppleContainer) BuildArgs() []string {
+// ImageTag is the tag of the runner image this VM runs.
+func (a *AppleContainer) ImageTag() string { return a.image() }
+
+// BuildArgs is the image build from RunnerDir: the context is the runner directory.
+func (a *AppleContainer) BuildArgs() []string { return a.buildArgs(a.RunnerDir) }
+
+func (a *AppleContainer) buildArgs(dir string) []string {
 	return []string{a.bin(), "build", "--progress", "plain", "-t", a.image(),
-		"-f", filepath.Join(a.RunnerDir, "container", "Dockerfile"), a.RunnerDir}
+		"-f", filepath.Join(dir, "container", "Dockerfile"), dir}
+}
+
+// BuildCommand is the image build, from RunnerDir or, when that is empty, from the bundled runner written
+// to EnvDir/runner-build/<hash>.
+func (a *AppleContainer) BuildCommand() ([]string, error) {
+	if a.RunnerDir != "" {
+		return a.BuildArgs(), nil
+	}
+	if a.EnvDir == "" {
+		return nil, fmt.Errorf("the runner image %s isn't built and there is no directory to build it in (agent_runner_dir)", a.image())
+	}
+	dir, err := ExtractRunner(filepath.Join(a.EnvDir, "runner-build", runner.Hash()), runner.FS())
+	if err != nil {
+		return nil, err
+	}
+	return a.buildArgs(dir), nil
+}
+
+// ExtractRunner writes the runner bundle to dir (0700) unless dir already holds exactly that bundle.
+func ExtractRunner(dir string, bundle fs.FS) (string, error) {
+	if runner.HashFS(os.DirFS(dir)) == runner.HashFS(bundle) {
+		return dir, nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return "", err
+	}
+	err := fs.WalkDir(bundle, ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(p))
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o700)
+		}
+		b, err := fs.ReadFile(bundle, p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(dst, b, 0o600)
+	})
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", fmt.Errorf("writing the runner sources: %w", err)
+	}
+	return dir, nil
+}
+
+// ImageExists says whether the runner image is there.
+func (a *AppleContainer) ImageExists(ctx context.Context) bool {
+	_, err := a.do(ctx, a.imageInspectArgs())
+	return err == nil
 }
 
 func (a *AppleContainer) imageInspectArgs() []string {
@@ -202,10 +264,11 @@ func (a *AppleContainer) EnsureImage(ctx context.Context) error {
 	if _, err := a.do(ctx, a.imageInspectArgs()); err == nil {
 		return nil
 	}
-	if a.RunnerDir == "" {
-		return fmt.Errorf("the runner image %s isn't built and no runner directory is configured (agent_runner_dir)", a.image())
+	argv, err := a.BuildCommand()
+	if err != nil {
+		return err
 	}
-	_, err := a.do(ctx, a.BuildArgs())
+	_, err = a.do(ctx, argv)
 	return err
 }
 
@@ -236,6 +299,9 @@ func (a *AppleContainer) verifyInternal(ctx context.Context) (string, error) {
 	}
 	return checkHostOnly(out, a.network())
 }
+
+// CheckHostOnly is the host-only check of a `container network inspect` output; it returns the gateway.
+func CheckHostOnly(out []byte, name string) (string, error) { return checkHostOnly(out, name) }
 
 func checkHostOnly(out []byte, name string) (string, error) {
 	var nets []networkInfo

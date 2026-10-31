@@ -1,8 +1,19 @@
 # The runner image (Apple container, `container build -f runner/container/Dockerfile runner/`).
-# The build context is runner/: package.json, package-lock.json and the compiled dist/ (milestone M1).
+# The build context is runner/: package*.json, tsconfig*.json, src/ and container/ (the same files the Rubi Home
+# binary embeds, runner/embed.go); the runner is compiled here, in the builder stage.
 # The base image is pinned by the digest of its multi-platform index (node 22.23.4, bookworm, 2026-10-28);
 # update both together.
-FROM node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+ARG NODE_IMAGE=node:22-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da
+
+# Builder: the packages from the lockfile (with dev dependencies, no install scripts) and the compiled runner.
+FROM ${NODE_IMAGE} AS builder
+WORKDIR /build
+COPY package.json package-lock.json tsconfig.json tsconfig.build.json ./
+RUN npm ci --ignore-scripts
+COPY src/ ./src/
+RUN npm run build
+
+FROM ${NODE_IMAGE}
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates netcat-openbsd \
@@ -15,7 +26,7 @@ WORKDIR /opt/rubi-runner
 COPY package.json package-lock.json ./
 # --ignore-scripts: no package's install script runs during the build.
 RUN npm ci --omit=dev --ignore-scripts
-COPY dist/ ./dist/
+COPY --from=builder /build/dist/ ./dist/
 
 # git asks Rubi Home for credentials through the runner (socket served by the runner, see
 # docs/design/rubi-home.md); never a token on disk in the image.

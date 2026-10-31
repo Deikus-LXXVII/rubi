@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -223,5 +224,46 @@ func TestAppleContainerPrepareFails(t *testing.T) {
 		Prepare: func(context.Context, string) (map[string]string, error) { return nil, errors.New("no proxy") }})
 	if err == nil || a.State() != StateFailed || ran[len(ran)-1] != "delete --force" {
 		t.Fatalf("%v %s %v", err, a.State(), ran)
+	}
+}
+
+func TestBuildCommandUsesTheBundledRunner(t *testing.T) {
+	env := t.TempDir()
+	a := &AppleContainer{EnvDir: env}
+	if !strings.HasPrefix(DefaultImage, "rubi-agent-runner:") || len(DefaultImage) != len("rubi-agent-runner:")+12 {
+		t.Fatalf("default image %q", DefaultImage)
+	}
+	argv, err := a.BuildCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := argv[len(argv)-1]
+	if filepath.Dir(dir) != filepath.Join(env, "runner-build") || argv[len(argv)-2] != filepath.Join(dir, "container", "Dockerfile") {
+		t.Errorf("build args: %v", argv)
+	}
+	if st, err := os.Stat(dir); err != nil || st.Mode().Perm() != 0o700 {
+		t.Errorf("extracted dir: %v %v", st, err)
+	}
+	for _, f := range []string{"package.json", "src/main.ts", "container/Dockerfile"} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Error(err)
+		}
+	}
+	// A damaged copy is rewritten; an agent_runner_dir override is used as it is.
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.BuildCommand(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "package.json")); string(b) == "{}" {
+		t.Error("damaged copy kept")
+	}
+	over := &AppleContainer{RunnerDir: "/opt/x", EnvDir: env}
+	if argv, _ := over.BuildCommand(); argv[len(argv)-1] != "/opt/x" {
+		t.Errorf("override: %v", argv)
+	}
+	if _, err := (&AppleContainer{}).BuildCommand(); err == nil {
+		t.Error("no directory to build in should fail")
 	}
 }

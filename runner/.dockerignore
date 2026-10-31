@@ -1,6 +1,7 @@
-# The image build context is runner/; only package*.json, dist/ and container/ are copied.
+# The image build context is runner/: package*.json, tsconfig*.json, src/ and container/ are copied; the
+# rest never is.
 node_modules
+dist
 dist-test
-src
 test
 testdata
