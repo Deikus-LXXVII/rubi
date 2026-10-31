@@ -2,17 +2,19 @@
 
 ## Unreleased
 
-- **Agents: one Claude sign-in for all projects (shared token, nothing else shared).** The setup's sign-in step is
-  now one for the computer: the image's `rubi-claude-token` helper runs `claude setup-token` under a terminal in a
+- **Agents: one Claude sign-in for all projects, and no project VM ever holds the token.** The setup's sign-in step is
+  one for the computer: the image's `rubi-claude-token` helper runs `claude setup-token` under a terminal in a
   short-lived sign-in container (no project mounted; a proxy allows only the sign-in hosts) and stores a one-year,
-  `user:inference`-scope subscription token in a directory of Rubi Home (`<helper dir>/agent-auth`, config
-  `agent_auth_dir`, 0700; a bind mount, since a container volume can't be attached to two running VMs). Every
-  project VM mounts it read-only at `/rubi-auth`, outside `/work`; the runner reads the token at each
-  query start into the SDK child's environment only. Each project keeps its own config directory. Status never
-  reads the token (it stats the file and reads a non-secret metadata file); anything shaped like `sk-ant-…` is
-  redacted in what the runner and Home send on; a shared token wins over `ANTHROPIC_API_KEY`; a "Sign out" step deletes
-  it for every project (it can't revoke it: do that at claude.ai). The per-project `claude auth login` remains a
-  fallback; the wizard drops the console method.
+  `user:inference`-scope subscription token in Rubi Home's directory (`<helper dir>/agent-auth`, config
+  `agent_auth_dir`, 0700, file 0600). Each project start runs its own **auth gateway** in Rubi Home, a reverse
+  proxy that checks a per-start secret, drops every client credential, adds the real token and forwards only
+  `POST /v1/messages` (and `count_tokens`) to `https://api.anthropic.com`, streaming, never following a redirect and
+  never logging a header or body. The runner gets `ANTHROPIC_BASE_URL` (the gateway) and the secret as its OAuth
+  token; `api.anthropic.com` leaves the VM proxy's list. A VM can still spend the subscription through the
+  gateway while its session runs; the secret dies with the runner. Each project keeps its own config directory.
+  Status never reads the token for the page (it stats the file and reads a non-secret metadata file); "Sign out"
+  deletes it (revoke it at claude.ai for a full end). Anything shaped like `sk-ant-…` is redacted in what the
+  runner and Home send on. The wizard drops the console method.
 - **Rubi Home: button-only setup of the agent path (`agent-setup.*`, capability `agent-setup`).** Home probes the
   machine on every status call (Apple's `container` tool at the pinned release, its service and kernel, the
   host-only network, the runner image, the projects, each project's Claude sign-in, a self-test) and runs one

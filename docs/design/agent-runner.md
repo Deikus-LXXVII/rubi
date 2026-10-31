@@ -81,10 +81,7 @@ prompting). `purpose` is `"push"` only for 120 s after Home approved a `perm.ask
 `git ... push`; otherwise `"read"`. Any process of the runner's VM user can connect to the socket; Home must treat the
 purpose as the runner's claim and keep separate read and push credentials. The runner neither stores nor logs them.
 
-Runner process: environment `RUBI_RUN_TOKEN` (required), `RUBI_AUTH_DIR` (the shared sign-in's directory, default
-`/rubi-auth`, a read-only bind mount of `<helper dir>/agent-auth`; at each query start the token in
-`token/oauth-token` becomes `CLAUDE_CODE_OAUTH_TOKEN` in the SDK child's environment only, see home-setup-wizard.md,
-"Shared sign-in"; the per-project `claude auth login` stays a fallback used when no shared token is stored), `RUBI_WORK_DIR` (working directory, default `/work`;
+Runner process: environment `RUBI_RUN_TOKEN` (required), `ANTHROPIC_BASE_URL` (the address of this start's auth gateway on the Mac, which holds the Claude token), `CLAUDE_CODE_OAUTH_TOKEN` (a per-start secret good only at that gateway; the VM never holds the real token, see home-setup-wizard.md, "Shared sign-in"), `NO_PROXY` (the gateway's host), `RUBI_WORK_DIR` (working directory, default `/work`;
 sessions and config under `<dir>/.rubi/claude`), `HTTPS_PROXY`. The runner sets `CLAUDE_CONFIG_DIR` for itself too,
 because `listSessions`/`forkSession` read the sessions of its own environment. `from` in `session.start`/`send` is
 written as a first line `[message from <from>]` in the text. A session the runner does not hold (after a restart or a
