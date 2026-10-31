@@ -507,7 +507,7 @@ credentials in the VM. An optional model review can be added later; it is not in
   un-withdraw (`admit` on a deprecated or withdrawn version signs it again), never an edit.
   The curator is set with `Core.RequestLibraryCurator(name)`: a strong approval of kind `rubi.library.curator`
   showing the old and new curator (`""` removes it), applied only if the curator is still what the user saw. The
-  panel button comes in R10.
+  panel button is in Settings, "Skills" (R10).
 - **Bot tools (core MCP):**
   - `rubi_library_list {query?, tag?}`, `rubi_library_get {id, version?}`, `rubi_library_submit {id?, description,
     tags, content}` (returns `proposal_id` and the scan);
@@ -531,8 +531,15 @@ credentials in the VM. An optional model review can be added later; it is not in
   `"id@3"` pins it. Attaching is tier 1, since admitted means trusted. When a new version is admitted, the plugin
   re-materializes each following role as a new role version (audit: "design-tokens 3 -> 4", diff, Revert).
   Updates never change tools or network.
-- **Panel:** a library screen in the core panel (search, versions, scan results, author and admitter, "used by roles",
-  which reads the plugin's role cache) and the curator queue.
+- **Panel (R10):** Settings, "Skills" opens the library screen: search and tag filter, an entry page with every version
+  (state, scan rules with line and excerpt, author Bot, admitted by, "self-admitted by curator", hash, dates, the skill in
+  a text-only `<pre>`), the curator queue (proposals with their scan results) and the curator with a Change button
+  (prompts for a Bot name, then the strong approval `rubi.library.curator`). Panel ops: `library.list`, `library.entry`,
+  `library.version`, `library.queue`, `library.curator.set`; a full settings ticket only. The user does not admit,
+  deprecate or withdraw from the panel in v1: the core has no user path for it (it is the curator Bot's job), so the
+  screen is read-only apart from the curator. All Bot-supplied text is drawn as clipped text and marked untrusted.
+  "Used by roles" is not shown: roles live in Home and the plugin, the core cannot see them, so it would need a plugin
+  call from the panel; left for later.
 
 ## 9. SSH targets
 
@@ -691,7 +698,7 @@ Order: after the auth gateway work. Each step is green on its own, and the legac
 | R7 | Plugin panel: Roles, Role detail, History with diff and Revert, chats grouped by role, Convert legacy role | plugin | `agent_panel_test` |
 | R8 (done) | Core library: store, library key, signing, curator setting (`rubi.library.curator`), `rubi_library_*` tools, `library.get` host method; Home pins the key (resolve the origin question first) | core | unit |
 | R9 | Plugin: library skills in roles (follow or pin, update re-materialization, rollback) | plugin | unit |
-| R10 | Core panel: library browser and curator queue | core/panel | panel tests |
+| R10 (done) | Core panel: library browser and curator queue | core/panel | panel tests |
 | R11 | Home SSH: key generation, target registry, pinned-host-key client, stream relay, limits, audit | core/home | unit with an in-process SSH server |
 | R12 | Runner and image: `rubi-ssh` wrapper, socket, `ssh.*` relay; plugin: `ssh_target` kind, grants, ask-each-time, SSH page | core/runner, plugin | integration and a live run |
 | R13a | Live spike: networkless container plus mux throughput | core | spike report |
