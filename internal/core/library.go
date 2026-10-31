@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +18,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
 	"github.com/Deikus-LXXVII/rubi/internal/library"
+	"github.com/Deikus-LXXVII/rubi/internal/library/libsig"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
 
@@ -34,6 +37,7 @@ const (
 	libraryWithdrawKind   = "rubi.library.withdraw"
 	librarySubmitsPerMin  = 10
 	libraryKeyPinOp       = "library.key"
+	libraryRevokedOp      = "library.revoked"
 	libraryPinTimeout     = 8 * time.Second
 	libraryPinEvery       = 10 * time.Minute // Home may have lost its pin (reinstalled); pinning again is harmless
 	maxLibraryAckRules    = 32
@@ -43,11 +47,6 @@ const (
 type pinned struct {
 	key string
 	at  time.Time
-}
-
-type libraryPins struct {
-	mu     sync.Mutex
-	pinned map[string]pinned // device id -> what this process last pinned there
 }
 
 // libraryKey returns the library signing key, making it on first use. It fails while Rubi is locked.
@@ -180,6 +179,7 @@ func (c *Core) RequestLibraryWithdraw(ctx context.Context, id string, version in
 				return nil, err
 			}
 			c.Audit.Record("library.withdrawn", audit.Fields{"id": id, "versions": changed, "by": "the user"})
+			c.pushLibraryRevocations()
 			return map[string]any{"applied": true, "withdrawn": changed}, nil
 		},
 	})
@@ -311,6 +311,7 @@ func (c *Core) LibraryAdmit(agent, code, proposalID string, ack []string) (libra
 		return res, err
 	}
 	c.auditAdmit("library.admitted", res, by)
+	c.pushLibraryRevocations() // admitting a withdrawn version again takes it off the list
 	return res, nil
 }
 
@@ -350,6 +351,9 @@ func (c *Core) LibrarySetState(agent, code, id string, version int, to library.S
 		return nil, err
 	}
 	c.Audit.Record("library."+string(to), audit.Fields{"id": id, "versions": changed, "by": by})
+	if to == library.Withdrawn {
+		c.pushLibraryRevocations()
+	}
 	return changed, nil
 }
 
@@ -367,43 +371,107 @@ func (c *Core) LibraryPurge(agent, code, id string, version int) ([]int, error) 
 	return purged, nil
 }
 
-// ---- pinning the library key on Rubi Home ----
+// ---- telling Rubi Home about the library ----
 
-// pinLibraryKey tells one Rubi Home which public key signs the library. Home pins the first key it is given and
-// refuses a different one. Only core calls this; see the note at the top of this file.
-func (c *Core) pinLibraryKey(ctx context.Context, dev *vault.Device) error {
-	pub, err := c.LibraryPublicKey()
-	if err != nil {
-		return err
-	}
-	enc := base64.StdEncoding.EncodeToString(pub)
-	c.libPins.mu.Lock()
-	last := c.libPins.pinned[dev.ID]
-	done := last.key == enc && time.Since(last.at) < libraryPinEvery
-	c.libPins.mu.Unlock()
-	if done {
-		return nil
+// Two core-only ops go to every paired Rubi Home: library.key (the public key that signs the library; Home pins
+// the first one it is given and refuses another) and library.revoked (the signed list of withdrawn versions; Home
+// keeps the newest, refuses to build roles with those versions and takes them out of the roles it has built).
+// Only core calls them; see the note at the top of this file.
+//
+// Latency of a withdrawal: a Home that is online gets the list within seconds of the withdrawal (it is pushed from
+// a goroutine, and again whenever a plugin fetches a skill). A Home that is offline, or whose relay is down, gets it
+// the next time a plugin fetches a skill or a withdrawal happens, or when Rubi restarts and a role is fetched, and
+// until then it keeps using what it had built. A VM start on Home also re-checks against the list Home holds.
+
+const (
+	libraryPinFailCooldown = time.Minute // an offline Home isn't tried again for this long by a plugin's library.get
+	libraryPinWait         = 2 * time.Second
+)
+
+type libraryPins struct {
+	mu       sync.Mutex
+	pinned   map[string]pinned    // device id -> what this process last pinned there
+	failed   map[string]time.Time // device id -> when the last attempt failed
+	inflight map[string]bool
+	revSent  map[string]revSent // device id -> the list last pushed there
+	// call is the seam for tests: it sends one op to a Home (nil: through the device's client).
+	call func(ctx context.Context, dev *vault.Device, op string, args any) error
+}
+
+type revSent struct {
+	hash string
+	at   time.Time
+}
+
+func (c *Core) homeCallLibrary(ctx context.Context, dev *vault.Device, op string, args any) error {
+	if c.libPins.call != nil {
+		return c.libPins.call(ctx, dev, op, args)
 	}
 	cl, err := c.deviceClient(dev)
 	if err != nil {
 		return err
 	}
+	return cl.Call(ctx, op, args, nil)
+}
+
+// syncLibraryHome pins the key on one Rubi Home and gives it the list of withdrawn versions (cached for a while
+// unless force is set, or the list changed).
+func (c *Core) syncLibraryHome(ctx context.Context, dev *vault.Device, force bool) error {
+	pub, err := c.LibraryPublicKey()
+	if err != nil {
+		return err
+	}
+	enc := base64.StdEncoding.EncodeToString(pub)
+	revoked, err := c.Library.Revoked()
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(strings.Join(revoked, "\n")))
+	hash := hex.EncodeToString(sum[:])
+	c.libPins.mu.Lock()
+	last := c.libPins.pinned[dev.ID]
+	sent := c.libPins.revSent[dev.ID]
+	pinDone := last.key == enc && time.Since(last.at) < libraryPinEvery && !force
+	revDone := sent.hash == hash && time.Since(sent.at) < libraryPinEvery && !force
+	c.libPins.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, libraryPinTimeout)
 	defer cancel()
-	if err := cl.Call(ctx, libraryKeyPinOp, map[string]string{"public_key": enc}, nil); err != nil {
+	if !pinDone {
+		if err := c.homeCallLibrary(ctx, dev, libraryKeyPinOp, map[string]string{"public_key": enc}); err != nil {
+			return err
+		}
+		c.libPins.mu.Lock()
+		if c.libPins.pinned == nil {
+			c.libPins.pinned = map[string]pinned{}
+		}
+		c.libPins.pinned[dev.ID] = pinned{enc, time.Now()}
+		c.libPins.mu.Unlock()
+	}
+	if revDone {
+		return nil
+	}
+	priv, err := c.libraryKey()
+	if err != nil {
+		return err
+	}
+	at := time.Now().UnixMilli()
+	sig, err := libsig.SignRevocations(priv, at, revoked)
+	if err != nil {
+		return err
+	}
+	if err := c.homeCallLibrary(ctx, dev, libraryRevokedOp, map[string]any{"issued_at": at, "revoked": revoked, "sig": sig}); err != nil {
 		return err
 	}
 	c.libPins.mu.Lock()
-	if c.libPins.pinned == nil {
-		c.libPins.pinned = map[string]pinned{}
+	if c.libPins.revSent == nil {
+		c.libPins.revSent = map[string]revSent{}
 	}
-	c.libPins.pinned[dev.ID] = pinned{enc, time.Now()}
+	c.libPins.revSent[dev.ID] = revSent{hash, time.Now()}
 	c.libPins.mu.Unlock()
 	return nil
 }
 
-// pinLibraryKeys pins the key on every paired Rubi Home (best effort: an offline one is tried again next time).
-func (c *Core) pinLibraryKeys(ctx context.Context) {
+func (c *Core) libraryDevices() []*vault.Device {
 	var devs []*vault.Device
 	_ = c.Vault.View(func(d *vault.Data) error {
 		for _, x := range d.Devices {
@@ -412,16 +480,62 @@ func (c *Core) pinLibraryKeys(ctx context.Context) {
 		}
 		return nil
 	})
-	var wg sync.WaitGroup
-	for _, d := range devs {
-		wg.Add(1)
+	return devs
+}
+
+// startLibrarySync starts syncing every paired Home that isn't already being synced (and, unless force is set,
+// didn't just fail) and returns channels that close when each is done. Nothing here waits for an offline Home.
+func (c *Core) startLibrarySync(force bool) []<-chan struct{} {
+	var done []<-chan struct{}
+	for _, d := range c.libraryDevices() {
+		c.libPins.mu.Lock()
+		if c.libPins.inflight == nil {
+			c.libPins.inflight, c.libPins.failed = map[string]bool{}, map[string]time.Time{}
+		}
+		skip := c.libPins.inflight[d.ID] || (!force && time.Since(c.libPins.failed[d.ID]) < libraryPinFailCooldown)
+		if !skip {
+			c.libPins.inflight[d.ID] = true
+		}
+		c.libPins.mu.Unlock()
+		if skip {
+			continue
+		}
+		ch := make(chan struct{})
+		done = append(done, ch)
 		go func() {
-			defer wg.Done()
-			_ = c.pinLibraryKey(ctx, d)
+			defer close(ch)
+			err := c.syncLibraryHome(context.Background(), d, force)
+			c.libPins.mu.Lock()
+			delete(c.libPins.inflight, d.ID)
+			if err != nil {
+				c.libPins.failed[d.ID] = time.Now()
+			} else {
+				delete(c.libPins.failed, d.ID)
+			}
+			c.libPins.mu.Unlock()
 		}()
 	}
-	wg.Wait()
+	return done
 }
+
+// pinLibraryKeys syncs every paired Rubi Home, waiting at most libraryPinWait (a plugin that fetches a skill goes
+// on to role.put at once, so an online Home should have the key by then; an offline one costs no more than that, and
+// is not tried again for a minute).
+func (c *Core) pinLibraryKeys(ctx context.Context) {
+	deadline := time.After(libraryPinWait)
+	for _, ch := range c.startLibrarySync(false) {
+		select {
+		case <-ch:
+		case <-deadline:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// pushLibraryRevocations sends the list of withdrawn versions to every Home now, without waiting for any.
+func (c *Core) pushLibraryRevocations() { c.startLibrarySync(true) }
 
 // ---- host method library.get ----
 

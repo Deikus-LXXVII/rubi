@@ -122,3 +122,42 @@ func Verify(pub ed25519.PublicKey, id, version, sha256, tok string) (Claims, err
 	}
 	return c, nil
 }
+
+// RevocationPrefix separates a revocation list's signature from a skill's.
+const RevocationPrefix = "rubi-skill-revocations-v1\n"
+
+// RevocationMessage is the byte string that is signed for a list: the time it was issued (Unix milliseconds; a
+// computer keeps only the newest list it has seen) and the withdrawn versions as "id@version", sorted.
+func RevocationMessage(issuedAt int64, revoked []string) []byte {
+	list := append([]string{}, revoked...)
+	sort.Strings(list)
+	var b bytes.Buffer
+	b.WriteString(RevocationPrefix)
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(struct {
+		IssuedAt int64    `json:"issued_at"`
+		Revoked  []string `json:"revoked"`
+	}{issuedAt, list})
+	return bytes.TrimRight(b.Bytes(), "\n")
+}
+
+// SignRevocations signs a revocation list; the result is URL-safe base64 without padding.
+func SignRevocations(priv ed25519.PrivateKey, issuedAt int64, revoked []string) (string, error) {
+	if len(priv) != ed25519.PrivateKeySize {
+		return "", errors.New("bad library key")
+	}
+	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, RevocationMessage(issuedAt, revoked))), nil
+}
+
+// VerifyRevocations checks a signed list against pub.
+func VerifyRevocations(pub ed25519.PublicKey, issuedAt int64, revoked []string, sig string) error {
+	if len(pub) != ed25519.PublicKeySize {
+		return errors.New("no library key is pinned on this computer")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil || len(raw) != ed25519.SignatureSize || !ed25519.Verify(pub, RevocationMessage(issuedAt, revoked), raw) {
+		return errors.New("the revocation list's signature doesn't match")
+	}
+	return nil
+}

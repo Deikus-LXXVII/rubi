@@ -402,7 +402,7 @@ func TestSignatureTokenChecks(t *testing.T) {
 
 // tooBig is a skill the scan rejects for its size.
 func tooBig(name string) string {
-	return skillNamed(name) + strings.Repeat("a b c d e f g h i j k l m n o p q r s t u v w x y z\n", 800)
+	return skillNamed(name) + strings.Repeat("a b c d e f g h i j k l m n o p q r s t u v w x y z\n", 640)
 }
 
 func TestOpenProposalsPerBotAndAdmittedIDs(t *testing.T) {
@@ -438,28 +438,37 @@ func TestOpenProposalsPerBotAndAdmittedIDs(t *testing.T) {
 func TestOnlyLiveVersionsAndEntriesCount(t *testing.T) {
 	r := newRig(t)
 	r.l.opt.MaxOpenPerBot = 100000
-	// Rejected versions don't use up the 20 live slots, and entries made only of rejects don't use up the 500.
-	bad := tooBig("bad")
-	if p, err := r.l.Submit(Submission{ID: "bad", Description: "d", Content: bad, Author: "a"}); err != nil || p.State != Rejected {
-		t.Fatalf("%+v %v", p, err)
+	// Withdrawn and rejected versions don't use up the 20 live slots, and entries made only of them don't use up
+	// the entry limit.
+	retire := func(id, content string) {
+		t.Helper()
+		p, err := r.l.Submit(Submission{ID: id, Description: "d", Content: content, Author: "a", Curator: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.l.Admit(p.ProposalID, "curator", nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.l.SetState(id, p.Version, Withdrawn, "curator"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for i := 0; i < MaxVersionsPerItem+3; i++ {
-		if _, err := r.l.Submit(Submission{ID: "bad", Description: "d", Content: bad + fmt.Sprint(i), Author: "a"}); err != nil {
-			t.Fatalf("reject %d: %v", i, err)
-		}
+		retire("old", skillNamed("old")+fmt.Sprint(i))
 	}
-	r.l.opt.MaxEntries = 10
+	if p, err := r.l.Submit(Submission{ID: "old", Description: "d", Content: tooBig("old"), Author: "a", Curator: true}); err != nil || p.State != Rejected {
+		t.Fatalf("%+v %v", p, err)
+	}
+	r.l.opt.MaxEntries = 4
 	for i := 0; i < 3*r.l.opt.MaxEntries; i++ { // more than the limit, none of them live
 		id := fmt.Sprintf("r%d", i)
-		if _, err := r.l.Submit(Submission{ID: id, Description: "d", Content: bad, Author: "a"}); err != nil {
-			t.Fatalf("entry %d: %v", i, err)
-		}
+		retire(id, skillNamed(id))
 	}
 	if list, _ := r.l.List("", "", true); len(list) != 3*r.l.opt.MaxEntries+1 {
 		t.Fatalf("%d", len(list))
 	}
 	if _, err := r.l.Submit(Submission{ID: "good", Description: "d", Content: skillNamed("good"), Author: "a"}); err != nil {
-		t.Fatalf("rejects used up the live entries: %v", err)
+		t.Fatalf("retired entries used up the live ones: %v", err)
 	}
 }
 

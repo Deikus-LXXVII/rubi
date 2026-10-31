@@ -3,6 +3,8 @@ package roles
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -123,5 +125,50 @@ func TestLibraryFlagsMustBeAmongTheSignedAcks(t *testing.T) {
 	}
 	if got := put(sign([]string{"exf.url"})).Skills[0]; got.State != StateActive {
 		t.Fatalf("the flag was acknowledged: %+v", got)
+	}
+}
+
+func TestWithdrawnLibraryVersionIsTakenOutOfBuiltRoles(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	revoked := map[string]bool{}
+	dir := t.TempDir()
+	s, _ := Open(Options{Dir: dir, Verifier: Pinned{Key: func() ed25519.PublicKey { return pub },
+		IsRevoked: func(id, v string) bool { return revoked[id+"@"+v] }}})
+	r := baseSpec()
+	r.Project = "p"
+	r.Skills = []Skill{{Name: "layout-notes", Source: SourceLibrary, LibraryID: "layout-notes", Resolved: "3", SHA256: sha(goodSkill), Sig: signedSkill(t, priv, "pass")}}
+	res := mustPut(t, s, PutArgs{Spec: r, Blobs: map[string]string{sha(goodSkill): goodSkill}})
+	skillFile := filepath.Join(dir, res.ID, "content", "current", "plugin", "skills", "layout-notes", "SKILL.md")
+	if _, err := os.Stat(skillFile); err != nil {
+		t.Fatalf("the skill isn't built: %v", err)
+	}
+	if left, err := s.EnforceRevocations(res.ID); err != nil || len(left) != 0 {
+		t.Fatalf("nothing is withdrawn yet: %v %v", left, err)
+	}
+	revoked["layout-notes@3"] = true
+	left, err := s.EnforceRevocations(res.ID)
+	if err != nil || len(left) != 1 || left[0].Library != "layout-notes@3" {
+		t.Fatalf("%v %v", left, err)
+	}
+	if _, err := os.Stat(skillFile); err == nil {
+		t.Fatal("the withdrawn skill is still in the built role")
+	}
+	rj, _ := os.ReadFile(filepath.Join(dir, res.ID, "content", "current", "role.json"))
+	if strings.Contains(string(rj), "layout-notes") {
+		t.Fatalf("role.json still lists it: %s", rj)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "revocations.jsonl")); !strings.Contains(string(b), "layout-notes@3") {
+		t.Fatalf("not audited: %s", b)
+	}
+	if left, _ := s.EnforceRevocations(res.ID); len(left) != 0 {
+		t.Fatal("reported twice")
+	}
+	// A new put with it is refused.
+	r2 := baseSpec()
+	r2.Project = "p"
+	r2.Name = "second"
+	r2.Skills = r.Skills
+	if _, err := s.Put(PutArgs{Spec: r2, Blobs: map[string]string{sha(goodSkill): goodSkill}}); err == nil {
+		t.Fatal("a withdrawn version was accepted at put")
 	}
 }
