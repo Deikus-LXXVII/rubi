@@ -95,7 +95,7 @@ func TestNoWakeWhenNotNeeded(t *testing.T) {
 	}))
 	defer hook.Close()
 	r.setWebhook(hook.URL)
-	time.Sleep(4 * time.Second)
+	time.Sleep(pastGrace)
 	for len(hits) > 0 {
 		<-hits
 	}
@@ -109,7 +109,7 @@ func TestNoWakeWhenNotNeeded(t *testing.T) {
 	if res, err := r.panelLink(quiet["approval_url"].(string)).ApproveWithPassword(quiet["approval_id"].(string), "send", pw); err != nil || res["state"] != "executed" {
 		t.Fatalf("approve: %v %v", res, err)
 	}
-	time.Sleep(5 * time.Second)
+	time.Sleep(pastGrace)
 	var woke []string
 	for len(hits) > 0 {
 		woke = append(woke, <-hits)
@@ -169,7 +169,7 @@ func TestPluginWaitsForItsApproval(t *testing.T) {
 		t.Fatalf("another integration's approval: %v", st)
 	}
 
-	time.Sleep(5 * time.Second) // past the grace before a wake
+	time.Sleep(pastGrace) // past the grace before a wake
 	for len(hits) > 0 {
 		if h := <-hits; h == toString(approved["approval_id"]) {
 			t.Fatal("the agent was woken for an outcome the plugin already handled")
