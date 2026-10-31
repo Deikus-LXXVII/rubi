@@ -162,6 +162,7 @@ type FakeRunner struct {
 
 	mu       sync.Mutex
 	calls    []Call
+	notes    []Call // notifications Home sent (ssh.data, ssh.exit, ...)
 	sessions int
 	helloOK  bool
 	replies  []json.RawMessage
@@ -172,6 +173,11 @@ func (fr *FakeRunner) run() {
 	fr.peer = newPeer(fr.out)
 	fr.peer.onReq = func(ctx context.Context, method string, params json.RawMessage) (any, error) {
 		return fr.answer(method, params)
+	}
+	fr.peer.onNote = func(method string, params json.RawMessage) {
+		fr.mu.Lock()
+		fr.notes = append(fr.notes, Call{method, append(json.RawMessage(nil), params...)})
+		fr.mu.Unlock()
 	}
 	go fr.peer.run(bufio.NewReader(fr.in))
 	if fr.NoHello {
@@ -260,6 +266,24 @@ func (fr *FakeRunner) Calls() []Call {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 	return append([]Call(nil), fr.calls...)
+}
+
+// Notes returns the notifications Home sent so far.
+func (fr *FakeRunner) Notes() []Call {
+	fr.mu.Lock()
+	defer fr.mu.Unlock()
+	return append([]Call(nil), fr.notes...)
+}
+
+// Notify sends a notification to Home (ssh.data, ssh.ack, ssh.close).
+func (fr *FakeRunner) Notify(method string, params any) {
+	b, _ := json.Marshal(params)
+	_ = fr.peer.send(rpcMsg{Method: method, Params: b})
+}
+
+// Request makes a request of Home (ssh.open) and decodes the result.
+func (fr *FakeRunner) Request(ctx context.Context, method string, params, result any) error {
+	return fr.peer.call(ctx, method, params, result)
 }
 
 // CallsOf returns the requests of one method.

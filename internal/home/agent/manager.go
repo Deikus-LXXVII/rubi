@@ -19,6 +19,7 @@ import (
 	"unicode"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/sshtarget"
 )
 
 // lockedAfter: Rubi counts as present while a claude-agent.next is open and this long after one ends.
@@ -97,6 +98,9 @@ type Options struct {
 	Resolve func(ctx context.Context, host string) ([]net.IP, error)
 	Dial    func(ctx context.Context, network, addr string) (net.Conn, error)
 	Now     func() time.Time
+	// SSHDial and SSHLimits are the SSH targets' dialer and stream limits (seams for tests; ssh.go).
+	SSHDial   sshtarget.Dialer
+	SSHLimits sshtarget.Limits
 }
 
 // Item is one thing for the plugin in claude-agent.next.
@@ -202,6 +206,7 @@ type Manager struct {
 	// roles is the role store (Dir/agent-roles); nil with rolesErr when it couldn't be opened.
 	roles    *roles.Store
 	rolesErr error
+	ssh      *sshtarget.Hub // SSH targets (ssh.go); nil with Dir unset or when the registry couldn't be opened
 	nameMu   sync.Mutex
 	names    map[string]string // role id -> name, for messages (dropped when the role is put)
 
@@ -284,6 +289,7 @@ func New(opt Options) *Manager {
 			Logf:     log.Printf,
 		})
 	}
+	m.initSSH()
 	return m
 }
 
@@ -304,6 +310,9 @@ func (m *Manager) Close() {
 	}
 	m.closed = true
 	close(m.stop)
+	if m.ssh != nil {
+		defer m.ssh.CloseAll()
+	}
 	var ps []*projState
 	for _, p := range m.projs {
 		ps = append(ps, p)
@@ -1625,8 +1634,12 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		res, err := m.roles.Handle(strings.TrimPrefix(op, "claude-agent."), args)
 		if err == nil && strings.TrimPrefix(op, "claude-agent.") == "role.put" {
 			m.rolePut(res)
+			m.sshRecheck() // a revoked grant cuts the role's live streams at once
 		}
 		return res, err
+	}
+	if strings.HasPrefix(strings.TrimPrefix(op, "claude-agent."), "ssh.") {
+		return m.sshOp(ctx, strings.TrimPrefix(op, "claude-agent."), args)
 	}
 	var in struct {
 		Project     string          `json:"project"`
