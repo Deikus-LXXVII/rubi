@@ -4,11 +4,17 @@ import { realSdk } from "./sdk-real.js";
 import { RUNNER_VERSION } from "./version.js";
 
 console.log = console.error; // stdout belongs to the protocol
+const cwd = process.env.RUBI_WORK_DIR || "/work";
+const configDir = `${cwd}/.rubi/claude`;
+// listSessions/forkSession/... run in this process and read sessions from the config dir of THIS
+// process's environment; the claude children get the same dir through their explicit env.
+process.env.CLAUDE_CONFIG_DIR = configDir;
 const runner = new Runner(process.stdin, process.stdout, {
   sdk: realSdk,
   version: RUNNER_VERSION,
   env: process.env,
-  cwd: process.env.RUBI_WORK_DIR || "/work",
+  cwd,
+  configDir,
   log: (m) => process.stderr.write(`[runner] ${m}\n`),
   exit: (code) => setImmediate(() => process.exit(code)),
 });
