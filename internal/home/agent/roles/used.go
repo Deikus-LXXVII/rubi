@@ -9,6 +9,9 @@ import (
 // MaxBlobBytes caps the skill text a role keeps in its blobs (every version's skills stay as history).
 const MaxBlobBytes = 4 << 20
 
+// blobCap is MaxBlobBytes; a test lowers it.
+var blobCap = MaxBlobBytes
+
 // used is the index of what a role's versions refer to, kept in <role>/used.json so that a put and the GC don't
 // read every version: the skill blobs with their sizes, and the approval ids already spent (approvals.go).
 // Version is the highest version it covers; when it differs from the committed one (a crash between the version file

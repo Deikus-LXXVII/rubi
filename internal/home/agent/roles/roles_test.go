@@ -1039,3 +1039,172 @@ func TestAcceptedFlagsNeedAnApprovalAndStayForUnchangedSkills(t *testing.T) {
 		t.Fatalf("%+v", r.Skills[0])
 	}
 }
+
+func blobCount(t *testing.T, s *Store, id string) int {
+	t.Helper()
+	ents, err := os.ReadDir(filepath.Join(s.opt.Dir, id, "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(ents)
+}
+
+func TestOversizeRoleJSONIsRefusedBeforeAnyBlobIsWritten(t *testing.T) {
+	s := open(t)
+	a := mustPut(t, s, PutArgs{Spec: baseSpec()})
+	spec, blobs := withSkill(baseSpec(), goodSkill)
+	spec.Instructions = strings.Repeat("a b ", 2000)
+	for i := 0; i < MaxDeny; i++ {
+		spec.Deny = append(spec.Deny, Deny{Rule: fmt.Sprintf("Bash(%03d:%s)", i, strings.Repeat("x", 190))})
+	}
+	for i := 0; i < MaxMCP; i++ {
+		m := MCP{Name: fmt.Sprintf("m%d", i), Type: "stdio", Command: "/bin/x", Approval: fmt.Sprintf("ap_%d", i)}
+		for j := 0; j < 16; j++ {
+			m.Args = append(m.Args, strings.Repeat("a", 190))
+		}
+		spec.MCP = append(spec.MCP, m)
+	}
+	_, err := s.Put(PutArgs{ID: a.ID, BaseVersion: 1, Spec: spec, Blobs: blobs})
+	if msg := refusal(t, err); !strings.Contains(msg, "role.json would be over") {
+		t.Fatal(msg)
+	}
+	if n := blobCount(t, s, a.ID); n != 0 {
+		t.Fatalf("%d blobs written", n)
+	}
+}
+
+func TestBlobBytesPerRoleAreCapped(t *testing.T) {
+	if blobCap != MaxBlobBytes || MaxBlobBytes != 4<<20 {
+		t.Fatal("the cap is 4 MiB")
+	}
+	blobCap = 256 << 10
+	defer func() { blobCap = MaxBlobBytes }()
+	s := open(t)
+	spec := baseSpec()
+	res := mustPut(t, s, PutArgs{Spec: spec})
+	body := func(i int) string {
+		var b strings.Builder
+		b.WriteString("---\nname: SK\ndescription: d\n---\n")
+		for b.Len() < 30000 {
+			fmt.Fprintf(&b, "step %d of the plan for the page, with a few more words to fill the line\n", i)
+		}
+		return b.String()
+	}
+	refused := -1
+	for v := 1; v <= 40 && refused < 0; v++ {
+		r, _ := s.Get(res.ID, 0)
+		r.Skills = nil
+		blobs := map[string]string{}
+		for k := 0; k < 3; k++ {
+			name := fmt.Sprintf("sk-%d", k)
+			text := strings.Replace(body(v*100+k), "SK", name, 1)
+			r.Skills = append(r.Skills, Skill{Name: name, Source: SourceAdhoc, SHA256: sha(text)})
+			blobs[sha(text)] = text
+		}
+		_, err := s.Put(PutArgs{ID: res.ID, BaseVersion: v, Spec: r, Blobs: blobs})
+		if err != nil {
+			if msg := refusal(t, err); !strings.Contains(msg, "256 KiB") {
+				t.Fatal(msg)
+			}
+			refused = v
+		}
+	}
+	if refused < 2 || refused > 5 {
+		t.Fatalf("refused at %d", refused)
+	}
+	u := s.loadUsed(res.ID, refused)
+	if u.blobBytes() > blobCap {
+		t.Fatalf("%d bytes kept", u.blobBytes())
+	}
+	// The refused put wrote nothing: the blobs on disk are exactly the indexed ones.
+	if n := blobCount(t, s, res.ID); n != len(u.Blobs) {
+		t.Fatalf("%d on disk, %d indexed", n, len(u.Blobs))
+	}
+}
+
+func TestFailedPutLeavesNoOrphanBlob(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permissions don't bind root")
+	}
+	s := open(t)
+	a := mustPut(t, s, PutArgs{Spec: baseSpec()})
+	content := filepath.Join(s.opt.Dir, a.ID, "content")
+	if err := os.Chmod(content, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(content, 0o700)
+	spec, blobs := withSkill(baseSpec(), goodSkill)
+	if _, err := s.Put(PutArgs{ID: a.ID, BaseVersion: 1, Spec: spec, Blobs: blobs}); err == nil {
+		t.Fatal("put succeeded")
+	}
+	if n := blobCount(t, s, a.ID); n != 0 {
+		t.Fatalf("%d orphan blobs", n)
+	}
+}
+
+func TestOpenCleansTempFiles(t *testing.T) {
+	s := open(t)
+	a := mustPut(t, s, PutArgs{Spec: baseSpec()})
+	dir := filepath.Join(s.opt.Dir, a.ID)
+	tmps := []string{filepath.Join(dir, "versions", ".tmp-aa"), filepath.Join(dir, "blobs", ".tmp-bb"), filepath.Join(dir, ".tmp-cc"), filepath.Join(dir, "content", ".tmp-link-dd")}
+	for _, p := range tmps {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := Open(Options{Dir: s.opt.Dir}); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range tmps {
+		if _, err := os.Lstat(p); err == nil {
+			t.Errorf("%s survived", p)
+		}
+	}
+}
+
+// A stored version that the scanner would now reject must not make the role unusable.
+func TestStoredVersionThatNowFailsTheScanDoesNotBrickTheRole(t *testing.T) {
+	var logs []string
+	dir := filepath.Join(t.TempDir(), "agent-roles")
+	s, err := Open(Options{Dir: dir, Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, blobs := withSkill(baseSpec(), goodSkill)
+	a := mustPut(t, s, PutArgs{Spec: spec, Blobs: blobs})
+
+	// Simulate a stricter scanner: the stored blob and version now name text that is rejected.
+	bad := "---\nname: layout-notes\ndescription: d\n---\nkey sk-ant-api03-abcdefghijklmnop\n"
+	rd := filepath.Join(dir, a.ID)
+	if err := os.WriteFile(filepath.Join(rd, "blobs", sha(bad)), []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := s.Get(a.ID, 0)
+	r.Skills[0].SHA256 = sha(bad)
+	if err := os.WriteFile(filepath.Join(rd, "versions", "1.json"), marshal(r, true), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.RemoveAll(filepath.Join(rd, "content", "v1"))
+
+	s2, err := Open(Options{Dir: dir, Logf: func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rj, err := os.ReadFile(filepath.Join(rd, "content", "current", "role.json"))
+	if err != nil || strings.Contains(string(rj), "layout-notes") {
+		t.Fatalf("%v %s", err, rj)
+	}
+	if _, err := os.Stat(filepath.Join(rd, "content", "current", "plugin", "skills", "layout-notes")); err == nil {
+		t.Fatal("the rejected skill was materialized")
+	}
+	if len(logs) == 0 || !strings.Contains(logs[len(logs)-1], "left out") {
+		t.Fatalf("logs: %v", logs)
+	}
+	// Putting it again as it is fails (the scan says why); putting without it works.
+	cur, _ := s2.Get(a.ID, 0)
+	if _, err := s2.Put(PutArgs{ID: a.ID, BaseVersion: 1, Spec: cur, Blobs: nil}); err == nil {
+		t.Fatal("the rejected skill was accepted again")
+	}
+	cur.Skills = nil
+	mustPut(t, s2, PutArgs{ID: a.ID, BaseVersion: 1, Spec: cur})
+}

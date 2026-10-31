@@ -30,6 +30,14 @@ type Options struct {
 	// MaxTotal is role_max_total (0: 50).
 	MaxTotal int
 	Now      func() time.Time
+	// Logf receives notes about repairs and skills left out (nil: dropped).
+	Logf func(format string, args ...any)
+}
+
+func (s *Store) logf(format string, args ...any) {
+	if s.opt.Logf != nil {
+		s.opt.Logf(format, args...)
+	}
 }
 
 // Store is the role store.
@@ -229,6 +237,14 @@ func (s *Store) reconcile(id string) error {
 		}
 	}
 	// A crash can leave temp files and a content/v<m> with m above the committed version.
+	for _, d := range []string{"", "versions", "blobs"} {
+		des, _ := os.ReadDir(filepath.Join(dir, d))
+		for _, e := range des {
+			if strings.HasPrefix(e.Name(), ".tmp-") {
+				_ = os.RemoveAll(filepath.Join(dir, d, e.Name()))
+			}
+		}
+	}
 	ents, _ := os.ReadDir(filepath.Join(dir, "content"))
 	for _, e := range ents {
 		if strings.HasPrefix(e.Name(), ".tmp-") {
@@ -241,7 +257,7 @@ func (s *Store) reconcile(id string) error {
 	}
 	vdir := filepath.Join(dir, "content", fmt.Sprintf("v%d", n))
 	if st, err := os.Stat(filepath.Join(vdir, "role.json")); err != nil || !st.Mode().IsRegular() {
-		if err := s.materialize(r, func(sha string) ([]byte, error) { return s.blob(id, sha) }); err != nil {
+		if err := s.materialize(r, false, func(sha string) ([]byte, error) { return s.blob(id, sha) }); err != nil {
 			return err
 		}
 	}
@@ -264,7 +280,7 @@ func (s *Store) writeIndex(r *Role) error {
 }
 
 // gc removes content/v<n> directories except the newest KeepVersions, the current one and the pinned ones, and
-// blobs that no version record names. Version records are history and stay.
+// blobs that no version record names (the used.json index). Version records are history and stay.
 func (s *Store) gc(id string, cur int) {
 	dir := s.roleDir(id)
 	keep := s.pinned(id)
@@ -284,17 +300,10 @@ func (s *Store) gc(id string, cur int) {
 		}
 		_ = os.RemoveAll(filepath.Join(dir, "content", fmt.Sprintf("v%d", v)))
 	}
-	used := map[string]bool{}
-	for _, n := range s.versionNumbers(id) {
-		if r, err := s.readVersion(id, n); err == nil {
-			for _, sk := range r.Skills {
-				used[sk.SHA256] = true
-			}
-		}
-	}
+	u := s.loadUsed(id, cur)
 	bents, _ := os.ReadDir(filepath.Join(dir, "blobs"))
 	for _, e := range bents {
-		if !used[e.Name()] {
+		if _, ok := u.Blobs[e.Name()]; !ok {
 			_ = os.Remove(filepath.Join(dir, "blobs", e.Name()))
 		}
 	}
@@ -463,7 +472,19 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 			p.addf("blobs: %.12s isn't used by any skill", k)
 		}
 	}
+	newBytes := 0
+	for k := range used {
+		if _, ok := spent.Blobs[k]; !ok {
+			newBytes += len(content[k])
+		}
+	}
+	if spent.blobBytes()+newBytes > blobCap {
+		p.addf("skills: this role's stored skill text would pass %d KiB (with its history)", blobCap>>10)
+	}
 	s.checkSkills(r, content, &p)
+	if len(p) == 0 && len(RoleJSON(r))+64 > MaxRoleJSON {
+		p.addf("role.json would be over %d bytes", MaxRoleJSON)
+	}
 	checkApprovals(r, cur, spent, &p)
 	if len(p) > 0 {
 		return nil, &ValidationError{Reasons: p}
@@ -501,7 +522,13 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 	}
 	defer release()
 
-	if err := s.commit(r, content); err != nil {
+	if created, err := s.commit(r, content); err != nil {
+		// Nothing was committed (no version file): the blobs this put wrote are orphans; a committed version keeps them.
+		if _, serr := os.Lstat(filepath.Join(s.roleDir(id), "versions", strconv.Itoa(r.Version)+".json")); serr != nil {
+			for _, sha := range created {
+				_ = os.Remove(filepath.Join(s.roleDir(id), "blobs", sha))
+			}
+		}
 		return nil, err
 	}
 	ok = true
@@ -536,12 +563,12 @@ func (s *Store) create() (string, error) {
 	return "", errors.New("couldn't make a role id")
 }
 
-// commit writes version r in the crash-safe order (see the package comment).
-func (s *Store) commit(r *Role, content map[string][]byte) error {
+// commit writes version r in the crash-safe order (see the package comment). It returns the blobs it created.
+func (s *Store) commit(r *Role, content map[string][]byte) (created []string, err error) {
 	dir := s.roleDir(r.ID)
 	for _, d := range []string{"versions", "blobs", "content", "claude"} {
 		if err := os.MkdirAll(filepath.Join(dir, d), 0o700); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	for sha, b := range content {
@@ -549,26 +576,28 @@ func (s *Store) commit(r *Role, content map[string][]byte) error {
 		if _, err := os.Lstat(p); err == nil {
 			continue
 		}
-		if err := writeNew(p, b, 0o600); err != nil && err != errExists {
-			return err
+		if err := writeNew(p, b, 0o600); err == nil {
+			created = append(created, sha)
+		} else if err != errExists {
+			return created, err
 		}
 	}
-	if err := s.materialize(r, func(sha string) ([]byte, error) {
+	if err := s.materialize(r, true, func(sha string) ([]byte, error) {
 		if b, ok := content[sha]; ok {
 			return b, nil
 		}
 		return s.blob(r.ID, sha)
 	}); err != nil {
-		return err
+		return created, err
 	}
 	if err := writeNew(filepath.Join(dir, "versions", strconv.Itoa(r.Version)+".json"), marshal(r, true), 0o600); err != nil {
 		if err == errExists {
-			return &ConflictError{Base: r.Parent, Current: r.Version}
+			return created, &ConflictError{Base: r.Parent, Current: r.Version}
 		}
-		return err
+		return created, err
 	}
 	if err := swapLink(filepath.Join(dir, "content", "current"), fmt.Sprintf("v%d", r.Version)); err != nil {
-		return err
+		return created, err
 	}
-	return s.writeIndex(r)
+	return created, s.writeIndex(r)
 }
