@@ -405,13 +405,50 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   is deleted once the handshake succeeded, never on a command line. `Fake` plays a runner in-process for tests.
 - **Handshake.** Per start Home makes a random `run_token`; the runner's first line must be `hello` with it
   (constant-time compare), else stdin is closed and the process killed; no hello in 10 s ends it too.
-- **Slot.** One top-level query on the computer. Events decide it: `status busy` takes it, `status idle` frees
-  it only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
-  done:true}` or a `result` with that `agent_id` removes it), `status closed` frees it. A `send` to the session
-  that holds the slot goes straight to the runner; anything else for a busy slot goes to the disk queue
-  (`<helper dir>/agent-queue.json`, 0600, atomic, 24 h, 64 items, 64 KiB each) and is delivered in order when
-  the slot frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The plugin sees
-  `queue` items (`queued`, `delivered`, `failed`, `expired`) in `next`.
+- **Slots.** A slot is one running top-level session (subagents and forks inside it don't count against the slot
+  limits; the subagent cap below handles them). Three limits apply to a new session: its project has
+  `agent_max_sessions_per_project` (default 1, at least 1; a project is one directory in `agent_projects`, with its
+  own VM and volume), the Bot that started it has its mode's session limit, and the computer has
+  `agent_max_sessions` (default 16, 0 = no cap, so the machine stays bounded whatever the modes say). Events decide
+  each slot: `status busy` takes one, `status idle` frees it
+  only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
+  done:true}` or a `result` with that `agent_id` removes it), `status closed`, the end of the project's runner
+  and `close` free it. A `send` to a session that holds a slot goes straight to the runner; a start, or a send
+  to a session without a slot, when a limit is reached goes to the disk queue
+  (`<helper dir>/agent-queue.json`, 0600, atomic, 24 h, 64 items, 64 KiB each) and is delivered when a slot
+  frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The queue is first in,
+  first out, except that an item waiting on a full project, a Bot at its limit, doesn't hold up the items behind
+  it: the first item that can run now goes, so a project with a free slot is never stuck behind another project's
+  waiting item. Items of one project and Bot keep their order (they wait on the same limits; items of different Bots in one project can pass each other when one Bot is at its limit), and when only the computer's cap is reached nothing runs, so
+  the oldest waiting item takes the next slot freed. A new item doesn't jump ahead of a queued one that could run.
+  Each queued item says why it waits in plain words (`reason`: "waiting: project my-project already has 1
+  session", "waiting: bot bot-a already has 1 session, the limit of its light mode", "waiting: the computer's
+  session limit is reached"). The plugin sees `queue` items (`queued` with the reason, `delivered`,
+  `failed`, `expired`) in `next`. `status` has `slots: [{project, session, bot, busy, background, subagents}]`,
+  `limits: {per_project, total}` (total = the computer's cap), `sessions_running`, `usage` (below); `slot` (the first
+  busy slot, or an empty one) stays for older plugins; `projects` rows have `slot_busy` (the project's slots are
+  full) and `sessions_running`.
+- **Usage modes, per Bot.** Each Bot has a mode that says how much it may run at once; its limits apply to the
+  sessions it started and their subagents only, so a Bot on light never caps another on medium. `maximum`: no cap on
+  sessions or subagents. `medium` (the default, "Recommended"): 4 sessions, 4 subagents per session. `light`: 1
+  session, 2 subagents per session. The per-project limit is separate (1 by default, for every mode) and so is
+  the computer's cap. Config: `agent_default_mode` (default `medium`: the mode of a Bot met for the first time and
+  of the sessions the user starts from the panel, which count as one extra owner under the default mode),
+  `agent_bot_modes` (`{botID: mode}`), and the raw overrides `agent_max_sessions_per_project`, `agent_max_sessions`
+  and `agent_max_subagents_per_session` (0 = no cap; it overrides every Bot's mode, and `status` then marks the
+  rows `custom`). **Identity:** the plugin knows which Bot sent a message and passes a stable id (letters, digits,
+  `_ . : @ -`, up to 64) as `bot` with `start` and `send`; Home keeps the mode table in its config (simpler and safer
+  than trusting limits sent per start: a Bot can't pick its own id or its own limits, and the table is one file the
+  user owns). A Bot met for the first time is recorded with the default mode (up to 256), so the panel lists it.
+  Slots and queue items keep the Bot id. `status.usage` is `{default, modes, bots: [{id, mode, custom,
+  sessions_running, sessions_limit, subagents_per_session}]}` (the user's own sessions are the row with id `""`).
+  The runner gets the Bot's subagent cap with every `session.start` and `session.send` (`agent-runner.md`).
+  **Only the user changes modes:** `claude-agent.usage_mode` with `mode` and exactly one of `bot` (one Bot),
+  `default` (the default), `all` (every known Bot and the default; Bots can be changed one by one again after)
+  returns the new status. The operation exists for the plugin's panel; Home cannot tell a panel from a Bot tool
+  because both arrive through the paired plugin, so the plugin must expose it only as a panel button, never as a
+  Bot tool, and a Bot has no way to reach it. A change applies to new starts only: nothing running is killed;
+  when a mode is lowered the excess finishes and new work queues; when raised, waiting work goes at once.
 - **Asks.** `perm.ask` from the runner and `cred.ask` from the git helper become `next` items with Home's own
   `ask_id` and wait for `decide`. No decision in 280 s (`claude_wait_seconds` does not apply here), no `next`
   poll for 15 s, a cancelled runner or more than 16 pending: deny. Home never decides itself.
@@ -447,8 +484,9 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   credential must be a read-only token. The push credential must be scoped to the repositories the agent
   may push to and short-lived: once the VM has it, nothing stops it using it until it expires, and the VM can
   keep it. Home never logs the credential helper's input or output (tested).
-- **Slot watchdog.** A session that holds the slot with no event and no pending ask for 30 minutes
-  (`SlotIdleTTL`) is interrupted and the slot freed (logged, and the plugin sees a `status closed` event).
+- **Slot watchdog.** A session that holds a slot with no event and no pending ask for 30 minutes
+  (`SlotIdleTTL`) is interrupted and its slot freed (logged, and the plugin sees a `status closed` event); each
+  slot has its own clock.
 - **Modes.** `agent_allow_bypass` (default `true`) allows `start` and `mode` with `bypassPermissions` or
   `dontAsk`; set it `false` to refuse them. The plugin still decides every tool call and approves loosening a
   mode with a passkey.

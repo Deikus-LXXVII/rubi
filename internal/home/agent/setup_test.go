@@ -88,3 +88,30 @@ func selfTestRunner(t *testing.T, fr *FakeRunner) {
 	}
 	fr.Emit(map[string]any{"session_id": "sess-1", "kind": "result", "result": "DENIED", "is_error": false})
 }
+
+// A self-test holds its project even when the project may run several sessions, and only that project:
+// a session elsewhere starts, one in the project waits with a plain reason and starts after the self-test.
+func TestSelfTestHoldsOnlyItsProject(t *testing.T) {
+	mu := newMulti(t, []string{"my-project", "web-app"}, setLimits(2, 0))
+	st, err := mu.m.BeginSelfTest("my-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := mu.start("web-app", "b"); r["queued"] == true {
+		t.Fatalf("another project waited for the self-test: %v", r)
+	}
+	r := mu.start("my-project", "a")
+	if r["queued"] != true {
+		t.Fatalf("a session of the self-tested project wasn't held back: %v", r)
+	}
+	s, _ := mu.op("status", nil)
+	q := s["queue"].([]any)
+	if len(q) != 1 || !strings.Contains(q[0].(map[string]any)["reason"].(string), "self-test") {
+		t.Fatalf("queue: %v", q)
+	}
+	if _, err := mu.m.BeginSelfTest("web-app"); err == nil {
+		t.Error("a self-test started in a project with a running session")
+	}
+	st.End()
+	eventually(t, "the held session starts", func() bool { return mu.startsOf("my-project") == 1 })
+}

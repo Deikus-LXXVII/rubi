@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
@@ -296,5 +297,53 @@ func TestWatchBeats(t *testing.T) {
 	// Everything else still needs the pairing.
 	if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "shortcuts.list"}); err == nil {
 		t.Fatal("an unpaired call went through")
+	}
+}
+
+func TestAgentUsageConfig(t *testing.T) {
+	zero, five, neg := 0, 5, -1
+	for _, c := range []struct {
+		cfg       Config
+		bot       string
+		per, subs int
+		sessions  int // the Bot's
+		machine   int
+		mode      string
+		custom    bool
+	}{
+		{Config{}, "bot-a", 1, 4, 4, 16, "medium", false}, // the defaults
+		{Config{AgentDefaultMode: "light"}, "bot-a", 1, 2, 1, 16, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-a", 1, 0, 0, 16, "maximum", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-b", 1, 2, 1, 16, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "", 1, 2, 1, 16, "light", false}, // the user's own
+		{Config{AgentDefaultMode: "nonsense"}, "bot-a", 1, 4, 4, 16, "medium", false},
+		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, "bot-a", 2, 4, 4, 5, "medium", true},
+		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, "bot-a", 1, 4, 4, 0, "medium", false}, // 0 = no cap
+		{Config{AgentMaxSessions: &neg}, "bot-a", 1, 4, 4, 16, "medium", false},
+		{Config{AgentDefaultMode: "light", AgentMaxSubagentsPerSession: &five}, "bot-a", 1, 5, 1, 16, "light", true},
+		{Config{AgentMaxSubagentsPerSession: &zero}, "bot-a", 1, 0, 4, 16, "medium", true},
+	} {
+		u := c.cfg.agentUsage()
+		l := u.For(c.bot)
+		if l.PerProject != c.per || l.Subagents != c.subs || l.Sessions != c.sessions || u.Machine() != c.machine || l.Mode != c.mode || l.Custom != c.custom {
+			t.Errorf("%+v (%q): got %+v machine %d", c.cfg, c.bot, l, u.Machine())
+		}
+	}
+}
+
+func TestApplyUsageChange(t *testing.T) {
+	c := Config{AgentBotModes: map[string]string{"bot-a": "light", "bot-b": "medium"}}
+	c.applyUsageChange(agent.UsageChange{Bot: "bot-c", Mode: "maximum"})
+	c.applyUsageChange(agent.UsageChange{Bot: "bot-a", Mode: "medium"})
+	if c.AgentBotModes["bot-c"] != "maximum" || c.AgentBotModes["bot-a"] != "medium" || c.AgentDefaultMode != "" {
+		t.Fatalf("one bot: %+v", c)
+	}
+	c.applyUsageChange(agent.UsageChange{Default: true, Mode: "light"})
+	if c.AgentDefaultMode != "light" || c.AgentBotModes["bot-b"] != "medium" {
+		t.Fatalf("default: %+v", c)
+	}
+	c.applyUsageChange(agent.UsageChange{All: true, Mode: "maximum"})
+	if c.AgentDefaultMode != "maximum" || c.AgentBotModes["bot-a"] != "maximum" || c.AgentBotModes["bot-b"] != "maximum" || c.AgentBotModes["bot-c"] != "maximum" {
+		t.Fatalf("all: %+v", c)
 	}
 }

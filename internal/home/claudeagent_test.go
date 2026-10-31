@@ -154,3 +154,33 @@ func TestClaudeAgentConfigAndDefaults(t *testing.T) {
 		t.Fatalf("projects over the helper dir: %v", res)
 	}
 }
+
+func TestUsageModeOpSavesTheConfig(t *testing.T) {
+	h, _, _ := agentHelper(t)
+	h.Agent.Close()
+	h.Agent = h.newAgent()
+	t.Cleanup(h.Agent.Close)
+	if _, err := handle(t, h, "wrong", "claude-agent.usage_mode", map[string]any{"all": true, "mode": "light"}); err == nil {
+		t.Fatal("an unpaired caller switched the mode")
+	}
+	// A Bot is met on its first start and gets the default; then the user changes it.
+	if _, err := handle(t, h, "tok", "claude-agent.usage_mode", map[string]any{"default": true, "mode": "light"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle(t, h, "tok", "claude-agent.start", map[string]any{"project": "my-project", "prompt": "x", "bot": "bot-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.Fresh().AgentBotModes["bot-a"]; got != "light" {
+		t.Fatalf("a new Bot's mode %q", got)
+	}
+	st, err := handle(t, h, "tok", "claude-agent.usage_mode", map[string]any{"bot": "bot-a", "mode": "maximum"})
+	if err != nil || h.Fresh().AgentBotModes["bot-a"] != "maximum" || st["usage"].(map[string]any)["default"] != "light" {
+		t.Fatalf("switch: %v %v", st, err)
+	}
+	if _, err := handle(t, h, "tok", "claude-agent.usage_mode", map[string]any{"all": true, "mode": "medium"}); err != nil {
+		t.Fatal(err)
+	}
+	if c := h.Fresh(); c.AgentDefaultMode != "medium" || c.AgentBotModes["bot-a"] != "medium" {
+		t.Fatalf("saved: %+v", c)
+	}
+}

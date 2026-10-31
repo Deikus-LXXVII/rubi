@@ -64,6 +64,13 @@ type Options struct {
 	AllowedHosts    func() []string
 	NoDefaultForges func() bool
 	AllowBypass     func() bool
+	// Usage is the usage modes and raw limits (agent_default_mode, agent_bot_modes,
+	// agent_max_sessions_per_project, agent_max_sessions, agent_max_subagents_per_session); nil means
+	// medium for everyone. SetUsage saves a change of mode (the user's choice from the plugin's panel) and
+	// SeeBot records a Bot met for the first time with the default mode; nil means no change is possible.
+	Usage    func() UsageConfig
+	SetUsage func(UsageChange) error
+	SeeBot   func(id string)
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
 	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it. An
@@ -97,18 +104,21 @@ type Item struct {
 	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
 	Event     json.RawMessage `json:"event,omitempty"`
 	Action    string          `json:"action,omitempty"` // queue items: queued, delivered, failed, expired
+	Reason    string          `json:"reason,omitempty"` // queued: what it waits for, in plain words
 	QueueID   string          `json:"queue_id,omitempty"`
 	Error     string          `json:"error,omitempty"`
 	At        time.Time       `json:"at"`
 }
 
+// slotState is one running top-level session (a slot in use). Subagents and forks inside it don't count.
 type slotState struct {
-	busy    bool
+	bot     string // the Bot that started the session ("" = the user, from the panel)
 	project string
-	session string
+	session string          // "" while a start hasn't got its session id yet
 	turn    bool            // a turn is running
 	last    time.Time       // the last sign of life (event, ask, delivery)
 	bg      map[string]bool // background subagents still running
+	sub     int             // subagents running now, as the runner counts them
 }
 
 type pendingAsk struct {
@@ -143,25 +153,28 @@ func (m *Manager) extraHosts(p *projState) []string {
 	return append(out, m.net.hosts(p.Dir)...)
 }
 
-// Manager is the Mac side of the agent: projects, the slot, the queue, asks.
+// Manager is the Mac side of the agent: projects, the slots, the queue, asks.
 type Manager struct {
 	opt Options
 	q   *diskQueue
 	net *netState
 
-	mu       sync.Mutex
-	projs    map[string]*projState
-	slot     slotState
-	asks     map[string]*pendingAsk
-	out      []Item
-	signal   chan struct{}
-	polls    int
-	lastPoll time.Time
-	login    json.RawMessage
-	usage    usageDay
-	lastCost map[string]float64
-	closed   bool
-	self     *selfTest // the self-test that holds the slot, if any (setup.go)
+	mu    sync.Mutex
+	projs map[string]*projState
+	slots []*slotState // the sessions holding a slot, oldest first
+	// sessionBot remembers which Bot started or first wrote to a session ("project|session"), for a session that
+	// runs without a slot (bounded).
+	sessionBot map[string]string
+	asks       map[string]*pendingAsk
+	out        []Item
+	signal     chan struct{}
+	polls      int
+	lastPoll   time.Time
+	login      json.RawMessage
+	usage      usageDay
+	lastCost   map[string]float64
+	closed     bool
+	self       *selfTest // the self-test that holds a slot, if any (setup.go)
 
 	cancels    map[string]context.CancelFunc
 	netFlights map[string]*netFlight
@@ -195,7 +208,7 @@ func New(opt Options) *Manager {
 	if opt.GitHosts == nil {
 		opt.GitHosts = func() []string { return nil }
 	}
-	m := &Manager{opt: opt, projs: map[string]*projState{}, asks: map[string]*pendingAsk{}, lastCost: map[string]float64{},
+	m := &Manager{opt: opt, sessionBot: map[string]string{}, projs: map[string]*projState{}, asks: map[string]*pendingAsk{}, lastCost: map[string]float64{},
 		kick: make(chan struct{}, 1), stop: make(chan struct{})}
 	m.q = &diskQueue{}
 	if opt.Dir != "" {
@@ -461,8 +474,7 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 	p.runner = nil
 	px := p.proxy
 	p.proxy = nil
-	if m.slot.busy && m.slot.project == p.ID {
-		m.slot = slotState{}
+	if m.dropProjectSlotsLocked(p.ID) {
 		m.pushLocked(Item{Type: "event", Project: p.ID, Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"runner ended"}`)})
 	}
 	m.mu.Unlock()
@@ -755,15 +767,136 @@ func (m *Manager) credential(ctx context.Context, p *projState, c CredParams) (C
 	return CredResult{}, nil // none: git fails without prompting
 }
 
-// ---- events and the slot ----
+// ---- events and the slots ----
 
-func (m *Manager) ownerLocked(p *projState, session string) bool {
-	return m.slot.busy && m.slot.project == p.ID && (m.slot.session == "" || m.slot.session == session || session == "")
+// usageNow is the usage configuration, read at each use so a change applies to the next start.
+func (m *Manager) usageNow() UsageConfig {
+	if m.opt.Usage != nil {
+		return m.opt.Usage()
+	}
+	return UsageConfig{}
 }
 
-func (m *Manager) releaseLocked() {
-	m.slot = slotState{}
+func sessions(n int) string {
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
+}
+
+func botName(bot string) string {
+	if bot == "" {
+		return "your panel sessions"
+	}
+	return "bot " + bot
+}
+
+// fullLocked says why a new top-level session of the Bot in the project can't run now ("" when it can):
+// the project has its sessions already, the Bot has (its mode's limit), or the computer has. A start also
+// waits while another start of the project hasn't got its session id, so an event is never matched to the
+// wrong one.
+func (m *Manager) fullLocked(c UsageConfig, project, bot string, start bool) string {
+	l := c.For(bot)
+	n, nb, pending := 0, 0, false
+	for _, s := range m.slots {
+		if s.project == project {
+			n++
+			pending = pending || s.session == ""
+		}
+		if s.bot == bot {
+			nb++
+		}
+	}
+	switch {
+	case m.self != nil && m.self.project == project: // its questions are answered by the self-test, never by a user
+		return "waiting: project " + project + " is running its self-test"
+	case start && pending:
+		return "waiting: project " + project + " is still starting a session"
+	case n >= l.PerProject:
+		return "waiting: project " + project + " already has " + sessions(n)
+	case l.Sessions > 0 && nb >= l.Sessions:
+		return fmt.Sprintf("waiting: %s already has %s, the limit of its %s mode", botName(bot), sessions(nb), l.Mode)
+	case c.Machine() > 0 && len(m.slots) >= c.Machine():
+		return "waiting: the computer's session limit is reached"
+	}
+	return ""
+}
+
+// exactLocked is the slot of a known session.
+func (m *Manager) exactLocked(project, session string) *slotState {
+	for _, s := range m.slots {
+		if s.project == project && session != "" && s.session == session {
+			return s
+		}
+	}
+	return nil
+}
+
+// ownerLocked is the slot an event of the session belongs to: the session's own, else the project's slot
+// that hasn't got its id yet (a start in flight), else, for an event without a session, the project's only one.
+func (m *Manager) ownerLocked(p *projState, session string) *slotState {
+	if s := m.exactLocked(p.ID, session); s != nil {
+		return s
+	}
+	var found *slotState
+	n := 0
+	for _, s := range m.slots {
+		if s.project != p.ID {
+			continue
+		}
+		n++
+		if s.session == "" || session == "" {
+			found = s
+		}
+	}
+	if session == "" && n != 1 {
+		return nil
+	}
+	return found
+}
+
+// reasonLocked says why a queue item can't be delivered now ("" when it can). A send to a session that
+// holds a slot already runs (owner is its slot).
+func (m *Manager) reasonLocked(c UsageConfig, it QueueItem) (reason string, owner *slotState) {
+	if it.Op == "send" {
+		if s := m.exactLocked(it.Project, it.Session); s != nil {
+			return "", s
+		}
+	}
+	return m.fullLocked(c, it.Project, it.Bot, it.Op == "start"), nil
+}
+
+// runnableLocked says whether some queued item could be delivered now (a drain is then due).
+func (m *Manager) runnableLocked(c UsageConfig) bool {
+	for _, q := range m.q.list() {
+		if r, _ := m.reasonLocked(c, q); r == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) releaseLocked(s *slotState) {
+	for i, o := range m.slots {
+		if o == s {
+			m.slots = append(m.slots[:i:i], m.slots[i+1:]...)
+			break
+		}
+	}
 	m.wake()
+}
+
+// dropProjectSlotsLocked frees every slot of the project (its runner ended) and says whether there was one.
+func (m *Manager) dropProjectSlotsLocked(project string) bool {
+	keep := m.slots[:0:0]
+	for _, s := range m.slots {
+		if s.project != project {
+			keep = append(keep, s)
+		}
+	}
+	gone := len(keep) != len(m.slots)
+	m.slots = keep
+	return gone
 }
 
 func (m *Manager) onEvent(p *projState, ev Event) {
@@ -775,6 +908,7 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 		} `json:"tasks"`
 		Result    string  `json:"result"`
 		IsError   bool    `json:"is_error"`
+		Count     int     `json:"count"`
 		TotalCost float64 `json:"total_cost_usd"`
 		Usage     struct {
 			In  int64 `json:"input_tokens"`
@@ -785,65 +919,81 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 	if f.State != "" {
 		f.Status = f.State // the runner says "state"; "status" is accepted too
 	}
+	var uc UsageConfig
+	if ev.Kind == "status" && f.Status == "busy" {
+		uc = m.usageNow() // read before the lock: it may read the configuration file
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if st := m.self; st != nil && st.project == p.ID {
 		st.event(ev, f.Result, f.IsError, f.Status) // the self-test's own events stay with it
 		return
 	}
-	if m.ownerLocked(p, ev.SessionID) {
-		m.slot.last = m.opt.Now()
+	s := m.ownerLocked(p, ev.SessionID)
+	if s != nil {
+		s.last = m.opt.Now()
 	}
 	switch ev.Kind {
 	case "status":
 		switch f.Status {
 		case "busy":
-			if !m.slot.busy {
-				m.slot = slotState{busy: true, project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()}
-			} else if m.ownerLocked(p, ev.SessionID) {
-				m.slot.turn = true
-				if m.slot.session == "" {
-					m.slot.session = ev.SessionID
+			if s == nil {
+				// A session that runs without a slot (the runner resumed it, or Home restarted): it is booked, charged to
+				// the Bot that started it when Home remembers which, else to the user's own. It is booked even over a limit,
+				// and logged, so that it is visible and counted; the limits then hold back new work until it ends.
+				bot := m.sessionBot[p.ID+"|"+ev.SessionID]
+				if why := m.fullLocked(uc, p.ID, bot, false); why != "" {
+					log.Printf("agent: session %q of project %q is running over the limits (%s); counted against %s", clip(ev.SessionID, 64), clip(p.ID, 64), strings.TrimPrefix(why, "waiting: "), botName(bot))
+				}
+				m.slots = append(m.slots, &slotState{bot: bot, project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()})
+			} else {
+				s.turn = true
+				if s.session == "" {
+					s.session = ev.SessionID
 				}
 			}
 		case "idle":
-			if m.ownerLocked(p, ev.SessionID) {
-				m.slot.turn = false
-				m.maybeReleaseLocked()
+			if s != nil {
+				s.turn = false
+				m.maybeReleaseLocked(s)
 			}
 		case "closed":
-			if m.ownerLocked(p, ev.SessionID) {
-				m.releaseLocked()
+			if s != nil {
+				m.releaseLocked(s)
 			}
 		}
 	case "background":
-		if m.ownerLocked(p, ev.SessionID) && f.Tasks != nil {
+		if s != nil && f.Tasks != nil {
 			// The runner lists every task still alive: that is the whole set.
-			m.slot.bg = map[string]bool{}
+			s.bg = map[string]bool{}
 			for i, t := range *f.Tasks {
 				if t.ID != "" && i < 1024 {
-					m.slot.bg[t.ID] = true
+					s.bg[t.ID] = true
 				}
 			}
-			m.maybeReleaseLocked()
-		} else if m.ownerLocked(p, ev.SessionID) && ev.AgentID != "" {
+			m.maybeReleaseLocked(s)
+		} else if s != nil && ev.AgentID != "" {
 			if ev.Done {
-				delete(m.slot.bg, ev.AgentID)
-				m.maybeReleaseLocked()
+				delete(s.bg, ev.AgentID)
+				m.maybeReleaseLocked(s)
 			} else {
-				if m.slot.bg == nil {
-					m.slot.bg = map[string]bool{}
+				if s.bg == nil {
+					s.bg = map[string]bool{}
 				}
-				if len(m.slot.bg) < 1024 {
-					m.slot.bg[ev.AgentID] = true
+				if len(s.bg) < 1024 {
+					s.bg[ev.AgentID] = true
 				}
 			}
 		}
+	case "subagents":
+		if s != nil {
+			s.sub = min(max(f.Count, 0), 1<<20)
+		}
 	case "result":
 		if ev.AgentID != "" {
-			if m.ownerLocked(p, ev.SessionID) {
-				delete(m.slot.bg, ev.AgentID)
-				m.maybeReleaseLocked()
+			if s != nil {
+				delete(s.bg, ev.AgentID)
+				m.maybeReleaseLocked(s)
 			}
 		} else {
 			m.addUsageLocked(ev.SessionID, f.Usage.In, f.Usage.Out, f.TotalCost)
@@ -857,9 +1007,9 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 }
 
 // maybeReleaseLocked frees the slot when no turn runs and no background subagent is left.
-func (m *Manager) maybeReleaseLocked() {
-	if m.slot.busy && !m.slot.turn && len(m.slot.bg) == 0 {
-		m.releaseLocked()
+func (m *Manager) maybeReleaseLocked(s *slotState) {
+	if !s.turn && len(s.bg) == 0 {
+		m.releaseLocked(s)
 	}
 }
 
@@ -892,7 +1042,7 @@ func (m *Manager) emitQueue(action string, it QueueItem, extra func(*Item)) {
 	m.mu.Unlock()
 }
 
-// submit delivers a start or send now when the slot allows, otherwise queues it on disk. The result is
+// submit delivers a start or send now when a slot allows, otherwise queues it on disk. The result is
 // what the op returns.
 func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, error) {
 	p, err := m.project(it.Project)
@@ -901,40 +1051,57 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 	}
 	m.ensureLoop()
 	it.ID, it.At = newQueueID(), m.opt.Now().UTC()
+	uc := m.usageNow() // read before the lock: it may read the configuration file
 	m.mu.Lock()
-	owner := it.Op == "send" && m.slot.busy && m.slot.project == it.Project && m.slot.session == it.Session
-	acquire := !m.slot.busy && m.q.len() == 0
+	// A new item never jumps ahead of a queued one that could run now.
+	reason, owner := m.reasonLocked(uc, it)
+	var slot *slotState
+	prevTurn := false
 	switch {
-	case owner:
-		m.slot.turn = true
-	case acquire:
-		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+	case owner != nil:
+		prevTurn, owner.turn = owner.turn, true
+	case reason == "" && !m.runnableLocked(uc):
+		slot = m.takeSlotLocked(it)
+	case reason == "":
+		reason = "waiting: earlier messages are queued first"
 	}
 	m.mu.Unlock()
-	if owner || acquire {
-		res, err := m.deliver(ctx, p, it)
+	if owner != nil || slot != nil {
+		res, err := m.deliver(ctx, p, it, slot)
 		if err != nil {
-			if acquire {
-				m.mu.Lock()
-				m.releaseLocked()
-				m.mu.Unlock()
+			m.mu.Lock()
+			if slot != nil {
+				m.releaseLocked(slot)
+			} else if owner != nil {
+				owner.turn = prevTurn // the send never started a turn
+				m.maybeReleaseLocked(owner)
 			}
+			m.mu.Unlock()
 			return nil, err
 		}
 		if it.Op == "send" {
 			res["queued"], res["position"], res["delivered"] = true, 0, true
 		}
+		m.wake() // a start that got its id may let a waiting start of the project go
 		return res, nil
 	}
 	pos, err := m.q.add(it)
 	if err != nil {
 		return nil, err
 	}
-	m.emitQueue("queued", it, nil)
-	return map[string]any{"queued": true, "position": pos, "delivered": false}, nil
+	m.emitQueue("queued", it, func(n *Item) { n.Reason = reason })
+	return map[string]any{"queued": true, "position": pos, "delivered": false, "reason": reason}, nil
 }
 
-func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem) (map[string]any, error) {
+// takeSlotLocked books a slot for a start or a send (the caller checked there is room).
+func (m *Manager) takeSlotLocked(it QueueItem) *slotState {
+	s := &slotState{bot: it.Bot, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+	m.slots = append(m.slots, s)
+	return s
+}
+
+// deliver hands the item to the runner; slot is the slot a start booked (nil for a send to a running session).
+func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot *slotState) (map[string]any, error) {
 	r, err := m.ensure(ctx, p)
 	if err != nil {
 		return nil, err
@@ -944,24 +1111,49 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem) (map[
 		var res struct {
 			ID string `json:"id"`
 		}
-		err := r.Call(ctx, "session.start", map[string]any{"prompt": it.Text, "name": it.Name, "from": it.From, "mode": it.Mode}, &res)
+		err := r.Call(ctx, "session.start", map[string]any{"prompt": it.Text, "name": it.Name, "from": it.From, "mode": it.Mode,
+			"max_subagents": m.usageNow().For(it.Bot).Subagents}, &res)
 		if err != nil {
 			return nil, err
 		}
 		m.mu.Lock()
-		if m.slot.busy && m.slot.project == p.ID && m.slot.session == "" {
-			m.slot.session = res.ID
+		if slot != nil && slot.session == "" {
+			slot.session = res.ID
 		}
+		m.rememberBotLocked(p.ID, res.ID, it.Bot, true)
 		m.mu.Unlock()
 		return map[string]any{"id": res.ID}, nil
 	default:
 		var res json.RawMessage
-		err := r.Call(ctx, "session.send", map[string]any{"id": it.Session, "text": it.Text, "from": it.From, "steer": it.Steer}, &res)
+		err := r.Call(ctx, "session.send", map[string]any{"id": it.Session, "text": it.Text, "from": it.From, "steer": it.Steer,
+			"max_subagents": m.usageNow().For(it.Bot).Subagents}, &res)
 		if err != nil {
 			return nil, err
 		}
+		m.mu.Lock()
+		m.rememberBotLocked(p.ID, it.Session, it.Bot, false)
+		m.mu.Unlock()
 		return map[string]any{}, nil
 	}
+}
+
+// rememberBotLocked notes which Bot a session belongs to: the one that started it, or (for a session of unknown
+// origin) the first Bot that wrote to it. A user's message to a Bot's session doesn't change it.
+func (m *Manager) rememberBotLocked(project, session, bot string, started bool) {
+	if session == "" || bot == "" && !started {
+		return
+	}
+	key := project + "|" + session
+	if _, known := m.sessionBot[key]; known && !started {
+		return
+	}
+	if len(m.sessionBot) >= 4096 {
+		for k := range m.sessionBot { // bounded: drop an arbitrary old entry
+			delete(m.sessionBot, k)
+			break
+		}
+	}
+	m.sessionBot[key] = bot
 }
 
 func (m *Manager) loop() {
@@ -980,36 +1172,60 @@ func (m *Manager) loop() {
 	}
 }
 
-// drain delivers queued items, in order, while the slot is free.
+// startTimeout is how long handing a start or send to the runner may take (it can boot the VM).
+const startTimeout = 12 * time.Minute
+
+// drain delivers queued items while a slot is free. The queue is first in, first out, except that an
+// item waiting on a full project doesn't hold up the items behind it: the first item that can run now
+// goes, so an item for a project with a free slot is never blocked by an earlier one waiting on another
+// project. Items of one project and Bot keep their order (they wait on the same slots), and when only the
+// total limit is reached nothing runs, so the oldest waiting item takes the next slot freed.
 func (m *Manager) drain() {
 	for {
 		for _, it := range m.q.sweep(m.opt.Now()) {
 			m.emitQueue("expired", it, nil)
 		}
+		uc := m.usageNow() // once per pass, read before the lock: it may read the configuration file
 		m.mu.Lock()
-		if m.closed || m.slot.busy {
+		if m.closed {
 			m.mu.Unlock()
 			return
 		}
-		it, ok := m.q.pop()
+		var owner *slotState
+		prevTurn := false
+		it, ok := m.q.take(func(q QueueItem) bool {
+			r, o := m.reasonLocked(uc, q)
+			owner = o
+			return r == ""
+		})
 		if !ok {
 			m.mu.Unlock()
 			return
 		}
-		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+		var slot *slotState
+		if owner != nil {
+			prevTurn, owner.turn = owner.turn, true
+		} else {
+			slot = m.takeSlotLocked(it)
+		}
 		m.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 		var err error
 		p, perr := m.project(it.Project)
 		if perr != nil {
 			err = perr
 		} else {
-			_, err = m.deliver(ctx, p, it)
+			_, err = m.deliver(ctx, p, it, slot)
 		}
 		cancel()
 		if err != nil {
 			m.mu.Lock()
-			m.releaseLocked()
+			if slot != nil {
+				m.releaseLocked(slot)
+			} else if owner != nil {
+				owner.turn = prevTurn
+				m.maybeReleaseLocked(owner)
+			}
 			m.mu.Unlock()
 			m.emitQueue("failed", it, func(n *Item) { n.Error = clip(err.Error(), 300) })
 			continue
@@ -1021,6 +1237,21 @@ func (m *Manager) drain() {
 // ---- operations ----
 
 var modes = map[string]bool{"default": true, "acceptEdits": true, "plan": true, "bypassPermissions": true, "dontAsk": true}
+
+var botRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$`)
+
+// okBot accepts a Bot id (a stable name the plugin gives) or "" (the user's own).
+func okBot(s string) bool { return s == "" || botRE.MatchString(s) }
+
+// seeBot records a Bot met for the first time (it gets the default mode, and the panel lists it).
+func (m *Manager) seeBot(bot string) {
+	if bot == "" || m.opt.SeeBot == nil {
+		return
+	}
+	if _, ok := m.usageNow().Bots[bot]; !ok {
+		m.opt.SeeBot(bot)
+	}
+}
 
 func okID(s string) bool { return idRE.MatchString(s) }
 
@@ -1039,6 +1270,9 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		Probe       bool            `json:"probe"`
 		WaitSeconds int             `json:"wait_seconds"`
 		AskID       string          `json:"ask_id"`
+		Bot         string          `json:"bot"`
+		Default     bool            `json:"default"`
+		All         bool            `json:"all"`
 		Behavior    string          `json:"behavior"`
 		Message     string          `json:"message"`
 		Updated     json.RawMessage `json:"updated_input"`
@@ -1063,6 +1297,30 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		return map[string]any{"ok": true}, m.Decide(in.AskID, in.Behavior, in.Message, in.Updated)
 	case "status":
 		return m.opStatus(ctx, in.Probe), nil
+	case "usage_mode":
+		// The user's switch: the plugin offers it only on its panel, never as a Bot tool. One of: bot (one
+		// Bot), default (the default for new Bots and the user's own sessions), all (every known Bot and
+		// the default).
+		ch := UsageChange{Mode: in.Mode, Bot: in.Bot, Default: in.Default, All: in.All}
+		n := 0
+		for _, set := range []bool{in.Bot != "", in.Default, in.All} {
+			if set {
+				n++
+			}
+		}
+		switch {
+		case !validMode(in.Mode):
+			return nil, fmt.Errorf("unknown usage mode %q", clip(in.Mode, 32))
+		case n != 1 || !okBot(in.Bot):
+			return nil, errors.New("say which: one bot, the default, or all")
+		case m.opt.SetUsage == nil:
+			return nil, errors.New("the usage mode can't be changed here")
+		}
+		if err := m.opt.SetUsage(ch); err != nil {
+			return nil, err
+		}
+		m.wake() // a raised limit may let the queue go
+		return m.opStatus(ctx, false), nil
 	case "sessions":
 		return m.forward(ctx, in.Project, "session.list", map[string]any{})
 	case "messages":
@@ -1078,7 +1336,11 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if err != nil {
 			return nil, err
 		}
-		return m.submit(ctx, QueueItem{Op: "start", Project: in.Project, Text: in.Prompt, Name: in.Name, From: in.From, Mode: mode})
+		if !okBot(in.Bot) {
+			return nil, errors.New("bad bot id")
+		}
+		m.seeBot(in.Bot)
+		return m.submit(ctx, QueueItem{Op: "start", Bot: in.Bot, Project: in.Project, Text: in.Prompt, Name: in.Name, From: in.From, Mode: mode})
 	case "send":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
@@ -1086,7 +1348,11 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		if strings.TrimSpace(in.Text) == "" {
 			return nil, errors.New("the text is empty")
 		}
-		return m.submit(ctx, QueueItem{Op: "send", Project: in.Project, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
+		if !okBot(in.Bot) {
+			return nil, errors.New("bad bot id")
+		}
+		m.seeBot(in.Bot)
+		return m.submit(ctx, QueueItem{Op: "send", Bot: in.Bot, Project: in.Project, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
 	case "rename":
 		if !okID(in.ID) || strings.TrimSpace(in.Name) == "" {
 			return nil, errors.New("a session id and a name are needed")
@@ -1109,8 +1375,8 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		res, err := m.forward(ctx, in.Project, "session.close", map[string]any{"id": in.ID})
 		if err == nil {
 			m.mu.Lock()
-			if m.slot.busy && m.slot.project == in.Project && m.slot.session == in.ID {
-				m.releaseLocked()
+			if sl := m.exactLocked(in.Project, in.ID); sl != nil {
+				m.releaseLocked(sl)
 			}
 			m.mu.Unlock()
 		}
@@ -1166,11 +1432,13 @@ func (m *Manager) opProjects() any {
 		VMState  State  `json:"vm_state"`
 		SlotBusy bool   `json:"slot_busy"`
 		Queue    int    `json:"queue"`
+		Running  int    `json:"sessions_running"`
 	}
 	queued := map[string]int{}
 	for _, it := range m.q.list() {
 		queued[it.Project]++
 	}
+	per := m.usageNow().For("").PerProject // once, outside the lock
 	rows := []row{}
 	for _, p := range m.projects() {
 		r := row{ID: p.ID, Dir: p.Dir, VMState: StateStopped, Queue: queued[p.ID]}
@@ -1178,7 +1446,12 @@ func (m *Manager) opProjects() any {
 		if ps := m.projs[p.ID]; ps != nil && ps.Dir == p.Dir && ps.vm != nil {
 			r.VMState = ps.vm.State()
 		}
-		r.SlotBusy = m.slot.busy && m.slot.project == p.ID
+		for _, s := range m.slots {
+			if s.project == p.ID {
+				r.Running++
+			}
+		}
+		r.SlotBusy = r.Running >= per // the project's slots are full
 		m.mu.Unlock()
 		rows = append(rows, r)
 	}
@@ -1190,21 +1463,68 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 	if probe {
 		m.probe(ctx)
 	}
+	uc := m.usageNow() // once, outside the lock
 	m.mu.Lock()
-	slot := map[string]any{"busy": m.slot.busy, "project": m.slot.project, "session": m.slot.session,
-		"background": len(m.slot.bg)}
+	slots := []map[string]any{}
+	for _, s := range m.slots {
+		slots = append(slots, map[string]any{"project": s.project, "session": s.session, "busy": true, "background": len(s.bg), "subagents": s.sub, "bot": s.bot})
+	}
+	slot := map[string]any{"busy": false, "project": "", "session": "", "background": 0} // for older plugins: the first
+	if len(slots) > 0 {
+		slot = slots[0]
+	}
+	def := uc.For("")
+	bots := m.botRowsLocked(uc)
+	reasons := map[string]string{}
+	waiting := m.q.list()
+	for _, it := range waiting {
+		r, _ := m.reasonLocked(uc, it)
+		if r == "" {
+			r = "waiting: earlier messages are queued first"
+		}
+		reasons[it.ID] = r
+	}
 	login := m.login
 	usage := m.usage
 	m.mu.Unlock()
 	queue := []map[string]any{}
-	for i, it := range m.q.list() {
+	for i, it := range waiting {
 		queue = append(queue, map[string]any{"id": it.ID, "op": it.Op, "project": it.Project, "session": it.Session,
-			"from": it.From, "at": it.At, "position": i + 1})
+			"from": it.From, "at": it.At, "position": i + 1, "reason": reasons[it.ID]})
 	}
 	if len(login) == 0 {
 		login = json.RawMessage("null")
 	}
-	return map[string]any{"login": login, "slot": slot, "queue": queue, "usage_today": usage}
+	return map[string]any{"login": login, "slot": slot, "slots": slots,
+		"limits":           map[string]any{"per_project": def.PerProject, "total": uc.Machine()},
+		"usage":            map[string]any{"default": def.Mode, "modes": UsageModes, "bots": bots},
+		"sessions_running": len(slots), "queue": queue, "usage_today": usage}
+}
+
+// botRowsLocked is one row per Bot known (listed in the configuration or running something), with its mode,
+// its limits and what it runs now. The user's own sessions (id "") show when they run.
+func (m *Manager) botRowsLocked(c UsageConfig) []map[string]any {
+	ids := map[string]bool{}
+	for id := range c.Bots {
+		ids[id] = true
+	}
+	running := map[string]int{}
+	for _, s := range m.slots {
+		ids[s.bot] = true
+		running[s.bot]++
+	}
+	var sorted []string
+	for id := range ids {
+		sorted = append(sorted, id)
+	}
+	sort.Strings(sorted)
+	rows := []map[string]any{}
+	for _, id := range sorted {
+		l := c.For(id)
+		rows = append(rows, map[string]any{"id": id, "mode": l.Mode, "custom": l.Custom, "sessions_running": running[id],
+			"sessions_limit": l.Sessions, "subagents_per_session": l.Subagents})
+	}
+	return rows
 }
 
 // probe asks a running runner for the login state (usage.probe spends no tokens); it never starts a VM.
@@ -1277,31 +1597,55 @@ func (m *Manager) askHost(ctx context.Context, p *projState, host string) bool {
 	return f.ok
 }
 
-// SlotIdleTTL is how long a session may hold the slot without a sign of life (no event, no ask) before it
+// SlotIdleTTL is how long a session may hold a slot without a sign of life (no event, no ask) before it
 // is interrupted and the slot freed, so a wedged runner can't block the queue forever.
 var SlotIdleTTL = 30 * time.Minute
 
 func (m *Manager) checkSlot() {
+	type stale struct {
+		project, session string
+		r                *Runner
+	}
 	m.mu.Lock()
-	if !m.slot.busy || m.slot.last.IsZero() || m.opt.Now().Sub(m.slot.last) < SlotIdleTTL || len(m.asks) > 0 {
-		m.mu.Unlock()
-		return
+	var out []stale
+	for _, s := range append([]*slotState(nil), m.slots...) {
+		if s.last.IsZero() || m.opt.Now().Sub(s.last) < SlotIdleTTL {
+			continue
+		}
+		// A session waiting for the user's answer is not idle. A start still being handed to the runner (no session
+		// id yet) gets the time that takes on top.
+		if m.askOpenLocked(s) || s.session == "" && m.opt.Now().Sub(s.last) < SlotIdleTTL+startTimeout {
+			continue
+		}
+		var r *Runner
+		if p := m.projs[s.project]; p != nil {
+			r = p.runner
+		}
+		out = append(out, stale{s.project, s.session, r})
+		m.releaseLocked(s)
+		m.pushLocked(Item{Type: "event", Project: s.project, SessionID: s.session,
+			Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"no activity; the slot was released"}`)})
 	}
-	project, session := m.slot.project, m.slot.session
-	var r *Runner
-	if p := m.projs[project]; p != nil {
-		r = p.runner
-	}
-	m.releaseLocked()
-	m.pushLocked(Item{Type: "event", Project: project, SessionID: session,
-		Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"no activity; the slot was released"}`)})
 	m.mu.Unlock()
-	log.Printf("agent: session %q of project %q held the slot with no activity for %v; interrupted and released", clip(session, 64), clip(project, 64), SlotIdleTTL)
-	if r != nil && session != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = r.Call(ctx, "session.interrupt", map[string]any{"id": session}, nil)
+	for _, st := range out {
+		log.Printf("agent: session %q of project %q held a slot with no activity for %v; interrupted and released", clip(st.session, 64), clip(st.project, 64), SlotIdleTTL)
+		if st.r != nil && st.session != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = st.r.Call(ctx, "session.interrupt", map[string]any{"id": st.session}, nil)
+			cancel()
+		}
 	}
+}
+
+// askOpenLocked says whether a question of the slot's session waits for the user (an ask of the project that
+// names no session counts for all of its slots).
+func (m *Manager) askOpenLocked(s *slotState) bool {
+	for _, a := range m.asks {
+		if a.project == s.project && (a.item.SessionID == "" || a.item.SessionID == s.session) {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareWorkDir makes /work/.rubi with a .gitignore of "*" on the first start, so the runner's sessions and

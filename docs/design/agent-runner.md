@@ -16,7 +16,7 @@ plugin claude-code v0.4 (in Rubi)  --Home ops (relay, E2E)-->  Rubi Home (Mac, u
 - **runner/** (TypeScript, `@anthropic-ai/claude-agent-sdk`): one process per project VM. Talks newline-delimited
   JSON-RPC 2.0 on stdin/stdout. No network of its own beyond the proxy given in its env.
 - **internal/home/agent/** (Go): supervisor behind `VM` interface (`AppleContainer` real impl, `Fake` impl for
-  tests), runner client, agent slot, disk queue, allow-list proxy, git credential helper, `run_token`.
+  tests), runner client, session slots (per project and total), disk queue, allow-list proxy, git credential helper, `run_token`.
 - **plugin claude-code v0.4**: replaces `claude-hook` approvals with `perm.ask`; sisters use the new Home ops.
 
 ## Runner protocol (stdio, JSON-RPC 2.0, one JSON object per line)
@@ -33,8 +33,8 @@ Home -> runner (requests):
 |---|---|---|
 | `session.list` | `{}` | `{sessions:[{id, name, created, last_activity, mode, busy}]}` (SDK `listSessions`, cwd `/work`) |
 | `session.messages` | `{id, limit?}` | `{messages:[...]}` (SDK `getSessionMessages`) |
-| `session.start` | `{prompt, name?, from?, mode}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option); `name` becomes the SDK `title` (no automatic title request) |
-| `session.send` | `{id, text, from?, steer?}` | `{queued:true, delivered}`: into the live query's input queue; `steer:true` = `priority:"now"`, `delivered:true`; without `steer` while a turn runs the runner holds the message and hands it to the SDK at the turn's `result` (`delivered:false`; the SDK never answers a mid-turn message of default priority); a session the runner does not hold -> `resume` |
+| `session.start` | `{prompt, name?, from?, mode, max_subagents?}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option); `name` becomes the SDK `title` (no automatic title request) |
+| `session.send` | `{id, text, from?, steer?, max_subagents?}` | `{queued:true, delivered}`: into the live query's input queue; `steer:true` = `priority:"now"`, `delivered:true`; without `steer` while a turn runs the runner holds the message and hands it to the SDK at the turn's `result` (`delivered:false`; the SDK never answers a mid-turn message of default priority); a session the runner does not hold -> `resume` |
 | `session.rename` | `{id, name}` | `{ok}` (`renameSession`) |
 | `session.fork` | `{id, name?}` | `{id}` (`forkSession`, then idle until sent to) |
 | `session.interrupt` | `{id}` | `{ok}` |
@@ -66,7 +66,7 @@ num_turns, is_error}`), `ask` (`AskUserQuestion` payload), `rate_limit` (from `r
 `api_error_params.rate_limit_info`), `background`, `status`, `error`. Field names (M1): `status` is
 `{status:"busy"|"idle"|"closed"}` (busy while a turn runs or a background subagent lives; `closed` once, after
 `session.close`); `background` is `{agent_id, subagent_type?, description?}` when a subagent keeps running after the
-turn (the slot stays busy) and `{agent_id, done:true}` when it ends; `error` is `{message}` (also sent when held-back
+turn (its slot stays busy) and `{agent_id, done:true}` when it ends; `error` is `{message}` (also sent when held-back
 messages or events had to be dropped, with `dropped:n` for events). `session_id` is always the id `session.start` returned.
 
 Runner -> Home notification, not an event: `perm.cancel {ask_id, session_id}`, sent when the runner gives up on a
@@ -144,5 +144,32 @@ mode no approval, to a looser one strong (passkey). Sisters: bind/send/replies a
 Runner -> Home request `git.credential {op: get|store|erase, input, purpose?: "push"}` -> `{output}` (the runner relays
 the in-VM `git-credential-rubi`). Home -> plugin `next` items besides `perm.ask`: `cred.ask {host, path, op:"push"}` (a push
 credential), `net.ask {host}` (a host not on the proxy's list), `queue {action, queue_id}`; all answered with `decide`.
-Slot events: `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
+Subagent cap. `max_subagents` (an integer, 0 or absent = no cap) is the most subagents one session may run at once
+(Home sends the cap of the Bot that owns the session). The runner counts a session's running subagents as its
+background tasks plus its `Agent`/`Task` calls that passed the gate and have not ended; a subagent started by a call
+(`task_started.tool_use_id`) is counted once, whether or not the SDK says it runs in the background. A change is
+reported with an event `subagents {count}`. The gate is its own `PreToolUse` hook, matcher `^(Agent|Task)$`, next to
+the hook that asks Home about every tool (no matcher, `hookTimeoutSec` = 300 s, unchanged: it asks about the subagent
+tools too, so a matcher that failed to match would lose the cap, never an ask; the integration test checks that every
+tool is still asked about). The gate hook **waits** (never denies) while the count is at the cap: it sends
+`waiting {reason, tool_use_id}` ("waiting: this session already has N subagents running, the limit"), repeats it every
+`waitKeepaliveMs` (5 min, with `still: true`; Home reads any event as a sign of life, so its 30-minute idle watchdog
+doesn't interrupt a session that waits on purpose), and when the call goes on sends `waiting {reason:"", done:true,
+tool_use_id}`. The gate has the long SDK timeout: `hookTimeoutSec` plus the longest wait, `subagentWaitSec` (default
+6 h). After the longest wait the call is denied with a reason the model sees (and an `error` event), never silently.
+A call is also denied ("Stopped while waiting...") when the session is interrupted or closed while it waits, and a wait
+stops when the call is denied by Home or ends some other way. The decision Home gave for such a call is remembered for
+as long as the call may wait, so the user is not asked twice.
+
+Places are released by the subagent's own end, not only by the tool result of its call: `task_notification` (which
+carries the call's `tool_use_id`) ends the call and the task. **Checked against the real SDK** (integration test,
+scripted API): the hooks of parallel `Agent` calls run together, the results of the calls stream one by one, a
+background subagent's call returns at once ("Async agent launched") while its task goes on, and a subagent can start
+subagents of its own (`spawn_depth` 2). **Rule for nested subagents:** a call made by a subagent is not held back by the
+places that subagent and its parents hold (it would wait for itself for ever), so a tree can run deeper than the cap by
+the depth of the chain; calls of other branches count in full. The count is approximate for a moment around a launch (the
+tool result and the task start are two messages). The cap is read at `session.start`; a `session.send` to a session with
+no turn, task or call running takes the cap it brings, a running one keeps its own. `session.fork` copies the cap of the
+source. Lowering a mode kills nothing: running subagents finish, new ones wait.
+Slot events (each session holds one slot; limits in `rubi-home.md`, "Slots"): `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
 `docs/design/rubi-home.md` ("Agents in a VM").

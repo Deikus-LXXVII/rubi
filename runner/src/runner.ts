@@ -33,6 +33,10 @@ export interface RunnerConfig {
   defaultMode?: PermissionMode; // mode of a session the runner did not start itself
   helloTimeoutMs?: number; // default 10 s
   hookTimeoutSec?: number; // default 300 (SDK hook timeout)
+  /** The longest a subagent call waits for a free place under the session's cap; then it is denied with a reason. Default 6 h. */
+  subagentWaitSec?: number;
+  /** While a subagent call waits for a place, a `waiting` event is repeated this often so Home sees the session alive. Default 5 min. */
+  waitKeepaliveMs?: number;
   askTimeoutMs?: number; // default 295 s: no answer -> deny (Home itself denies after 280 s)
   maxLineBytes?: number;
   maxQueuedBytes?: number;
@@ -61,11 +65,25 @@ interface Session {
   lastStatus: Status;
   closed: boolean;
   /** Decisions the hook got, by tool_use_id, so canUseTool for the same call does not ask again. */
-  decided: Map<string, { d: Decision; tool: string; hashes: string[]; at: number }>;
+  decided: Map<string, { d: Decision; tool: string; hashes: string[]; at: number; ttl: number }>;
   /** Restarts of a dead query without a result in between (bounded, so a crash loop ends). */
   respawns: number;
   /** Asks in flight, so an interrupt can cancel them. */
   asking: Set<AbortController>;
+  /** Most subagents running at once in this session (0 = no cap); set by Home at start and at a send to an idle session. */
+  maxSubagents: number;
+  /** Subagent calls (Agent/Task) that passed the gate and have not ended, by tool_use_id, with the agent (if any) that made the call. With `tasks` (background ones) they are the running subagents. */
+  calls: Map<string, string | undefined>;
+  /** Task id -> the tool_use_id of the Agent/Task call that started it, so one subagent is counted once. */
+  taskCall: Map<string, string>;
+  /** Calls waiting at the gate; cancelled when the call is denied or ended some other way. */
+  gating: Map<string, { cancelled: boolean }>;
+  /** Raised by an interrupt: gate waits that began earlier give up. */
+  stopSeq: number;
+  /** Subagent calls waiting for a place; woken when the count changes. */
+  gateWaiters: (() => void)[];
+  /** The count last reported in a `subagents` event. */
+  lastSub: number;
 }
 
 interface Decision {
@@ -80,6 +98,8 @@ const PUSH_WINDOW_MS = 120_000;
 const GIT_PUSH_RE = /\bgit\b[^\n]*\bpush\b/;
 const DECIDED_MAX = 100;
 const DECIDED_TTL_MS = 30_000;
+const SUBAGENT_MATCHER = "^(Agent|Task)$";
+const isSubagentTool = (name: string) => name === "Agent" || name === "Task";
 const short = (v: unknown, n = SHORT): string => {
   const s = typeof v === "string" ? v : (JSON.stringify(v) ?? "");
   return s.length > n ? s.slice(0, n) + "..." : s;
@@ -166,6 +186,8 @@ export class Runner {
       settingSources: c.settingSources ?? ["project"],
       helloTimeoutMs: c.helloTimeoutMs ?? 10_000,
       hookTimeoutSec: c.hookTimeoutSec ?? 300,
+      subagentWaitSec: c.subagentWaitSec ?? 6 * 3600,
+      waitKeepaliveMs: c.waitKeepaliveMs ?? 300_000,
       askTimeoutMs: c.askTimeoutMs ?? 295_000,
       credTimeoutMs: c.credTimeoutMs ?? 295_000,
     };
@@ -251,12 +273,14 @@ export class Runner {
         const name = optStr(p, "name");
         const f = await this.sdk.forkSession(id, { dir: this.cfg.cwd, ...(name !== undefined ? { title: name } : {}) });
         const src = this.sessions.get(id);
-        this.register({ id: f.sessionId, mode: src?.mode ?? this.cfg.defaultMode, ...(name !== undefined ? { name } : {}) });
+        this.register({ id: f.sessionId, mode: src?.mode ?? this.cfg.defaultMode, ...(src ? { maxSubagents: src.maxSubagents } : {}), ...(name !== undefined ? { name } : {}) });
         return { id: f.sessionId };
       }
       case "session.interrupt": {
         const s = this.get(uuid(p, "id"));
         s.pending = []; // held-back messages are dropped: the user wants the work to stop
+        s.stopSeq++; // subagent calls waiting for a place give up too
+        this.updateSubagents(s);
         for (const a of [...s.asking]) a.abort(); // pending asks are given up (perm.cancel) and denied
         if (s.query) await s.query.interrupt();
         return { ok: true };
@@ -286,7 +310,7 @@ export class Runner {
     return s;
   }
 
-  private register(init: { id: string; mode: PermissionMode; name?: string }): Session {
+  private register(init: { id: string; mode: PermissionMode; name?: string; maxSubagents?: number }): Session {
     const now = Date.now();
     const s: Session = {
       id: init.id,
@@ -302,6 +326,13 @@ export class Runner {
       decided: new Map(),
       respawns: 0,
       asking: new Set(),
+      maxSubagents: init.maxSubagents ?? 0,
+      calls: new Map(),
+      taskCall: new Map(),
+      gating: new Map(),
+      stopSeq: 0,
+      gateWaiters: [],
+      lastSub: 0,
     };
     this.sessions.set(s.id, s);
     return s;
@@ -334,7 +365,7 @@ export class Runner {
     const name = optStr(p, "name");
     const mode = modeOf(p, "mode");
     const id = randomUUID();
-    const s = this.register({ id, mode, ...(name !== undefined ? { name } : {}) });
+    const s = this.register({ id, mode, maxSubagents: maxSubagentsOf(p), ...(name !== undefined ? { name } : {}) });
     try {
       this.openQuery(s, "new", name);
       this.deliver(s, this.userMessage(prompt, optStr(p, "from")), false);
@@ -351,7 +382,9 @@ export class Runner {
     const steer = p.steer === true;
     let s = this.sessions.get(id);
     const fresh = !s;
-    if (!s) s = this.register({ id, mode: this.cfg.defaultMode }); // idle session from disk: resumed below
+    const cap = maxSubagentsOf(p);
+    if (!s) s = this.register({ id, mode: this.cfg.defaultMode, maxSubagents: cap }); // idle session from disk: resumed below
+    else if (!s.turnActive && s.tasks.size === 0 && s.calls.size === 0) s.maxSubagents = cap; // a running session keeps its cap
     try {
       const delivered = this.deliver(s, this.userMessage(text, optStr(p, "from")), steer);
       return { queued: true, delivered };
@@ -426,7 +459,15 @@ export class Runner {
       disallowedTools: disallowedEditTools(this.cfg.cwd),
       abortController: abort,
       // The hook runs for the main session, subagents and forks, in every mode (M0 exp 2-4).
-      hooks: { PreToolUse: [{ timeout: this.cfg.hookTimeoutSec, hooks: [(input, _id, o) => this.preToolUse(s, input, o.signal)] }] },
+      // Every tool is asked about by the first hook, with the usual timeout. A second hook, only for the subagent
+      // tools, holds the call while the session has its cap of subagents running; it has the long timeout (the
+      // longest wait on top) and decides nothing else, so a matcher that did not match would lose the cap, never an ask.
+      hooks: {
+        PreToolUse: [
+          { timeout: this.cfg.hookTimeoutSec, hooks: [(input, _id, o) => this.preToolUse(s, input, o.signal)] },
+          { matcher: SUBAGENT_MATCHER, timeout: this.cfg.hookTimeoutSec + this.cfg.subagentWaitSec, hooks: [(input, _id, o) => this.subagentGateHook(s, input, o.signal)] },
+        ],
+      },
       canUseTool: (tool, input, o) => this.canUseTool(s, tool, input, o),
       stderr: (d) => this.log(`claude: ${short(d.trim(), 400)}`),
     };
@@ -456,6 +497,9 @@ export class Runner {
     s.abort = undefined;
     s.turnActive = false;
     s.tasks.clear();
+    s.calls.clear();
+    s.taskCall.clear();
+    this.updateSubagents(s);
     s.decided.clear();
     // Held-back messages go into a resumed query, in order, unless it keeps dying without a result.
     const next = s.pending.shift();
@@ -519,6 +563,19 @@ export class Runner {
       case "rate_limit_event":
         this.event(s, "rate_limit", { info: m.rate_limit_info });
         break;
+      case "user": {
+        // A tool result ends a foreground subagent call (a background one goes on as a task).
+        const content = ((m.message ?? {}) as { content?: unknown }).content;
+        let ended = false;
+        for (const b of Array.isArray(content) ? (content as Record<string, unknown>[]) : []) {
+          if (b.type !== "tool_result" || typeof b.tool_use_id !== "string") continue;
+          if (s.calls.delete(b.tool_use_id)) ended = true;
+          const g = s.gating.get(b.tool_use_id);
+          if (g) g.cancelled = true; // the call ended while its gate still waited
+        }
+        if (ended) this.updateSubagents(s);
+        break;
+      }
       case "system":
         this.onSystem(s, m);
         break;
@@ -529,6 +586,7 @@ export class Runner {
 
   private onSystem(s: Session, m: SdkMessage) {
     const before = new Map(s.tasks);
+    if (typeof m.task_id === "string" && typeof m.tool_use_id === "string" && (m.subtype === "task_started" || m.subtype === "task_progress")) s.taskCall.set(m.task_id, m.tool_use_id);
     if (m.subtype === "background_tasks_changed") {
       s.tasks.clear();
       for (const t of Array.isArray(m.tasks) ? (m.tasks as Record<string, unknown>[]) : []) {
@@ -538,14 +596,150 @@ export class Runner {
     } else if (m.subtype === "task_started") {
       if (m.is_backgrounded !== false && typeof m.task_id === "string") s.tasks.set(m.task_id, taskInfo(m));
     } else if (m.subtype === "task_notification") {
-      if (typeof m.task_id === "string") s.tasks.delete(m.task_id);
+      // The subagent's own end releases its place, whatever happens to the tool result of its call.
+      if (typeof m.task_id === "string") {
+        s.tasks.delete(m.task_id);
+        s.taskCall.delete(m.task_id);
+      }
+      if (typeof m.tool_use_id === "string") {
+        s.calls.delete(m.tool_use_id);
+        const g = s.gating.get(m.tool_use_id);
+        if (g) g.cancelled = true;
+      }
     } else {
       return;
     }
     // One event per agent that started or finished: Home counts them to keep its slot busy.
     for (const [id, t] of s.tasks) if (!before.has(id)) this.event(s, "background", { agent_id: id, ...omitId(t) });
     for (const id of before.keys()) if (!s.tasks.has(id)) this.event(s, "background", { agent_id: id, done: true });
+    this.updateSubagents(s);
     this.updateStatus(s);
+  }
+
+  /** Subagents running now: background tasks plus calls without an end, a subagent started by a call being counted once. */
+  private runningSubagents(s: Session): number {
+    const started = new Set<string>();
+    for (const id of s.tasks.keys()) {
+      const call = s.taskCall.get(id);
+      if (call) started.add(call);
+    }
+    let n = s.tasks.size;
+    for (const id of s.calls.keys()) if (!started.has(id)) n++;
+    return n;
+  }
+
+  /**
+   * Places held by the agent that makes a call and by the agents above it: a subagent waiting to start its own
+   * subagent must not wait for the place it holds itself, or the tree would wait on itself for ever.
+   */
+  private heldByChain(s: Session, agentId: string | undefined): number {
+    let n = 0;
+    let agent = agentId;
+    const seen = new Set<string>();
+    while (agent && !seen.has(agent) && n < 16) {
+      seen.add(agent);
+      n++;
+      const call = s.taskCall.get(agent);
+      agent = call !== undefined ? s.calls.get(call) : undefined;
+    }
+    return n;
+  }
+
+  /** Reports a changed count to Home (the panel shows it) and wakes the calls waiting for a place. */
+  private updateSubagents(s: Session) {
+    const n = this.runningSubagents(s);
+    if (n !== s.lastSub) {
+      s.lastSub = n;
+      this.event(s, "subagents", { count: n });
+    }
+    const w = s.gateWaiters;
+    s.gateWaiters = [];
+    for (const f of w) f();
+  }
+
+  /**
+   * The gate for the subagent tools: while the session already has its cap of subagents running the call waits,
+   * it is not denied. A subagent's own calls are not held back by the places it and its parents hold (the rule
+   * that avoids a tree waiting on itself), so a tree can be deeper than the cap. Waiting is announced with a
+   * `waiting` event, repeated every waitKeepaliveMs (Home reads any event as a sign of life, so its idle watchdog
+   * leaves a waiting session alone), and ends with one carrying `done`. Returns a reason when the call must not
+   * go on: interrupted or closed, denied or ended meanwhile, or waited longer than subagentWaitSec.
+   */
+  private async subagentGate(s: Session, input: PreToolUseInput, signal: AbortSignal): Promise<string | undefined> {
+    const id = input.tool_use_id;
+    const limit = Date.now() + this.cfg.subagentWaitSec * 1000;
+    const stop = s.stopSeq;
+    const mine = { cancelled: false };
+    s.gating.set(id, mine);
+    let waiting = false;
+    let lastEvent = 0;
+    const done = () => {
+      s.gating.delete(id);
+      if (waiting) this.event(s, "waiting", { reason: "", done: true, tool_use_id: id });
+    };
+    try {
+      for (;;) {
+        if (s.stopSeq !== stop || signal.aborted || s.closed) {
+          done();
+          return "Stopped while waiting for a free subagent place.";
+        }
+        if (mine.cancelled) {
+          done();
+          return "The call ended before a subagent place came free.";
+        }
+        const cap = s.maxSubagents;
+        if (cap <= 0 || this.runningSubagents(s) - this.heldByChain(s, input.agent_id) < cap) break;
+        const now = Date.now();
+        if (now >= limit) {
+          done();
+          this.event(s, "error", { message: "a subagent waited too long for a free place and was not started" });
+          return `No place for another subagent came free in ${this.cfg.subagentWaitSec} s (the limit is ${cap}); it was not started.`;
+        }
+        if (!waiting || now - lastEvent >= this.cfg.waitKeepaliveMs) {
+          this.event(s, "waiting", { reason: `waiting: this session already has ${cap} subagent${cap === 1 ? "" : "s"} running, the limit`, tool_use_id: id, ...(waiting ? { still: true } : {}) });
+          waiting = true;
+          lastEvent = now;
+        }
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, Math.max(1, Math.min(limit - now, lastEvent + this.cfg.waitKeepaliveMs - now)));
+          timer.unref(); // a wait nobody ends must not keep the process alive
+          const wake = () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", wake);
+            resolve();
+          };
+          s.gateWaiters.push(wake);
+          signal.addEventListener("abort", wake, { once: true });
+        });
+      }
+      s.calls.set(id, input.agent_id);
+      this.updateSubagents(s);
+      done();
+      return undefined;
+    } catch (e) {
+      done();
+      throw e;
+    }
+  }
+
+  private async subagentGateHook(s: Session, input: PreToolUseInput, signal: AbortSignal): Promise<HookOutput> {
+    try {
+      if (input.hook_event_name !== "PreToolUse" || !isSubagentTool(input.tool_name)) return {};
+      const why = await this.subagentGate(s, input, signal);
+      if (why) return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } };
+      return {};
+    } catch (e) {
+      this.log(`subagent gate failed: ${errMsg(e)}; denying`);
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Rubi could not check this call, so it was denied." } };
+    }
+  }
+
+  /** A subagent call that was denied or failed: its gate stops waiting and it holds no place. */
+  private dropSubagentCall(s: Session, id: string) {
+    const g = s.gating.get(id);
+    if (g) g.cancelled = true;
+    s.calls.delete(id);
+    this.updateSubagents(s);
   }
 
   private statusOf(s: Session): Status {
@@ -581,6 +775,7 @@ export class Runner {
     s.closed = true;
     this.sessions.delete(s.id);
     s.pending = [];
+    this.updateSubagents(s); // wakes the subagent calls waiting for a place; they see the session is closed
     s.inbox?.end();
     s.abort?.abort();
     try {
@@ -634,6 +829,7 @@ export class Runner {
       // AskUserQuestion is decided in canUseTool (it carries the answers back); asking twice would
       // show the same question twice.
       if (input.tool_name === "AskUserQuestion") return {};
+      const subagent = isSubagentTool(input.tool_name);
       const d = await this.askHome(
         s,
         {
@@ -650,6 +846,7 @@ export class Runner {
       this.remember(s, input.tool_use_id, input.tool_name, input.tool_input, d);
       this.notePush(input.tool_name, input.tool_input, d);
       if (d.behavior === "deny") {
+        if (subagent) this.dropSubagentCall(s, input.tool_use_id);
         return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: d.message ?? "Denied by Rubi" } };
       }
       // An allow is never returned from the hook: the SDK's own rules and canUseTool still apply
@@ -657,6 +854,7 @@ export class Runner {
       if (d.updated_input) return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: d.updated_input } };
       return {};
     } catch (e) {
+      if (isSubagentTool(input.tool_name)) this.dropSubagentCall(s, input.tool_use_id);
       this.log(`PreToolUse hook failed: ${errMsg(e)}; denying`);
       return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Rubi could not check this call, so it was denied." } };
     }
@@ -691,8 +889,10 @@ export class Runner {
   private remember(s: Session, id: string | undefined, tool: string, input: unknown, d: Decision) {
     if (!id) return;
     const now = Date.now();
-    for (const [k, v] of s.decided) if (now - v.at > DECIDED_TTL_MS) s.decided.delete(k);
-    s.decided.set(id, { d, tool, hashes: [hashOf(input), ...(d.updated_input ? [hashOf(d.updated_input)] : [])], at: now });
+    for (const [k, v] of s.decided) if (now - v.at > v.ttl) s.decided.delete(k);
+    // A subagent call may wait at the gate long after it was approved: its decision is kept for that long.
+    const ttl = isSubagentTool(tool) ? DECIDED_TTL_MS + this.cfg.subagentWaitSec * 1000 : DECIDED_TTL_MS;
+    s.decided.set(id, { d, tool, hashes: [hashOf(input), ...(d.updated_input ? [hashOf(d.updated_input)] : [])], at: now, ttl });
     while (s.decided.size > DECIDED_MAX) s.decided.delete(s.decided.keys().next().value as string);
   }
 
@@ -701,7 +901,7 @@ export class Runner {
     const e = s.decided.get(id);
     if (!e) return undefined;
     s.decided.delete(id);
-    if (e.tool !== tool || Date.now() - e.at > DECIDED_TTL_MS || !e.hashes.includes(hashOf(input))) return undefined;
+    if (e.tool !== tool || Date.now() - e.at > e.ttl || !e.hashes.includes(hashOf(input))) return undefined;
     return e.d;
   }
 
@@ -770,6 +970,12 @@ function optInt(p: Record<string, unknown>, k: string): number | undefined {
   const v = p[k];
   if (v === undefined || v === null) return undefined;
   return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : bad(k);
+}
+/** `max_subagents` from Home: 0 or absent = no cap. */
+function maxSubagentsOf(p: Record<string, unknown>): number {
+  const v = p.max_subagents;
+  if (v === undefined || v === null) return 0;
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1000 ? v : bad("max_subagents");
 }
 function modeOf(p: Record<string, unknown>, k: string): PermissionMode {
   const v = p[k];

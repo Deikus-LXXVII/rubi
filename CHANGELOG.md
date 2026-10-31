@@ -12,18 +12,39 @@
   script into a fresh directory, re-checked and installed behind macOS's own administrator dialog; Home never
   runs `sudo` and never downgrades. The sign-in runs `claude auth login` in the project's VM with pipes; the
   link is shown only when it is an https link to a Claude or Anthropic sign-in host, the code goes straight to
-  the process's stdin. The self-test holds the agent slot and the manager itself denies every question of that
+  the process's stdin. The self-test holds a slot of its project (no other session of it starts meanwhile) and the manager itself denies every question of that
   project, so no plugin decision is involved. The runner's sources are now embedded in the binary: the image is
   tagged `rubi-agent-runner:<hash12>`, built from `<helper dir>/runner-build/<hash>` (multi-stage Dockerfile that
   compiles the runner with `npm ci --ignore-scripts`) when `agent_runner_dir` is not set.
+- **Rubi Home: Agent SDK sessions run per project, not one at a time.** The single slot ("one top-level query on
+  the computer") is now a slot per running top-level session: `agent_max_sessions_per_project` (default 1, at
+  least 1) per project and `agent_max_sessions` (default 16; 0 = no cap) for the whole computer, on top of the per-Bot limits of the usage modes below. Subagents and forks
+  inside a session take no slot (their number is capped separately, below). A start (or a send to a session without a slot) over a limit waits in the
+  disk queue, first in, first out, except that an item waiting on a full project or a Bot at its limit doesn't hold up
+  one behind it that can run (items of one project and Bot keep their order); each queued item carries a plain `reason`. Every slot keeps the old rules
+  (busy while a turn or a background subagent runs; freed on idle, close, runner exit or crash; the 30 minute
+  idle interrupt, per slot). `claude-agent.status` has `slots` and `limits` (and still `slot`, the first busy
+  one, for older plugins); `claude-agent.projects` rows add `sessions_running`, and `slot_busy` means the
+  project's slots are full.
+- **Rubi Home and runner: usage modes per Bot, and a cap on subagents.** Each Bot has a mode, `maximum` (no cap),
+  `medium` (the default: 4 sessions, 4 subagents per session) or `light` (1 session, 2 subagents per session); its
+  limits apply to the sessions it started only. `agent_default_mode` is for new Bots and for the sessions the user
+  starts from the panel; `agent_bot_modes` holds each Bot's; `agent_max_sessions_per_project`, `agent_max_sessions`
+  (now the cap on the whole computer, default 16) and the new `agent_max_subagents_per_session` override. Only the
+  user changes a mode: `claude-agent.usage_mode {mode, bot | default | all}` is for the plugin's panel and has no Bot
+  tool. A change applies to new starts; nothing running is killed. `claude-agent.start` and `send` take `bot`;
+  `status` reports `usage` with each Bot's mode and live counters. The runner takes `max_subagents` in
+  `session.start`/`send` and makes the `Agent`/`Task` gate wait (event `waiting`, count in `subagents`) while a session
+  has its cap running, with a longer SDK hook timeout; after 6 h of waiting the call is denied with a reason.
+
 - **Rubi Home: `claude-agent.*` operations and the Mac side of the Agent SDK runner (milestone M2).** A new Home
   capability, `claude-agent` (shown on the install screen as running Claude agents in a virtual machine on
   that computer, deciding each tool call and allowing git pushes). Operations: `projects`, `sessions`,
   `messages`, `start`, `send`, `rename`, `fork`, `interrupt`, `close`, `mode`, `next`, `decide`, `status`.
   Behind them (`internal/home/agent`): a `VM` interface with an Apple `container` implementation (argv-tested
   here, not run) and a fake for tests; the runner client with a per-start `run_token` handshake; one top-level
-  query on the computer at a time (the slot; background subagents keep it busy), with a disk queue
-  (`agent-queue.json`, 0600, 24 h) for starts and sends that find it busy; tool-call questions from the runner
+  query per slot (background subagents keep it busy; limits per project and in total, see above), with a disk queue
+  (`agent-queue.json`, 0600, 24 h) for starts and sends that find no free slot; tool-call questions from the runner
   reach the plugin through `next` and wait for `decide`: no answer in 280 s, or no `next` poll for 15 s, is a
   denial; an allow-list CONNECT proxy (no TLS decryption) and a git credential helper (reads always, a push
   only after the plugin approves). Configuration: `agent_projects`, `agent_git_hosts`, `agent_proxy_listen`,

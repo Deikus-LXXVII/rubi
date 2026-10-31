@@ -109,10 +109,12 @@ type SelfTest struct {
 	m    *Manager
 	p    *projState
 	st   *selfTest
+	slot *slotState
 	once sync.Once
 }
 
-// BeginSelfTest takes the slot for a self-test of the project; it fails when a session is running or queued.
+// BeginSelfTest takes a slot of the project for a self-test; it fails while a session of that project runs or
+// waits, or another self-test runs. It counts toward the computer-wide limit like a session the user starts.
 func (m *Manager) BeginSelfTest(id string) (*SelfTest, error) {
 	p, err := m.project(id)
 	if err != nil {
@@ -120,13 +122,21 @@ func (m *Manager) BeginSelfTest(id string) (*SelfTest, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.slot.busy || m.q.len() > 0 || m.self != nil {
-		return nil, errors.New("an agent session is running or waiting; try the self-test when it is done")
+	busy := m.self != nil
+	for _, s := range m.slots {
+		busy = busy || s.project == p.ID
+	}
+	for _, it := range m.q.list() {
+		busy = busy || it.Project == p.ID
+	}
+	if busy {
+		return nil, errors.New("an agent session of this project is running or waiting; try the self-test when it is done")
 	}
 	st := &selfTest{project: p.ID, result: make(chan TurnResult, 1)}
+	slot := &slotState{project: p.ID, turn: true, last: m.opt.Now()}
 	m.self = st
-	m.slot = slotState{busy: true, project: p.ID, turn: true, last: m.opt.Now()}
-	return &SelfTest{m: m, p: p, st: st}, nil
+	m.slots = append(m.slots, slot)
+	return &SelfTest{m: m, p: p, st: st, slot: slot}, nil
 }
 
 // Sandbox is the project's VM for the isolation probe.
@@ -170,9 +180,7 @@ func (t *SelfTest) End() {
 		if t.m.self == t.st {
 			t.m.self = nil
 		}
-		if t.m.slot.busy && t.m.slot.project == t.p.ID {
-			t.m.releaseLocked()
-		}
+		t.m.releaseLocked(t.slot)
 		t.m.mu.Unlock()
 	})
 }
