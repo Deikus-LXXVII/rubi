@@ -13,7 +13,8 @@ covers what is specific to the code and the test fixtures.
 | `src/runner.ts` | handshake, session registry, queue-fed queries, `PreToolUse` hook + `canUseTool` -> `perm.ask`, events |
 | `src/sdk.ts` | the small interface over the SDK that the runner uses (tests inject a fake) |
 | `src/sdk-real.ts` | the real SDK behind that interface, including the zero-cost `usage.probe` |
-| `src/main.ts` | entry point (stdout is the protocol; logs go to stderr) |
+| `src/main.ts`, `src/start.ts` | entry point with a Node/SDK preflight, then the wiring (stdout is the protocol; logs go to stderr) |
+| `src/cred.ts` | the git credential unix socket |
 | `test/` | unit tests against a fake SDK (`fake-sdk.ts`, `harness.ts`) and an opt-in integration test |
 | `testdata/*.ndjson` | wire transcripts for the Go client (below) |
 
@@ -21,6 +22,7 @@ covers what is specific to the code and the test fixtures.
 
 ```
 npm ci
+npm run build               # runner/dist/main.js, the image's entry point
 npm test                    # tsc, then node --test against the fake SDK (no network, no claude)
 npm run test:integration    # real SDK + real bundled claude against a scripted local API (opt-in)
 ```
@@ -37,6 +39,8 @@ scripted Messages API on 127.0.0.1 through `ANTHROPIC_BASE_URL` with a placehold
 | `RUBI_WORK_DIR` | working directory of every session, default `/work`. Sessions and config live in `$RUBI_WORK_DIR/.rubi/claude` (`CLAUDE_CONFIG_DIR`) |
 | `HTTPS_PROXY` | the allow-list proxy; passed on to `claude` |
 | `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `NO_PROXY`, `PATH`, `HOME`, ... | passed through to `claude` (small explicit allow-list; nothing else from the runner's environment) |
+
+Also: `RUBI_CRED_SOCK` (git credential socket, default `/tmp/rubi-cred.sock`), `RUBI_SETTING_SOURCES=none` (ignore the project's `.claude`).
 
 Exit codes: 0 stdin closed after a good handshake; 2 no token; 3 hello refused, unanswered in 10 s, or stdin closed before it.
 
@@ -60,6 +64,11 @@ Exit codes: 0 stdin closed after a good handshake; 2 no token; 3 hello refused, 
   if Home itself went away.
 - `status` is `busy` while a turn runs or background tasks (`background_tasks_changed`, `task_started`/`task_notification`)
   are alive; `background` events list those tasks. `closed` is sent once by `session.close`.
+- Security hardening (details in the contract): project hooks, `apiKeyHelper` and `.mcp.json` servers are switched off, `.rubi`,
+  `.claude` and `.mcp.json` are not editable and `.rubi` not readable by tools, the hook never returns `allow`, and any exception
+  in a permission callback denies. In `dontAsk` mode the SDK itself denies `AskUserQuestion`; nothing reaches Home.
+- Git credentials: unix socket `RUBI_CRED_SOCK` (0600) relayed as `git.credential`; `purpose` is `push` only for 120 s after an
+  approved `git ... push` command.
 - Session names: `session.start` with `name` passes it as the SDK `title` (no automatic title request for it).
 - The runner process sets `CLAUDE_CONFIG_DIR` for itself too: `listSessions`/`forkSession` read the sessions of the
   runner's own environment, not the child's.
@@ -86,7 +95,7 @@ them: `UPDATE_FIXTURES=1 npm test` rewrites them, otherwise a difference fails t
 - Do not depend on the order of an `event` notification relative to a nearby `perm.ask` or response: they come from
   different tasks inside the runner. The files show one order that happened to be stable.
 - Files: `handshake-ok`, `handshake-refused`, `malformed-lines`, `start-perm-allow-deny-subagent`,
-  `queue-and-steer`, `ask-user-question`.
+  `queue-and-steer`, `ask-user-question`, `background-subagent`, `git-credential`.
 
 ## Attribution
 
