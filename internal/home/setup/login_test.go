@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -279,7 +280,7 @@ func TestLoginSkipsWhenSignedInInAllAndChecksOnlyWithoutMethod(t *testing.T) {
 }
 
 func TestIsolationAndTurnChecks(t *testing.T) {
-	if bad := checkIsolation([]byte(goodProbe + "\n")); bad != "" {
+	if bad := checkIsolation([]byte(goodProbe+"\n"), true); bad != "" {
 		t.Errorf("good probe: %s", bad)
 	}
 	mod := func(k, v string) []byte {
@@ -296,9 +297,21 @@ func TestIsolationAndTurnChecks(t *testing.T) {
 		"proxy blocks": mod(`HTTP/1.1 200 Connection Established`, `HTTP/1.1 403 Forbidden`),
 		"proxy leaks":  mod(`"proxy_not_listed":"HTTP/1.1 403 Forbidden"`, `"proxy_not_listed":"HTTP/1.1 200 Connection Established"`),
 	} {
-		if checkIsolation(out) == "" {
+		if checkIsolation(out, true) == "" {
 			t.Errorf("%s passed", name)
 		}
+	}
+	for _, ok := range []string{"ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "timeout"} {
+		if bad := checkIsolation(mod(`"direct_ip":"timeout"`, `"direct_ip":"`+ok+`"`), true); bad != "" {
+			t.Errorf("%s: %s", ok, bad)
+		}
+	}
+	// without a known default network the gateway probe is skipped, but then it must say so
+	if checkIsolation(mod(`"direct_default_gw":"ENETUNREACH"`, `"direct_default_gw":"skipped"`), false) != "" {
+		t.Error("skipped gateway probe refused")
+	}
+	if checkIsolation(mod(`"direct_default_gw":"ENETUNREACH"`, `"direct_default_gw":"skipped"`), true) == "" {
+		t.Error("a skipped probe passed although a gateway was given")
 	}
 	if checkTurn(goodTurn) != "" {
 		t.Error("good turn failed")
@@ -348,5 +361,51 @@ func TestSelfTestJob(t *testing.T) {
 	e.wait()
 	if s := e.step("selftest"); s.State != Failed || !strings.Contains(s.Reason, "running or waiting") {
 		t.Errorf("%+v", s)
+	}
+}
+
+func TestSelfTestProbesTheDefaultNetworkGatewayWhenKnown(t *testing.T) {
+	for _, known := range []bool{true, false} {
+		e := newTestEnv(t)
+		e.ready()
+		p := e.addProject("my-project")
+		e.ag.running[p.ID] = true
+		e.ag.box.loggedIn = true
+		e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn}
+		probe := goodProbe
+		if !known {
+			probe = strings.Replace(goodProbe, `"direct_default_gw":"ENETUNREACH"`, `"direct_default_gw":"skipped"`, 1)
+			e.m.extra = func(argv []string) ([]byte, error, bool) {
+				if len(argv) > 3 && argv[1] == "network" && argv[3] == "default" {
+					return nil, errors.New("no such network"), true
+				}
+				return nil, nil, false
+			}
+		} else {
+			e.m.extra = func(argv []string) ([]byte, error, bool) {
+				if len(argv) > 3 && argv[1] == "network" && argv[3] == "default" {
+					return []byte(defaultNet(t)), nil, true
+				}
+				return nil, nil, false
+			}
+		}
+		e.ag.box.probeOut = probe
+		e.op("run", map[string]any{"step": "selftest", "project": p.ID})
+		e.wait()
+		if s := e.step("selftest"); s.State != Done {
+			t.Errorf("known=%v: %+v", known, s)
+		}
+		var gw string
+		for _, env := range e.ag.box.envs {
+			if v, ok := env["RUBI_PROBE_GW"]; ok {
+				gw = v
+			}
+		}
+		if known != (gw != "") {
+			t.Errorf("known=%v but the probe got gateway %q", known, gw)
+		}
+		if strings.Contains(isolationProbe, "192.168.64.1") {
+			t.Error("a gateway address is hardcoded in the probe")
+		}
 	}
 }

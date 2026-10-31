@@ -163,12 +163,14 @@ type fakeBox struct {
 	login     func(c *fakeConn) // plays `claude auth login`
 	probeOut  string
 	execs     [][]string
+	envs      []map[string]string
 	lastLogin *fakeConn
 }
 
 func (b *fakeBox) Exec(ctx context.Context, argv []string, extra map[string]string) (agent.Conn, error) {
 	b.mu.Lock()
 	b.execs = append(b.execs, argv)
+	b.envs = append(b.envs, extra)
 	b.mu.Unlock()
 	c := newFakeConn()
 	switch {
