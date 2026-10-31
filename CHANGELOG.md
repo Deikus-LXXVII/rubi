@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **No network for VMs (agent roles, R13, option D).** Every project, role and sign-in VM now runs with
+  `container run --network none`: loopback only, no route, so nothing on the Mac (another app's open port, the gateway
+  address) is reachable from a VM and DNS is moot. The VM's way out is `rubi-netpipe`, a forwarder in the image that listens
+  on `127.0.0.1:3128` (the CONNECT proxy) and `127.0.0.1:3129` (the auth gateway) and carries every connection as a stream
+  (framing, 256 KiB window per stream and direction, 64 streams) over a long-lived `container exec -i` that Rubi Home keeps
+  running; Home serves the streams to the same proxy and gateway code, with the same checks, and neither listens on the Mac
+  any more. If the exec process dies Home restarts it (stops the VM after three restarts in five minutes). Measured on the
+  spike: the exec stdio is binary safe and moves about 220-290 MiB/s as a raw pipe (about 180-230 MiB/s through the mux),
+  130 ms to start, 0.15 ms median round trip. The setup wizard's network step keeps its id and reads "done: not needed"
+  (nothing is created or checked; `agent_network`, `agent_proxy_listen` and `agent_proxy_vm_host` are ignored); the self-test
+  asserts no route or interface but `lo`, `ENETUNREACH` to a public address and to gateways, failing DNS, a working proxy and
+  a refused unlisted host. The runner image changes (new tag).
 - **Skill library in the panel (agent roles, R10).** Settings has a "Skills" tab: search and tag filter, each skill's
   versions with state, scan rules (line and excerpt), author Bot, who admitted it ("self-admitted by curator" when the
   curator admitted its own), hash and dates, the skill's text in a text-only box, and the queue of proposals waiting for

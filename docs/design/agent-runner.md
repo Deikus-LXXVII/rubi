@@ -14,7 +14,8 @@ plugin claude-code v0.4 (in Rubi)  --Home ops (relay, E2E)-->  Rubi Home (Mac, u
 ```
 
 - **runner/** (TypeScript, `@anthropic-ai/claude-agent-sdk`): one process per project VM. Talks newline-delimited
-  JSON-RPC 2.0 on stdin/stdout. No network of its own beyond the proxy given in its env.
+  JSON-RPC 2.0 on stdin/stdout. No network at all (the VM runs with `--network none`): its only way out is the proxy and
+  the auth gateway on its own loopback, which are streams to Rubi Home ("No network: rubi-netpipe", below).
 - **internal/home/agent/** (Go): supervisor behind `VM` interface (`AppleContainer` real impl, `Fake` impl for
   tests), runner client, session slots (per project and total), disk queue, allow-list proxy, git credential helper, `run_token`.
 - **plugin claude-code v0.4**: replaces `claude-hook` approvals with `perm.ask`; sisters use the new Home ops.
@@ -175,11 +176,60 @@ Build: `npm run build` writes `runner/dist/main.js` (the image's entry point, No
 
 ## Network and git
 
-- Allow-list proxy (CONNECT only, no TLS decryption) on a Home-owned port reachable only from the VM:
+- Allow-list proxy (CONNECT only, no TLS decryption), served by Rubi Home on a netpipe stream (no socket on the Mac), reached by the VM at `127.0.0.1:3128`:
   Anthropic hosts from M0 (`api.anthropic.com`; login/refresh hosts to confirm with a real login:
   `claude.ai`, `console.anthropic.com`, `platform.claude.com` are the candidates), the project's git host(s),
   `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, SwiftPM package hosts from `Package.resolved`.
   Everything else: refused and logged. Telemetry hosts (Datadog, downloads.claude.ai) are refused.
+### No network: rubi-netpipe (R13, option D of agent-roles.md section 10)
+
+Every project, role and sign-in VM is started with `container run --network none`: it has loopback and nothing else (no
+interface, no route, no DNS; a direct connect fails with `ENETUNREACH`). Nothing on the Mac, no wildcard listener of
+another app and no gateway address, is reachable from it. The runner's environment says where its two services are:
+`HTTPS_PROXY=http://rubi:<per-start token>@127.0.0.1:3128`, `ANTHROPIC_BASE_URL=http://127.0.0.1:3129`,
+`NO_PROXY=127.0.0.1` (the per-start secrets are unchanged).
+
+Behind those ports is **`rubi-netpipe`** (`runner/container/rubi-netpipe`, a node script in the image at
+`/usr/local/bin/rubi-netpipe`, embedded in the Rubi Home binary like the rest of the runner, so the image tag changes with
+it). Rubi Home runs it once per VM with a long-lived `container exec -i <name> /usr/local/bin/rubi-netpipe` (no
+environment, no secret on the command line) before the runner starts, and waits for its HELLO. The forwarder listens on
+127.0.0.1 only and turns every accepted TCP connection into a stream over its own stdin and stdout. Home hands each stream
+(a `net.Conn` with half close and deadlines, `internal/home/agent/netpipe`) to the CONNECT proxy or to the auth gateway
+through a `net.Listener` adapter: the same handlers, the same checks (proxy token, host list, port 443, address guard, asks;
+gateway secret, paths, header list, token injection), no TCP on the Mac.
+
+Frame: `type u8 | stream u32 | length u32` (big endian, 9 bytes), then the payload, length at most 32 KiB.
+
+| Type | Meaning |
+|---|---|
+| HELLO 1 (stream 0, payload `[version]`) | forwarder to Home, once, when both ports listen; a different version ends the channel |
+| OPEN 2 (payload `[service]`: 1 proxy, 2 gateway) | the forwarder accepted a connection (only the VM side opens) |
+| DATA 3 | bytes of the connection |
+| CLOSE 4 | the sender writes no more (a half close; closing a stream sends one) |
+| RESET 5 | the stream is dead both ways (refused, violation, closed stream that got data, a peer silent for 30 s after a close) |
+| ACK 6 (payload `u32`) | bytes the reader has handed on (to the socket in the VM, to the handler on the Mac) |
+
+Flow control: each direction of each stream starts with a window of 256 KiB; DATA spends it and ACK (sent at every 64 KiB
+consumed) returns it, so a reader that stops reading stops its sender and at most 256 KiB per stream and direction is
+ever buffered; the forwarder pauses the local socket at zero credit. At most 64 streams at once (the forwarder drops a
+65th connection, Home resets an OPEN over its limit). A frame that doesn't parse (unknown type, length over 32 KiB, a bad
+payload length, DATA without a stream, an OPEN twice) ends the channel (the forwarder exits 2, Home resets every stream);
+a frame for an unknown stream is ignored; data beyond the window or after CLOSE resets only that stream.
+
+If the exec process dies, every stream fails (the runner sees a connection error and retries as it would on a network
+error), and Home starts the forwarder again after 0.5 s, 1 s, 2 s; after three restarts in five minutes it stops the VM,
+which ends the runner and its sessions (the next send starts a fresh VM). `Stop` ends the forwarder first. A VM whose
+forwarder doesn't say HELLO within 20 s is not started. The sign-in container uses the same pipe, with the proxy service
+only (a stream to the gateway port is reset).
+
+Measured (R13a spike, Apple container 1.6.1, `--network none`, `container exec -i`, Node 20 on the Mac, Node 22 in the VM,
+100 MiB, sha-256 compared): the stdio channel is binary safe (all 256 byte values, end of input arrives as EOF) and moves
+222-263 MiB/s Mac to VM and 266-294 MiB/s VM to Mac as a raw byte pipe (8 MiB: 83-95 MiB/s, start-up bound); starting
+the exec to the first echoed byte takes 130 ms; a 1-byte round trip is 0.15 ms median, 0.7 ms at the 95th percentile.
+Through the multiplexer and the real forwarder (Go Mux on the Mac, node in the VM, 32 KiB frames) 100 MiB goes at about 230
+MiB/s VM to Mac (0.42-0.44 s) and 180-225 MiB/s Mac to VM (0.46-0.58 s). The API (a few MiB per turn) and npm traffic are
+far below that.
+
 - Git credential helper (`git-credential-rubi` in the VM, through the runner's credential socket and the `git.credential`
   request, see above): `get` for read always; for a push
   only while a matching mandate (`md_` with push scope) is live in the plugin (Home asks the plugin via

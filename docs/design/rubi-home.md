@@ -400,9 +400,9 @@ decide | status | role.list | role.get | role.history | role.diff | role.put`; a
   user's home is skipped. Encrypted per-project volumes (design section 9a) are a later milestone.
 - **VM.** `VM` is an interface; `AppleContainer` shells out to Apple's `container` CLI (1.6.x): `build` of the
   image from `runner/container/Dockerfile` (the runner's sources are embedded in the binary, tagged by their hash,
-  and built from `<helper dir>/runner-build/<hash>` unless `agent_runner_dir` names a directory), a host-only network (`network create --internal`), `run -d` with the
+  and built from `<helper dir>/runner-build/<hash>` unless `agent_runner_dir` names a directory), `run -d --network none` (no network at all) with the
   project bind-mounted at `/work`, a non-root user, `--cap-drop ALL`, a read-only root, then
-  `exec -i --env-file` for the runner. The run token and proxy settings go in an environment file (0600) that
+  a long-lived `exec -i` of `rubi-netpipe` (the VM's only way out, see agent-runner.md) and `exec -i --env-file` for the runner. The run token and proxy settings go in an environment file (0600) that
   is deleted once the handshake succeeded, never on a command line. `Fake` plays a runner in-process for tests.
 - **Handshake.** Per start Home makes a random `run_token`; the runner's first line must be `hello` with it
   (constant-time compare), else stdin is closed and the process killed; no hello in 10 s ends it too.
@@ -534,14 +534,16 @@ decide | status | role.list | role.get | role.history | role.diff | role.put`; a
   an address that is loopback, private (RFC 1918), link-local, ULA, CGNAT (100.64/10), 0.0.0.0/8, multicast,
   reserved, or an IPv4-mapped/NAT64/6to4 form of those: one such address in the answer refuses the host, and
   the socket's own address is checked again when it connects. Only `agent_git_hosts` may resolve to private
-  addresses (an owner's own git server). It refuses a wildcard listen address, requires
-  `Proxy-Authorization: Basic` with a per-start token (put into `HTTPS_PROXY` as `http://rubi:<token>@host:port`;
-  not the run token), and ends tunnels idle for 10 minutes. It listens on `agent_proxy_listen` (default
-  `127.0.0.1:0`; a VM cannot reach the Mac's loopback, so a real setup sets it to the Mac's address on the VM
-  network) and tells the VM `agent_proxy_vm_host`.
-- **Network check.** Before every start Home inspects the VM network and refuses to start unless the output says
-  it is internal (host-only); output it cannot read is a refusal. The inspect JSON schema of `container 1.6.x`
-  is not confirmed (a key `internal`, any case, anywhere in the document, must be `true`).
+  addresses (an owner's own git server). It requires
+  `Proxy-Authorization: Basic` with a per-start token (put into `HTTPS_PROXY` as `http://rubi:<token>@127.0.0.1:3128`;
+  not the run token), and ends tunnels idle for 10 minutes. It listens on no socket: a VM has no network, so the proxy
+  and the auth gateway serve the streams of the VM's `rubi-netpipe` (agent-runner.md, "No network: rubi-netpipe"), which
+  the VM reaches on its own loopback. `agent_network`, `agent_proxy_listen` and `agent_proxy_vm_host` are obsolete: they
+  still parse and are ignored (the proxy still refuses a wildcard listen address when it is given a socket, as the tests do).
+- **No network.** Every VM is started with `--network none`. There is no host-only network to create or to verify, no
+  address of the Mac the VM could reach, and no listener opened for it. The setup wizard's network step stays (same id) and
+  reads "done: not needed". The self-test asserts the absence of any route or interface besides `lo`, `ENETUNREACH` for
+  direct connections, failing DNS, a working proxy path and a refused unlisted host.
 - **Git credentials.** The helper in the VM (`runner/container/git-credential-rubi`) hands `git credential
   get|store|erase` to the runner, which sends `git.credential {op, input, purpose}` to Home (the runner side
   of the relay is part of the runner, not yet in M1). Hosts must be in `agent_git_hosts` and https. `get` for a
