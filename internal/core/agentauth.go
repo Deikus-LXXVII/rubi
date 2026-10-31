@@ -91,14 +91,17 @@ func (c *Core) checkAgentCode(name, code string) error {
 	a := &c.agentAuth
 	a.mu.Lock()
 	k := agentKey(name)
-	if until := a.blocked[k]; time.Now().Before(until) {
-		a.mu.Unlock()
-		return errors.New("too many wrong codes for this Bot; try again later")
-	}
+	// The right code always passes, blocked or not. A block answers wrong codes only: otherwise anyone who can
+	// name a Bot could lock it out of its own account with three wrong guesses. (Rubi can't tell the callers
+	// apart: they share one MCP server, so failures are counted per name, not per caller.)
 	cur, ok := a.codes[k]
 	if ok && time.Now().Before(cur.expires) && subtle.ConstantTimeCompare([]byte(cur.code), []byte(strings.TrimSpace(code))) == 1 {
 		a.mu.Unlock()
 		return nil
+	}
+	if until := a.blocked[k]; time.Now().Before(until) {
+		a.mu.Unlock()
+		return errors.New("too many wrong codes for this Bot; try again later (a correct code still works)")
 	}
 	if a.fails == nil {
 		a.fails, a.blocked = map[string][]time.Time{}, map[string]time.Time{}
@@ -113,13 +116,12 @@ func (c *Core) checkAgentCode(name, code string) error {
 	block := len(recent) >= agentMaxFailures
 	if block {
 		a.blocked[k] = time.Now().Add(agentBlockFor)
-		delete(a.codes, k)
-		a.fails[k] = nil
+		a.fails[k] = nil // the Bot's current code stays valid: a stranger's guesses don't cost it its access
 	}
 	a.mu.Unlock()
 	if block {
 		c.agentSuspicious(name, fmt.Sprintf("%d wrong codes in a few minutes", len(recent)))
-		return errors.New("too many wrong codes for this Bot; codes are blocked for 30 minutes and the user is told")
+		return errors.New("too many wrong codes for this Bot; wrong codes are blocked for 30 minutes (the right one still works) and the user is told")
 	}
 	return errors.New("that code is wrong or expired; codes come with each Rubi webhook (agent_code), or ask with rubi_verify")
 }
@@ -132,10 +134,6 @@ func (c *Core) RequestAgentCode(name string) error {
 	a := &c.agentAuth
 	k := agentKey(name)
 	a.mu.Lock()
-	if until := a.blocked[k]; time.Now().Before(until) {
-		a.mu.Unlock()
-		return errors.New("codes for this Bot are blocked for now after wrong attempts; try again later")
-	}
 	if a.asked == nil {
 		a.asked = map[string]time.Time{}
 	}

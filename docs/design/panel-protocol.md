@@ -133,7 +133,8 @@ that integration) and an unlocked Rubi. Reads return data; every change returns
 | `library.entry` | `id` | every version of one skill, without content: state, `author_bot`, `admitted_by`, `self_admitted`, `sha256`, dates, `scan_verdict`, `scan_hits[]` (`id`, `line`, `severity`, `excerpt`), `scan_stripped[]`, curator `history[]`. Full `settings` ticket only |
 | `library.version` | `id`, `version?` (0 = latest admitted) | one version with its `content` (text, at most 32 KiB; the panel draws it in a `<pre>`, clipped). Full `settings` ticket only |
 | `library.queue` | — | the proposals waiting for the curator, with their scan results, no content. Full `settings` ticket only |
-| `library.curator.set` | `name` (`""` removes it) | `{"approval_id", "ticket"}` for the strong approval `rubi.library.curator` (old and new curator shown); applied only if the curator is still the one the user saw. The name must be a connected Bot. The panel has no op that admits, publishes, deprecates, withdraws or edits a skill: those are the curator Bot's |
+| `library.curator.set` | `name` (`""` removes it) | `{"approval_id", "ticket"}` for the strong approval `rubi.library.curator` (old and new curator shown); applied only if the curator is still the one the user saw. The name must be a connected Bot. The panel has no op that admits, publishes, deprecates or edits a skill: those are the curator Bot's |
+| `library.withdraw` | `id`, `version` (0: every version that isn't withdrawn) | `{"approval_id", "ticket"}` for the strong approval `rubi.library.withdraw` (skill and versions shown). The user's own way to pull a skill whatever the curator does; the entry page has a "Withdraw this version" button. Roles drop a withdrawn version when Rubi Home next builds them (see agent-roles.md section 8) |
 
 ### Approval proofs
 

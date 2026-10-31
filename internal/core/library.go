@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,7 @@ import (
 
 const (
 	libraryCuratorKind    = "rubi.library.curator"
+	libraryWithdrawKind   = "rubi.library.withdraw"
 	librarySubmitsPerMin  = 10
 	libraryKeyPinOp       = "library.key"
 	libraryPinTimeout     = 8 * time.Second
@@ -136,6 +138,49 @@ func (c *Core) RequestLibraryCurator(ctx context.Context, name string) (map[stri
 			}
 			c.Audit.Record("library.curator_set", audit.Fields{"from": cur, "to": name})
 			return map[string]any{"applied": true, "curator": name}, nil
+		},
+	})
+}
+
+// RequestLibraryWithdraw asks the user, with a strong approval (kind rubi.library.withdraw), to withdraw a
+// version of a library skill (version 0: every version that isn't withdrawn). This is the user's own way to pull a
+// skill the curator should not have admitted, whatever the curator does. Nothing changes until the user approves.
+func (c *Core) RequestLibraryWithdraw(ctx context.Context, id string, version int) (map[string]any, error) {
+	if c.State() != Unlocked {
+		return nil, errors.New("Rubi is locked")
+	}
+	if version < 0 {
+		return nil, errors.New("bad version")
+	}
+	vs, err := c.Library.Entry(id)
+	if err != nil {
+		return nil, err
+	}
+	var which []string
+	for _, v := range vs {
+		if (version == 0 || v.Version == version) && v.State != library.Withdrawn && v.State != library.Rejected {
+			which = append(which, "v"+strconv.Itoa(v.Version)+" ("+string(v.State)+")")
+		}
+	}
+	if len(which) == 0 {
+		return nil, errors.New("there is nothing to withdraw there")
+	}
+	summary := "Withdraw skill " + id + " from the library"
+	if version != 0 {
+		summary = "Withdraw version " + strconv.Itoa(version) + " of skill " + id + " from the library"
+	}
+	return c.Approvals.Submit(ctx, approvals.Request{
+		Integration: "rubi", Kind: libraryWithdrawKind, Summary: summary,
+		Preview: map[string]any{"skill": id, "versions": strings.Join(which, ", "),
+			"effect": "Roles that use it drop it the next time Rubi Home builds them (at once on computers that are online, otherwise when they next connect to Rubi). New roles can't attach it. The curator can admit it again."},
+		Options: []approvals.Option{{Key: "apply", Label: "Withdraw"}},
+		Execute: func(context.Context, string) (any, error) {
+			changed, err := c.Library.SetState(id, version, library.Withdrawn, "the user (panel)")
+			if err != nil {
+				return nil, err
+			}
+			c.Audit.Record("library.withdrawn", audit.Fields{"id": id, "versions": changed, "by": "the user"})
+			return map[string]any{"applied": true, "withdrawn": changed}, nil
 		},
 	})
 }

@@ -204,7 +204,7 @@ export class DemoClient {
         return { approval_id: "settings", ticket: "demo" };
       case "agent.add":
         return { approval_id: "bot", ticket: "demo" };
-      case "library.list": case "library.entry": case "library.version": case "library.queue": case "library.curator.set":
+      case "library.list": case "library.entry": case "library.version": case "library.queue": case "library.curator.set": case "library.withdraw":
         return demoLibrary(op, args);
       case "plugin.panel": {
         if (args.id === "gmail") return demoMailPage(args.op, args.args);
@@ -372,6 +372,7 @@ function demoLibrary(op, a) {
     if (!v) throw new Error("no such version");
     return { id: a.id, ...v };
   }
+  if (op === "library.withdraw") return { approval_id: "withdraw", ticket: "demo" };
   if (a.name && a.name.toLowerCase() === DEMO_LIB.curator.toLowerCase()) throw new Error("that is already the curator");
   return { approval_id: "curator", ticket: "demo" };
 }
