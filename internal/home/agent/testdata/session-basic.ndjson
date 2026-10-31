@@ -1,0 +1,7 @@
+# A runner transcript: one turn with a tool call that needs an answer, then idle.
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"status","status":"busy"}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"assistant","text":"Looking at the tests."}}
+{"jsonrpc":"2.0","id":1,"method":"perm.ask","params":{"ask_id":"r1","session_id":"sess-1","tool":"Bash","input":{"command":"go test ./..."},"cwd":"/work","mode":"bypassPermissions"}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"tool","name":"Bash","summary":"go test ./..."}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"result","usage":{"input_tokens":120,"output_tokens":30},"total_cost_usd":0.01,"num_turns":2,"is_error":false}}
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"sess-1","kind":"status","status":"idle"}}
