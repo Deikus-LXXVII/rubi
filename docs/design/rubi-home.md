@@ -408,7 +408,7 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   limits; the subagent cap below handles them). Three limits apply to a new session: its project has
   `agent_max_sessions_per_project` (default 1, at least 1; a project is one directory in `agent_projects`, with its
   own VM and volume), the Bot that started it has its mode's session limit, and the computer has
-  `agent_max_sessions` (default 16, 0 = no cap, so the machine stays bounded whatever the modes say). Events decide
+  `agent_max_sessions` (default 4, 0 = no cap, so the machine stays bounded whatever the modes say; a Bot on maximum is bounded only by it). Events decide
   each slot: `status busy` takes one, `status idle` frees it
   only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
   done:true}` or a `result` with that `agent_id` removes it), `status closed`, the end of the project's runner

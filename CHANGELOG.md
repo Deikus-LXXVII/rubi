@@ -4,7 +4,7 @@
 
 - **Rubi Home: Agent SDK sessions run per project, not one at a time.** The single slot ("one top-level query on
   the computer") is now a slot per running top-level session: `agent_max_sessions_per_project` (default 1, at
-  least 1) per project and `agent_max_sessions` (default 16; 0 = no cap) for the whole computer, on top of the per-Bot limits of the usage modes below. Subagents and forks
+  least 1) per project and `agent_max_sessions` (default 4; 0 = no cap) for the whole computer, on top of the per-Bot limits of the usage modes below. Subagents and forks
   inside a session take no slot (their number is capped separately, below). A start (or a send to a session without a slot) over a limit waits in the
   disk queue, first in, first out, except that an item waiting on a full project or a Bot at its limit doesn't hold up
   one behind it that can run (items of one project and Bot keep their order); each queued item carries a plain `reason`. Every slot keeps the old rules
@@ -16,7 +16,7 @@
   `medium` (the default: 4 sessions, 4 subagents per session) or `light` (1 session, 2 subagents per session); its
   limits apply to the sessions it started only. `agent_default_mode` is for new Bots and for the sessions the user
   starts from the panel; `agent_bot_modes` holds each Bot's; `agent_max_sessions_per_project`, `agent_max_sessions`
-  (now the cap on the whole computer, default 16) and the new `agent_max_subagents_per_session` override. Only the
+  (now the cap on the whole computer, default 4; maximum is bounded only by it) and the new `agent_max_subagents_per_session` override. Only the
   user changes a mode: `claude-agent.usage_mode {mode, bot | default | all}` is for the plugin's panel and has no Bot
   tool. A change applies to new starts; nothing running is killed. `claude-agent.start` and `send` take `bot`;
   `status` reports `usage` with each Bot's mode and live counters. The runner takes `max_subagents` in
