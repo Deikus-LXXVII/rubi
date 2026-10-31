@@ -8,7 +8,7 @@ import (
 )
 
 func TestEmbeddedBundle(t *testing.T) {
-	for _, p := range []string{"package.json", "package-lock.json", "tsconfig.build.json", "src/main.ts", "container/Dockerfile", "container/git-credential-rubi"} {
+	for _, p := range []string{"package.json", "package-lock.json", "tsconfig.build.json", "src/main.ts", "container/Dockerfile", "container/git-credential-rubi", "container/rubi-claude-token"} {
 		if _, err := fs.Stat(FS(), p); err != nil {
 			t.Errorf("%s isn't embedded: %v", p, err)
 		}

@@ -1,0 +1,133 @@
+#!/usr/bin/env node
+// Signs the shared Claude account in from inside the auth container of Rubi Home, without a terminal on the Mac:
+// it runs `claude setup-token` under a pty (`script`), relays stdin, and speaks a small line protocol on stdout.
+// It prints only these lines (never the token, never anything of claude's own output):
+//   URL <https sign-in link>     the first link of an allowed sign-in host
+//   CODE?                        claude asks for the code the browser shows
+//   SAVED                        the token was written
+//   FAILED <short reason>
+// The token is a long-lived (1 year) subscription token (scope user:inference). It is written atomically
+// (mode 0600) to $RUBI_AUTH_DIR/token/oauth-token with a non-secret oauth-token.meta; it stays in memory
+// otherwise and is never put in an environment, an argument or a log.
+// Plain script, no imports: runs as CommonJS (the image) or ESM (a checkout), Node >= 22.
+const fs = process.getBuiltinModule("fs");
+const path = process.getBuiltinModule("path");
+const cp = process.getBuiltinModule("child_process");
+
+const AUTH = process.env.RUBI_AUTH_DIR || "/rubi-auth";
+const CLAUDE = process.env.RUBI_CLAUDE_BIN || "/opt/rubi-runner/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude";
+const TEST_CMD = process.env.RUBI_SETUP_TOKEN_CMD; // tests: a shell command that plays `claude setup-token`
+const LIMIT_MS = 16 * 60 * 1000;
+const HOSTS = ["claude.com", "claude.ai", "platform.claude.com", "console.anthropic.com"];
+const VALID_DAYS = 365;
+
+function emit(line) {
+  if (/sk-ant/i.test(line)) return; // a token never leaves through the protocol
+  process.stdout.write(line.replace(/[\r\n]+/g, " ") + "\n");
+}
+
+let finished = false;
+let child = null;
+function finish(line, code) {
+  if (finished) return;
+  finished = true;
+  emit(line);
+  if (child) {
+    try {
+      child.kill("SIGTERM");
+    } catch {}
+  }
+  setTimeout(() => process.exit(code), 100);
+}
+
+function allowed(raw) {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" && !u.username && !u.password && u.port === "" && HOSTS.includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// Everything the terminal UI draws besides text: CSI sequences (colors, cursor), OSC (hyperlinks, titles), others.
+const ESC = /\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+const OSC8_BLOCK = /\x1b\]8;[^;\x07\x1b]*;[^\x07\x1b]*(?:\x07|\x1b\\)[\s\S]*?\x1b\]8;;(?:\x07|\x1b\\)/g;
+const OSC8 = /\x1b\]8;[^;\x07\x1b]*;(https:\/\/[^\x07\x1b]+)(?:\x07|\x1b\\)/;
+
+function writeAtomic(file, data) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  fs.writeFileSync(tmp, data, { mode: 0o600, flag: "wx" });
+  fs.renameSync(tmp, file);
+}
+
+function save(token) {
+  process.umask(0o077);
+  const dir = path.join(AUTH, "token");
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeAtomic(path.join(dir, "oauth-token"), token + "\n");
+  const now = Date.now();
+  const meta = { created: new Date(now).toISOString(), expires: new Date(now + VALID_DAYS * 86400e3).toISOString(), method: "setup-token" };
+  writeAtomic(path.join(dir, "oauth-token.meta"), JSON.stringify(meta) + "\n");
+}
+
+function main() {
+  // A wide pty, so the link is not wrapped.
+  const inner = `stty cols 2000 rows 50 2>/dev/null; exec '${CLAUDE}' setup-token`;
+  const argv = TEST_CMD ? ["/bin/sh", "-c", TEST_CMD] : ["script", "-qfc", inner, "/dev/null"];
+  child = cp.spawn(argv[0], argv.slice(1), { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, TERM: "xterm-256color", NO_COLOR: "1" } });
+  child.on("error", () => finish("FAILED could not start claude", 1));
+  child.stdin.on("error", () => {});
+
+  let raw = ""; // the child's output, bounded
+  // The token is looked for outside links (a link is never the token), and, until claude has ended, only once
+  // something follows it (so a half-drawn token is never taken).
+  function tryToken(final) {
+    const bare = raw.replace(OSC8_BLOCK, " ").replace(ESC, "").replace(/\r/g, "").replace(/https:\/\/\S+/g, " ");
+    const t = /sk-ant-oat01-[A-Za-z0-9_-]{30,}(?![A-Za-z0-9_-])/.exec(final ? bare : bare.replace(/sk-ant-oat01-[A-Za-z0-9_-]*$/, ""));
+    if (!t) return false;
+    try {
+      save(t[0]);
+    } catch {
+      finish("FAILED could not save the token", 1);
+      return true;
+    }
+    finish("SAVED", 0);
+    return true;
+  }
+  let urlSent = false;
+  let promptShown = false;
+  child.stdout.on("data", (d) => {
+    if (finished) return;
+    raw = (raw + d.toString("utf8")).slice(-65536);
+    const text = raw.replace(OSC8, "$1 ").replace(ESC, "").replace(/\r/g, "");
+    if (!urlSent) {
+      const m = OSC8.exec(raw) || /(https:\/\/[^\s\x1b]+)/.exec(text);
+      const url = m && m[1].replace(/[.,;:)]+$/, "");
+      if (url) {
+        if (!allowed(url)) return finish("FAILED unexpected sign-in link", 1);
+        urlSent = true;
+        emit("URL " + url);
+      }
+    }
+    if (!promptShown && /paste code here/i.test(text)) {
+      promptShown = true;
+      emit("CODE?");
+    }
+    tryToken(false);
+  });
+  child.on("close", () => {
+    if (!finished && tryToken(true)) return;
+    if (!finished) finish("FAILED the sign-in ended without a token", 1);
+  });
+  // The code (a line) goes to claude as Enter-terminated input; a terminal's Enter is \r.
+  process.stdin.on("data", (d) => {
+    if (finished) return;
+    child.stdin.write(d.toString("utf8").replace(/\r?\n/g, "\r"));
+    promptShown = false; // the prompt may come back after a wrong code
+    raw = ""; // what was drawn before the code is not looked at again
+  });
+  process.stdin.on("end", () => {});
+  setTimeout(() => finish("FAILED the sign-in timed out", 1), LIMIT_MS).unref();
+}
+
+main();

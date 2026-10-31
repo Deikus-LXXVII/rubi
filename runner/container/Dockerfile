@@ -31,7 +31,10 @@ COPY --from=builder /build/dist/ ./dist/
 # git asks Rubi Home for credentials through the runner (socket served by the runner, see
 # docs/design/rubi-home.md); never a token on disk in the image.
 COPY container/git-credential-rubi /usr/local/bin/git-credential-rubi
-RUN chmod 0755 /usr/local/bin/git-credential-rubi \
+# The sign-in helper of the setup wizard (it runs `claude setup-token` under `script`, from util-linux); it is
+# run in the short-lived auth container, never by the runner.
+COPY container/rubi-claude-token /usr/local/bin/rubi-claude-token
+RUN chmod 0755 /usr/local/bin/git-credential-rubi /usr/local/bin/rubi-claude-token \
  && git config --system credential.helper /usr/local/bin/git-credential-rubi \
  && git config --system credential.useHttpPath true
 
