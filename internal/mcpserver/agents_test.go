@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"github.com/Deikus-LXXVII/rubi/internal/core"
 	"github.com/Deikus-LXXVII/rubi/internal/gateway"
@@ -661,6 +662,12 @@ func TestRubiHome(t *testing.T) {
 	if len(devs.Devices) != 1 {
 		t.Fatalf("devices: %v", devs)
 	}
+	// Rubi presents its library key to a newly paired Rubi Home (core-only op library.key).
+	pub, err := r.c.LibraryPublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor("library key pinned", func() bool { return h.Config().LibraryKey == base64.StdEncoding.EncodeToString(pub) })
 	out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"})
 	if !strings.Contains(toString(out["out"]), "Lights off") {
 		t.Fatalf("shortcuts.list: %v", out)

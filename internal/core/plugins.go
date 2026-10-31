@@ -429,6 +429,12 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 				return nil, err
 			}
 			return map[string]any{"result": out}, nil
+		case "library.get":
+			out, err := c.libraryHostGet(ctx, m.Home, params)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
 		case "hook.url":
 			if !m.Hooks {
 				return nil, errors.New("the manifest doesn't declare hooks")

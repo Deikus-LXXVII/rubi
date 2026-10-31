@@ -86,6 +86,11 @@ type Data struct {
 	LockReason string `json:"lock_reason,omitempty"`
 	// Watch is which watchers tell the administrator when Rubi is down or locked (core/watchdog.go).
 	Watch *Watch `json:"watch,omitempty"`
+	// LibraryKey is the Ed25519 private key (seed) that signs admitted skills; made on first use
+	// (internal/library). LibraryCurator is the one Bot that may admit skills (set only by the strong approval
+	// rubi.library.curator).
+	LibraryKey     []byte `json:"library_key,omitempty"`
+	LibraryCurator string `json:"library_curator,omitempty"`
 }
 
 type Watch struct {

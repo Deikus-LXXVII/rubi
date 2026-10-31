@@ -9,8 +9,10 @@ package home
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +25,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
@@ -102,6 +105,10 @@ type Config struct {
 	// AgentMaxSubagentsPerSession caps subagents running at once in one session for every Bot (0 = no cap;
 	// unset: each Bot's mode decides). A session over it waits; nothing is denied.
 	AgentMaxSubagentsPerSession *int `json:"agent_max_subagents_per_session,omitempty"`
+	// LibraryKey is the public key (base64) that signs the skills in Rubi's shared library, pinned the first time
+	// Rubi presents it (op library.key, which only Rubi's core sends; a plugin's home.call can't reach it). A
+	// different key is refused, and a new pairing forgets it.
+	LibraryKey string `json:"library_key,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -221,9 +228,10 @@ func (h *Helper) newAgent() *agent.Manager {
 				}
 			})
 		},
-		Cred:        agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
-		ProxyListen: h.Fresh().AgentProxyListen,
-		ProxyVMHost: h.Fresh().AgentProxyVMHost,
+		RoleVerifier: roles.Pinned{Key: h.libraryKey},
+		Cred:         agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
+		ProxyListen:  h.Fresh().AgentProxyListen,
+		ProxyVMHost:  h.Fresh().AgentProxyVMHost,
 	})
 }
 
@@ -428,6 +436,8 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 	switch env.Op {
 	case "hello":
 		return h.hello(), nil
+	case "library.key":
+		return h.pinLibraryKey(env.Args)
 	case "unpair":
 		want := tokenHash(env.Token)
 		return nil, h.Update(func(c *Config) {
@@ -480,6 +490,45 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
 }
 
+// libraryKey is the pinned library public key (nil: none).
+func (h *Helper) libraryKey() ed25519.PublicKey {
+	b, err := base64.StdEncoding.DecodeString(h.Fresh().LibraryKey)
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil
+	}
+	return ed25519.PublicKey(b)
+}
+
+// pinLibraryKey pins the key Rubi's core presents (the first one wins; a different one is refused).
+func (h *Helper) pinLibraryKey(args json.RawMessage) (any, error) {
+	var in struct {
+		PublicKey string `json:"public_key"`
+	}
+	if json.Unmarshal(args, &in) != nil {
+		return nil, errors.New("bad arguments")
+	}
+	b, err := base64.StdEncoding.DecodeString(in.PublicKey)
+	if err != nil || len(b) != ed25519.PublicKeySize {
+		return nil, errors.New("bad arguments")
+	}
+	var refused error
+	uerr := h.Update(func(c *Config) {
+		switch {
+		case c.LibraryKey == "":
+			c.LibraryKey = in.PublicKey
+		case c.LibraryKey != in.PublicKey:
+			refused = errors.New("a different library key is already pinned on this computer; pair with Rubi again to change it")
+		}
+	})
+	if uerr != nil {
+		return nil, uerr
+	}
+	if refused != nil {
+		return nil, refused
+	}
+	return map[string]any{"pinned": true}, nil
+}
+
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
@@ -512,6 +561,7 @@ func (h *Helper) pair(args json.RawMessage) (any, error) {
 		c.Pending = nil
 		// A new pairing replaces every earlier one. Codes are made on this computer by its owner, so a new
 		// one means "this Rubi, from now on": a pairing someone got from an earlier code ends here.
+		c.LibraryKey = "" // the library key is pinned again by the new Rubi
 		c.Paired = []Pairing{{TokenHash: tokenHash(in.Token), Label: in.Label, At: time.Now().UTC()}}
 	})
 	if uerr != nil {

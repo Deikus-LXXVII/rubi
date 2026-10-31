@@ -19,6 +19,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/events"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
 	"github.com/Deikus-LXXVII/rubi/internal/integrity"
+	"github.com/Deikus-LXXVII/rubi/internal/library"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
@@ -47,14 +48,16 @@ var ErrNoTransport = errors.New("the panel connection is not available yet (Rubi
 	"try again in a few seconds")
 
 type Core struct {
-	Layout      paths.Layout
-	ID          *identity.Identity
-	Vault       *vault.Store
-	Approvals   *approvals.Engine
-	Events      *events.Store
-	Audit       *audit.Log
-	Store       *plugins.Store
-	Runner      *plugins.Runner
+	Layout    paths.Layout
+	ID        *identity.Identity
+	Vault     *vault.Store
+	Approvals *approvals.Engine
+	Events    *events.Store
+	Audit     *audit.Log
+	Store     *plugins.Store
+	Runner    *plugins.Runner
+	// Library is the shared skill library (library.go).
+	Library     *library.Library
 	PanelOrigin string
 	// HookBase is the public base URL of hook addresses ("" = none on this transport), and
 	// OnHookRoute applies a new hook route to the transport. Both are set by the daemon.
@@ -99,6 +102,7 @@ type Core struct {
 	access    accessGrants // access codes for plugin accounts (access.go)
 	botReqs   botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
 	devs      deviceClients
+	libPins   libraryPins
 }
 
 // SetIntegrity records the result of the binary self-check.
@@ -148,6 +152,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		plans:       map[string]pendingPlan{},
 		seen:        map[string]bool{},
 	}
+	c.Library = library.Open(library.Options{Dir: layout.Library(), Instance: id.InstanceID, DEK: c.Vault.Key, Signer: c.libraryKey})
 	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
 		Handler: c.pluginHandler, Launched: c.pluginLaunched, Crashed: c.pluginCrashed, Logf: log.Printf}}
 	_, keysErr := os.Stat(layout.Keys())

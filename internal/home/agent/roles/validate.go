@@ -37,7 +37,7 @@ var (
 	itemRE     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,47}$`) // skills, subagents, library ids
 	shaRE      = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	numRE      = regexp.MustCompile(`^[0-9]{1,6}$`)
-	sigRE      = regexp.MustCompile(`^[A-Za-z0-9+/=_-]{1,200}$`)
+	sigRE      = regexp.MustCompile(`^[A-Za-z0-9+/=_-]{1,600}$`)
 	approvalRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 	whoRE      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$`)
 	ruleRE     = regexp.MustCompile(`^[a-z]{3}\.[a-z0-9]{1,16}$`)

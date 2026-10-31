@@ -134,7 +134,15 @@ func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
 			d.Devices = append(d.Devices, dev)
 			return nil
 		},
-		func() { c.Audit.Record("device.paired", audit.Fields{"device": dev.ID, "name": name}) })
+		func() {
+			c.Audit.Record("device.paired", audit.Fields{"device": dev.ID, "name": name})
+			// A new pairing replaces the old one on the computer, so it learns the library key again.
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				_ = c.pinLibraryKey(ctx, dev)
+			}()
+		})
 }
 
 // RemoveDevice asks the user to approve forgetting a helper; the helper is told to forget us too.

@@ -423,6 +423,7 @@ type callIn struct {
 }
 
 func (s *Server) registerCoreTools() {
+	s.registerLibraryTools()
 	addCore(s, &mcp.Tool{Name: "rubi_status",
 		Description: "Rubi's state (unpaired / locked / unlocked), installed plugins, and the link the user needs next, if any."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
