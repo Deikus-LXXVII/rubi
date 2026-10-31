@@ -49,11 +49,15 @@ Exit codes: 0 stdin closed after a good handshake; 2 no token; 3 hello refused, 
   `default` until `session.mode` says otherwise; a fork inherits the mode of its source.
 - `from` is written into the message as a first line `[message from <from>]`.
 - `perm.ask` has two extra fields beyond the contract: `tool_use_id` and `via` (`"hook"` or `"can_use_tool"`).
-  In modes stricter than bypass a call can be asked twice (hook, then the CLI's own ask); `tool_use_id` correlates them.
+  In modes stricter than bypass the CLI may also consult `canUseTool` for a call the hook already decided; the runner
+  then returns the hook's decision for that `tool_use_id` without a second `perm.ask`.
   `AskUserQuestion` is asked only via `canUseTool` (the real SDK does call it in bypass mode, checked by the integration test),
   after an `ask` event with the questions.
 - Anything but an explicit `allow` is a deny. The runner stops waiting after 295 s (Home itself denies after 280 s;
-  the SDK blocks the call after the 300 s hook timeout). The runner sends no cancel message for an ask it gave up on.
+  the SDK blocks the call after the 300 s hook timeout). When the runner gives up on an ask (its own timeout, the SDK
+  hook timeout aborting the hook, `session.interrupt`, `session.close`) it sends the notification
+  `perm.cancel {ask_id, session_id}` so Home can drop the pending item, and the call is denied. Nothing is sent
+  if Home itself went away.
 - `status` is `busy` while a turn runs or background tasks (`background_tasks_changed`, `task_started`/`task_notification`)
   are alive; `background` events list those tasks. `closed` is sent once by `session.close`.
 - Session names: `session.start` with `name` passes it as the SDK `title` (no automatic title request for it).

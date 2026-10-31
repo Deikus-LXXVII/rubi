@@ -33,8 +33,8 @@ Home -> runner (requests):
 |---|---|---|
 | `session.list` | `{}` | `{sessions:[{id, name, created, last_activity, mode, busy}]}` (SDK `listSessions`, cwd `/work`) |
 | `session.messages` | `{id, limit?}` | `{messages:[...]}` (SDK `getSessionMessages`) |
-| `session.start` | `{prompt, name?, from?, mode}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option) |
-| `session.send` | `{id, text, from?, steer?}` | `{queued:true}`: into the live query's input queue; `steer:true` = `priority:"now"`; idle session -> `resume` |
+| `session.start` | `{prompt, name?, from?, mode}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option); `name` becomes the SDK `title` (no automatic title request) |
+| `session.send` | `{id, text, from?, steer?}` | `{queued:true, delivered}`: into the live query's input queue; `steer:true` = `priority:"now"`, `delivered:true`; without `steer` while a turn runs the runner holds the message and hands it to the SDK at the turn's `result` (`delivered:false`; the SDK never answers a mid-turn message of default priority); a session the runner does not hold -> `resume` |
 | `session.rename` | `{id, name}` | `{ok}` (`renameSession`) |
 | `session.fork` | `{id, name?}` | `{id}` (`forkSession`, then idle until sent to) |
 | `session.interrupt` | `{id}` | `{ok}` |
@@ -46,18 +46,35 @@ Runner -> Home (requests the runner waits on):
 
 | Method | Params | Result |
 |---|---|---|
-| `perm.ask` | `{ask_id, session_id, agent_id?, agent_type?, tool, input, cwd, mode}` | `{behavior:"allow"\|"deny", message?, updated_input?}` |
+| `perm.ask` | `{ask_id, session_id, agent_id?, agent_type?, tool, tool_use_id?, via, input, cwd, mode}` | `{behavior:"allow"\|"deny", message?, updated_input?}` |
 
 `perm.ask` is sent from the `PreToolUse` hook for **every** tool call in every mode (the hook is installed for
 the main session, subagents and forks; M0 showed deny works in bypass and inside subagents/forks). The hook's
 own timeout is 300 s; no answer -> the SDK blocks the call (M0 exp 5). The runner also installs `canUseTool`
 (for `AskUserQuestion` and modes stricter than bypass) and routes it through `perm.ask` with `tool` set.
 
+Additions in M1: `via` is `"hook"` or `"can_use_tool"`; `tool_use_id` correlates the asks of one call. If the hook
+already got a decision for a `tool_use_id`, `canUseTool` for the same call returns that decision without a second
+`perm.ask`. `AskUserQuestion` is not asked by the hook, only by `canUseTool` (the real SDK calls it even in bypass),
+after an `ask` event with the questions; `updated_input` carries the answers back. Anything but an explicit `allow`
+is a deny. The runner stops waiting after 295 s (Home denies at 280 s) and denies. A `message` is shown to the model.
+
 Runner -> Home (notifications, no reply): `event {session_id, kind, ...}` with `kind` one of
 `assistant` (text), `tool` (name + short input summary), `result` (`{usage, model_usage, total_cost_usd,
 num_turns, is_error}`), `ask` (`AskUserQuestion` payload), `rate_limit` (from `rate_limit_event` or
 `api_error_params.rate_limit_info`), `background` (a subagent kept running after the turn: the slot stays busy
 until its own result), `status` (`idle`/`busy`/`closed`), `error`.
+
+Runner -> Home notification, not an event: `perm.cancel {ask_id, session_id}`, sent when the runner gives up on a
+`perm.ask` (its own timeout, the SDK hook timeout, `session.interrupt`, `session.close`); Home drops the pending
+item. The call is denied on the runner side. Not sent when Home is gone.
+
+Runner process: environment `RUBI_RUN_TOKEN` (required), `RUBI_WORK_DIR` (working directory, default `/work`;
+sessions and config under `<dir>/.rubi/claude`), `HTTPS_PROXY`. The runner sets `CLAUDE_CONFIG_DIR` for itself too,
+because `listSessions`/`forkSession` read the sessions of its own environment. `from` in `session.start`/`send` is
+written as a first line `[message from <from>]` in the text. A session the runner does not hold (after a restart or a
+close) is resumed in mode `default` until `session.mode` is sent; a fork inherits the mode of its source. Wire
+transcripts for client tests: `runner/testdata/*.ndjson`, format in `runner/README.md`.
 
 Runner options for every query: `cwd:"/work"`, `settingSources:["project"]`, `allowDangerouslySkipPermissions:
 true`, `permissionMode` from Home, `env` with `CLAUDE_CONFIG_DIR=/work/.rubi/claude`, `DISABLE_TELEMETRY=1`,
