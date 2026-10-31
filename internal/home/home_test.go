@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
@@ -299,19 +300,29 @@ func TestWatchBeats(t *testing.T) {
 	}
 }
 
-func TestAgentSessionLimitsConfig(t *testing.T) {
+func TestAgentUsageConfig(t *testing.T) {
 	zero, five, neg := 0, 5, -1
 	for _, c := range []struct {
 		cfg        Config
 		per, total int
+		subs       int
+		mode       string
+		custom     bool
 	}{
-		{Config{}, 1, 4}, // the defaults
-		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, 2, 5},
-		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, 1, 0}, // 0 = no cap
-		{Config{AgentMaxSessions: &neg}, 1, 4},
+		{Config{}, 1, 4, 4, "medium", false}, // the defaults
+		{Config{AgentUsageMode: "light"}, 1, 1, 2, "light", false},
+		{Config{AgentUsageMode: "maximum"}, 1, 0, 0, "maximum", false},
+		{Config{AgentUsageMode: "nonsense"}, 1, 4, 4, "medium", false},
+		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, 2, 5, 4, "medium", true},
+		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, 1, 0, 4, "medium", true}, // 0 = no cap
+		{Config{AgentMaxSessions: &neg}, 1, 4, 4, "medium", false},
+		{Config{AgentUsageMode: "light", AgentMaxSessions: &zero, AgentMaxSubagentsPerSession: &five}, 1, 0, 5, "light", true},
+		{Config{AgentUsageMode: "light", AgentMaxSessions: new(int)}, 1, 0, 2, "light", true},
+		{Config{AgentUsageMode: "medium", AgentMaxSessions: &zero, AgentMaxSubagentsPerSession: &zero}, 1, 0, 0, "medium", true},
 	} {
-		if p, n := c.cfg.agentMaxSessionsPerProject(), c.cfg.agentMaxSessions(); p != c.per || n != c.total {
-			t.Errorf("%+v: got %d, %d; want %d, %d", c.cfg, p, n, c.per, c.total)
+		l := agent.ResolveUsage(c.cfg.agentUsage())
+		if l.PerProject != c.per || l.Total != c.total || l.Subagents != c.subs || l.Mode != c.mode || l.Custom != c.custom {
+			t.Errorf("%+v: got %+v", c.cfg, l)
 		}
 	}
 }

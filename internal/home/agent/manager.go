@@ -63,11 +63,11 @@ type Options struct {
 	AllowedHosts    func() []string
 	NoDefaultForges func() bool
 	AllowBypass     func() bool
-	// MaxSessionsPerProject and MaxSessions are the slot limits: top-level sessions running at once in one
-	// project (agent_max_sessions_per_project, at least 1, default DefaultMaxSessionsPerProject) and across
-	// all projects (agent_max_sessions, 0 = no cap, default DefaultMaxSessions). Nil means the defaults.
-	MaxSessionsPerProject func() int
-	MaxSessions           func() int
+	// Usage is the usage mode and the raw limits (agent_usage_mode, agent_max_sessions_per_project,
+	// agent_max_sessions, agent_max_subagents_per_session); nil means the medium mode. SetUsageMode saves a
+	// new mode (the user's choice from the plugin's panel); nil means it can't be changed.
+	Usage        func() UsageConfig
+	SetUsageMode func(mode string) error
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
 	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it. An
@@ -114,6 +114,7 @@ type slotState struct {
 	turn    bool            // a turn is running
 	last    time.Time       // the last sign of life (event, ask, delivery)
 	bg      map[string]bool // background subagents still running
+	sub     int             // subagents running now, as the runner counts them
 }
 
 type pendingAsk struct {
@@ -144,12 +145,6 @@ func (m *Manager) extraHosts(p *projState) []string {
 	}
 	return append(out, m.net.hosts(p.Dir)...)
 }
-
-// Defaults of the slot limits.
-const (
-	DefaultMaxSessionsPerProject = 1
-	DefaultMaxSessions           = 4
-)
 
 // Manager is the Mac side of the agent: projects, the slots, the queue, asks.
 type Manager struct {
@@ -746,22 +741,19 @@ func (m *Manager) credential(ctx context.Context, p *projState, c CredParams) (C
 
 // ---- events and the slots ----
 
+// limitsNow is the limits in force, read at each use so a change applies to the next start.
+func (m *Manager) limitsNow() Limits {
+	var c UsageConfig
+	if m.opt.Usage != nil {
+		c = m.opt.Usage()
+	}
+	return ResolveUsage(c)
+}
+
 // limits are the slot limits in force: sessions per project (at least 1) and in total (0 = no cap).
 func (m *Manager) limits() (perProject, total int) {
-	perProject, total = DefaultMaxSessionsPerProject, DefaultMaxSessions
-	if m.opt.MaxSessionsPerProject != nil {
-		perProject = m.opt.MaxSessionsPerProject()
-	}
-	if m.opt.MaxSessions != nil {
-		total = m.opt.MaxSessions()
-	}
-	if perProject < 1 {
-		perProject = 1
-	}
-	if total < 0 {
-		total = DefaultMaxSessions
-	}
-	return perProject, total
+	l := m.limitsNow()
+	return l.PerProject, l.Total
 }
 
 func sessions(n int) string {
@@ -881,6 +873,7 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 		Tasks  *[]struct {
 			ID string `json:"task_id"`
 		} `json:"tasks"`
+		Count     int     `json:"count"`
 		TotalCost float64 `json:"total_cost_usd"`
 		Usage     struct {
 			In  int64 `json:"input_tokens"`
@@ -943,6 +936,10 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 					s.bg[ev.AgentID] = true
 				}
 			}
+		}
+	case "subagents":
+		if s != nil {
+			s.sub = min(max(f.Count, 0), 1<<20)
 		}
 	case "result":
 		if ev.AgentID != "" {
@@ -1061,7 +1058,8 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 		var res struct {
 			ID string `json:"id"`
 		}
-		err := r.Call(ctx, "session.start", map[string]any{"prompt": it.Text, "name": it.Name, "from": it.From, "mode": it.Mode}, &res)
+		err := r.Call(ctx, "session.start", map[string]any{"prompt": it.Text, "name": it.Name, "from": it.From, "mode": it.Mode,
+			"max_subagents": m.limitsNow().Subagents}, &res)
 		if err != nil {
 			return nil, err
 		}
@@ -1073,7 +1071,8 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 		return map[string]any{"id": res.ID}, nil
 	default:
 		var res json.RawMessage
-		err := r.Call(ctx, "session.send", map[string]any{"id": it.Session, "text": it.Text, "from": it.From, "steer": it.Steer}, &res)
+		err := r.Call(ctx, "session.send", map[string]any{"id": it.Session, "text": it.Text, "from": it.From, "steer": it.Steer,
+			"max_subagents": m.limitsNow().Subagents}, &res)
 		if err != nil {
 			return nil, err
 		}
@@ -1196,6 +1195,19 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		return map[string]any{"ok": true}, m.Decide(in.AskID, in.Behavior, in.Message, in.Updated)
 	case "status":
 		return m.opStatus(ctx, in.Probe), nil
+	case "usage_mode":
+		// The user's switch: the plugin offers it only on its panel, never as a Bot tool.
+		if !validMode(in.Mode) {
+			return nil, fmt.Errorf("unknown usage mode %q", clip(in.Mode, 32))
+		}
+		if m.opt.SetUsageMode == nil {
+			return nil, errors.New("the usage mode can't be changed here")
+		}
+		if err := m.opt.SetUsageMode(in.Mode); err != nil {
+			return nil, err
+		}
+		m.wake() // a raised limit may let the queue go
+		return m.opStatus(ctx, false), nil
 	case "sessions":
 		return m.forward(ctx, in.Project, "session.list", map[string]any{})
 	case "messages":
@@ -1333,13 +1345,14 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 	m.mu.Lock()
 	slots := []map[string]any{}
 	for _, s := range m.slots {
-		slots = append(slots, map[string]any{"project": s.project, "session": s.session, "busy": true, "background": len(s.bg)})
+		slots = append(slots, map[string]any{"project": s.project, "session": s.session, "busy": true, "background": len(s.bg), "subagents": s.sub})
 	}
 	slot := map[string]any{"busy": false, "project": "", "session": "", "background": 0} // for older plugins: the first
 	if len(slots) > 0 {
 		slot = slots[0]
 	}
-	per, total := m.limits()
+	lim := m.limitsNow()
+	per, total := lim.PerProject, lim.Total
 	reasons := map[string]string{}
 	waiting := m.q.list()
 	for _, it := range waiting {
@@ -1361,7 +1374,9 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 		login = json.RawMessage("null")
 	}
 	return map[string]any{"login": login, "slot": slot, "slots": slots,
-		"limits": map[string]any{"per_project": per, "total": total}, "queue": queue, "usage_today": usage}
+		"limits":           map[string]any{"per_project": per, "total": total, "subagents_per_session": lim.Subagents},
+		"usage":            map[string]any{"mode": lim.Mode, "custom": lim.Custom, "modes": UsageModes},
+		"sessions_running": len(slots), "queue": queue, "usage_today": usage}
 }
 
 // probe asks a running runner for the login state (usage.probe spends no tokens); it never starts a VM.

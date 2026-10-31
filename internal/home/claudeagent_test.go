@@ -154,3 +154,20 @@ func TestClaudeAgentConfigAndDefaults(t *testing.T) {
 		t.Fatalf("projects over the helper dir: %v", res)
 	}
 }
+
+func TestUsageModeOpSavesTheConfig(t *testing.T) {
+	h, _, _ := agentHelper(t)
+	h.Agent.Close()
+	h.Agent = h.newAgent()
+	t.Cleanup(h.Agent.Close)
+	if _, err := handle(t, h, "wrong", "claude-agent.usage_mode", map[string]any{"mode": "light"}); err == nil {
+		t.Fatal("an unpaired caller switched the mode")
+	}
+	st, err := handle(t, h, "tok", "claude-agent.usage_mode", map[string]any{"mode": "light"})
+	if err != nil || st["usage"].(map[string]any)["mode"] != "light" || st["limits"].(map[string]any)["total"] != float64(1) {
+		t.Fatalf("switch: %v %v", st, err)
+	}
+	if got := h.Fresh().AgentUsageMode; got != "light" {
+		t.Fatalf("saved mode %q", got)
+	}
+}

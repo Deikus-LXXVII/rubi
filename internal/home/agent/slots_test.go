@@ -70,8 +70,7 @@ func (mu *multi) startsOf(project string) int {
 
 func setLimits(per, total int) func(*Options) {
 	return func(o *Options) {
-		o.MaxSessionsPerProject = func() int { return per }
-		o.MaxSessions = func() int { return total }
+		o.Usage = func() UsageConfig { return UsageConfig{MaxSessionsPerProject: per, MaxSessions: &total} }
 	}
 }
 
@@ -203,13 +202,14 @@ func TestZeroMeansNoGlobalCapAndDefaults(t *testing.T) {
 	if mu.running() != len(names) {
 		t.Fatalf("%d running", mu.running())
 	}
-	// The defaults, and values that are out of range.
+	// The defaults (medium), and values that are out of range.
 	m := New(Options{})
 	defer m.Close()
 	if p, tot := m.limits(); p != 1 || tot != 4 {
 		t.Fatalf("defaults %d %d", p, tot)
 	}
-	m.opt.MaxSessionsPerProject, m.opt.MaxSessions = func() int { return 0 }, func() int { return -3 }
+	neg := -3
+	m.opt.Usage = func() UsageConfig { return UsageConfig{MaxSessionsPerProject: 0, MaxSessions: &neg} }
 	if p, tot := m.limits(); p != 1 || tot != 4 {
 		t.Fatalf("out of range %d %d", p, tot)
 	}

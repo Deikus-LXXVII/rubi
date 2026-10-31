@@ -76,12 +76,19 @@ type Config struct {
 	// AgentAllowBypass says whether agent sessions may run in bypassPermissions or dontAsk (default true;
 	// the plugin still decides every tool call and approves loosening a mode with a passkey).
 	AgentAllowBypass *bool `json:"agent_allow_bypass,omitempty"`
+	// AgentUsageMode is "maximum", "medium" (default) or "light": presets for how much the agents may run at
+	// once (see agent/usage.go). The raw keys below override the preset for their limit. The user changes
+	// the mode from the plugin's panel; a Bot can't.
+	AgentUsageMode string `json:"agent_usage_mode,omitempty"`
 	// AgentMaxSessionsPerProject is how many top-level agent sessions may run at once in one project
 	// (default 1, at least 1); more wait in the queue. Subagents and forks inside a session don't count.
 	AgentMaxSessionsPerProject int `json:"agent_max_sessions_per_project,omitempty"`
-	// AgentMaxSessions caps top-level agent sessions running at once across all projects (default 4;
-	// 0 = no cap).
+	// AgentMaxSessions caps top-level agent sessions running at once across all projects (0 = no cap;
+	// unset: the mode's preset).
 	AgentMaxSessions *int `json:"agent_max_sessions,omitempty"`
+	// AgentMaxSubagentsPerSession caps subagents running at once in one session (0 = no cap; unset: the
+	// mode's preset). A session over it waits; nothing is denied.
+	AgentMaxSubagentsPerSession *int `json:"agent_max_subagents_per_session,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -176,26 +183,19 @@ func (h *Helper) newAgent() *agent.Manager {
 			b := h.Fresh().AgentAllowBypass
 			return b == nil || *b
 		},
-		MaxSessionsPerProject: func() int { return h.Fresh().agentMaxSessionsPerProject() },
-		MaxSessions:           func() int { return h.Fresh().agentMaxSessions() },
-		Cred:                  agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
-		ProxyListen:           h.Fresh().AgentProxyListen,
-		ProxyVMHost:           h.Fresh().AgentProxyVMHost,
+		Usage: func() agent.UsageConfig { return h.Fresh().agentUsage() },
+		SetUsageMode: func(mode string) error {
+			return h.Update(func(c *Config) { c.AgentUsageMode = mode })
+		},
+		Cred:        agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
+		ProxyListen: h.Fresh().AgentProxyListen,
+		ProxyVMHost: h.Fresh().AgentProxyVMHost,
 	})
 }
 
-func (c Config) agentMaxSessionsPerProject() int {
-	if c.AgentMaxSessionsPerProject < 1 {
-		return agent.DefaultMaxSessionsPerProject
-	}
-	return c.AgentMaxSessionsPerProject
-}
-
-func (c Config) agentMaxSessions() int {
-	if c.AgentMaxSessions == nil || *c.AgentMaxSessions < 0 {
-		return agent.DefaultMaxSessions
-	}
-	return *c.AgentMaxSessions
+func (c Config) agentUsage() agent.UsageConfig {
+	return agent.UsageConfig{Mode: c.AgentUsageMode, MaxSessionsPerProject: c.AgentMaxSessionsPerProject,
+		MaxSessions: c.AgentMaxSessions, MaxSubagents: c.AgentMaxSubagentsPerSession}
 }
 
 func (h *Helper) path() string { return filepath.Join(h.Dir, "config.json") }
@@ -376,7 +376,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		return h.Claude.handle(ctx, env.Op, env.Args)
 	case "claude-agent.projects", "claude-agent.sessions", "claude-agent.messages", "claude-agent.start", "claude-agent.send",
 		"claude-agent.rename", "claude-agent.fork", "claude-agent.interrupt", "claude-agent.close", "claude-agent.mode",
-		"claude-agent.next", "claude-agent.decide", "claude-agent.status":
+		"claude-agent.next", "claude-agent.decide", "claude-agent.status", "claude-agent.usage_mode":
 		return h.Agent.Handle(ctx, env.Op, env.Args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", env.Op)
