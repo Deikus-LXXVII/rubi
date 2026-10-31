@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Library and SSH security review fixes (agent roles).** SSH: a cut stream always releases its slot and sends
+  `ssh.exit` (even with a full window and no acks); `ssh.ask` shows the exact command unredacted and refuses commands with
+  control or format characters; allow-list prefix patterns stop at a word boundary and refuse options and `=` unless
+  written `prefix **` (the panel shows a warning; prefix patterns are not a safety boundary for `git -c`, `tar
+  --checkpoint-action`, `rsync -e`); dial errors reach the VM only as fixed sentences; 30 `ssh.open` per minute and 2
+  waiting `ssh.ask` per role; identical refusals collapse into a counter, refusals have their own audit file, entries
+  have a `seq` and `ssh.audit` takes `after_seq`; the grant is re-read after the dial; register leaves no orphan key; the
+  `rubi-ssh` wrapper caps inbound frames at 128 KiB. Library: a per-Bot quota of 5 open proposals, live-only limits, only
+  the curator adds versions to an admitted skill, `rubi_library_purge`, wrong codes no longer lock a Bot out, the user can
+  withdraw a version from the panel (`library.withdraw`, strong approval), Home gets a signed revocation list
+  (`library.revoked`), admission signs the acknowledged rule ids (Home holds a skill with other flags), key pinning
+  no longer stalls `library.get` on an offline Home, and sealed entry files carry a counter against restored old copies.
+
 - **Skill library in the panel (agent roles, R10).** Settings has a "Skills" tab: search and tag filter, each skill's
   versions with state, scan rules (line and excerpt), author Bot, who admitted it ("self-admitted by curator" when the
   curator admitted its own), hash and dates, the skill's text in a text-only box, and the queue of proposals waiting for

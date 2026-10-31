@@ -508,11 +508,36 @@ credentials in the VM. An optional model review can be added later; it is not in
   The curator is set with `Core.RequestLibraryCurator(name)`: a strong approval of kind `rubi.library.curator`
   showing the old and new curator (`""` removes it), applied only if the curator is still what the user saw. The
   panel button is in Settings, "Skills" (R10).
+- **Limits and exhaustion.** One Bot has at most 5 proposals waiting. Only live versions (proposed, admitted,
+  deprecated) count against the 20 per skill, and only skills with a live version against the 500; a hard cap (100
+  versions per skill, 4 x 500 files) bounds the rest. Only the curator adds versions to a skill that already has an
+  admitted version (others ask the curator to publish a change). `rubi_library_purge` (curator) drops rejected,
+  proposed and withdrawn versions: a withdrawn one keeps a stub so its number is not reused and its revocation stays.
+  Wrong codes are counted per Bot name; they block *wrong* codes for 30 minutes and the user is warned, but the Bot's
+  correct code always works, so a stranger can't lock the curator out (Rubi cannot tell MCP callers apart, so there is
+  no per-caller count).
+- **The user can always withdraw.** The entry page has "Withdraw this version": panel op `library.withdraw {id,
+  version}` gives a strong approval `rubi.library.withdraw` (locked, like the curator choice); on approval the version
+  is withdrawn whatever the curator does, audited as `library.withdrawn` by "the user".
+- **Revocation on Home.** Core signs the list of withdrawn versions (`id@version`, with the time it was issued) with the
+  library key and pushes it to every paired Home with the core-only op `library.revoked`, right after a withdrawal or
+  an admit (which can take a version off the list), and again whenever a plugin fetches a skill (the push is cached
+  for 10 minutes per Home). Home verifies it against the pinned key, keeps only the newest list (an older one is
+  refused: no replay), refuses a put that uses a listed version, rebuilds every materialized role version without
+  the listed skills, and does the same when a role's VM starts; each skill taken out is logged and recorded in
+  `agent-roles/revocations.jsonl`. Latency: an online Home has it within seconds; a Home that is off or unreachable
+  keeps using what it built until Rubi reaches it again (the next withdrawal, or the next skill fetch by a plugin
+  after the one-minute cooldown). A running session keeps the skill text it already loaded.
+- **What the signature covers.** The admission facts include the acknowledged scan rule ids (`acked`, signature prefix
+  `rubi-skill-library-v2`); Home requires every flag it sees on a library skill to be among them, otherwise the skill is
+  held like an ad-hoc one. Entry files carry a save counter and a sealed index keeps the highest counter per skill, so
+  an older copy restored over one file is refused (restoring the whole directory, index included, is not detected);
+  one damaged file is skipped and logged, it does not fail the whole list.
 - **Bot tools (core MCP):**
   - `rubi_library_list {query?, tag?}`, `rubi_library_get {id, version?}`, `rubi_library_submit {id?, description,
     tags, content}` (returns `proposal_id` and the scan);
   - curator only: `rubi_library_admit {proposal_id, ack: [rule ids]}`, `rubi_library_update`,
-    `rubi_library_deprecate`, `rubi_library_withdraw`.
+    `rubi_library_deprecate`, `rubi_library_withdraw`, `rubi_library_purge {id, version?}`.
   - Core knows the calling Bot itself, so the curator check is core's: every tool that writes takes `agent` (the Bot's
     name) and `code` (the `agent_code` of its latest Rubi webhook, the same proof `rubi_events` uses) and core
     compares the registered name with `library_curator`. `list` and `get` need no proof; with it the curator also sees
