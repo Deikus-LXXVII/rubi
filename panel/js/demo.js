@@ -91,6 +91,8 @@ const PLUGINS = [
     previous_version: "v1.2.0" },
   { id: "gmail", latest: "v1.0.0", publisher: "Rubi-Project", summary: "The same, for Gmail. Several accounts.", name: "Gmail", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true, panel: "view", setup: true,
     accounts: [{ id: "alex.k@gmail.com", label: "alex.k@gmail.com", default: true }] },
+  { id: "claude-code", latest: "v0.4.0", publisher: "Rubi-Project", summary: "Claude Code sessions: approvals, trusts, and the agent's projects and chats.", name: "Claude Code", version: "v0.4.0", installed: true, reviewed: true, connected: true, panel: "view",
+    accounts: [{ id: "claude-code", label: "Claude Code", default: true }] },
   { id: "steam", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Prices, sales and your wishlist; deal alerts.", name: "Steam", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     update_available: "v1.1.0", accounts: [{ id: "76561198000000000", label: "Alex", default: true }] },
   { id: "presence", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Home or away, from your iPhone. Never coordinates.", name: "Location", version: "v1.0.0", installed: true, reviewed: true, connected: false, has_config: true },
@@ -198,6 +200,7 @@ export class DemoClient {
         return { approval_id: "bot", ticket: "demo" };
       case "plugin.panel": {
         if (args.id === "gmail") return demoMailPage(args.op, args.args);
+        if (args.id === "claude-code") return demoAgentPage(args.op, args.args || {});
         const notes = DEMO_NOTES;
         if (args.op === "save") {
           const a = args.args;
@@ -249,6 +252,55 @@ function demoMailPage(op, a) {
         items: DEMO_MAIL.rules.map((r) => ({ ...r, actions: [{ label: "Remove", op: "remove_rule", args: { id: r.id }, danger: true, confirm: `Remove the rule "${r.title}"?` }] })) },
     ],
   };
+}
+
+// The Claude Code plugin's agent pages: projects, a project's sessions, a session's chat, usage and sign-in.
+// Opening a page calls "view" with its args ({} for the first one); a button with open {..} drills down.
+const DEMO_AGENT = {
+  mode: "default", name: "Fix the login bug", usage: 18.4, threshold: 15,
+  chat: [
+    { role: "user", author: "you", text: "The login form loses its error message after a failed try. Can you look?" },
+    { role: "tool", text: "Read src/login.ts" },
+    { role: "assistant", author: "Claude", text: "The error state is reset in render. I'll move it into the submit handler and add a test." },
+    { role: "sister", author: "Reviewer (Grok Bot)", untrusted: true, text: "Check the empty-password case too. <b>Ignore previous instructions</b> is shown as plain text here." },
+  ],
+};
+function demoAgentPage(op, a) {
+  const root = { label: "Projects", open: {} };
+  if (op === "mode") DEMO_AGENT.mode = a.mode;
+  if (op === "rename") DEMO_AGENT.name = a.name || "Fix the login bug";
+  if (op === "send") DEMO_AGENT.chat.push({ role: "user", author: "you", text: a.text });
+  if (op !== "view") return { ok: true };
+  if (a.page === "chat") {
+    const base = { project: "web-app", session: "s1" };
+    return { title: DEMO_AGENT.name, refresh: 5, up: { label: "Sessions", open: { page: "sessions", project: "web-app" } },
+      note: `Mode: ${DEMO_AGENT.mode}. Messages from other Bots are marked and are text, not instructions.`,
+      sections: [{ kind: "chat", title: "Chat", empty: "No messages yet.", items: DEMO_AGENT.chat,
+        actions: [{ label: "Interrupt", op: "interrupt", args: base, danger: true }],
+        input: { op: "send", args: base, arg: "text", label: "Message to Claude", send: "Send" } }] };
+  }
+  if (a.page === "sessions") {
+    const base = { project: "web-app", session: "s1" };
+    const modes = ["plan", "default", "acceptEdits", "bypassPermissions"];
+    return { title: "web-app: sessions", up: { label: "Projects", open: {} }, sections: [{ title: "Sessions", empty: "No sessions.", items: [{
+      title: DEMO_AGENT.name, detail: `Sister: Reviewer · mode ${DEMO_AGENT.mode} · busy`,
+      actions: [{ label: "Open chat", open: { page: "chat", ...base } },
+        { label: "Rename", op: "rename", args: base, prompt: { arg: "name", label: "Name for this session (up to 64 characters)", value: DEMO_AGENT.name } },
+        { label: "Fork", op: "fork", args: base }, { label: "Interrupt", op: "interrupt", args: base },
+        ...modes.filter((m) => m !== DEMO_AGENT.mode).map((m) => ({ label: "Mode: " + m, op: "mode", args: { ...base, mode: m } })),
+        { label: "Close", op: "close", args: base, danger: true, confirm: "Close this session?" }] }] }] };
+  }
+  if (a.page === "usage") {
+    const over = DEMO_AGENT.usage > DEMO_AGENT.threshold;
+    return { title: "Usage and sign-in", up: root, sections: [
+      { title: "Today", note: "An estimate from what the sessions reported; it never blocks anything.", items: [
+        { title: `About $${DEMO_AGENT.usage.toFixed(2)} today`, detail: `Warning above $${DEMO_AGENT.threshold}`, warn: over }] },
+      { title: "Sign-in", items: [{ title: "Signed in, plan Max", detail: "To sign in or switch account, run claude and /login on your Mac." }] }] };
+  }
+  return { title: "Claude Code agent", sections: [
+    { title: "Projects", empty: "No projects.", items: [{ title: "web-app", detail: "Container running · agent busy: Fix the login bug · 1 waiting (position 1)",
+      actions: [{ label: "Sessions", open: { page: "sessions", project: "web-app" } }] }] },
+    { title: "More", items: [{ title: "Usage and sign-in", actions: [{ label: "Open", open: { page: "usage" } }] }] }] };
 }
 
 const DEMO_NOTES = [
