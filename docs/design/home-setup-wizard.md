@@ -41,20 +41,31 @@ isn't rebuilt). One job runs at a time; a second press gets "busy". Self-test re
 All are `agent-setup.*`, listed in the hello as capability `agent-setup`.
 
 - `agent-setup.status {}` -> `{steps: [{id, title, state, reason, progress?: [line], action?, projects?: [...]}],
-  job?: {step, project?, started}, login?: {project, url, wants_code}}`. Progress keeps the last 20 lines of the
+  job?: {step, project?, started}, login?: {project, url?, wants_code}}`. A project step (`projects`, `login`,
+  `selftest`) carries `projects: [{id, dir, state, reason?, progress?, action?}]`; `project` in `job` and `login`
+  is the project id. `action` is the one button of a row: `install`, `upgrade`, `start`, `create`,
+  `use_auto_address`, `build`, `add` (step rows); `remove`, `check`, `login`, `login_again`, `selftest`
+  (project rows); `cancel` while it works. Progress keeps the last 20 lines of the
   running job, each at most 200 characters, with anything that looks like a token removed. `login.url` is present
   only while a sign-in waits for the browser.
-- `agent-setup.run {step, project?}` -> `{started: true}` or an error (`busy`, `needs step N first`, unknown step).
-  `step` is one of `container`, `service`, `network`, `image`, `login`, `selftest`, `all`.
+- `agent-setup.run {step, project?, method?, option?}` -> `{started: true}` or an error (`busy`, `needs step N
+  first`, unknown step). `step` is one of `container`, `service`, `network`, `image`, `login`, `selftest`, `all`.
+  `project` is a project id (`login`, `selftest`; `all` takes the first project when it is empty). `method` is
+  `console` or `claudeai` for `login`; without it `login` only checks the sign-in (and ends `needs_user` when
+  the project isn't signed in); with it, it signs in even when already signed in ("Sign in again"). `all` skips
+  a signed-in project. `option` is `auto-address` for `network`: clear `agent_proxy_listen` and
+  `agent_proxy_vm_host` first.
 - `agent-setup.login.code {project, code}` -> `{sent: true}`: writes the code and a newline to the running sign-in's
   stdin. At most 512 printable ASCII characters, no spaces; refused when no sign-in for that project waits.
 - `agent-setup.login.open {project}` -> `{opened: true}`: opens the sign-in link in the Mac's default browser
   (`/usr/bin/open`), only when it is an `https://` link to `claude.com`, `claude.ai`, `platform.claude.com` or
   `console.anthropic.com`.
 - `agent-setup.project.add {}` -> `{added: dir}` or `{cancelled: true}`: shows the macOS folder chooser on the
-  Mac and adds the chosen folder to `agent_projects` (refused: the home folder itself, `/`, system folders, a
-  folder inside Rubi Home's directory, more than 20 projects). `agent-setup.project.remove {dir}` removes one.
-- `agent-setup.cancel {}` stops the running job (a sign-in, a build).
+  Mac and adds the chosen folder to `agent_projects` (refused: the home folder itself or a folder holding it,
+  its private folders such as `.ssh` and `Library`, `/`, system folders, a folder that is or holds Rubi Home's
+  directory, a folder already added, more than 20 projects).
+- `agent-setup.project.remove {dir}` -> `{removed: true}`; refused while a job works on that project.
+- `agent-setup.cancel {}` stops the running job (a sign-in, a build) -> `{stopped: bool}`.
 
 Only the plugin calls these, and only from its page's buttons (the user's own request) or from the execute step
 of an approval. Bots get no tool for them.
@@ -68,8 +79,10 @@ that signs the installed `container` binary). Install:
 1. Download into `<helper dir>/setup/` (0700) over HTTPS from `github.com` (redirects only to
    `objects.githubusercontent.com` / `release-assets.githubusercontent.com`), at most the pinned size, then check
    size and SHA-256. A mismatch deletes the file and fails the step.
-2. `pkgutil --check-signature` must report a Developer ID Installer certificate of team `UPBK2H6LZM`, trusted by
-   Apple, and the package must be notarized (`spctl --assess --type install`).
+2. `pkgutil --check-signature` must report "signed by a developer certificate issued by Apple for distribution",
+   "Notarization: trusted by the Apple notary service" and a leaf certificate (1.) "Developer ID Installer: ...
+   (UPBK2H6LZM)"; `spctl --assess --type install -vv` must say `accepted`, `source=Notarized Developer ID` and an
+   `origin=` Developer ID Installer of the same team.
 3. Run `osascript` with `do shell script ... with administrator privileges`: macOS shows its own password or
    Touch ID dialog on the Mac. The page never has a password field and Rubi Home never runs `sudo`. The root
    script copies the package into a fresh root-owned directory, checks the pinned SHA-256 again there (so a
@@ -105,7 +118,10 @@ installation, and the user confirms twice: in the panel (passkey) and on the Mac
   flow inside the VM: "Anthropic Console account" (`--console`, billed per token) and "Claude subscription"
   (`--claudeai`); the page notes that a subscription is for the user's own personal use under Anthropic's terms.
   The credentials stay in the project's `.rubi/claude` (the VM's config directory); Rubi Home never reads them.
-- **Self-test.** In the project's VM: the isolation probe (the runner's user writes `/work/.rubi`, direct
+- **Self-test.** Home runs it itself, against its own agent manager, and needs no plugin. It takes the manager's
+  slot (refused while a session runs or waits) and, while it exists, the manager denies every `perm.ask`,
+  `cred.ask` and `net.ask` of that project internally: the question is never queued for the plugin, so no
+  `decide` can answer it (or be mistaken for the answer), and the self-test's events stay with it. In the project's VM: the isolation probe (the runner's user writes `/work/.rubi`, direct
   connections and name lookups fail, an allowed host is reachable through the proxy, a host not on the list is
   refused), then one small turn asking for a Bash command that the self-test denies through `perm.ask`. Pass needs
   every check plus a `result` after the deny. The prompt and answers are fixed; it never runs the user's prompt.

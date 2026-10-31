@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Rubi Home: button-only setup of the agent path (`agent-setup.*`, capability `agent-setup`).** Home probes the
+  machine on every status call (Apple's `container` tool at the pinned release, its service and kernel, the
+  host-only network, the runner image, the projects, each project's Claude sign-in, a self-test) and runs one
+  step at a time as a job with a progress list (20 lines, secrets dropped). Operations: `status`, `run`,
+  `login.code`, `login.open`, `project.add`, `project.remove`, `cancel`. The container tool is installed from a
+  release pinned in code (URL on github.com, size, SHA-256, Apple's Developer ID team): HTTPS download with
+  checked redirects, size and hash, `pkgutil` and `spctl` checks, then the package is copied by a fixed root
+  script into a fresh directory, re-checked and installed behind macOS's own administrator dialog; Home never
+  runs `sudo` and never downgrades. The sign-in runs `claude auth login` in the project's VM with pipes; the
+  link is shown only when it is an https link to a Claude or Anthropic sign-in host, the code goes straight to
+  the process's stdin. The self-test holds the agent slot and the manager itself denies every question of that
+  project, so no plugin decision is involved. The runner's sources are now embedded in the binary: the image is
+  tagged `rubi-agent-runner:<hash12>`, built from `<helper dir>/runner-build/<hash>` (multi-stage Dockerfile that
+  compiles the runner with `npm ci --ignore-scripts`) when `agent_runner_dir` is not set.
 - **Rubi Home: `claude-agent.*` operations and the Mac side of the Agent SDK runner (milestone M2).** A new Home
   capability, `claude-agent` (shown on the install screen as running Claude agents in a virtual machine on
   that computer, deciding each tool call and allowing git pushes). Operations: `projects`, `sessions`,

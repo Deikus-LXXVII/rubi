@@ -398,7 +398,8 @@ decide | status`; a plugin that declares `claude-agent` can call only those.
   the directory name). A directory that is `/`, that holds the helper's own directory (its keys) or that is the
   user's home is skipped. Encrypted per-project volumes (design section 9a) are a later milestone.
 - **VM.** `VM` is an interface; `AppleContainer` shells out to Apple's `container` CLI (1.6.x): `build` of the
-  image from `runner/container/Dockerfile`, a host-only network (`network create --internal`), `run -d` with the
+  image from `runner/container/Dockerfile` (the runner's sources are embedded in the binary, tagged by their hash,
+  and built from `<helper dir>/runner-build/<hash>` unless `agent_runner_dir` names a directory), a host-only network (`network create --internal`), `run -d` with the
   project bind-mounted at `/work`, a non-root user, `--cap-drop ALL`, a read-only root, then
   `exec -i --env-file` for the runner. The run token and proxy settings go in an environment file (0600) that
   is deleted once the handshake succeeded, never on a command line. `Fake` plays a runner in-process for tests.
