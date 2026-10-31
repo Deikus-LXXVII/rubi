@@ -1,7 +1,7 @@
 package agent
 
-// The disk queue: starts and sends that found the slot busy wait in <helper dir>/agent-queue.json (0600,
-// written atomically) and are delivered in order when the slot frees. They survive a restart of Home. An
+// The disk queue: starts and sends that found no free slot (their project's or the total limit) wait in
+// <helper dir>/agent-queue.json (0600, written atomically) and are delivered in order when one frees. They survive a restart of Home. An
 // item still waiting after QueueTTL expires (its sender is told through claude-agent.next). Delivery is
 // at most once: an item leaves the file when it is handed to the runner, so a crash in between loses it
 // rather than sending it twice.
@@ -31,7 +31,7 @@ const (
 // QueueTTL is how long an item may wait.
 var QueueTTL = 24 * time.Hour
 
-// QueueItem is a start or send waiting for the slot.
+// QueueItem is a start or send waiting for a slot.
 type QueueItem struct {
 	ID      string    `json:"id"`
 	Op      string    `json:"op"` // "start" or "send"
@@ -137,16 +137,18 @@ func (q *diskQueue) add(it QueueItem) (int, error) {
 	return len(q.items), nil
 }
 
-func (q *diskQueue) pop() (QueueItem, bool) {
+// take removes and returns the first item the test accepts.
+func (q *diskQueue) take(ok func(QueueItem) bool) (QueueItem, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.items) == 0 {
-		return QueueItem{}, false
+	for i, it := range q.items {
+		if ok(it) {
+			q.items = append(q.items[:i:i], q.items[i+1:]...)
+			q.saveLocked()
+			return it, true
+		}
 	}
-	it := q.items[0]
-	q.items = q.items[1:]
-	q.saveLocked()
-	return it, true
+	return QueueItem{}, false
 }
 
 func (q *diskQueue) len() int {

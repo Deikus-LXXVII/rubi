@@ -63,6 +63,11 @@ type Options struct {
 	AllowedHosts    func() []string
 	NoDefaultForges func() bool
 	AllowBypass     func() bool
+	// MaxSessionsPerProject and MaxSessions are the slot limits: top-level sessions running at once in one
+	// project (agent_max_sessions_per_project, at least 1, default DefaultMaxSessionsPerProject) and across
+	// all projects (agent_max_sessions, 0 = no cap, default DefaultMaxSessions). Nil means the defaults.
+	MaxSessionsPerProject func() int
+	MaxSessions           func() int
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
 	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it. An
@@ -96,15 +101,16 @@ type Item struct {
 	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
 	Event     json.RawMessage `json:"event,omitempty"`
 	Action    string          `json:"action,omitempty"` // queue items: queued, delivered, failed, expired
+	Reason    string          `json:"reason,omitempty"` // queued: what it waits for, in plain words
 	QueueID   string          `json:"queue_id,omitempty"`
 	Error     string          `json:"error,omitempty"`
 	At        time.Time       `json:"at"`
 }
 
+// slotState is one running top-level session (a slot in use). Subagents and forks inside it don't count.
 type slotState struct {
-	busy    bool
 	project string
-	session string
+	session string          // "" while a start hasn't got its session id yet
 	turn    bool            // a turn is running
 	last    time.Time       // the last sign of life (event, ask, delivery)
 	bg      map[string]bool // background subagents still running
@@ -139,7 +145,13 @@ func (m *Manager) extraHosts(p *projState) []string {
 	return append(out, m.net.hosts(p.Dir)...)
 }
 
-// Manager is the Mac side of the agent: projects, the slot, the queue, asks.
+// Defaults of the slot limits.
+const (
+	DefaultMaxSessionsPerProject = 1
+	DefaultMaxSessions           = 4
+)
+
+// Manager is the Mac side of the agent: projects, the slots, the queue, asks.
 type Manager struct {
 	opt Options
 	q   *diskQueue
@@ -147,7 +159,7 @@ type Manager struct {
 
 	mu       sync.Mutex
 	projs    map[string]*projState
-	slot     slotState
+	slots    []*slotState // the sessions holding a slot, oldest first
 	asks     map[string]*pendingAsk
 	out      []Item
 	signal   chan struct{}
@@ -448,8 +460,7 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 	p.runner = nil
 	px := p.proxy
 	p.proxy = nil
-	if m.slot.busy && m.slot.project == p.ID {
-		m.slot = slotState{}
+	if m.dropProjectSlotsLocked(p.ID) {
 		m.pushLocked(Item{Type: "event", Project: p.ID, Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"runner ended"}`)})
 	}
 	m.mu.Unlock()
@@ -733,15 +744,134 @@ func (m *Manager) credential(ctx context.Context, p *projState, c CredParams) (C
 	return CredResult{}, nil // none: git fails without prompting
 }
 
-// ---- events and the slot ----
+// ---- events and the slots ----
 
-func (m *Manager) ownerLocked(p *projState, session string) bool {
-	return m.slot.busy && m.slot.project == p.ID && (m.slot.session == "" || m.slot.session == session || session == "")
+// limits are the slot limits in force: sessions per project (at least 1) and in total (0 = no cap).
+func (m *Manager) limits() (perProject, total int) {
+	perProject, total = DefaultMaxSessionsPerProject, DefaultMaxSessions
+	if m.opt.MaxSessionsPerProject != nil {
+		perProject = m.opt.MaxSessionsPerProject()
+	}
+	if m.opt.MaxSessions != nil {
+		total = m.opt.MaxSessions()
+	}
+	if perProject < 1 {
+		perProject = 1
+	}
+	if total < 0 {
+		total = DefaultMaxSessions
+	}
+	return perProject, total
 }
 
-func (m *Manager) releaseLocked() {
-	m.slot = slotState{}
+func sessions(n int) string {
+	if n == 1 {
+		return "1 session"
+	}
+	return fmt.Sprintf("%d sessions", n)
+}
+
+// fullLocked says why a new top-level session in the project can't run now ("" when it can): the project
+// has its sessions already, or the computer does. A start also waits while another start of the project
+// hasn't got its session id, so an event is never matched to the wrong one.
+func (m *Manager) fullLocked(project string, start bool) string {
+	per, total := m.limits()
+	n, pending := 0, false
+	for _, s := range m.slots {
+		if s.project == project {
+			n++
+			pending = pending || s.session == ""
+		}
+	}
+	switch {
+	case start && pending:
+		return "waiting: project " + project + " is still starting a session"
+	case n >= per:
+		return "waiting: project " + project + " already has " + sessions(n)
+	case total > 0 && len(m.slots) >= total:
+		if len(m.slots) == 1 {
+			return "waiting: 1 session is running, the limit"
+		}
+		return fmt.Sprintf("waiting: %d sessions are running, the limit", len(m.slots))
+	}
+	return ""
+}
+
+// exactLocked is the slot of a known session.
+func (m *Manager) exactLocked(project, session string) *slotState {
+	for _, s := range m.slots {
+		if s.project == project && session != "" && s.session == session {
+			return s
+		}
+	}
+	return nil
+}
+
+// ownerLocked is the slot an event of the session belongs to: the session's own, else the project's slot
+// that hasn't got its id yet (a start in flight), else, for an event without a session, the project's only one.
+func (m *Manager) ownerLocked(p *projState, session string) *slotState {
+	if s := m.exactLocked(p.ID, session); s != nil {
+		return s
+	}
+	var found *slotState
+	n := 0
+	for _, s := range m.slots {
+		if s.project != p.ID {
+			continue
+		}
+		n++
+		if s.session == "" || session == "" {
+			found = s
+		}
+	}
+	if session == "" && n != 1 {
+		return nil
+	}
+	return found
+}
+
+// reasonLocked says why a queue item can't be delivered now ("" when it can). A send to a session that
+// holds a slot already runs (owner is its slot).
+func (m *Manager) reasonLocked(it QueueItem) (reason string, owner *slotState) {
+	if it.Op == "send" {
+		if s := m.exactLocked(it.Project, it.Session); s != nil {
+			return "", s
+		}
+	}
+	return m.fullLocked(it.Project, it.Op == "start"), nil
+}
+
+// runnableLocked says whether some queued item could be delivered now (a drain is then due).
+func (m *Manager) runnableLocked() bool {
+	for _, q := range m.q.list() {
+		if r, _ := m.reasonLocked(q); r == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) releaseLocked(s *slotState) {
+	for i, o := range m.slots {
+		if o == s {
+			m.slots = append(m.slots[:i:i], m.slots[i+1:]...)
+			break
+		}
+	}
 	m.wake()
+}
+
+// dropProjectSlotsLocked frees every slot of the project (its runner ended) and says whether there was one.
+func (m *Manager) dropProjectSlotsLocked(project string) bool {
+	keep := m.slots[:0:0]
+	for _, s := range m.slots {
+		if s.project != project {
+			keep = append(keep, s)
+		}
+	}
+	gone := len(keep) != len(m.slots)
+	m.slots = keep
+	return gone
 }
 
 func (m *Manager) onEvent(p *projState, ev Event) {
@@ -763,59 +893,62 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.ownerLocked(p, ev.SessionID) {
-		m.slot.last = m.opt.Now()
+	s := m.ownerLocked(p, ev.SessionID)
+	if s != nil {
+		s.last = m.opt.Now()
 	}
 	switch ev.Kind {
 	case "status":
 		switch f.Status {
 		case "busy":
-			if !m.slot.busy {
-				m.slot = slotState{busy: true, project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()}
-			} else if m.ownerLocked(p, ev.SessionID) {
-				m.slot.turn = true
-				if m.slot.session == "" {
-					m.slot.session = ev.SessionID
+			if s == nil {
+				if m.fullLocked(p.ID, false) == "" {
+					m.slots = append(m.slots, &slotState{project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()})
+				}
+			} else {
+				s.turn = true
+				if s.session == "" {
+					s.session = ev.SessionID
 				}
 			}
 		case "idle":
-			if m.ownerLocked(p, ev.SessionID) {
-				m.slot.turn = false
-				m.maybeReleaseLocked()
+			if s != nil {
+				s.turn = false
+				m.maybeReleaseLocked(s)
 			}
 		case "closed":
-			if m.ownerLocked(p, ev.SessionID) {
-				m.releaseLocked()
+			if s != nil {
+				m.releaseLocked(s)
 			}
 		}
 	case "background":
-		if m.ownerLocked(p, ev.SessionID) && f.Tasks != nil {
+		if s != nil && f.Tasks != nil {
 			// The runner lists every task still alive: that is the whole set.
-			m.slot.bg = map[string]bool{}
+			s.bg = map[string]bool{}
 			for i, t := range *f.Tasks {
 				if t.ID != "" && i < 1024 {
-					m.slot.bg[t.ID] = true
+					s.bg[t.ID] = true
 				}
 			}
-			m.maybeReleaseLocked()
-		} else if m.ownerLocked(p, ev.SessionID) && ev.AgentID != "" {
+			m.maybeReleaseLocked(s)
+		} else if s != nil && ev.AgentID != "" {
 			if ev.Done {
-				delete(m.slot.bg, ev.AgentID)
-				m.maybeReleaseLocked()
+				delete(s.bg, ev.AgentID)
+				m.maybeReleaseLocked(s)
 			} else {
-				if m.slot.bg == nil {
-					m.slot.bg = map[string]bool{}
+				if s.bg == nil {
+					s.bg = map[string]bool{}
 				}
-				if len(m.slot.bg) < 1024 {
-					m.slot.bg[ev.AgentID] = true
+				if len(s.bg) < 1024 {
+					s.bg[ev.AgentID] = true
 				}
 			}
 		}
 	case "result":
 		if ev.AgentID != "" {
-			if m.ownerLocked(p, ev.SessionID) {
-				delete(m.slot.bg, ev.AgentID)
-				m.maybeReleaseLocked()
+			if s != nil {
+				delete(s.bg, ev.AgentID)
+				m.maybeReleaseLocked(s)
 			}
 		} else {
 			m.addUsageLocked(ev.SessionID, f.Usage.In, f.Usage.Out, f.TotalCost)
@@ -829,9 +962,9 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 }
 
 // maybeReleaseLocked frees the slot when no turn runs and no background subagent is left.
-func (m *Manager) maybeReleaseLocked() {
-	if m.slot.busy && !m.slot.turn && len(m.slot.bg) == 0 {
-		m.releaseLocked()
+func (m *Manager) maybeReleaseLocked(s *slotState) {
+	if !s.turn && len(s.bg) == 0 {
+		m.releaseLocked(s)
 	}
 }
 
@@ -864,7 +997,7 @@ func (m *Manager) emitQueue(action string, it QueueItem, extra func(*Item)) {
 	m.mu.Unlock()
 }
 
-// submit delivers a start or send now when the slot allows, otherwise queues it on disk. The result is
+// submit delivers a start or send now when a slot allows, otherwise queues it on disk. The result is
 // what the op returns.
 func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, error) {
 	p, err := m.project(it.Project)
@@ -874,21 +1007,24 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 	m.ensureLoop()
 	it.ID, it.At = newQueueID(), m.opt.Now().UTC()
 	m.mu.Lock()
-	owner := it.Op == "send" && m.slot.busy && m.slot.project == it.Project && m.slot.session == it.Session
-	acquire := !m.slot.busy && m.q.len() == 0
+	// A new item never jumps ahead of a queued one that could run now.
+	reason, owner := m.reasonLocked(it)
+	var slot *slotState
 	switch {
-	case owner:
-		m.slot.turn = true
-	case acquire:
-		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+	case owner != nil:
+		owner.turn = true
+	case reason == "" && !m.runnableLocked():
+		slot = m.takeSlotLocked(it)
+	case reason == "":
+		reason = "waiting: earlier messages are queued first"
 	}
 	m.mu.Unlock()
-	if owner || acquire {
-		res, err := m.deliver(ctx, p, it)
+	if owner != nil || slot != nil {
+		res, err := m.deliver(ctx, p, it, slot)
 		if err != nil {
-			if acquire {
+			if slot != nil {
 				m.mu.Lock()
-				m.releaseLocked()
+				m.releaseLocked(slot)
 				m.mu.Unlock()
 			}
 			return nil, err
@@ -896,17 +1032,26 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 		if it.Op == "send" {
 			res["queued"], res["position"], res["delivered"] = true, 0, true
 		}
+		m.wake() // a start that got its id may let a waiting start of the project go
 		return res, nil
 	}
 	pos, err := m.q.add(it)
 	if err != nil {
 		return nil, err
 	}
-	m.emitQueue("queued", it, nil)
-	return map[string]any{"queued": true, "position": pos, "delivered": false}, nil
+	m.emitQueue("queued", it, func(n *Item) { n.Reason = reason })
+	return map[string]any{"queued": true, "position": pos, "delivered": false, "reason": reason}, nil
 }
 
-func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem) (map[string]any, error) {
+// takeSlotLocked books a slot for a start or a send (the caller checked there is room).
+func (m *Manager) takeSlotLocked(it QueueItem) *slotState {
+	s := &slotState{project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+	m.slots = append(m.slots, s)
+	return s
+}
+
+// deliver hands the item to the runner; slot is the slot a start booked (nil for a send to a running session).
+func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot *slotState) (map[string]any, error) {
 	r, err := m.ensure(ctx, p)
 	if err != nil {
 		return nil, err
@@ -921,8 +1066,8 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem) (map[
 			return nil, err
 		}
 		m.mu.Lock()
-		if m.slot.busy && m.slot.project == p.ID && m.slot.session == "" {
-			m.slot.session = res.ID
+		if slot != nil && slot.session == "" {
+			slot.session = res.ID
 		}
 		m.mu.Unlock()
 		return map[string]any{"id": res.ID}, nil
@@ -952,23 +1097,37 @@ func (m *Manager) loop() {
 	}
 }
 
-// drain delivers queued items, in order, while the slot is free.
+// drain delivers queued items while a slot is free. The queue is first in, first out, except that an
+// item waiting on a full project doesn't hold up the items behind it: the first item that can run now
+// goes, so an item for a project with a free slot is never blocked by an earlier one waiting on another
+// project. Items of one project keep their order (they wait on the same slots), and when only the
+// total limit is reached nothing runs, so the oldest waiting item takes the next slot freed.
 func (m *Manager) drain() {
 	for {
 		for _, it := range m.q.sweep(m.opt.Now()) {
 			m.emitQueue("expired", it, nil)
 		}
 		m.mu.Lock()
-		if m.closed || m.slot.busy {
+		if m.closed {
 			m.mu.Unlock()
 			return
 		}
-		it, ok := m.q.pop()
+		var owner *slotState
+		it, ok := m.q.take(func(q QueueItem) bool {
+			r, o := m.reasonLocked(q)
+			owner = o
+			return r == ""
+		})
 		if !ok {
 			m.mu.Unlock()
 			return
 		}
-		m.slot = slotState{busy: true, project: it.Project, session: it.Session, turn: true, last: m.opt.Now()}
+		var slot *slotState
+		if owner != nil {
+			owner.turn = true
+		} else {
+			slot = m.takeSlotLocked(it)
+		}
 		m.mu.Unlock()
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 		var err error
@@ -976,13 +1135,15 @@ func (m *Manager) drain() {
 		if perr != nil {
 			err = perr
 		} else {
-			_, err = m.deliver(ctx, p, it)
+			_, err = m.deliver(ctx, p, it, slot)
 		}
 		cancel()
 		if err != nil {
-			m.mu.Lock()
-			m.releaseLocked()
-			m.mu.Unlock()
+			if slot != nil {
+				m.mu.Lock()
+				m.releaseLocked(slot)
+				m.mu.Unlock()
+			}
 			m.emitQueue("failed", it, func(n *Item) { n.Error = clip(err.Error(), 300) })
 			continue
 		}
@@ -1081,8 +1242,8 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		res, err := m.forward(ctx, in.Project, "session.close", map[string]any{"id": in.ID})
 		if err == nil {
 			m.mu.Lock()
-			if m.slot.busy && m.slot.project == in.Project && m.slot.session == in.ID {
-				m.releaseLocked()
+			if sl := m.exactLocked(in.Project, in.ID); sl != nil {
+				m.releaseLocked(sl)
 			}
 			m.mu.Unlock()
 		}
@@ -1138,6 +1299,7 @@ func (m *Manager) opProjects() any {
 		VMState  State  `json:"vm_state"`
 		SlotBusy bool   `json:"slot_busy"`
 		Queue    int    `json:"queue"`
+		Running  int    `json:"sessions_running"`
 	}
 	queued := map[string]int{}
 	for _, it := range m.q.list() {
@@ -1150,7 +1312,13 @@ func (m *Manager) opProjects() any {
 		if ps := m.projs[p.ID]; ps != nil && ps.Dir == p.Dir && ps.vm != nil {
 			r.VMState = ps.vm.State()
 		}
-		r.SlotBusy = m.slot.busy && m.slot.project == p.ID
+		per, _ := m.limits()
+		for _, s := range m.slots {
+			if s.project == p.ID {
+				r.Running++
+			}
+		}
+		r.SlotBusy = r.Running >= per // the project's slots are full
 		m.mu.Unlock()
 		rows = append(rows, r)
 	}
@@ -1163,20 +1331,37 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 		m.probe(ctx)
 	}
 	m.mu.Lock()
-	slot := map[string]any{"busy": m.slot.busy, "project": m.slot.project, "session": m.slot.session,
-		"background": len(m.slot.bg)}
+	slots := []map[string]any{}
+	for _, s := range m.slots {
+		slots = append(slots, map[string]any{"project": s.project, "session": s.session, "busy": true, "background": len(s.bg)})
+	}
+	slot := map[string]any{"busy": false, "project": "", "session": "", "background": 0} // for older plugins: the first
+	if len(slots) > 0 {
+		slot = slots[0]
+	}
+	per, total := m.limits()
+	reasons := map[string]string{}
+	waiting := m.q.list()
+	for _, it := range waiting {
+		r, _ := m.reasonLocked(it)
+		if r == "" {
+			r = "waiting: earlier messages are queued first"
+		}
+		reasons[it.ID] = r
+	}
 	login := m.login
 	usage := m.usage
 	m.mu.Unlock()
 	queue := []map[string]any{}
-	for i, it := range m.q.list() {
+	for i, it := range waiting {
 		queue = append(queue, map[string]any{"id": it.ID, "op": it.Op, "project": it.Project, "session": it.Session,
-			"from": it.From, "at": it.At, "position": i + 1})
+			"from": it.From, "at": it.At, "position": i + 1, "reason": reasons[it.ID]})
 	}
 	if len(login) == 0 {
 		login = json.RawMessage("null")
 	}
-	return map[string]any{"login": login, "slot": slot, "queue": queue, "usage_today": usage}
+	return map[string]any{"login": login, "slot": slot, "slots": slots,
+		"limits": map[string]any{"per_project": per, "total": total}, "queue": queue, "usage_today": usage}
 }
 
 // probe asks a running runner for the login state (usage.probe spends no tokens); it never starts a VM.
@@ -1249,30 +1434,42 @@ func (m *Manager) askHost(ctx context.Context, p *projState, host string) bool {
 	return f.ok
 }
 
-// SlotIdleTTL is how long a session may hold the slot without a sign of life (no event, no ask) before it
+// SlotIdleTTL is how long a session may hold a slot without a sign of life (no event, no ask) before it
 // is interrupted and the slot freed, so a wedged runner can't block the queue forever.
 var SlotIdleTTL = 30 * time.Minute
 
 func (m *Manager) checkSlot() {
+	type stale struct {
+		project, session string
+		r                *Runner
+	}
 	m.mu.Lock()
-	if !m.slot.busy || m.slot.last.IsZero() || m.opt.Now().Sub(m.slot.last) < SlotIdleTTL || len(m.asks) > 0 {
+	if len(m.asks) > 0 {
 		m.mu.Unlock()
 		return
 	}
-	project, session := m.slot.project, m.slot.session
-	var r *Runner
-	if p := m.projs[project]; p != nil {
-		r = p.runner
+	var out []stale
+	for _, s := range append([]*slotState(nil), m.slots...) {
+		if s.last.IsZero() || m.opt.Now().Sub(s.last) < SlotIdleTTL {
+			continue
+		}
+		var r *Runner
+		if p := m.projs[s.project]; p != nil {
+			r = p.runner
+		}
+		out = append(out, stale{s.project, s.session, r})
+		m.releaseLocked(s)
+		m.pushLocked(Item{Type: "event", Project: s.project, SessionID: s.session,
+			Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"no activity; the slot was released"}`)})
 	}
-	m.releaseLocked()
-	m.pushLocked(Item{Type: "event", Project: project, SessionID: session,
-		Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"no activity; the slot was released"}`)})
 	m.mu.Unlock()
-	log.Printf("agent: session %q of project %q held the slot with no activity for %v; interrupted and released", clip(session, 64), clip(project, 64), SlotIdleTTL)
-	if r != nil && session != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = r.Call(ctx, "session.interrupt", map[string]any{"id": session}, nil)
+	for _, st := range out {
+		log.Printf("agent: session %q of project %q held a slot with no activity for %v; interrupted and released", clip(st.session, 64), clip(st.project, 64), SlotIdleTTL)
+		if st.r != nil && st.session != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			_ = st.r.Call(ctx, "session.interrupt", map[string]any{"id": st.session}, nil)
+			cancel()
+		}
 	}
 }
 

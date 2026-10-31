@@ -298,3 +298,20 @@ func TestWatchBeats(t *testing.T) {
 		t.Fatal("an unpaired call went through")
 	}
 }
+
+func TestAgentSessionLimitsConfig(t *testing.T) {
+	zero, five, neg := 0, 5, -1
+	for _, c := range []struct {
+		cfg        Config
+		per, total int
+	}{
+		{Config{}, 1, 4}, // the defaults
+		{Config{AgentMaxSessionsPerProject: 2, AgentMaxSessions: &five}, 2, 5},
+		{Config{AgentMaxSessionsPerProject: -2, AgentMaxSessions: &zero}, 1, 0}, // 0 = no cap
+		{Config{AgentMaxSessions: &neg}, 1, 4},
+	} {
+		if p, n := c.cfg.agentMaxSessionsPerProject(), c.cfg.agentMaxSessions(); p != c.per || n != c.total {
+			t.Errorf("%+v: got %d, %d; want %d, %d", c.cfg, p, n, c.per, c.total)
+		}
+	}
+}

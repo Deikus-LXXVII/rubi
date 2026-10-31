@@ -80,7 +80,7 @@ func (e *env) op(op string, args any) (map[string]any, error) {
 func (e *env) busy() bool {
 	e.m.mu.Lock()
 	defer e.m.mu.Unlock()
-	return e.m.slot.busy
+	return len(e.m.slots) > 0
 }
 
 // poller plays the plugin polling claude-agent.next.
@@ -201,7 +201,7 @@ func TestSlotExclusivityQueueOrderAndPersistence(t *testing.T) {
 		t.Fatalf("queue file content: %s", b)
 	}
 	status, _ := e.op("status", nil)
-	if len(status["queue"].([]any)) != 3 || status["slot"].(map[string]any)["busy"] != true {
+	if len(status["queue"].([]any)) != 3 || status["slot"].(map[string]any)["busy"] != true || len(status["slots"].([]any)) != 1 {
 		t.Fatalf("status: %v", status)
 	}
 
@@ -243,7 +243,7 @@ func TestQueueExpiresAndCaps(t *testing.T) {
 		o.Now = func() time.Time { nmu.Lock(); defer nmu.Unlock(); return now }
 	})
 	e.m.mu.Lock()
-	e.m.slot = slotState{busy: true, project: "my-project", session: "x", turn: true}
+	e.m.slots = []*slotState{{project: "my-project", session: "x", turn: true}}
 	e.m.mu.Unlock()
 	if _, err := e.op("start", map[string]any{"project": "my-project", "prompt": "old"}); err != nil {
 		t.Fatal(err)
@@ -379,7 +379,7 @@ func TestReplayRunnerTranscripts(t *testing.T) {
 	eventually(t, "slot busy through background", func() bool {
 		e.m.mu.Lock()
 		defer e.m.mu.Unlock()
-		return e.m.slot.busy && len(e.m.slot.bg) == 1 && !e.m.slot.turn
+		return len(e.m.slots) == 1 && len(e.m.slots[0].bg) == 1 && !e.m.slots[0].turn
 	})
 	done2, _ := ReadFixture("testdata/background-done.ndjson")
 	if err := fr.Replay(e.ctx, done2); err != nil {

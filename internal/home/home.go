@@ -76,6 +76,12 @@ type Config struct {
 	// AgentAllowBypass says whether agent sessions may run in bypassPermissions or dontAsk (default true;
 	// the plugin still decides every tool call and approves loosening a mode with a passkey).
 	AgentAllowBypass *bool `json:"agent_allow_bypass,omitempty"`
+	// AgentMaxSessionsPerProject is how many top-level agent sessions may run at once in one project
+	// (default 1, at least 1); more wait in the queue. Subagents and forks inside a session don't count.
+	AgentMaxSessionsPerProject int `json:"agent_max_sessions_per_project,omitempty"`
+	// AgentMaxSessions caps top-level agent sessions running at once across all projects (default 4;
+	// 0 = no cap).
+	AgentMaxSessions *int `json:"agent_max_sessions,omitempty"`
 }
 
 // Pairing is one Rubi allowed to use the helper; only a hash of its token is kept.
@@ -170,10 +176,26 @@ func (h *Helper) newAgent() *agent.Manager {
 			b := h.Fresh().AgentAllowBypass
 			return b == nil || *b
 		},
-		Cred:        agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
-		ProxyListen: h.Fresh().AgentProxyListen,
-		ProxyVMHost: h.Fresh().AgentProxyVMHost,
+		MaxSessionsPerProject: func() int { return h.Fresh().agentMaxSessionsPerProject() },
+		MaxSessions:           func() int { return h.Fresh().agentMaxSessions() },
+		Cred:                  agent.FileCredSource{Path: filepath.Join(h.Dir, AgentCredFile)},
+		ProxyListen:           h.Fresh().AgentProxyListen,
+		ProxyVMHost:           h.Fresh().AgentProxyVMHost,
 	})
+}
+
+func (c Config) agentMaxSessionsPerProject() int {
+	if c.AgentMaxSessionsPerProject < 1 {
+		return agent.DefaultMaxSessionsPerProject
+	}
+	return c.AgentMaxSessionsPerProject
+}
+
+func (c Config) agentMaxSessions() int {
+	if c.AgentMaxSessions == nil || *c.AgentMaxSessions < 0 {
+		return agent.DefaultMaxSessions
+	}
+	return *c.AgentMaxSessions
 }
 
 func (h *Helper) path() string { return filepath.Join(h.Dir, "config.json") }
