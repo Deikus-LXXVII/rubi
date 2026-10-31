@@ -2,7 +2,8 @@
 
 Status: DRAFT for review, 2026-10-31. Implemented so far in the core repo: runner role mode (R1), the role store
 (R3), the VM per role with per-role hosts and approvals, version pins, idle stop and the `role` argument of the ops
-(R4), and slots per profile with `claude-agent.limits` (R5). See rubi-home.md ("VM per role", "Session limits").
+(R4), slots per profile with `claude-agent.limits` (R5), and the shared skill library in core with signing, the curator
+setting, the `rubi_library_*` tools, the `library.get` host method and Home's pinned-key verifier (R8, §8). See rubi-home.md ("VM per role", "Session limits").
 Deviations noted in implementation: the container's name uses the role's name (not its id) as the slug; role versions put
 while a VM runs stay pinned until it stops; `projects` rows are one per (project, role); `net.ask` approvals of a role are
 kept in `agent-net.json` under `roles`.
@@ -448,17 +449,36 @@ credentials in the VM. An optional model review can be added later; it is not in
   Versions are immutable. The store is encrypted under the vault DEK like other core data. Limits: 32 KiB per version,
   500 entries, 20 versions per entry.
 - **Admission:**
-  1. `skillscan` runs (reject is final).
-  2. The curator Bot calls `admit` and must acknowledge every flag by rule id.
+  1. `skillscan` runs on submit (reject is final: the version is kept as `rejected`, without its text, and can never
+     be admitted). The description and tags get `ScanText`.
+  2. The curator Bot calls `admit` and must acknowledge every flag by rule id. The scan runs again at admission.
   3. Core signs Ed25519 over `"rubi-skill-library-v1\n" + canonical JSON {id, version, sha256, admitted_by,
-     admitted_at, scan.verdict, scanner_version}`.
-- **Signing key:** a new dedicated **library key** in the vault, usable only while Rubi is unlocked. It is not the
-  instance identity key (stored unencrypted) and not the release key (CI-only).
-- **Pinning on Home:** Home pins the library key's public half when core first presents it. This must arrive on a
-  core-originated message that a plugin cannot forge (proposed: carried in pairing, plus a one-time core op for homes
-  already paired).
-- **Open question:** whether Home can tell a core-originated op from a plugin's `home.call` today. Verify in R8. Without
-  that, the signature only proves "the plugin relayed something core signed" once the key is pinned.
+     admitted_at, scan_verdict, scanner_version, self_admitted}` (field order fixed, no spaces; `internal/library/libsig`).
+     The signature a role carries (`sig`) is one token: URL-safe base64 of a JSON object with those admission facts
+     and the signature, at most 600 characters. Home rebuilds the message from the skill's own id, version and
+     sha256 plus the token's facts, so none of them can be changed.
+- **Signing key:** a new dedicated **library key** (Ed25519 seed in the vault, made on first use), usable only while
+  Rubi is unlocked. It is not the instance identity key (stored unencrypted) and not the release key (CI-only).
+- **Store:** `<rubi home>/library/<id>.enc`, one file per entry, XChaCha20-Poly1305 under a key derived from the vault
+  DEK (HMAC-SHA256 with a fixed label), the instance and entry id as associated data; 0600. Nothing is readable on disk
+  or while Rubi is locked, and a file moved to another id or edited fails to open. Limits: 32 KiB per version (a
+  scan reject beyond that), 500 entries, 20 versions per entry (rejected ones count), 8 tags, 10 submissions per Bot
+  per minute. Proposal ids are `id@version`.
+- **Pinning on Home (resolved in R8):** Home pins the library key's public half on the op `library.key`
+  `{public_key}` (base64), which only core sends. The first key wins; the same key again is accepted; a different one
+  is refused ("pair with Rubi again to change it"); a new pairing forgets the pin. Core sends it to a newly paired Home
+  right after the pairing is approved, and again (at most every 10 minutes per Home, best effort) whenever a plugin
+  calls `library.get`, so homes paired before the library existed pin it too.
+- **Origin question, answered:** Home **cannot** tell a core-originated op from a plugin's `home.call` relayed by
+  core. Both arrive in the same envelope with the same pairing token, and Home has one token per Rubi. What
+  separates them is core's own filter in `homeCall`: an op is forwarded only if it starts with `<capability>.` for a
+  capability in the plugin's manifest, and the manifest validator accepts only `hue`, `shortcuts`, `claude`,
+  `claude-sessions`, `claude-start`, `claude-agent` and `agent-setup`. `library.key` starts with none of them, and a
+  manifest cannot declare a `library` capability, so no plugin can make core send it; only core's own
+  `pinLibraryKey` does. Tests: `TestPluginCannotCallTheLibraryKeyOp` (every capability declared, odd spellings, the
+  manifest check, `home.call` through the plugin handler) and `TestLibraryKeyPinning` (Home side). The consequence: the
+  pin is as trustworthy as core's filter, and a plugin that is buggy or compromised cannot pin its own key; it still
+  could not forge a signature without the library key.
 - **What the signature buys:** a buggy or compromised plugin cannot make Home label an unreviewed skill "library", and
   library content altered at rest is detected. It does not protect against someone who controls Rubi's machine while
   Rubi is unlocked (security model §3).
@@ -466,15 +486,32 @@ credentials in the VM. An optional model review can be added later; it is not in
   (strong, locked). The curator may admit, publish new versions, deprecate (no new attachments) and withdraw (active
   roles drop the skill at their next materialization; audited per role). Other Bots only submit into the queue.
   A curator may admit its own proposal (owner decision): the automatic checks still run and must pass, the version is
-  marked with the curator as author, and the panel and audit show "self-admitted by curator".
-  All curator actions go to Rubi's audit log. "Revert" is a new admit or un-withdraw, never an edit.
+  marked with the curator as author, and the panel and audit show "self-admitted by curator" (the flag is also in the
+  signature). All curator actions go to Rubi's audit log (`library.submitted`, `library.admitted`, `library.published`,
+  `library.deprecated`, `library.withdrawn`, `library.curator_set`, `library.refused`). "Revert" is a new admit or
+  un-withdraw (`admit` on a deprecated or withdrawn version signs it again), never an edit.
+  The curator is set with `Core.RequestLibraryCurator(name)`: a strong approval of kind `rubi.library.curator`
+  showing the old and new curator (`""` removes it), applied only if the curator is still what the user saw. The
+  panel button comes in R10.
 - **Bot tools (core MCP):**
   - `rubi_library_list {query?, tag?}`, `rubi_library_get {id, version?}`, `rubi_library_submit {id?, description,
     tags, content}` (returns `proposal_id` and the scan);
   - curator only: `rubi_library_admit {proposal_id, ack: [rule ids]}`, `rubi_library_update`,
     `rubi_library_deprecate`, `rubi_library_withdraw`.
-  - Core knows the calling Bot itself, so the curator check is core's. The plugin gets read-only host methods
-    (`library.get {id, version}` returns content and signature) to build `role.put`.
+  - Core knows the calling Bot itself, so the curator check is core's: every tool that writes takes `agent` (the Bot's
+    name) and `code` (the `agent_code` of its latest Rubi webhook, the same proof `rubi_events` uses) and core
+    compares the registered name with `library_curator`. `list` and `get` need no proof; with it the curator also sees
+    proposals, rejections and withdrawn versions (others get the same "no admitted skill" for anything not
+    admitted or deprecated). `get` without a version means the latest admitted; `update` is the curator's new
+    version submitted and admitted in one step (always self-admitted); `deprecate` and `withdraw` take an optional
+    `version` (default every version that applies).
+  - The plugin gets the read-only host method `library.get {id, version?}` (only a plugin whose manifest declares the
+    `claude-agent` Rubi Home capability) returning `{id, version, state, content, sha256, signature, description,
+    tags, admitted_by, admitted_at, self_admitted, scan_verdict, scanner_version, latest_admitted}` for an admitted or
+    deprecated version, to build `role.put`. A proposed, rejected or withdrawn version is an error. There is no host
+    method that writes.
+  - Home's check is `roles.Pinned`: no pinned key, a signature for another id, version or hash, a key that is not the
+    pinned one, or a verdict other than pass or flag all refuse the library skill.
 - **In roles:** `claude_code_role_skills_add {role, library: "id"}` follows the latest admitted version;
   `"id@3"` pins it. Attaching is tier 1, since admitted means trusted. When a new version is admitted, the plugin
   re-materializes each following role as a new role version (audit: "design-tokens 3 -> 4", diff, Revert).
@@ -619,7 +656,7 @@ Order: after the auth gateway work. Each step is green on its own, and the legac
 | R5 | Slots per profile (`agent_max_sessions_per_profile`), queue reasons, `claude-agent.limits` (user-only) | core/home | `slots_test` |
 | R6 | Plugin: role cache, tier engine (diff-based), per-Bot limits, `claude_code_role_*` tools, new kinds (`role_foreign`, `role_widen`, `role_skill_accept`), audit | plugin | unit (tier table) |
 | R7 | Plugin panel: Roles, Role detail, History with diff and Revert, chats grouped by role, Convert legacy role | plugin | `agent_panel_test` |
-| R8 | Core library: store, library key, signing, curator setting (`rubi.library.curator`), `rubi_library_*` tools, `library.get` host method; Home pins the key (resolve the origin question first) | core | unit |
+| R8 (done) | Core library: store, library key, signing, curator setting (`rubi.library.curator`), `rubi_library_*` tools, `library.get` host method; Home pins the key (resolve the origin question first) | core | unit |
 | R9 | Plugin: library skills in roles (follow or pin, update re-materialization, rollback) | plugin | unit |
 | R10 | Core panel: library browser and curator queue | core/panel | panel tests |
 | R11 | Home SSH: key generation, target registry, pinned-host-key client, stream relay, limits, audit | core/home | unit with an in-process SSH server |

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Shared skill library (agent roles, R8).** New `internal/library`: skills are submitted by any connected Bot and admitted
+  by one curator Bot, with versions that never change, each file sealed under a key derived from the vault key (32 KiB per
+  version, 500 skills, 20 versions each). The scan runs on submit (a reject is final) and again on admit; every flag must be
+  acknowledged by rule id. Admitting signs the version with a new library key kept in the vault (Ed25519, made on first
+  use, usable only while Rubi is unlocked). New Bot tools `rubi_library_list`, `rubi_library_get`, `rubi_library_submit`
+  and, for the curator only, `rubi_library_admit`, `rubi_library_update`, `rubi_library_deprecate`,
+  `rubi_library_withdraw` (a Bot proves itself with its `agent_code`, like `rubi_events`). The curator is set with a strong
+  approval of kind `rubi.library.curator` (the panel button comes later); it may admit its own proposals, marked
+  "self-admitted by curator" in the signature and the audit log. Plugins with the `claude-agent` capability get the
+  read-only host method `library.get {id, version}` (content and signature). Rubi Home pins the library public key on the
+  new op `library.key`, which only Rubi's core sends (no plugin capability reaches it) and verifies library skills in roles
+  with it; before, every library skill was refused. A role's skill `sig` may now be up to 600 characters.
 - **Rubi Home: one VM per role (agent roles, R4).** `claude-agent.start/send/sessions/messages/rename/fork/interrupt/close/mode`
   take an optional `role` (a role id; missing means the project's legacy role, which keeps its VM, mounts and environment
   exactly). An isolated role runs in its own container (`rubi-agent-<role>-<hash of dir|role>`) with the project at `/work`,
