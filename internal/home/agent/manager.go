@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 )
 
 // lockedAfter: Rubi counts as present while a claude-agent.next is open and this long after one ends.
@@ -75,6 +77,10 @@ type Options struct {
 	Usage    func() UsageConfig
 	SetUsage func(UsageChange) error
 	SeeBot   func(id string)
+	// RoleVerifier checks the signatures of library skills in roles (nil: every library skill is refused until
+	// the library exists) and RoleMaxTotal is role_max_total (0: 50). The roles live in Dir/agent-roles.
+	RoleVerifier roles.Verifier
+	RoleMaxTotal int
 	// Wait is how long an ask waits (DefaultWait when zero).
 	Wait time.Duration
 	// ProxyListen and ProxyVMHost: where the proxy listens and the host name the VM uses to reach it. An
@@ -163,6 +169,9 @@ type Manager struct {
 	opt Options
 	q   *diskQueue
 	net *netState
+	// roles is the role store (Dir/agent-roles); nil with rolesErr when it couldn't be opened.
+	roles    *roles.Store
+	rolesErr error
 
 	mu    sync.Mutex
 	projs map[string]*projState
@@ -221,6 +230,27 @@ func New(opt Options) *Manager {
 	}
 	m.q.load()
 	m.net = newNetState(opt.Dir)
+	if opt.Dir != "" {
+		m.roles, m.rolesErr = roles.Open(roles.Options{
+			Dir: filepath.Join(opt.Dir, RolesDir),
+			Projects: func() []string {
+				var ids []string
+				for _, p := range m.projects() {
+					ids = append(ids, p.ID)
+				}
+				return ids
+			},
+			BaseHosts: func() []string {
+				if opt.AllowedHosts == nil {
+					return nil
+				}
+				return opt.AllowedHosts()
+			},
+			Verifier: opt.RoleVerifier,
+			MaxTotal: opt.RoleMaxTotal,
+			Now:      opt.Now,
+		})
+	}
 	return m
 }
 
@@ -1315,6 +1345,15 @@ func okID(s string) bool { return idRE.MatchString(s) }
 
 // Handle serves one claude-agent.* operation.
 func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (any, error) {
+	if strings.HasPrefix(strings.TrimPrefix(op, "claude-agent."), "role.") {
+		if m.roles == nil {
+			if m.rolesErr != nil {
+				return nil, fmt.Errorf("roles aren't available: %s", clip(m.rolesErr.Error(), 120))
+			}
+			return nil, errors.New("roles aren't available here")
+		}
+		return m.roles.Handle(strings.TrimPrefix(op, "claude-agent."), args)
+	}
 	var in struct {
 		Project     string          `json:"project"`
 		ID          string          `json:"id"`

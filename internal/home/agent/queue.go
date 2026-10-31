@@ -22,6 +22,9 @@ import (
 // QueueFile is the queue file's name in the helper's directory.
 const QueueFile = "agent-queue.json"
 
+// RolesDir is the directory of the role store in the helper's directory.
+const RolesDir = "agent-roles"
+
 const (
 	maxQueueItems = 64
 	maxQueueText  = 64 << 10
