@@ -276,14 +276,21 @@ The VM reaches the model API only through the auth gateway, and an agent in the 
 (web fetch, code execution, the MCP connector), so a request that enables one would reach hosts the CONNECT
 allow-list refuses. The gateway therefore checks each `POST /v1/messages` and `/v1/messages/count_tokens`:
 
-- **Body** (JSON object, within the 64 MiB cap, else 413; not JSON or an object with a repeated or differently
+- **Body** (JSON object, within the 32 MiB cap, else 413; all request bodies in memory together are held to 256 MiB, else 503 with `Retry-After`; not JSON or an object with a repeated or differently
   cased key, else 403): `mcp_servers` and `container` are refused (403 `permission_error`, nothing forwarded). Every
   `tools[]` entry must be a plain client tool (no `type`, or `custom`) or one of the typed tools that run on the
   client: `bash_*`, `text_editor_*`, `computer_*`, `memory_*` (a date suffix, e.g. `bash_20250124`),
   `advisor_<date>` and `tool_search_tool_*` (looks only at the request's own tool list). `web_search_*` is allowed only when the session
   allows WebSearch: always for the legacy role (Claude Code's default tools), and for a role only if its tools
   include `WebSearch` and it has no deny rule `WebSearch`; the policy is read when the VM starts, so a role
-  version that adds WebSearch applies at the next start. Everything else (`web_fetch_*`, `code_execution_*`,
+  version that adds WebSearch applies at the next start. `messages` and `system` are walked recursively (nested
+  content lists, `tool_result.content`, `search_result.content`, documents with `source.type` `content`): an `image`
+  or `document` source must be `base64`, `text` or `content`; `url` and `file` sources (Anthropic would fetch them,
+  which bypasses the CONNECT allow-list), any `file_id`, and block types outside the list (`text`, `image`,
+  `document`, `search_result`, `thinking`, `redacted_thinking`, `tool_use`, `tool_result`, `tool_reference`,
+  `compaction`, `advisor_tool_result`) are refused, as are `mcp_tool_*`, `container_upload` and `web_fetch_tool_result`
+  in history. `server_tool_use` passes only for `advisor`, or `web_search` when WebSearch is allowed, and
+  `web_search_tool_result` only then. Nesting deeper than 8 is refused. Everything else (`web_fetch_*`, `code_execution_*`,
   `mcp_toolset`, and any type added later) is refused: the list is an allow-list.
 - **`anthropic-beta`**: split on commas; a value is kept (once each, plus the OAuth beta) if it starts with the
   name of a beta the bundled Claude Code CLI knows, without its date (`claude-code-`, `oauth-`, `advanced-tool-use-`,

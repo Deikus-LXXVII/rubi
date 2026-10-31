@@ -30,7 +30,7 @@ const (
 	// AnthropicAPI is the only upstream the gateway talks to.
 	AnthropicAPI = "https://api.anthropic.com"
 	// gatewayMaxBody bounds a request (a long conversation with images is a few MiB).
-	gatewayMaxBody = 64 << 20
+	gatewayMaxBody = 32 << 20
 	// gatewayStall ends a response that sends nothing for this long (a stream sends pings every few seconds).
 	gatewayStall = 5 * time.Minute
 	oauthBeta    = "oauth-2025-04-20"
@@ -40,6 +40,9 @@ const (
 var (
 	// gatewayMaxInFlight is how many requests are served at once; more get 429 (a runner makes a few at a time).
 	gatewayMaxInFlight = 64
+	// gatewayBodyBudget is how many bytes of request bodies are held in memory at once, over all requests; a
+	// request that would go over it gets 503.
+	gatewayBodyBudget int64 = 256 << 20
 	// gatewayReadBudget is how long a request, body included, may take to arrive.
 	gatewayReadBudget = 5 * time.Minute
 	// gatewayWriteChunk is how long one write to the guest may take: a guest that stops reading is cut off.
@@ -102,6 +105,9 @@ type Gateway struct {
 	ln       net.Listener
 
 	sem chan struct{}
+
+	budgetMu sync.Mutex
+	held     int64 // request body bytes in memory
 
 	mu         sync.Mutex
 	refusals   map[string]int
@@ -267,10 +273,14 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 4. the body: no server-side tool, no MCP connector (they run on Anthropic's servers, outside the allow-list).
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, gatewayMaxBody))
+	body, held, err := g.readBody(w, r)
+	defer g.release(held)
 	if err != nil {
 		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
+		if errors.Is(err, errBodyBudget) {
+			w.Header().Set("Retry-After", "5")
+			g.refuse(w, http.StatusServiceUnavailable, "body budget", "overloaded_error", "Rubi: the agent gateway is busy; try again shortly.")
+		} else if errors.As(err, &mbe) {
 			g.refuse(w, http.StatusRequestEntityTooLarge, "body size", "request_too_large", "Rubi: the request is too large for the agent gateway.")
 		} else {
 			g.refuse(w, http.StatusBadRequest, "request", "invalid_request_error", "Rubi: bad request.")
@@ -343,3 +353,48 @@ func (g *Gateway) handle(w http.ResponseWriter, r *http.Request) {
 
 // TokenFileOf is the token file for a sign-in directory.
 func TokenFileOf(authDir string) string { return filepath.Join(authDir, "token", tokenFile) }
+
+var errBodyBudget = errors.New("body budget exhausted")
+
+// reserve takes n bytes from the shared budget for request bodies.
+func (g *Gateway) reserve(n int64) bool {
+	g.budgetMu.Lock()
+	defer g.budgetMu.Unlock()
+	if g.held+n > gatewayBodyBudget {
+		return false
+	}
+	g.held += n
+	return true
+}
+
+func (g *Gateway) release(n int64) {
+	g.budgetMu.Lock()
+	g.held -= n
+	g.budgetMu.Unlock()
+}
+
+// readBody reads the request body within gatewayMaxBody (else *http.MaxBytesError) and within the shared budget
+// (else errBodyBudget). It returns the number of bytes held, which the caller releases when it is done with body.
+func (g *Gateway) readBody(w http.ResponseWriter, r *http.Request) (body []byte, held int64, err error) {
+	if r.ContentLength > gatewayMaxBody {
+		return nil, 0, &http.MaxBytesError{Limit: gatewayMaxBody}
+	}
+	rd := http.MaxBytesReader(w, r.Body, gatewayMaxBody)
+	buf := make([]byte, 32<<10)
+	for {
+		n, rerr := rd.Read(buf)
+		if n > 0 {
+			if !g.reserve(int64(n)) {
+				return nil, held, errBodyBudget
+			}
+			held += int64(n)
+			body = append(body, buf[:n]...)
+		}
+		if rerr == io.EOF {
+			return body, held, nil
+		}
+		if rerr != nil {
+			return nil, held, rerr
+		}
+	}
+}
