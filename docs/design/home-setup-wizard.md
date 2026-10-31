@@ -21,8 +21,11 @@ One row per step. Each row shows a state, a one-line reason in plain language, a
 | 6 | Claude sign-in (per project) | `claude auth status` in that project's VM says logged in | Sign in / Sign in again | none |
 | 7 | Self-test (per project) | the last self-test passed (kept in memory only) | Run self-test | none |
 
-"Set up everything" runs steps 1 to 4, then 6 and 7 for the first project, in order. It stops at the first step
-that needs the user: an approval, the macOS administrator dialog, a folder choice, or the browser sign-in.
+"Set up everything" (`all`) runs the service (2) and image (4) steps, then 6 and 7 for the first project, in order.
+It never runs the two privileged steps, installing the container tool (1) and creating the network (3): each has
+its own approval in the plugin. When either isn't done as `all` starts, or stops being done while it runs, `all`
+stops with `needs_user` "needs step N (asks for approval)" on that step. It also stops at the first step that needs
+the user: a folder choice or the browser sign-in.
 
 States: `todo` (not done), `working` (a job runs it; the row shows progress lines), `done`, `failed` (with the
 reason), `needs_user` (waiting for the user: the reason says what to do). A step whose earlier step isn't done is
@@ -53,8 +56,9 @@ All are `agent-setup.*`, listed in the hello as capability `agent-setup`.
   `project` is a project id (`login`, `selftest`; `all` takes the first project when it is empty). `method` is
   `console` or `claudeai` for `login`; without it `login` only checks the sign-in (and ends `needs_user` when
   the project isn't signed in); with it, it signs in even when already signed in ("Sign in again"). `all` skips
-  a signed-in project. `option` is `auto-address` for `network`: clear `agent_proxy_listen` and
-  `agent_proxy_vm_host` first.
+  a signed-in project. `option` is `auto-address` for `network`: it never creates the network (error "creating the network needs its own
+  approval" when it is missing, nothing changed); it only clears, when the network exists and is host-only,
+  `agent_proxy_listen` and `agent_proxy_vm_host`.
 - `agent-setup.login.code {project, code}` -> `{sent: true}`: writes the code and a newline to the running sign-in's
   stdin. At most 512 printable ASCII characters, no spaces; refused when no sign-in for that project waits.
 - `agent-setup.login.open {project}` -> `{opened: true}`: opens the sign-in link in the Mac's default browser

@@ -632,7 +632,11 @@ func TestContainerUnreadableVersionIsNeverInstalledOver(t *testing.T) {
 		}
 		c.wait()
 		st := c.step("container")
-		if st.State != Failed || !strings.Contains(st.Reason, "not reinstalling") || len(c.osaCalls) != 0 || c.cmd.ran("/usr/sbin/pkgutil") != 0 {
+		want, state := "not reinstalling", Failed
+		if step == "all" { // "all" never installs: it stops and asks
+			want, state = "asks for approval", NeedsUser
+		}
+		if st.State != state || !strings.Contains(st.Reason, want) || len(c.osaCalls) != 0 || c.cmd.ran("/usr/sbin/pkgutil") != 0 {
 			t.Errorf("%s: %+v osascript %v", step, st, c.osaCalls)
 		}
 	}

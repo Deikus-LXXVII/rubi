@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
 
 func (e *testEnv) op(op string, args any) (map[string]any, error) {
@@ -286,46 +288,44 @@ func TestRunAllStopsAtTheFirstStepThatNeedsTheUser(t *testing.T) {
 	}
 }
 
-func TestRunAllWholeWay(t *testing.T) {
+// allEnv is a Mac with the container tool installed and the network made, a stopped service, no image, and
+// a signed-in project: what "all" is allowed to finish.
+func allEnv(t *testing.T) *testEnv {
 	e := newTestEnv(t)
+	e.ready()
 	e.m.image = false
+	e.m.sysJSON = ""
 	p := e.addProject("my-project")
 	e.ag.running[p.ID] = true
 	e.ag.box.loggedIn = true // signed in already: the sign-in step is skipped
 	e.ag.box.probeOut = goodProbe
 	e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn}
-	// from a bare machine: install, start, network, image
-	e.m.version = ""
-	e.appDir = filepath.Join(t.TempDir(), "app")
-	os.MkdirAll(filepath.Join(e.appDir, "kernels"), 0o755)
-	os.WriteFile(filepath.Join(e.appDir, "kernels", "default.kernel-arm64"), []byte("k"), 0o644)
-	body := []byte("p")
-	d := newDownload(t, body, nil)
-	d.opts(&e.s.opt)
-	installed := false
 	e.m.extra = func(argv []string) ([]byte, error, bool) {
-		switch {
-		case argv[0] == "/usr/sbin/pkgutil":
-			return []byte(pkgutilOut), nil, true
-		case argv[0] == "/usr/sbin/spctl":
-			return []byte(spctlOut), nil, true
-		case argv[0] == "/usr/bin/osascript":
-			installed = true
-			return nil, nil, true
-		case strings.Join(argv, " ") == "container --version":
-			if !installed {
-				return nil, errors.New("nf"), true
-			}
-			return []byte(version161), nil, true
-		case len(argv) > 2 && argv[1] == "system" && argv[2] == "start":
+		if len(argv) > 2 && argv[1] == "system" && argv[2] == "start" {
 			e.m.sysJSON = strings.ReplaceAll(sysRunning, "%APP%", e.appDir+"/")
-			return nil, nil, true
-		case len(argv) > 2 && argv[1] == "network" && argv[2] == "create":
-			e.m.network = internalNet(t)
 			return nil, nil, true
 		}
 		return nil, nil, false
 	}
+	return e
+}
+
+// noPrivilegedCommand fails the test if "all" ran the installer, its downloads or the network creation.
+func noPrivilegedCommand(t *testing.T, e *testEnv) {
+	t.Helper()
+	for _, c := range e.cmd.calls {
+		j := strings.Join(c, " ")
+		if c[0] == "/usr/bin/osascript" || c[0] == "/usr/sbin/pkgutil" || strings.HasPrefix(j, "container network create") {
+			t.Errorf("a privileged command ran: %s", j)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(e.dir, "setup")); err == nil {
+		t.Error("something was downloaded")
+	}
+}
+
+func TestRunAllWholeWay(t *testing.T) {
+	e := allEnv(t)
 	if _, err := e.op("run", map[string]any{"step": "all"}); err != nil {
 		t.Fatal(err)
 	}
@@ -334,6 +334,117 @@ func TestRunAllWholeWay(t *testing.T) {
 		if st := e.step(id); st.State != Done {
 			t.Errorf("%s: %+v", id, st)
 		}
+	}
+	noPrivilegedCommand(t, e)
+}
+
+func TestRunAllNeverRunsThePrivilegedSteps(t *testing.T) {
+	for name, c := range map[string]struct {
+		break_ func(e *testEnv)
+		step   string
+		n      string
+	}{
+		"container missing": {func(e *testEnv) { e.m.version = "" }, "container", "1"},
+		"container older":   {func(e *testEnv) { e.m.version = "container CLI version 1.0.0 (build: release, commit: abc)\n" }, "container", "1"},
+		"network missing":   {func(e *testEnv) { e.m.network = "" }, "network", "3"},
+	} {
+		e := allEnv(t)
+		c.break_(e)
+		if _, err := e.op("run", map[string]any{"step": "all"}); err != nil {
+			t.Fatal(err)
+		}
+		e.wait()
+		st := e.step(c.step)
+		if st.State != NeedsUser || !strings.Contains(st.Reason, "needs step "+c.n+" (asks for approval)") {
+			t.Errorf("%s: %+v", name, st)
+		}
+		noPrivilegedCommand(t, e)
+		if e.cmd.ran("container", "build") != 0 && c.step == "container" {
+			t.Errorf("%s: went on after the stop", name)
+		}
+	}
+}
+
+// The tool or the network goes away between the plugin's check and Home's run, or while "all" runs.
+func TestRunAllStopsWhenAPrivilegedStepRegressesMidRun(t *testing.T) {
+	e := allEnv(t)
+	prev := e.m.extra
+	e.m.extra = func(argv []string) ([]byte, error, bool) {
+		if len(argv) > 1 && argv[1] == "build" { // the network disappears while the image builds
+			e.m.image = true
+			e.m.network = ""
+			return []byte("built"), nil, true
+		}
+		return prev(argv)
+	}
+	e.op("run", map[string]any{"step": "all"})
+	e.wait()
+	if st := e.step("network"); st.State != NeedsUser || !strings.Contains(st.Reason, "needs step 3 (asks for approval)") {
+		t.Errorf("network: %+v", st)
+	}
+	if len(e.ag.box.execs) != 0 {
+		t.Errorf("the sign-in or the self-test started: %v", e.ag.box.execs)
+	}
+	noPrivilegedCommand(t, e)
+
+	e = allEnv(t)
+	prev = e.m.extra
+	e.m.extra = func(argv []string) ([]byte, error, bool) {
+		if len(argv) > 2 && argv[1] == "system" && argv[2] == "start" { // the tool is removed as the service starts
+			e.m.version = ""
+			e.m.sysJSON = strings.ReplaceAll(sysRunning, "%APP%", e.appDir+"/")
+			return nil, nil, true
+		}
+		return prev(argv)
+	}
+	e.op("run", map[string]any{"step": "all"})
+	e.wait()
+	if st := e.step("container"); st.State != NeedsUser || !strings.Contains(st.Reason, "needs step 1 (asks for approval)") {
+		t.Errorf("container: %+v", st)
+	}
+	if e.cmd.ran("container", "build") != 0 {
+		t.Error("the image was built after the tool went away")
+	}
+	noPrivilegedCommand(t, e)
+}
+
+func TestAutoAddressNeverCreatesTheNetwork(t *testing.T) {
+	e := newTestEnv(t)
+	e.ready()
+	e.m.network = ""
+	e.cfg.ProxyListen, e.cfg.ProxyVMHost = "127.0.0.1:3128", "host.example.com"
+	// refused right away, and if it got through, the job would still not create anything
+	if _, err := e.op("run", map[string]any{"step": "network", "option": "auto-address"}); err == nil || !strings.Contains(err.Error(), "its own approval") {
+		t.Fatalf("run: %v", err)
+	}
+	j, ctx, err := e.s.begin(StepNetwork, agentProject())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := e.s.runNetwork(ctx, j, true)
+	e.s.release(j)
+	if out.State != Failed || !strings.Contains(out.Reason, "needs its own approval") {
+		t.Errorf("job: %+v", out)
+	}
+	if e.cmd.ran("container", "network", "create") != 0 || e.cfg.ProxyListen == "" || e.cfg.ProxyVMHost == "" {
+		t.Errorf("something changed: %v %+v", e.cmd.calls, e.cfg)
+	}
+	// an existing host-only network: the addresses are cleared
+	e.m.network = internalNet(t)
+	if _, err := e.op("run", map[string]any{"step": "network", "option": "auto-address"}); err != nil {
+		t.Fatal(err)
+	}
+	e.wait()
+	if e.cfg.ProxyListen != "" || e.cfg.ProxyVMHost != "" || e.step("network").State != Done || e.cmd.ran("container", "network", "create") != 0 {
+		t.Errorf("%+v", e.cfg)
+	}
+	// a network that isn't host-only: nothing is cleared
+	e.cfg.Network, e.cfg.ProxyListen = "default", "127.0.0.1:3128"
+	e.m.network = defaultNet(t)
+	e.op("run", map[string]any{"step": "network", "option": "auto-address"})
+	e.wait()
+	if e.cfg.ProxyListen == "" || e.step("network").State != Failed {
+		t.Errorf("%+v %+v", e.cfg, e.step("network"))
 	}
 }
 
@@ -431,3 +542,5 @@ func TestProgressNeverCarriesSecretsEvenFromCommands(t *testing.T) {
 		t.Errorf("status carries a secret: %s", raw)
 	}
 }
+
+func agentProject() agent.Project { return agent.Project{} }

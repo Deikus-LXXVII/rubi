@@ -282,6 +282,11 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 	if n := s.firstUnmet(ctx, needs(step)); n > 0 && step != "all" {
 		return fmt.Errorf("needs step %d first", n)
 	}
+	if step == StepNetwork && option == optAutoAddress {
+		if st := s.probeNetwork(ctx); st.State == Todo {
+			return errors.New("creating the network needs its own approval")
+		}
+	}
 	if step == StepSelfTest {
 		if st := s.loginState(ctx, p); st.State != Done {
 			return fmt.Errorf("needs step %d first", 6)
@@ -355,9 +360,35 @@ func clip(s string, n int) string {
 	return s
 }
 
-// runAll runs steps 1 to 4, then 6 and 7 for the project (the first when none is named), skipping what is
-// done, and stops at the first step that isn't done.
+// privileged are the steps "all" never runs: installing the tool and creating the network each have their own
+// approval in the plugin, so "all" stops when one isn't done.
+var privileged = map[string]bool{StepContainer: true, StepNetwork: true}
+
+// runAll runs the service and image steps, then the sign-in and the self-test for the project (the first when
+// none is named), skipping what is done. It stops at the first step that isn't done. It never installs the
+// container tool or creates the network: if either is missing, also if it goes missing while "all" runs, it stops
+// there ("needs step N (asks for approval)").
 func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method string) {
+	// gate checks that the steps up to and including n are done, now. A privileged one that isn't stops "all".
+	gate := func(n int) bool {
+		raw := s.rawAll(ctx)
+		for i := 0; i < n; i++ {
+			if raw[i].State == Done {
+				continue
+			}
+			step := stepOrder[i]
+			reason := fmt.Sprintf("Stopped: needs step %d first.", i+1)
+			if privileged[step] {
+				reason = fmt.Sprintf("Stopped: needs step %d (asks for approval).", i+1)
+			}
+			s.setStep(j, step, agent.Project{})
+			s.mu.Lock()
+			s.last[key(step, "")] = result{outcome: outcome{NeedsUser, reason}}
+			s.mu.Unlock()
+			return false
+		}
+		return true
+	}
 	runStep := func(step string, fn func() outcome) bool {
 		for _, st := range s.rawAll(ctx) {
 			if st.ID == step && st.State == Done {
@@ -369,10 +400,8 @@ func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method stri
 		s.record(ctx, step, "", j, out)
 		return out.State == Done
 	}
-	if !runStep(StepContainer, func() outcome { return s.runContainer(ctx, j) }) ||
-		!runStep(StepService, func() outcome { return s.runService(ctx, j) }) ||
-		!runStep(StepNetwork, func() outcome { return s.runNetwork(ctx, j, false) }) ||
-		!runStep(StepImage, func() outcome { return s.runImage(ctx, j) }) {
+	if !gate(1) || !runStep(StepService, func() outcome { return s.runService(ctx, j) }) || !gate(3) ||
+		!runStep(StepImage, func() outcome { return s.runImage(ctx, j) }) || !gate(4) {
 		return
 	}
 	if p.Dir == "" {
@@ -388,7 +417,7 @@ func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method stri
 	s.setStep(j, StepLogin, p)
 	out := s.runLogin(ctx, j, p, method, true)
 	s.record(ctx, StepLogin, p.Dir, j, out)
-	if out.State != Done {
+	if out.State != Done || !gate(4) {
 		return
 	}
 	s.setStep(j, StepSelfTest, p)

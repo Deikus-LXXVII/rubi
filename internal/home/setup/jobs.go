@@ -41,16 +41,30 @@ func (s *Setup) runService(ctx context.Context, j *job) outcome {
 	}
 }
 
+// msgNetworkApproval: creating the network has its own approval, which "use the automatic address" doesn't give.
+const msgNetworkApproval = "Creating the network needs its own approval."
+
+// runNetwork creates the host-only network when it is missing. With autoAddress it never creates anything: it
+// clears agent_proxy_listen and agent_proxy_vm_host, and only when the network exists and is host-only.
 func (s *Setup) runNetwork(ctx context.Context, j *job, autoAddress bool) outcome {
 	log := j.log(s)
+	name := s.network()
+	st := s.probeNetwork(ctx)
 	if autoAddress {
+		if st.State != Done && st.State != NeedsUser {
+			if st.State == Todo {
+				return outcome{Failed, msgNetworkApproval}
+			}
+			return outcome{st.State, st.Reason}
+		}
 		if err := s.opt.Update(func(c *Settings) { c.ProxyListen, c.ProxyVMHost = "", "" }); err != nil {
 			return outcome{Failed, "Couldn't save the setting: " + safeText(err.Error())}
 		}
 		log("The proxy now uses the network's address.")
+		st = s.probeNetwork(ctx)
+		return outcome{st.State, st.Reason}
 	}
-	name := s.network()
-	if st := s.probeNetwork(ctx); st.State != Todo {
+	if st.State != Todo {
 		return outcome{st.State, st.Reason} // done, or a network that isn't host-only: nothing is changed
 	}
 	log("Creating the host-only network " + name + "...")
@@ -60,7 +74,7 @@ func (s *Setup) runNetwork(ctx context.Context, j *job, autoAddress bool) outcom
 		}
 		return outcome{Failed, "Creating the network failed: " + safeText(string(out))}
 	}
-	st := s.probeNetwork(ctx)
+	st = s.probeNetwork(ctx)
 	if st.State == Todo {
 		return outcome{Failed, "The network was created but can't be inspected."}
 	}
