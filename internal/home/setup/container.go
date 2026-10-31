@@ -220,16 +220,23 @@ func (s *Setup) verifySignature(ctx context.Context, pkg string) error {
 // ---- administrator install ----
 
 // installScript runs as root (osascript, "with administrator privileges") as `sh -c <script> rubi-install
-// <pkg> <sha256> <team>`. It copies the package into a fresh directory only root can write, so a process of
-// the user can't swap the file after it was checked, checks the SHA-256 and the signature of the copy,
-// installs it and removes the copy.
+// <pkg> <sha256> <team> <uid>`, uid being 0. It copies the package into a fresh directory under
+// /private/var/tmp (TMPDIR is dropped: it is not root's to trust), checks that the directory is a real
+// directory of that uid with mode 700, so a process of the user can't swap the file after it was checked,
+// checks the SHA-256 and the signature of the copy, installs it and removes the copy.
 const installScript = `set -eu
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
-src=$1 want=$2 team=$3
+src=$1 want=$2 team=$3 uid=$4
+unset TMPDIR
+umask 077
+if [ "$(id -u)" != "$uid" ]; then echo "not running as the expected user" >&2; exit 13; fi
 if [ ! -f "$src" ] || [ -L "$src" ]; then echo "the package is not a plain file" >&2; exit 10; fi
-dir=$(mktemp -d -t rubi-container)
+dir=$(mktemp -d /private/var/tmp/rubi-container.XXXXXX)
 trap 'rm -rf "$dir"' EXIT
+if [ -L "$dir" ] || [ ! -d "$dir" ] || [ "$(stat -f %u "$dir")" != "$uid" ] || [ "$(stat -f %Lp "$dir")" != 700 ]; then
+  echo "the scratch directory is not private" >&2; exit 13
+fi
 pkg=$dir/container.pkg
 cp "$src" "$pkg"
 got=$(shasum -a 256 "$pkg" | cut -d' ' -f1)
@@ -252,7 +259,12 @@ func asString(s string) string {
 // installCommand is the osascript argv for the administrator install of pkg. The script is a constant; the
 // package path, hash and team are quoted words, so no value can add a command.
 func installCommand(pkg, sha, team string) ([]string, error) {
-	for _, v := range []string{pkg, sha, team} {
+	return installCommandAs(pkg, sha, team, "0")
+}
+
+// installCommandAs is installCommand for the user id the script must run as (0 outside tests).
+func installCommandAs(pkg, sha, team, uid string) ([]string, error) {
+	for _, v := range []string{pkg, sha, team, uid} {
 		if v == "" || strings.ContainsAny(v, "\x00\r\n") || strings.ContainsFunc(v, func(r rune) bool { return r < ' ' }) {
 			return nil, errors.New("a value for the installer can't be passed safely")
 		}
@@ -260,7 +272,7 @@ func installCommand(pkg, sha, team string) ([]string, error) {
 	if !filepath.IsAbs(pkg) {
 		return nil, errors.New("the package path isn't absolute")
 	}
-	sh := "/bin/sh -c " + shellQuote(installScript) + " rubi-install " + shellQuote(pkg) + " " + shellQuote(sha) + " " + shellQuote(team)
+	sh := "/bin/sh -c " + shellQuote(installScript) + " rubi-install " + shellQuote(pkg) + " " + shellQuote(sha) + " " + shellQuote(team) + " " + shellQuote(uid)
 	return []string{"/usr/bin/osascript", "-e", "do shell script " + asString(sh) + " with administrator privileges"}, nil
 }
 

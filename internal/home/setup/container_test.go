@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -251,7 +253,7 @@ func TestInstallCommandQuoting(t *testing.T) {
 			t.Fatalf("sh %q", sh)
 		}
 		words := shellWords(t, sh)
-		if len(words) != 7 || words[3] != "rubi-install" || words[4] != pkg || words[5] != sha || words[6] != "UPBK2H6LZM" || words[2] != installScript {
+		if len(words) != 8 || words[3] != "rubi-install" || words[4] != pkg || words[5] != sha || words[6] != "UPBK2H6LZM" || words[7] != "0" || words[2] != installScript {
 			t.Errorf("words: %q (pkg %q)", words, pkg)
 		}
 	}
@@ -326,6 +328,10 @@ func shellWords(t *testing.T, s string) []string {
 // The root script's early exits are real shell: a missing file, a symlink and a wrong hash never get to
 // the installer. (The script is run with sh only; osascript and installer are never run.)
 func TestInstallScriptRefusals(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the script uses macOS tools (stat -f, shasum, /private/var/tmp)")
+	}
+	uid := strconv.Itoa(os.Getuid())
 	dir := t.TempDir()
 	good := filepath.Join(dir, "c.pkg")
 	if err := os.WriteFile(good, []byte("not a package"), 0o600); err != nil {
@@ -346,7 +352,7 @@ func TestInstallScriptRefusals(t *testing.T) {
 		// the right hash of a file that isn't a signed package stops at the signature check
 		"unsigned": {good, hex.EncodeToString(sum[:]), 12},
 	} {
-		cmd := exec.Command("/bin/sh", "-c", installScript, "rubi-install", c.pkg, c.sha, "UPBK2H6LZM")
+		cmd := exec.Command("/bin/sh", "-c", installScript, "rubi-install", c.pkg, c.sha, "UPBK2H6LZM", uid)
 		cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "TMPDIR=" + dir}
 		out, err := cmd.CombinedOutput()
 		var ee *exec.ExitError
@@ -356,6 +362,16 @@ func TestInstallScriptRefusals(t *testing.T) {
 	}
 	if ents, _ := os.ReadDir(dir); len(ents) != 2 {
 		t.Errorf("the script left files behind: %v", ents)
+	}
+	// not running as the uid it expects (a non-root user asked for root): refused before anything is copied
+	cmd := exec.Command("/bin/sh", "-c", installScript, "rubi-install", good, hex.EncodeToString(sum[:]), "UPBK2H6LZM", "4242")
+	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+	var ee *exec.ExitError
+	if err := cmd.Run(); !errors.As(err, &ee) || ee.ExitCode() != 13 {
+		t.Errorf("wrong uid: %v", err)
+	}
+	if !strings.Contains(installScript, "mktemp -d /private/var/tmp/rubi-container.XXXXXX") || !strings.Contains(installScript, "unset TMPDIR") {
+		t.Error("the scratch directory isn't the fixed private one")
 	}
 }
 
