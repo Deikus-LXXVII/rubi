@@ -184,7 +184,7 @@ func TestGlobalCapWaitsAndReleases(t *testing.T) {
 	mu.start("my-project", "a")
 	mu.start("web-app", "b")
 	r := mu.start("docs-site", "c")
-	if r["queued"] != true || r["reason"] != "waiting: 2 sessions are running on this computer, the limit" {
+	if r["queued"] != true || r["reason"] != "waiting: the computer's session limit is reached" {
 		t.Fatalf("over the cap: %v", r)
 	}
 	mu.fakes["web-app"].Runner().Emit(statusEv("sess-1", "idle"))

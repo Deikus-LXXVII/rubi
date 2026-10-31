@@ -155,18 +155,21 @@ type Manager struct {
 	q   *diskQueue
 	net *netState
 
-	mu       sync.Mutex
-	projs    map[string]*projState
-	slots    []*slotState // the sessions holding a slot, oldest first
-	asks     map[string]*pendingAsk
-	out      []Item
-	signal   chan struct{}
-	polls    int
-	lastPoll time.Time
-	login    json.RawMessage
-	usage    usageDay
-	lastCost map[string]float64
-	closed   bool
+	mu    sync.Mutex
+	projs map[string]*projState
+	slots []*slotState // the sessions holding a slot, oldest first
+	// sessionBot remembers which Bot started or first wrote to a session ("project|session"), for a session that
+	// runs without a slot (bounded).
+	sessionBot map[string]string
+	asks       map[string]*pendingAsk
+	out        []Item
+	signal     chan struct{}
+	polls      int
+	lastPoll   time.Time
+	login      json.RawMessage
+	usage      usageDay
+	lastCost   map[string]float64
+	closed     bool
 
 	cancels    map[string]context.CancelFunc
 	netFlights map[string]*netFlight
@@ -200,7 +203,7 @@ func New(opt Options) *Manager {
 	if opt.GitHosts == nil {
 		opt.GitHosts = func() []string { return nil }
 	}
-	m := &Manager{opt: opt, projs: map[string]*projState{}, asks: map[string]*pendingAsk{}, lastCost: map[string]float64{},
+	m := &Manager{opt: opt, sessionBot: map[string]string{}, projs: map[string]*projState{}, asks: map[string]*pendingAsk{}, lastCost: map[string]float64{},
 		kick: make(chan struct{}, 1), stop: make(chan struct{})}
 	m.q = &diskQueue{}
 	if opt.Dir != "" {
@@ -770,8 +773,7 @@ func botName(bot string) string {
 // the project has its sessions already, the Bot has (its mode's limit), or the computer has. A start also
 // waits while another start of the project hasn't got its session id, so an event is never matched to the
 // wrong one.
-func (m *Manager) fullLocked(project, bot string, start bool) string {
-	c := m.usageNow()
+func (m *Manager) fullLocked(c UsageConfig, project, bot string, start bool) string {
 	l := c.For(bot)
 	n, nb, pending := 0, 0, false
 	for _, s := range m.slots {
@@ -791,7 +793,7 @@ func (m *Manager) fullLocked(project, bot string, start bool) string {
 	case l.Sessions > 0 && nb >= l.Sessions:
 		return fmt.Sprintf("waiting: %s already has %s, the limit of its %s mode", botName(bot), sessions(nb), l.Mode)
 	case c.Machine() > 0 && len(m.slots) >= c.Machine():
-		return fmt.Sprintf("waiting: %s are running on this computer, the limit", sessions(len(m.slots)))
+		return "waiting: the computer's session limit is reached"
 	}
 	return ""
 }
@@ -831,19 +833,19 @@ func (m *Manager) ownerLocked(p *projState, session string) *slotState {
 
 // reasonLocked says why a queue item can't be delivered now ("" when it can). A send to a session that
 // holds a slot already runs (owner is its slot).
-func (m *Manager) reasonLocked(it QueueItem) (reason string, owner *slotState) {
+func (m *Manager) reasonLocked(c UsageConfig, it QueueItem) (reason string, owner *slotState) {
 	if it.Op == "send" {
 		if s := m.exactLocked(it.Project, it.Session); s != nil {
 			return "", s
 		}
 	}
-	return m.fullLocked(it.Project, it.Bot, it.Op == "start"), nil
+	return m.fullLocked(c, it.Project, it.Bot, it.Op == "start"), nil
 }
 
 // runnableLocked says whether some queued item could be delivered now (a drain is then due).
-func (m *Manager) runnableLocked() bool {
+func (m *Manager) runnableLocked(c UsageConfig) bool {
 	for _, q := range m.q.list() {
-		if r, _ := m.reasonLocked(q); r == "" {
+		if r, _ := m.reasonLocked(c, q); r == "" {
 			return true
 		}
 	}
@@ -891,6 +893,10 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 	if f.State != "" {
 		f.Status = f.State // the runner says "state"; "status" is accepted too
 	}
+	var uc UsageConfig
+	if ev.Kind == "status" && f.Status == "busy" {
+		uc = m.usageNow() // read before the lock: it may read the configuration file
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.ownerLocked(p, ev.SessionID)
@@ -902,9 +908,14 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 		switch f.Status {
 		case "busy":
 			if s == nil {
-				if m.fullLocked(p.ID, "", false) == "" {
-					m.slots = append(m.slots, &slotState{project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()})
+				// A session that runs without a slot (the runner resumed it, or Home restarted): it is booked, charged to
+				// the Bot that started it when Home remembers which, else to the user's own. It is booked even over a limit,
+				// and logged, so that it is visible and counted; the limits then hold back new work until it ends.
+				bot := m.sessionBot[p.ID+"|"+ev.SessionID]
+				if why := m.fullLocked(uc, p.ID, bot, false); why != "" {
+					log.Printf("agent: session %q of project %q is running over the limits (%s); counted against %s", clip(ev.SessionID, 64), clip(p.ID, 64), strings.TrimPrefix(why, "waiting: "), botName(bot))
 				}
+				m.slots = append(m.slots, &slotState{bot: bot, project: p.ID, session: ev.SessionID, turn: true, last: m.opt.Now()})
 			} else {
 				s.turn = true
 				if s.session == "" {
@@ -1010,14 +1021,16 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 	}
 	m.ensureLoop()
 	it.ID, it.At = newQueueID(), m.opt.Now().UTC()
+	uc := m.usageNow() // read before the lock: it may read the configuration file
 	m.mu.Lock()
 	// A new item never jumps ahead of a queued one that could run now.
-	reason, owner := m.reasonLocked(it)
+	reason, owner := m.reasonLocked(uc, it)
 	var slot *slotState
+	prevTurn := false
 	switch {
 	case owner != nil:
-		owner.turn = true
-	case reason == "" && !m.runnableLocked():
+		prevTurn, owner.turn = owner.turn, true
+	case reason == "" && !m.runnableLocked(uc):
 		slot = m.takeSlotLocked(it)
 	case reason == "":
 		reason = "waiting: earlier messages are queued first"
@@ -1026,11 +1039,14 @@ func (m *Manager) submit(ctx context.Context, it QueueItem) (map[string]any, err
 	if owner != nil || slot != nil {
 		res, err := m.deliver(ctx, p, it, slot)
 		if err != nil {
+			m.mu.Lock()
 			if slot != nil {
-				m.mu.Lock()
 				m.releaseLocked(slot)
-				m.mu.Unlock()
+			} else if owner != nil {
+				owner.turn = prevTurn // the send never started a turn
+				m.maybeReleaseLocked(owner)
 			}
+			m.mu.Unlock()
 			return nil, err
 		}
 		if it.Op == "send" {
@@ -1074,6 +1090,7 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 		if slot != nil && slot.session == "" {
 			slot.session = res.ID
 		}
+		m.rememberBotLocked(p.ID, res.ID, it.Bot, true)
 		m.mu.Unlock()
 		return map[string]any{"id": res.ID}, nil
 	default:
@@ -1083,8 +1100,30 @@ func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot 
 		if err != nil {
 			return nil, err
 		}
+		m.mu.Lock()
+		m.rememberBotLocked(p.ID, it.Session, it.Bot, false)
+		m.mu.Unlock()
 		return map[string]any{}, nil
 	}
+}
+
+// rememberBotLocked notes which Bot a session belongs to: the one that started it, or (for a session of unknown
+// origin) the first Bot that wrote to it. A user's message to a Bot's session doesn't change it.
+func (m *Manager) rememberBotLocked(project, session, bot string, started bool) {
+	if session == "" || bot == "" && !started {
+		return
+	}
+	key := project + "|" + session
+	if _, known := m.sessionBot[key]; known && !started {
+		return
+	}
+	if len(m.sessionBot) >= 4096 {
+		for k := range m.sessionBot { // bounded: drop an arbitrary old entry
+			delete(m.sessionBot, k)
+			break
+		}
+	}
+	m.sessionBot[key] = bot
 }
 
 func (m *Manager) loop() {
@@ -1103,24 +1142,29 @@ func (m *Manager) loop() {
 	}
 }
 
+// startTimeout is how long handing a start or send to the runner may take (it can boot the VM).
+const startTimeout = 12 * time.Minute
+
 // drain delivers queued items while a slot is free. The queue is first in, first out, except that an
 // item waiting on a full project doesn't hold up the items behind it: the first item that can run now
 // goes, so an item for a project with a free slot is never blocked by an earlier one waiting on another
-// project. Items of one project keep their order (they wait on the same slots), and when only the
+// project. Items of one project and Bot keep their order (they wait on the same slots), and when only the
 // total limit is reached nothing runs, so the oldest waiting item takes the next slot freed.
 func (m *Manager) drain() {
 	for {
 		for _, it := range m.q.sweep(m.opt.Now()) {
 			m.emitQueue("expired", it, nil)
 		}
+		uc := m.usageNow() // once per pass, read before the lock: it may read the configuration file
 		m.mu.Lock()
 		if m.closed {
 			m.mu.Unlock()
 			return
 		}
 		var owner *slotState
+		prevTurn := false
 		it, ok := m.q.take(func(q QueueItem) bool {
-			r, o := m.reasonLocked(q)
+			r, o := m.reasonLocked(uc, q)
 			owner = o
 			return r == ""
 		})
@@ -1130,12 +1174,12 @@ func (m *Manager) drain() {
 		}
 		var slot *slotState
 		if owner != nil {
-			owner.turn = true
+			prevTurn, owner.turn = owner.turn, true
 		} else {
 			slot = m.takeSlotLocked(it)
 		}
 		m.mu.Unlock()
-		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 		var err error
 		p, perr := m.project(it.Project)
 		if perr != nil {
@@ -1145,11 +1189,14 @@ func (m *Manager) drain() {
 		}
 		cancel()
 		if err != nil {
+			m.mu.Lock()
 			if slot != nil {
-				m.mu.Lock()
 				m.releaseLocked(slot)
-				m.mu.Unlock()
+			} else if owner != nil {
+				owner.turn = prevTurn
+				m.maybeReleaseLocked(owner)
 			}
+			m.mu.Unlock()
 			m.emitQueue("failed", it, func(n *Item) { n.Error = clip(err.Error(), 300) })
 			continue
 		}
@@ -1361,6 +1408,7 @@ func (m *Manager) opProjects() any {
 	for _, it := range m.q.list() {
 		queued[it.Project]++
 	}
+	per := m.usageNow().For("").PerProject // once, outside the lock
 	rows := []row{}
 	for _, p := range m.projects() {
 		r := row{ID: p.ID, Dir: p.Dir, VMState: StateStopped, Queue: queued[p.ID]}
@@ -1368,7 +1416,6 @@ func (m *Manager) opProjects() any {
 		if ps := m.projs[p.ID]; ps != nil && ps.Dir == p.Dir && ps.vm != nil {
 			r.VMState = ps.vm.State()
 		}
-		per := m.usageNow().For("").PerProject
 		for _, s := range m.slots {
 			if s.project == p.ID {
 				r.Running++
@@ -1386,6 +1433,7 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 	if probe {
 		m.probe(ctx)
 	}
+	uc := m.usageNow() // once, outside the lock
 	m.mu.Lock()
 	slots := []map[string]any{}
 	for _, s := range m.slots {
@@ -1395,13 +1443,12 @@ func (m *Manager) opStatus(ctx context.Context, probe bool) any {
 	if len(slots) > 0 {
 		slot = slots[0]
 	}
-	uc := m.usageNow()
 	def := uc.For("")
 	bots := m.botRowsLocked(uc)
 	reasons := map[string]string{}
 	waiting := m.q.list()
 	for _, it := range waiting {
-		r, _ := m.reasonLocked(it)
+		r, _ := m.reasonLocked(uc, it)
 		if r == "" {
 			r = "waiting: earlier messages are queued first"
 		}
@@ -1530,13 +1577,14 @@ func (m *Manager) checkSlot() {
 		r                *Runner
 	}
 	m.mu.Lock()
-	if len(m.asks) > 0 {
-		m.mu.Unlock()
-		return
-	}
 	var out []stale
 	for _, s := range append([]*slotState(nil), m.slots...) {
 		if s.last.IsZero() || m.opt.Now().Sub(s.last) < SlotIdleTTL {
+			continue
+		}
+		// A session waiting for the user's answer is not idle. A start still being handed to the runner (no session
+		// id yet) gets the time that takes on top.
+		if m.askOpenLocked(s) || s.session == "" && m.opt.Now().Sub(s.last) < SlotIdleTTL+startTimeout {
 			continue
 		}
 		var r *Runner
@@ -1557,6 +1605,17 @@ func (m *Manager) checkSlot() {
 			cancel()
 		}
 	}
+}
+
+// askOpenLocked says whether a question of the slot's session waits for the user (an ask of the project that
+// names no session counts for all of its slots).
+func (m *Manager) askOpenLocked(s *slotState) bool {
+	for _, a := range m.asks {
+		if a.project == s.project && (a.item.SessionID == "" || a.item.SessionID == s.session) {
+			return true
+		}
+	}
+	return false
 }
 
 // prepareWorkDir makes /work/.rubi with a .gitignore of "*" on the first start, so the runner's sessions and
