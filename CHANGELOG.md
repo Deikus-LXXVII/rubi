@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.0-rc.2 (2026-11-01)
+
+Release candidate 2. Same features as rc.1, which never got release assets because its Linux tests failed.
+
+- Output of a process Rubi Home starts is no longer lost on Linux when the process exits quickly.
+- Test fixes only otherwise; the claude-code plugin's minimum Rubi becomes v0.14.0-rc.2.
+
 ## v0.14.0-rc.1 (2026-11-01)
 
 Release candidate. What changes for you:
