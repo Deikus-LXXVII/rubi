@@ -215,6 +215,11 @@
           "version": "v0.3.0",
           "sums_sha256": "207832c46632266b2a5a7d0e5f9d4e9336d9c68ef5af6d5a55912ec70d905eed",
           "min_rubi": "v0.13.0"
+        },
+        {
+          "version": "v0.4.0-rc.1",
+          "sums_sha256": "d9c61942524e5d89b76389de155fad8c61d8d615b7b21d515160b0e154d0a3aa",
+          "min_rubi": "v0.14.0-rc.2"
         }
       ]
     }
