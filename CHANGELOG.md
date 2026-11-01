@@ -21,6 +21,20 @@ Release candidate. What changes for you:
   role and for the whole computer (default 4), and a cap on subagents.
 - **Requires** the claude-code plugin built for v0.14 (its minimum Rubi is v0.14.0-rc.1).
 
+- **Pre-release security fixes.**
+  - The auth gateway refuses Anthropic server-side tools (web fetch, code execution, the MCP connector, containers)
+    and content fetched by URL or file id. Web search passes only when the role allows WebSearch. `anthropic-beta` is
+    filtered to the values Claude Code itself sends. Request bodies are capped at 32 MiB each and 256 MiB together.
+  - Role VMs always get read-only `.claude` and `.git/hooks`, mounted from a Home-owned copy made without following
+    symlinks, one per VM. Rubi Home warns when a role session changes `.mcp.json`, `.git/config` or a few other files
+    that tools load (event `project_files_changed`).
+  - Only the official claude-code plugin (its publisher key) may declare the `claude-agent` and `agent-setup`
+    capabilities. Core checks the approval ids of role changes and every field of an SSH target registration against
+    the user's real approvals before Rubi Home sees them. The `claude-agent.ssh.*` ops now reach Rubi Home.
+  - Smaller fixes: the installer copy refuses symlinks and FIFOs; `rubi-home status` no longer creates a folder;
+    folder deny-lists ignore case and resolve symlinks; installer errors are shown as fixed sentences; the runner's
+    tests say when Node is older than 22.
+
 ### Details
 
 - **No network for VMs (agent roles).** Every project, role and sign-in VM now runs with
@@ -91,7 +105,7 @@ Release candidate. What changes for you:
   `allowed_commands` are enforced; a changed host key is refused and audited. Limits: 4 streams per role, 2 h per stream,
   10 min idle, 8 MiB per direction with acknowledgement-based backpressure. A `role.put` removing the grant, `ssh.remove`,
   a stopped runner or Home stopping cuts live streams. Audit per stream in `agent-ssh/audit.jsonl`: no output, no key
-  material. The runner/wrapper side is R12.
+  material. The runner/wrapper side is in the next entry.
 
 - **Rubi Home: one VM per role (agent roles).** `claude-agent.start/send/sessions/messages/rename/fork/interrupt/close/mode`
   take an optional `role` (a role id; missing means the project's legacy role, which keeps its VM, mounts and environment
