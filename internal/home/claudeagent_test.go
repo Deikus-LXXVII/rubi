@@ -162,7 +162,8 @@ func TestClaudeAgentConfigAndDefaults(t *testing.T) {
 }
 
 func TestUsageModeOpSavesTheConfig(t *testing.T) {
-	h, _, _ := agentHelper(t)
+	h, fake, _ := agentHelper(t)
+	h.vmOverride = func(agent.Project) agent.VM { return fake }
 	h.Agent.Close()
 	h.Agent = h.newAgent()
 	t.Cleanup(h.Agent.Close)
@@ -192,7 +193,8 @@ func TestUsageModeOpSavesTheConfig(t *testing.T) {
 }
 
 func TestLimitsOpSavesTheConfig(t *testing.T) {
-	h, _, _ := agentHelper(t)
+	h, fake, _ := agentHelper(t)
+	h.vmOverride = func(agent.Project) agent.VM { return fake }
 	h.Agent.Close()
 	h.Agent = h.newAgent()
 	t.Cleanup(h.Agent.Close)
