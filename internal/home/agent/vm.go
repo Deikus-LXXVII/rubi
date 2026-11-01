@@ -39,6 +39,8 @@ type Project struct {
 	// /work/CLAUDE.md stays writable (docs/design/agent-roles.md section 3).
 	EmptyDir string
 	ReadOnly []ShieldMount
+	// shieldErr says why roleShield refused (a .claude or .git/hooks that isn't a plain directory).
+	shieldErr error
 	// snapFailed names the ReadOnly places whose copy came out empty (set by roleShield; Home tells the plugin).
 	snapFailed []string
 }

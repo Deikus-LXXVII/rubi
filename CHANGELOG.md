@@ -20,7 +20,6 @@ Release candidate. What changes for you:
 - **Usage modes and session limits.** Maximum, Medium (default) and Light per Bot, a cap on sessions per project, per
   role and for the whole computer (default 4), and a cap on subagents.
 - **Requires** the claude-code plugin built for v0.14 (its minimum Rubi is v0.14.0-rc.1).
-
 - **Pre-release security fixes.**
   - The auth gateway refuses Anthropic server-side tools (web fetch, code execution, the MCP connector, containers)
     and content fetched by URL or file id. Web search passes only when the role allows WebSearch. `anthropic-beta` is

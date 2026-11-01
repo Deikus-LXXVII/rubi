@@ -794,6 +794,9 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 		shieldGuard = newFileGuard(p.Dir)
 		if shield.EmptyDir == "" {
 			removeShield(m.opt.Dir, p.Dir, p.Role)
+			if shield.shieldErr != nil {
+				return nil, fmt.Errorf("role %s: %v", clip(p.RoleName, 40), shield.shieldErr)
+			}
 			return nil, fmt.Errorf("role %s: can't prepare the empty directory that covers /work/.rubi", clip(p.RoleName, 40))
 		}
 		m.mu.Lock()
@@ -2505,7 +2508,7 @@ func roleShield(projectDir, emptyDir, role string) Project {
 	names, err := shieldTargetsOf(projectDir)
 	if err != nil {
 		log.Printf("agent: can't shield the project: %v", err)
-		return s
+		return Project{shieldErr: err}
 	}
 	root := filepath.Join(filepath.Dir(emptyDir), RoleShieldDir, snapshotKey(projectDir, role))
 	var mounts []ShieldMount
