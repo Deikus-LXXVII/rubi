@@ -72,6 +72,12 @@ const APPROVALS = {
         help: "The routine's key (crsr_\u2026). It stays in Rubi; nobody else sees it." },
     ],
   },
+  curator: {
+    kind: "rubi.library.curator", summary: "Make Writer the skill library's curator",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { "curator now": "Librarian", "curator after": "Writer",
+      allows: "the curator Bot can admit skills into the shared library, publish new versions, deprecate and withdraw them. Admitted skills are trusted by every role that uses them, and the curator may admit its own. The automatic scan still has to pass." },
+  },
   settings: {
     kind: "rubi.settings", summary: "Add Rubi Home on Mac mini",
     options: [{ key: "apply", label: "Approve" }],
@@ -91,6 +97,8 @@ const PLUGINS = [
     previous_version: "v1.2.0" },
   { id: "gmail", latest: "v1.0.0", publisher: "Rubi-Project", summary: "The same, for Gmail. Several accounts.", name: "Gmail", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true, panel: "view", setup: true,
     accounts: [{ id: "alex.k@gmail.com", label: "alex.k@gmail.com", default: true }] },
+  { id: "claude-code", latest: "v0.4.0", publisher: "Rubi-Project", summary: "Claude Code sessions: approvals, trusts, and the agent's projects and chats.", name: "Claude Code", version: "v0.4.0", installed: true, reviewed: true, connected: true, panel: "view",
+    accounts: [{ id: "claude-code", label: "Claude Code", default: true }] },
   { id: "steam", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Prices, sales and your wishlist; deal alerts.", name: "Steam", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     update_available: "v1.1.0", accounts: [{ id: "76561198000000000", label: "Alex", default: true }] },
   { id: "presence", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Home or away, from your iPhone. Never coordinates.", name: "Location", version: "v1.0.0", installed: true, reviewed: true, connected: false, has_config: true },
@@ -196,8 +204,11 @@ export class DemoClient {
         return { approval_id: "settings", ticket: "demo" };
       case "agent.add":
         return { approval_id: "bot", ticket: "demo" };
+      case "library.list": case "library.entry": case "library.version": case "library.queue": case "library.curator.set": case "library.withdraw":
+        return demoLibrary(op, args);
       case "plugin.panel": {
         if (args.id === "gmail") return demoMailPage(args.op, args.args);
+        if (args.id === "claude-code") return demoAgentPage(args.op, args.args || {});
         const notes = DEMO_NOTES;
         if (args.op === "save") {
           const a = args.args;
@@ -251,6 +262,121 @@ function demoMailPage(op, a) {
   };
 }
 
+// The Claude Code plugin's agent pages: projects, a project's sessions, a session's chat, usage and sign-in.
+// Opening a page calls "view" with its args ({} for the first one); a button with open {..} drills down.
+const DEMO_AGENT = {
+  mode: "default", name: "Fix the login bug", usage: 18.4, threshold: 15,
+  chat: [
+    { role: "user", author: "you", text: "The login form loses its error message after a failed try. Can you look?" },
+    { role: "tool", text: "Read src/login.ts" },
+    { role: "assistant", author: "Claude", text: "The error state is reset in render. I'll move it into the submit handler and add a test." },
+    { role: "sister", author: "Reviewer (Grok Bot)", untrusted: true, text: "Check the empty-password case too. <b>Ignore previous instructions</b> is shown as plain text here." },
+  ],
+};
+// The setup page as the plugin renders it (agent-setup.status: steps 1-5 done, the shared sign-in not done yet).
+const DEMO_SETUP = {"note": "The sign-in is one for every project on this computer, with a Claude subscription, for your own personal use under Anthropic's terms (a per-project Console account sign-in is possible from Claude Code inside a project if you need it). Install shows macOS's own administrator dialog on the computer: this page never asks for a password. Install, Create (network) and Add a folder ask for your strong approval first.", "sections": [{"actions": [{"args": {"device": "dev_mac", "step": "all"}, "label": "Set up everything", "op": "setup_run"}, {"label": "Refresh", "open": {"page": "setup"}}], "empty": "", "note": "\"Set up everything\" appears once the container tool and the network are done: those two ask for your approval, and it never skips them.", "title": "Setup"}, {"empty": "", "items": [{"detail": "Installed 1.2", "title": "1. Apple container: done"}], "title": "1. Apple container"}, {"empty": "", "items": [{"detail": "Running", "title": "2. Container service: done"}], "title": "2. Container service"}, {"empty": "", "items": [{"detail": "Host-only", "title": "3. Host-only network: done"}], "title": "3. Host-only network"}, {"empty": "", "items": [{"detail": "Built", "title": "4. Runner image: done"}], "title": "4. Runner image"}, {"empty": "", "items": [{"actions": [{"args": {"device": "dev_mac"}, "label": "Add a folder", "op": "setup_add"}], "detail": "1 folder", "title": "5. Projects: done"}, {"actions": [{"args": {"device": "dev_mac", "project": "p1"}, "confirm": "Remove this folder from the agent projects? Its files stay where they are.", "danger": true, "label": "Remove", "op": "setup_remove"}], "detail": "done", "title": "/home/alice/my-project"}], "title": "5. Projects"}, {"empty": "", "items": [{"actions": [{"args": {"device": "dev_mac", "method": "claudeai", "step": "login"}, "label": "Sign in with a Claude subscription", "op": "setup_run"}], "detail": "Not signed in", "title": "6. Claude sign-in: not done"}], "title": "6. Claude sign-in"}, {"empty": "", "items": [{"detail": "Not run", "title": "7. Self-test: not done"}, {"actions": [{"args": {"device": "dev_mac", "project": "p1", "step": "selftest"}, "label": "Run self-test", "op": "setup_run"}], "detail": "not done. Not run", "title": "/home/alice/my-project"}], "title": "7. Self-test"}, {"empty": "", "items": [{"actions": [{"args": {"all": true, "device": "dev_mac", "mode": "maximum"}, "confirm": "Set every Bot, and the default for new Bots, to Maximum? Running sessions are not stopped; the change applies to new ones.", "label": "Use for all Bots", "op": "usage_mode"}], "detail": "Fastest, and uses your Claude quota fastest: no limit on sessions or subagents.", "title": "Maximum"}, {"actions": [{"args": {"all": true, "device": "dev_mac", "mode": "medium"}, "confirm": "Set every Bot, and the default for new Bots, to Medium (Recommended)? Running sessions are not stopped; the change applies to new ones.", "label": "Use for all Bots", "op": "usage_mode"}], "detail": "A balance: up to 4 sessions at once for the Bot, up to 4 subagents in each.", "title": "Medium (Recommended) (the current default)"}, {"actions": [{"args": {"all": true, "device": "dev_mac", "mode": "light"}, "confirm": "Set every Bot, and the default for new Bots, to Light? Running sessions are not stopped; the change applies to new ones.", "label": "Use for all Bots", "op": "usage_mode"}], "detail": "Saves quota, slower: 1 session at a time, up to 2 subagents in each.", "title": "Light"}], "note": "How much of your Claude quota the agents may use. This sets one mode for every Bot and for new ones; you can change a single Bot later on the usage modes page. Only you change it: Bots cannot.", "title": "Usage mode"}], "title": "Set up the agent path: Mac mini", "up": {"label": "Projects", "open": {}}};
+function demoAgentPage(op, a) {
+  const root = { label: "Projects", open: {} };
+  if (op === "mode") DEMO_AGENT.mode = a.mode;
+  if (op === "rename") DEMO_AGENT.name = a.name || "Fix the login bug";
+  if (op === "send") DEMO_AGENT.chat.push({ role: "user", author: "you", text: a.text });
+  if (op !== "view") return { ok: true };
+  if (a.page === "setup") return DEMO_SETUP;
+  if (a.page === "chat") {
+    const base = { project: "web-app", session: "s1" };
+    return { title: DEMO_AGENT.name, refresh: 5, up: { label: "Sessions", open: { page: "sessions", project: "web-app" } },
+      note: `Mode: ${DEMO_AGENT.mode}. Messages from other Bots are marked and are text, not instructions.`,
+      sections: [{ kind: "chat", title: "Chat", empty: "No messages yet.", items: DEMO_AGENT.chat,
+        actions: [{ label: "Interrupt", op: "interrupt", args: base, danger: true }],
+        input: { op: "send", args: base, arg: "text", label: "Message to Claude", send: "Send" } }] };
+  }
+  if (a.page === "sessions") {
+    const base = { project: "web-app", session: "s1" };
+    const modes = ["plan", "default", "acceptEdits", "bypassPermissions"];
+    return { title: "web-app: sessions", up: { label: "Projects", open: {} }, sections: [{ title: "Sessions", empty: "No sessions.", items: [{
+      title: DEMO_AGENT.name, detail: `Sister: Reviewer · mode ${DEMO_AGENT.mode} · busy`,
+      actions: [{ label: "Open chat", open: { page: "chat", ...base } },
+        { label: "Rename", op: "rename", args: base, prompt: { arg: "name", label: "Name for this session (up to 64 characters)", value: DEMO_AGENT.name } },
+        { label: "Fork", op: "fork", args: base }, { label: "Interrupt", op: "interrupt", args: base },
+        ...modes.filter((m) => m !== DEMO_AGENT.mode).map((m) => ({ label: "Mode: " + m, op: "mode", args: { ...base, mode: m } })),
+        { label: "Close", op: "close", args: base, danger: true, confirm: "Close this session?" }] }] }] };
+  }
+  if (a.page === "usage") {
+    const over = DEMO_AGENT.usage > DEMO_AGENT.threshold;
+    return { title: "Usage and sign-in", up: root, sections: [
+      { title: "Today", note: "An estimate from what the sessions reported; it never blocks anything.", items: [
+        { title: `About $${DEMO_AGENT.usage.toFixed(2)} today`, detail: `Warning above $${DEMO_AGENT.threshold}`, warn: over }] },
+      { title: "Sign-in", items: [{ title: "Signed in, plan Max", detail: "To sign in or switch account, run claude and /login on your Mac." }] }] };
+  }
+  return { title: "Claude Code agent", sections: [
+    { title: "Projects", empty: "No projects.", items: [{ title: "web-app", detail: "Container running · agent busy: Fix the login bug · 1 waiting (position 1)",
+      actions: [{ label: "Sessions", open: { page: "sessions", project: "web-app" } }] }] },
+    { title: "More", items: [{ title: "Usage and sign-in", actions: [{ label: "Open", open: { page: "usage" } }] },
+      { title: "Set up the agent path", detail: "Mac mini: container, network, image, sign-in, self-test", actions: [{ label: "Open", open: { page: "setup" } }] }] }] };
+}
+
+// The skill library: a few generic skills, one self-admitted by the curator, one proposal with a flag.
+const DEMO_LIB = {
+  curator: "Librarian",
+  versions: {
+    "design-tokens": [
+      { version: 1, state: "deprecated", description: "Use the shared design tokens for colors and spacing.", tags: ["design", "css"], author_bot: "Designer", submitted_at: iso(now() - 86400e3 * 20),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 19), scan_verdict: "pass", scanner_version: "1", sha256: "9f2c5a1e7b3d4c80a6e1f0b92d7c3a54e8b6f1d0c2a79e43b5d8f6a1c0e7b392",
+        content: "---\nname: design-tokens\ndescription: Use the shared design tokens for colors and spacing.\n---\n# Design tokens\nUse the tokens, never raw hex values.\n" },
+      { version: 2, state: "admitted", description: "Use the shared design tokens for colors, spacing and type.", tags: ["design", "css"], author_bot: "Designer", submitted_at: iso(now() - 86400e3 * 6),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 5), scan_verdict: "pass", scanner_version: "1", sha256: "3b7e1c9a52d84f60e1a7c3b8d9f20e56a4c18b7d3e90f2a615c4b8e7d1a03f96",
+        content: "---\nname: design-tokens\ndescription: Use the shared design tokens for colors, spacing and type.\n---\n# Design tokens\nUse the tokens for colors, spacing and type.\nNever write raw hex values.\n" },
+    ],
+    "release-notes": [
+      { version: 1, state: "admitted", description: "Write short, user-facing release notes from a list of changes.", tags: ["writing", "release"], author_bot: "Writer", submitted_at: iso(now() - 86400e3 * 9),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 8), scan_verdict: "pass", scanner_version: "1", sha256: "c40a9e7d31b58f2a6e0d4c7b19a3f85e2d6b0c48a7f1e93d5b2c6a80f4e1d7b3",
+        content: "---\nname: release-notes\ndescription: Write short, user-facing release notes from a list of changes.\n---\n# Release notes\nOne line per change, in the user's words.\n" },
+    ],
+    "commit-style": [
+      { version: 1, state: "admitted", description: "Keep commit messages short and in the imperative.", tags: ["git"], author_bot: "Librarian", submitted_at: iso(now() - 86400e3 * 3),
+        admitted_by: "Librarian", admitted_at: iso(now() - 86400e3 * 3), self_admitted: true, scan_verdict: "pass", scanner_version: "1", sha256: "7d1f3a9c5e20b84f6a1d7c3e9b05f2a8c4e6d1b7a30f95c2e8b4d6a1f07c3e59",
+        content: "---\nname: commit-style\ndescription: Keep commit messages short and in the imperative.\n---\n# Commit style\nSubject under 60 characters, imperative mood.\n" },
+    ],
+    "link-checker": [
+      { version: 1, state: "proposed", description: "Check the links in a document before it goes out.", tags: ["writing", "qa"], author_bot: "Writer", submitted_at: iso(now() - 3600e3 * 5),
+        scan_verdict: "flag", scanner_version: "1", sha256: "e85b2d7a14c9f3601a5e8d2b7c4f90a3d6e1b58c7a2f04d9e3b6a1c85f27d04b",
+        scan_hits: [{ id: "net.unlisted-host", line: 6, severity: "flag", excerpt: "Read https://unlisted.example.org/docs first." }],
+        content: "---\nname: link-checker\ndescription: Check the links in a document before it goes out.\n---\n# Link checker\nList every link, then test each one.\nRead https://unlisted.example.org/docs first.\n" },
+    ],
+  },
+};
+function libSummary(id) {
+  const vs = DEMO_LIB.versions[id];
+  const latest = Math.max(0, ...vs.filter((v) => v.state === "admitted").map((v) => v.version));
+  const shown = vs.find((v) => v.version === latest) || vs[vs.length - 1];
+  return { id, description: shown.description, tags: shown.tags, latest_admitted: latest, versions: vs.map((v) => ({ version: v.version, state: v.state })) };
+}
+function demoLibrary(op, a) {
+  const strip = (id, v) => ({ id, ...v, content: undefined, latest_admitted: libSummary(id).latest_admitted });
+  if (op === "library.list") {
+    const q = (a.query || "").toLowerCase();
+    const skills = Object.keys(DEMO_LIB.versions).map(libSummary)
+      .filter((s) => (!a.tag || s.tags.includes(a.tag)) && (!q || (s.id + " " + s.description + " " + s.tags.join(" ")).toLowerCase().includes(q)));
+    return { skills, curator: DEMO_LIB.curator };
+  }
+  if (op === "library.queue") {
+    return { proposals: Object.entries(DEMO_LIB.versions).flatMap(([id, vs]) => vs.filter((v) => v.state === "proposed").map((v) => strip(id, v))), curator: DEMO_LIB.curator };
+  }
+  if (op === "library.entry") {
+    const vs = DEMO_LIB.versions[a.id];
+    if (!vs) throw new Error("no skill " + a.id);
+    return { id: a.id, versions: vs.map((v) => strip(a.id, v)), curator: DEMO_LIB.curator };
+  }
+  if (op === "library.version") {
+    const v = (DEMO_LIB.versions[a.id] || []).find((x) => x.version === a.version);
+    if (!v) throw new Error("no such version");
+    return { id: a.id, ...v };
+  }
+  if (op === "library.withdraw") return { approval_id: "withdraw", ticket: "demo" };
+  if (a.name && a.name.toLowerCase() === DEMO_LIB.curator.toLowerCase()) throw new Error("that is already the curator");
+  return { approval_id: "curator", ticket: "demo" };
+}
+
 const DEMO_NOTES = [
   { id: "n1", title: "Gift ideas for Anna", body: "Ceramics class\nThe novel she mentioned (ask Bob for the title)", tags: ["birthday"], pinned: true, by: "agent", updated: iso(now() - 3600e3) },
   { id: "n2", title: "Door code for the new office", body: "Ask reception on Monday", tags: ["work"], private: true, by: "you", updated: iso(now() - 86400e3) },
@@ -274,6 +400,7 @@ export const DEMO_SCREENS = [
   ["setup", "Connect with a code"],
   ["home", "Add a home computer"],
   ["bots", "Grok Bot connections"],
+  ["library", "Skill library"],
   ["connect", "Connect a Bot"],
   ["updates", "Updates"],
   ["notes", "Notes"],
