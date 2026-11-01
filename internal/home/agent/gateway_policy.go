@@ -117,6 +117,17 @@ func strictObject(raw []byte) (map[string]json.RawMessage, error) {
 	return out, nil
 }
 
+// topLevelKey are the top-level fields of a request body that are passed on, matched exactly. A field not listed
+// is refused, so one Anthropic adds later (a server-side feature such as mcp_servers or container, say) stays out
+// until it is added here on purpose. The list is what Claude Code's requests carry (the runner's dumped bodies and
+// the fields the bundled CLI sets); betas, user_profile_id and workspace_id are moved by the SDK into headers.
+var topLevelKey = map[string]bool{
+	"model": true, "messages": true, "system": true, "max_tokens": true, "metadata": true, "stop_sequences": true,
+	"stream": true, "temperature": true, "top_k": true, "top_p": true, "tools": true, "tool_choice": true,
+	"thinking": true, "context_management": true, "output_config": true, "output_format": true,
+	"service_tier": true, "speed": true, "inference_geo": true, "cache_control": true,
+}
+
 // checkBody decides whether a request body may be forwarded. It returns "" or the reason it is refused.
 func checkBody(body []byte, allowWebSearch bool) (reason string) {
 	top, err := strictObject(body)
@@ -124,13 +135,8 @@ func checkBody(body []byte, allowWebSearch bool) (reason string) {
 		return "the body isn't a JSON object that can be checked"
 	}
 	for k := range top {
-		switch strings.ToLower(k) {
-		case "mcp_servers", "container":
-			return "'" + clip(k, 20) + "' (a server-side feature) isn't allowed" // in any case: a parser may fold it
-		case "tools":
-			if k != "tools" {
-				return "a field can't be checked"
-			}
+		if !topLevelKey[k] { // exact, case-sensitive: "Messages" or "System" is not the field a parser would walk
+			return "the field '" + clip(k, 20) + "' isn't allowed"
 		}
 	}
 	for _, k := range []string{"messages", "system"} {
