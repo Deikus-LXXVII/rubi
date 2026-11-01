@@ -78,18 +78,18 @@ func TestPutWithPinnedVerifier(t *testing.T) {
 		return PutArgs{Spec: r, Blobs: map[string]string{sha(goodSkill): goodSkill}}
 	}
 	sig := signedSkill(t, priv, "pass")
-	if _, err := s.Put(mk(sig)); err == nil {
+	if _, err := putA(s, mk(sig)); err == nil {
 		t.Fatal("a library skill was accepted with no key pinned")
 	}
 	key = pub
 	if res := mustPut(t, s, mk(sig)); res.Skills[0].State != StateActive {
 		t.Fatalf("%+v", res.Skills)
 	}
-	if _, err := s.Put(mk("A" + sig[1:])); err == nil {
+	if _, err := putA(s, mk("A"+sig[1:])); err == nil {
 		t.Fatal("a bad signature was accepted")
 	}
 	// A plugin cannot label an ad-hoc skill "library" without a valid signature either.
-	if _, err := s.Put(mk(strings.Repeat("A", 100))); err == nil {
+	if _, err := putA(s, mk(strings.Repeat("A", 100))); err == nil {
 		t.Fatal("a made-up signature was accepted")
 	}
 }
@@ -168,7 +168,7 @@ func TestWithdrawnLibraryVersionIsTakenOutOfBuiltRoles(t *testing.T) {
 	r2.Project = "p"
 	r2.Name = "second"
 	r2.Skills = r.Skills
-	if _, err := s.Put(PutArgs{Spec: r2, Blobs: map[string]string{sha(goodSkill): goodSkill}}); err == nil {
+	if _, err := putA(s, PutArgs{Spec: r2, Blobs: map[string]string{sha(goodSkill): goodSkill}}); err == nil {
 		t.Fatal("a withdrawn version was accepted at put")
 	}
 }

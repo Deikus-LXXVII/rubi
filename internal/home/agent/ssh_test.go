@@ -354,7 +354,7 @@ func (se *sshEnv) setGrants(id string, targets []string) {
 	}
 	spec := *cur
 	spec.SSH = targets
-	_, err = se.op("role.put", roles.PutArgs{ID: id, BaseVersion: cur.Version, Spec: &spec, By: "user", Change: &roles.Change{Approval: "ap-test-x"}})
+	_, err = se.op("role.put", roles.PutArgs{ID: id, BaseVersion: cur.Version, Spec: &spec, By: "user", Change: &roles.Change{Approval: "ap-test-x"}, AttestedKinds: map[string]string{"ap-test-x": "claude-code.role_widen"}})
 	if err != nil {
 		se.t.Fatal(err)
 	}

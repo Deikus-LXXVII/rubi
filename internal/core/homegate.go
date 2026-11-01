@@ -30,6 +30,9 @@ const (
 	kindSSHTarget   = "claude-code.ssh_target"
 	kindSkillAccept = "claude-code.role_skill_accept"
 
+	// attestedKindsField is the role.put argument core owns: id -> approval kind of every id it attested.
+	attestedKindsField = "attested_kinds"
+
 	opRolePut     = "claude-agent.role.put"
 	opSSHRegister = "claude-agent.ssh.register"
 )
@@ -73,7 +76,11 @@ func (c *Core) beginExec(plugin, kind string, payload json.RawMessage) func() {
 }
 
 // attestHomeCall refuses a Home call that carries approvals core can't vouch for.
-func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) error {
+//
+// For a role.put it also returns the arguments to forward: any `attested_kinds` the plugin sent is dropped and
+// replaced by core's own map from each attested id to its approval kind, which Home uses to keep an id from covering
+// more than its kind allows (roles/approvals.go).
+func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.RawMessage, error) {
 	switch op {
 	case opRolePut:
 		var in struct {
@@ -90,7 +97,7 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) error {
 			} `json:"change"`
 		}
 		if err := json.Unmarshal(args, &in); err != nil {
-			return errors.New("Rubi Home refused: bad role.put arguments")
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
 		}
 		var ids []string
 		for _, m := range in.Spec.MCP {
@@ -102,18 +109,35 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) error {
 		if in.Change != nil {
 			ids = append(ids, in.Change.Approval)
 		}
+		kinds := map[string]string{}
 		for _, id := range ids {
 			if id == "" {
 				continue
 			}
-			if err := c.checkApprovalID(plugin, id, roleApprovalKinds); err != nil {
-				return err
+			kind, err := c.checkApprovalID(plugin, id, roleApprovalKinds)
+			if err != nil {
+				return nil, err
 			}
+			kinds[id] = kind
 		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(args, &top); err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		raw, err := json.Marshal(kinds)
+		if err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		top[attestedKindsField] = raw
+		out, err := json.Marshal(top)
+		if err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		return out, nil
 	case opSSHRegister:
-		return c.attestSSHRegister(plugin, args)
+		return args, c.attestSSHRegister(plugin, args)
 	}
-	return nil
+	return args, nil
 }
 
 // checkApprovalID accepts an id that is (a) a core approval of this plugin, of a role kind, that is executing or
@@ -124,10 +148,12 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) error {
 // has one option, the approving one (apply, accept). So any option that gets here is an approval. The id is not
 // bound to the content of the change (the plugin's ticket holds the role's fields and core does not parse them);
 // Home spends an id once, and the plugin's own pending record ties an id to one change.
-func (c *Core) checkApprovalID(plugin, id string, kinds map[string]bool) error {
+//
+// It returns the kind the id was attested as.
+func (c *Core) checkApprovalID(plugin, id string, kinds map[string]bool) (string, error) {
 	if s, err := c.Approvals.Get(id); err == nil && s.Integration == plugin && kinds[s.Kind] &&
 		(s.State == approvals.Executing || s.State == approvals.Executed) {
-		return nil
+		return s.Kind, nil
 	}
 	c.execMu.Lock()
 	defer c.execMu.Unlock()
@@ -136,10 +162,10 @@ func (c *Core) checkApprovalID(plugin, id string, kinds map[string]bool) error {
 			ApprovalID string `json:"approval_id"`
 		}
 		if g.kind == kindSkillAccept && kinds[g.kind] && json.Unmarshal(g.payload, &p) == nil && p.ApprovalID != "" && p.ApprovalID == id {
-			return nil
+			return g.kind, nil
 		}
 	}
-	return fmt.Errorf("Rubi refused: approval %q is not an approval the user gave this plugin for a role change", clip(id, 40))
+	return "", fmt.Errorf("Rubi refused: approval %q is not an approval the user gave this plugin for a role change", clip(id, 40))
 }
 
 // sshTarget is every field Home's ssh.register takes (sshtarget.RegisterArgs) and the plugin's approval payload

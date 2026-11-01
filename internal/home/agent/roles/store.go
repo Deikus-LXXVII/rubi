@@ -488,7 +488,7 @@ func (s *Store) Put(in PutArgs) (*PutResult, error) {
 	if len(p) == 0 && len(RoleJSON(r))+64 > MaxRoleJSON {
 		p.addf("role.json would be over %d bytes", MaxRoleJSON)
 	}
-	checkApprovals(r, cur, spent, &p)
+	checkApprovals(r, cur, spent, in.AttestedKinds, &p)
 	if len(p) > 0 {
 		return nil, &ValidationError{Reasons: p}
 	}

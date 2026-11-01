@@ -162,6 +162,8 @@ type PutArgs struct {
 	Blobs       map[string]string `json:"blobs"`
 	By          string            `json:"by"`
 	Change      *Change           `json:"change"`
+	// AttestedKinds is set by core alone (it drops what a plugin sends): the approval kind of every id it attested.
+	AttestedKinds map[string]string `json:"attested_kinds"`
 }
 
 // SkillState is a skill's outcome in a PutResult.

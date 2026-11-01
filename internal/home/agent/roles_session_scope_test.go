@@ -255,7 +255,7 @@ func TestRoleRevocationReachesARunningVM(t *testing.T) {
 		t.Fatal("host not allowed to begin with")
 	}
 	spec := &roles.Role{Project: "my-project", Name: "role-a", Description: "d", Tools: []string{"Read"}, Hosts: []string{"keep.example.com"}}
-	res, err := re.m.roles.Put(roles.PutArgs{ID: a, BaseVersion: v, Spec: spec, By: "user", Change: &roles.Change{Approval: "ap-test-2"}})
+	res, err := re.m.roles.Put(roles.PutArgs{ID: a, BaseVersion: v, Spec: spec, By: "user", Change: &roles.Change{Approval: "ap-test-2"}, AttestedKinds: map[string]string{"ap-test-2": "claude-code.role_widen"}})
 	if err != nil {
 		t.Fatal(err)
 	}

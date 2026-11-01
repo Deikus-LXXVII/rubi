@@ -25,6 +25,9 @@ import (
 // role kind, decided by the user), and only the official plugin may declare the capability that reaches here
 // (plugins.ReservedHomeCapability). Home's part is the spent-id rule above.
 
+// kindSkillAccept is the kind core attests a skill-flag acceptance as (internal/core/homegate.go).
+const kindSkillAccept = "claude-code.role_skill_accept"
+
 // approvalUse records which version spent an approval id and what it authorized.
 type approvalUse struct {
 	Version int      `json:"version"`
@@ -182,7 +185,12 @@ func carry(r, prev *Role, by string) {
 }
 
 // checkApprovals refuses additions without an approval id, and ids that were already spent.
-func checkApprovals(r, prev *Role, u *used, p *problems) {
+//
+// kinds is core's map from each id it attested to the approval's kind (PutArgs.AttestedKinds). An id missing from it
+// (also when core sent none: only core forwards a plugin's call) covers nothing, and an id of kind
+// kindSkillAccept covers only skill-flag additions ("accept:"); a host, tool, MCP server or plugin needs a
+// role_widen or role_foreign id.
+func checkApprovals(r, prev *Role, u *used, kinds map[string]string, p *problems) {
 	adds := additions(prev, r)
 	spent := map[string]bool{}
 	for _, a := range adds {
@@ -193,6 +201,10 @@ func checkApprovals(r, prev *Role, u *used, p *problems) {
 		switch {
 		case a.Approval == "":
 			p.addf("adding %s needs an approval id", key)
+		case kinds[a.Approval] == "":
+			p.addf("approval %s for %s was not attested by Rubi", clipText(a.Approval, 64), key)
+		case kinds[a.Approval] == kindSkillAccept && !strings.HasPrefix(a.Key, "accept:"):
+			p.addf("approval %s is for accepting a skill flag; adding %s needs a role change approval", clipText(a.Approval, 64), key)
 		case u.Approvals[a.Approval].Version > 0:
 			if !spent[a.Approval] {
 				p.addf("approval %s was already used by version %d", clipText(a.Approval, 64), u.Approvals[a.Approval].Version)
