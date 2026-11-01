@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
@@ -83,6 +84,12 @@ func (c *Core) beginExec(plugin, kind string, payload json.RawMessage) func() {
 func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.RawMessage, error) {
 	switch op {
 	case opRolePut:
+		// encoding/json matches keys ignoring case (Unicode folding too: the Kelvin sign is a k), and which of two
+		// such keys wins depends on their order. Core checks one reading and forwards the original, so two keys that
+		// fold together anywhere would let core and Home read different specs or kinds.
+		if err := noFoldedDuplicates(args); err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
 		var in struct {
 			Spec struct {
 				MCP []struct {
@@ -128,6 +135,11 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.Raw
 		if err != nil {
 			return nil, errors.New("Rubi Home refused: bad role.put arguments")
 		}
+		for k := range top {
+			if strings.EqualFold(k, attestedKindsField) {
+				delete(top, k) // the plugin's own, in any spelling
+			}
+		}
 		top[attestedKindsField] = raw
 		out, err := json.Marshal(top)
 		if err != nil {
@@ -135,6 +147,9 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.Raw
 		}
 		return out, nil
 	case opSSHRegister:
+		if err := noFoldedDuplicates(args); err != nil {
+			return nil, errors.New("Rubi Home refused: bad ssh.register arguments")
+		}
 		return args, c.attestSSHRegister(plugin, args)
 	}
 	return args, nil
@@ -239,4 +254,65 @@ func clip(s string, n int) string {
 		return s[:n]
 	}
 	return s
+}
+
+// noFoldedDuplicates refuses JSON with an object, at any depth, holding two keys that are equal ignoring case the way
+// encoding/json compares them (strings.EqualFold: Unicode simple folding).
+func noFoldedDuplicates(raw json.RawMessage) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := foldCheckValue(dec, 0); err != nil {
+		return err
+	}
+	if dec.More() {
+		return errors.New("trailing data")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("trailing data")
+	}
+	return nil
+}
+
+func foldCheckValue(dec *json.Decoder, depth int) error {
+	if depth > 64 {
+		return errors.New("too deep")
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		var keys []string
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			k, ok := kt.(string)
+			if !ok {
+				return errors.New("bad key")
+			}
+			for _, prev := range keys {
+				if strings.EqualFold(prev, k) {
+					return fmt.Errorf("duplicate key %q", clip(k, 40))
+				}
+			}
+			keys = append(keys, k)
+			if err := foldCheckValue(dec, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // }
+		return err
+	case json.Delim('['):
+		for dec.More() {
+			if err := foldCheckValue(dec, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // ]
+		return err
+	}
+	return nil
 }
