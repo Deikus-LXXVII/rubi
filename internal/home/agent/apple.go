@@ -550,18 +550,31 @@ func spawnProcess(argv []string, logStderr bool) (Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := cmd.StdoutPipe()
+	// An os.Pipe, not StdoutPipe: Wait closes StdoutPipe's read end at the process's exit and drops
+	// what is still unread (seen on Linux with a fast process); here the reader gets all, then EOF.
+	out, pw, err := os.Pipe()
 	if err != nil {
 		return nil, err
 	}
-	errPipe, err := cmd.StderrPipe()
+	cmd.Stdout = pw
+	errPipe, pe, err := os.Pipe()
 	if err != nil {
+		_ = out.Close()
+		_ = pw.Close()
 		return nil, err
 	}
+	cmd.Stderr = pe
 	if err := cmd.Start(); err != nil {
+		_ = out.Close()
+		_ = pw.Close()
+		_ = errPipe.Close()
+		_ = pe.Close()
 		return nil, err
 	}
-	go func() { // the runner's stderr goes to the log, line by line and bounded; other processes' is dropped
+	_ = pw.Close() // the child holds the write ends now
+	_ = pe.Close()
+	go func() {
+		defer errPipe.Close() // the runner's stderr goes to the log, line by line and bounded; other processes' is dropped
 		if !logStderr {
 			_, _ = io.Copy(io.Discard, errPipe)
 			return
@@ -578,6 +591,7 @@ func spawnProcess(argv []string, logStderr bool) (Conn, error) {
 	go func() {
 		_ = cmd.Wait()
 		close(c.done)
+		// out stays open for the reader to drain; Close or the GC's finalizer frees it.
 	}()
 	return c, nil
 }
@@ -588,6 +602,9 @@ func (c *procConn) CloseWrite() error           { return c.stdin.Close() }
 func (c *procConn) Done() <-chan struct{}       { return c.done }
 func (c *procConn) Close() error {
 	_ = c.stdin.Close()
+	if f, ok := c.out.(*os.File); ok {
+		defer f.Close()
+	}
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}

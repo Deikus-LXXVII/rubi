@@ -133,6 +133,8 @@ const pairingTTL = 15 * time.Minute
 type Helper struct {
 	Dir string
 	ID  *identity.Identity
+	// vmOverride, when set, makes the agents' VM instead of the Apple container (a seam for tests).
+	vmOverride func(agent.Project) agent.VM
 	// Shortcuts runs the shortcuts command (a seam for tests).
 	Shortcuts func(ctx context.Context, args ...string) ([]byte, error)
 	Hue       *Hue
@@ -219,6 +221,9 @@ func (h *Helper) newAgent() *agent.Manager {
 		Projects:  func() []string { return h.Fresh().AgentProjects },
 		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
 		NewVM: func(p agent.Project) agent.VM {
+			if h.vmOverride != nil {
+				return h.vmOverride(p)
+			}
 			c := h.Fresh()
 			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
 		},
