@@ -107,6 +107,70 @@ func TestHomeGateSSHRegister(t *testing.T) {
 	}
 }
 
+// Every field Home's ssh.register takes is bound to the approval: widening one that the user did not see is refused.
+func TestHomeGateSSHRegisterAllFields(t *testing.T) {
+	c := targetCore(t)
+	const base = `"name":"web","host":"example.com","port":22,"user":"deploy","fingerprint":"SHA256:abc"`
+	payload := json.RawMessage(`{"device":"d","key_type":"ssh-ed25519",` + base + `,"allowed_commands":["ls","uptime"],"ask_each_time":true}`)
+	decide(t, c, "claude-code", kindSSHTarget, payload, func(string) {
+		try := func(extra string) error {
+			return c.attestHomeCall("claude-code", opSSHRegister, json.RawMessage(`{`+base+extra+`}`))
+		}
+		if err := try(`,"allowed_commands":["uptime","ls","ls"],"ask_each_time":true`); err != nil {
+			t.Errorf("the approved target (commands in another order) was refused: %v", err)
+		}
+		for name, extra := range map[string]string{
+			"no allowed list":   `,"ask_each_time":true`,
+			"one more command":  `,"allowed_commands":["ls","uptime","sh"],"ask_each_time":true`,
+			"one fewer command": `,"allowed_commands":["ls"],"ask_each_time":true`,
+			"ask_each_time off": `,"allowed_commands":["ls","uptime"]`,
+			"reuse":             `,"allowed_commands":["ls","uptime"],"ask_each_time":true,"reuse":true`,
+			"an unknown field":  `,"allowed_commands":["ls","uptime"],"ask_each_time":true,"sudo":true`,
+		} {
+			if try(extra) == nil {
+				t.Errorf("%s was accepted", name)
+			}
+		}
+	})
+	// A payload without the optional fields allows only args without them (missing equals false).
+	decide(t, c, "claude-code", kindSSHTarget, json.RawMessage(`{`+base+`}`), func(string) {
+		if err := c.attestHomeCall("claude-code", opSSHRegister, json.RawMessage(`{`+base+`,"ask_each_time":false,"reuse":false}`)); err != nil {
+			t.Errorf("false equals missing: %v", err)
+		}
+		if err := c.attestHomeCall("claude-code", opSSHRegister, json.RawMessage(`{`+base+`,"allowed_commands":["ls"]}`)); err == nil {
+			t.Error("a command list the approval did not carry was accepted")
+		}
+		if err := c.attestHomeCall("claude-code", opSSHRegister, json.RawMessage(`{`+base+`,"reuse":true}`)); err == nil {
+			t.Error("reuse the approval did not carry was accepted")
+		}
+	})
+}
+
+// A skill accept carries the id the plugin made; core vouches for it while that approval executes.
+func TestHomeGateSkillAcceptID(t *testing.T) {
+	c := targetCore(t)
+	args := func(id string) json.RawMessage {
+		return json.RawMessage(`{"spec":{},"change":{"approval":"` + id + `"}}`)
+	}
+	if err := c.attestHomeCall("claude-code", opRolePut, args("sk_1")); err == nil {
+		t.Error("an unknown skill-accept id was accepted")
+	}
+	decide(t, c, "claude-code", "claude-code.role_skill_accept", json.RawMessage(`{"approval_id":"sk_1"}`), func(string) {
+		if err := c.attestHomeCall("claude-code", opRolePut, args("sk_1")); err != nil {
+			t.Errorf("the executing skill accept was refused: %v", err)
+		}
+		if err := c.attestHomeCall("claude-code", opRolePut, args("sk_2")); err == nil {
+			t.Error("another id was accepted")
+		}
+		if err := c.attestHomeCall("other-plugin", opRolePut, args("sk_1")); err == nil {
+			t.Error("another plugin used the id")
+		}
+	})
+	if err := c.attestHomeCall("claude-code", opRolePut, args("sk_1")); err == nil {
+		t.Error("the id outlived the approval")
+	}
+}
+
 // The gate sits on the relay: homeCall refuses before it looks for a device.
 func TestHomeCallRunsTheGate(t *testing.T) {
 	c := targetCore(t)

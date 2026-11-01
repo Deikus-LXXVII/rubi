@@ -124,6 +124,12 @@ func TestClaudeAgentOpsThroughHandle(t *testing.T) {
 			t.Errorf("%s: %v", op, err)
 		}
 	}
+	// The SSH ops reach the agent (the answer may be an error of the SSH layer, never "doesn't do").
+	for _, op := range []string{"ssh.scan", "ssh.register", "ssh.list", "ssh.remove", "ssh.audit"} {
+		if _, err := handle(t, h, "tok", "claude-agent."+op, map[string]any{}); err != nil && strings.Contains(err.Error(), "doesn't do") {
+			t.Errorf("%s not routed: %v", op, err)
+		}
+	}
 	if _, err := handle(t, h, "tok", "claude-agent.bogus", nil); err == nil {
 		t.Fatal("unknown op served")
 	}

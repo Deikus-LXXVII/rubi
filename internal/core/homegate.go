@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,7 +27,8 @@ import (
 // what stands between the official plugin's bugs and Home, and the reserved list is what keeps others out.
 
 const (
-	kindSSHTarget = "claude-code.ssh_target"
+	kindSSHTarget   = "claude-code.ssh_target"
+	kindSkillAccept = "claude-code.role_skill_accept"
 
 	opRolePut     = "claude-agent.role.put"
 	opSSHRegister = "claude-agent.ssh.register"
@@ -114,25 +116,76 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) error {
 	return nil
 }
 
+// checkApprovalID accepts an id that is (a) a core approval of this plugin, of a role kind, that is executing or
+// executed, or (b) the approval_id of a role_skill_accept approval of this plugin that is executing right now (the
+// plugin makes that id itself; it is not a core approval id).
+//
+// Executing or Executed is reached only through the approving button: a decline ends in Denied, and every role kind
+// has one option, the approving one (apply, accept). So any option that gets here is an approval. The id is not
+// bound to the content of the change (the plugin's ticket holds the role's fields and core does not parse them);
+// Home spends an id once, and the plugin's own pending record ties an id to one change.
 func (c *Core) checkApprovalID(plugin, id string, kinds map[string]bool) error {
-	s, err := c.Approvals.Get(id)
-	if err != nil || s.Integration != plugin || !kinds[s.Kind] ||
-		(s.State != approvals.Executing && s.State != approvals.Executed) {
-		return fmt.Errorf("Rubi refused: approval %q is not an approval the user gave this plugin for a role change", clip(id, 40))
+	if s, err := c.Approvals.Get(id); err == nil && s.Integration == plugin && kinds[s.Kind] &&
+		(s.State == approvals.Executing || s.State == approvals.Executed) {
+		return nil
 	}
-	return nil
+	c.execMu.Lock()
+	defer c.execMu.Unlock()
+	for _, g := range c.execs[plugin] {
+		var p struct {
+			ApprovalID string `json:"approval_id"`
+		}
+		if g.kind == kindSkillAccept && kinds[g.kind] && json.Unmarshal(g.payload, &p) == nil && p.ApprovalID != "" && p.ApprovalID == id {
+			return nil
+		}
+	}
+	return fmt.Errorf("Rubi refused: approval %q is not an approval the user gave this plugin for a role change", clip(id, 40))
+}
+
+// sshTarget is every field Home's ssh.register takes (sshtarget.RegisterArgs) and the plugin's approval payload
+// carries (same JSON names). The gate decodes the arguments strictly into it and compares all of it, so a field
+// Home learns later is refused until the gate knows it.
+type sshTarget struct {
+	Name            string   `json:"name"`
+	Host            string   `json:"host"`
+	Port            int      `json:"port"`
+	User            string   `json:"user"`
+	Fingerprint     string   `json:"fingerprint"`
+	AllowedCommands []string `json:"allowed_commands"`
+	AskEachTime     bool     `json:"ask_each_time"`
+	Reuse           bool     `json:"reuse"`
+}
+
+func (a sshTarget) same(b sshTarget) bool {
+	if a.Name != b.Name || a.Host != b.Host || a.Port != b.Port || a.User != b.User || a.Fingerprint != b.Fingerprint ||
+		a.AskEachTime != b.AskEachTime || a.Reuse != b.Reuse {
+		return false
+	}
+	// A set: order and repeats don't matter, a missing list equals an empty one.
+	set := func(l []string) map[string]bool {
+		m := map[string]bool{}
+		for _, x := range l {
+			m[x] = true
+		}
+		return m
+	}
+	x, y := set(a.AllowedCommands), set(b.AllowedCommands)
+	if len(x) != len(y) {
+		return false
+	}
+	for k := range x {
+		if !y[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Core) attestSSHRegister(plugin string, args json.RawMessage) error {
-	type target struct {
-		Name        string `json:"name"`
-		Host        string `json:"host"`
-		Port        int    `json:"port"`
-		User        string `json:"user"`
-		Fingerprint string `json:"fingerprint"`
-	}
-	var want target
-	if err := json.Unmarshal(args, &want); err != nil {
+	var want sshTarget
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&want); err != nil || dec.More() {
 		return errors.New("Rubi Home refused: bad ssh.register arguments")
 	}
 	c.execMu.Lock()
@@ -141,8 +194,8 @@ func (c *Core) attestSSHRegister(plugin string, args json.RawMessage) error {
 		if g.kind != kindSSHTarget {
 			continue
 		}
-		var got target
-		if json.Unmarshal(g.payload, &got) == nil && got == want && want.Name != "" && want.Fingerprint != "" {
+		var got sshTarget // the payload has more fields (device, key_type); they are not Home's
+		if json.Unmarshal(g.payload, &got) == nil && got.same(want) && want.Name != "" && want.Fingerprint != "" {
 			return nil
 		}
 	}
