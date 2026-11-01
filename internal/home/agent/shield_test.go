@@ -234,3 +234,24 @@ func TestSecondDaemonDoesNotSweepShields(t *testing.T) {
 		t.Fatalf("a second daemon swept the first one's snapshots: %v", err)
 	}
 }
+
+// A file with more than one hard link may be a host file under another name: the snapshot leaves it out.
+func TestSnapshotSkipsHardLinkedFiles(t *testing.T) {
+	root := t.TempDir()
+	proj, outside := filepath.Join(root, "p"), filepath.Join(root, "outside")
+	write(t, filepath.Join(outside, "id_rsa"), "SECRET-KEY")
+	write(t, filepath.Join(proj, ".claude", "keep"), "ok")
+	if err := os.Link(filepath.Join(outside, "id_rsa"), filepath.Join(proj, ".claude", "linked")); err != nil {
+		t.Skipf("no hard links here: %v", err)
+	}
+	dst := filepath.Join(root, "snap")
+	if _, err := snapshotDir(proj, ".claude", dst); err != nil {
+		t.Fatal(err)
+	}
+	if treeHas(dst, "SECRET-KEY") {
+		t.Fatal("a hard-linked file reached the snapshot")
+	}
+	if !treeHas(dst, "ok") {
+		t.Fatal("an ordinary file was left out")
+	}
+}
