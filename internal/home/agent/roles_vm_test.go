@@ -67,7 +67,7 @@ func (re *roleEnv) put(name string, mod func(*roles.Role)) (id string, version i
 		mod(spec)
 	}
 	// Widening fields (hosts, tools outside the safe set) need an approval id; the tests stand in for one.
-	res, err := re.m.roles.Put(roles.PutArgs{Spec: spec, By: "user", Change: &roles.Change{Approval: "ap-test-" + name}})
+	res, err := re.m.roles.Put(roles.PutArgs{Spec: spec, By: "user", Change: &roles.Change{Approval: "ap-test-" + name}, AttestedKinds: map[string]string{"ap-test-" + name: "claude-code.role_widen"}})
 	if err != nil {
 		re.t.Fatal(err)
 	}

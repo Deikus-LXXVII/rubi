@@ -199,6 +199,19 @@ Reasons:
     `claude-code.ssh_target` is being executed for the plugin right now and its payload is the same target (name, host,
     port, user, host key fingerprint) the user confirmed. Spending an id once stays Home's job (`used.json`).
 
+  - **The kind travels with the id (`attested_kinds`).** After attesting a `role.put`, core drops any `attested_kinds`
+    field the plugin sent and sets its own: `{"<id>": "<kind>"}` for every id it attested (a plugin-made `sk_...` id of
+    a running `role_skill_accept` execute counts as that kind). Home takes this map as the only source of an id's kind,
+    and refuses a put that adds anything covered by an id the map does not list (also when the field is missing: only
+    core forwards a plugin's call, and no other caller of `role.put` adds anything without it). An id of kind
+    `role_skill_accept` may cover only an accepted skill flag; an added host, non-safe tool, MCP server or plugin
+    needs a `role_widen` or `role_foreign` id. So accepting a skill flag cannot authorize widening a role.
+
+  What Home does not require an approval for, by the owner's decision (tier 1 in section 6.1): granting an
+  already-registered SSH target to a role, and a mode up to the ceiling (`bypassPermissions` by default). The plugin
+  enforces who may do these (a Bot may grant itself only restricted targets); Home cannot tell the caller, so a
+  compromised official plugin could do both.
+
   What is not bound: an id is not tied to a digest of the exact change it approved (the plugin's ticket does that, and
   Home's spent-id rule limits an id to one version), and core does not know what a put adds (Home does). A bug in the
   official plugin can therefore still reuse a genuine, unspent role approval for a different widening; a third party

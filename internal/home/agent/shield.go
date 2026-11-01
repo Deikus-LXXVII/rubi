@@ -154,6 +154,9 @@ func snapshotDir(projectDir, rel, dst string) (copyErr, err error) {
 	return copyErr, os.Rename(tmp, dst)
 }
 
+// hardlinkLog makes the "left out" line for a hard-linked file appear once per process.
+var hardlinkLog sync.Once
+
 func copyTree(root *os.Root, dst, rel string, bytes *int64, files *int) error {
 	d, err := root.Open(".")
 	if err != nil {
@@ -198,6 +201,15 @@ func copyTree(root *os.Root, dst, rel string, bytes *int64, files *int) error {
 			}
 			st, err := in.Stat()
 			if err != nil || !st.Mode().IsRegular() || !os.SameFile(lst, st) {
+				in.Close()
+				continue
+			}
+			if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Nlink > 1 {
+				// A hard link may be the same file as something outside the project (a key, say); a snapshot
+				// of a tracked config file has no need of one. Left out.
+				hardlinkLog.Do(func() {
+					log.Printf("agent: %s/%s has more than one hard link; left out of the read-only snapshot", rel, clip(name, 60))
+				})
 				in.Close()
 				continue
 			}
