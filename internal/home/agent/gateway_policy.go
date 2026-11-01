@@ -133,6 +133,13 @@ func checkBody(body []byte, allowWebSearch bool) (reason string) {
 			}
 		}
 	}
+	for _, k := range []string{"messages", "system"} {
+		if raw, ok := top[k]; ok {
+			if why := checkContent(raw, 0, allowWebSearch, k == "messages"); why != "" {
+				return why
+			}
+		}
+	}
 	raw, ok := top["tools"]
 	if !ok || string(bytes.TrimSpace(raw)) == "null" {
 		return ""
@@ -166,6 +173,155 @@ func checkBody(body []byte, allowWebSearch bool) (reason string) {
 			continue
 		}
 		return "the server-side tool type '" + clip(*typ, 40) + "' isn't allowed"
+	}
+	return ""
+}
+
+// maxContentDepth bounds how deep content blocks may nest (tool_result in a message, a document inside it, ...).
+const maxContentDepth = 8
+
+// sourceType are the source types of an image or document block that carry their data in the request (or nest
+// further blocks). "url" and "file" make Anthropic fetch something, which is a way around the CONNECT allow-list.
+var sourceType = map[string]bool{"base64": true, "text": true, "content": true}
+
+// blockType are the content block types that are passed on. They carry their data in the request; the ones that
+// may point at something to fetch (image, document) have their source checked, and the ones that nest blocks are
+// walked. The server-side kinds are handled separately (server_tool_use, web_search_tool_result). Anything else
+// (mcp_tool_use, mcp_tool_result, web_fetch_tool_result, container_upload, code execution results, and any type
+// added later) is refused.
+var blockType = map[string]bool{
+	"text": true, "image": true, "document": true, "search_result": true, "thinking": true, "redacted_thinking": true,
+	"tool_use": true, "tool_result": true, "tool_reference": true, "compaction": true, "advisor_tool_result": true,
+}
+
+// member returns the value of key k in o. A key that matches only in another case is an error: another parser
+// could read it as k.
+func member(o map[string]json.RawMessage, k string) (raw json.RawMessage, has, ok bool) {
+	for name := range o {
+		if name != k && strings.EqualFold(name, k) {
+			return nil, false, false
+		}
+	}
+	raw, has = o[k]
+	return raw, has, true
+}
+
+// stringMember reads a member that must be a string when present.
+func stringMember(o map[string]json.RawMessage, k string) (s string, has, ok bool) {
+	raw, has, ok := member(o, k)
+	if !ok {
+		return "", false, false
+	}
+	if !has {
+		return "", false, true
+	}
+	if json.Unmarshal(raw, &s) != nil {
+		return "", true, false
+	}
+	return s, true, true
+}
+
+// checkContent walks "messages" (isList of messages, each with a content) or a content value (a string or a list
+// of blocks) and refuses anything that makes Anthropic fetch or run something on its side.
+func checkContent(raw json.RawMessage, depth int, allowWebSearch, messages bool) string {
+	if depth > maxContentDepth {
+		return "content is nested too deeply to be checked"
+	}
+	raw = bytes.TrimSpace(raw)
+	if string(raw) == "null" || len(raw) == 0 {
+		return ""
+	}
+	if raw[0] == '"' && !messages {
+		return ""
+	}
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return "content can't be checked"
+	}
+	for _, it := range items {
+		o, err := strictObject(it)
+		if err != nil {
+			return "a message or content block can't be checked"
+		}
+		if messages {
+			c, has, ok := member(o, "content")
+			if !ok {
+				return "a message can't be checked"
+			}
+			if has {
+				if why := checkContent(c, depth+1, allowWebSearch, false); why != "" {
+					return why
+				}
+			}
+			continue
+		}
+		if why := checkBlock(o, depth, allowWebSearch); why != "" {
+			return why
+		}
+	}
+	return ""
+}
+
+func checkBlock(o map[string]json.RawMessage, depth int, allowWebSearch bool) string {
+	typ, has, ok := stringMember(o, "type")
+	if !ok || !has {
+		return "a content block has a type that can't be checked"
+	}
+	switch {
+	case typ == "server_tool_use":
+		name, _, ok := stringMember(o, "name")
+		if !ok || !((name == "web_search" && allowWebSearch) || name == "advisor") {
+			return "the server-side tool use '" + clip(name, 40) + "' isn't allowed"
+		}
+		return ""
+	case typ == "web_search_tool_result":
+		if !allowWebSearch {
+			return "a web search result isn't allowed"
+		}
+		return ""
+	case !blockType[typ]:
+		return "the content block type '" + clip(typ, 40) + "' isn't allowed"
+	}
+	for k := range o {
+		if strings.EqualFold(k, "file_id") {
+			return "a content block refers to an uploaded file"
+		}
+	}
+	switch typ {
+	case "image", "document":
+		src, has, ok := member(o, "source")
+		if !ok {
+			return "a content block has a source that can't be checked"
+		}
+		if !has {
+			return ""
+		}
+		so, err := strictObject(src)
+		if err != nil {
+			return "a content block has a source that can't be checked"
+		}
+		st, has, ok := stringMember(so, "type")
+		if !ok || !has || !sourceType[st] {
+			return "a content block has a source that Anthropic would have to fetch or that can't be checked (only inline data is allowed)"
+		}
+		for k := range so {
+			if strings.EqualFold(k, "file_id") || strings.EqualFold(k, "url") {
+				return "a content block has a source that Anthropic would have to fetch"
+			}
+		}
+		if st == "content" {
+			if c, has, ok := member(so, "content"); !ok {
+				return "a content block can't be checked"
+			} else if has {
+				return checkContent(c, depth+1, allowWebSearch, false)
+			}
+		}
+	case "tool_result", "search_result":
+		if c, has, ok := member(o, "content"); !ok {
+			return "a content block can't be checked"
+		} else if has {
+			return checkContent(c, depth+1, allowWebSearch, false)
+		}
 	}
 	return ""
 }

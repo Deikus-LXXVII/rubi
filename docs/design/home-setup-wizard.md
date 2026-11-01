@@ -165,7 +165,7 @@ in each project (skills, settings, history, MCP).
   - streams the answer (server-sent events) chunk by chunk, and never logs a header, a body or a token (it logs
     the reason of a refusal, each reason at most once per 10 seconds with a count of the rest);
   - bounds what a guest can hold: at most 64 requests in flight (more get 429 with `Retry-After`), 64 KiB of
-    headers, 10 s for the headers, 5 minutes for a request to arrive with its body, 64 MiB of body, a 60-second
+    headers, 10 s for the headers, 5 minutes for a request to arrive with its body, 32 MiB of body, a 60-second
     deadline for each chunk written back (a guest that stops reading is cut off and the upstream stream with it),
     a 2-minute wait for the upstream's headers and a 5-minute stall limit on the upstream's stream;
   - checks the request body and the `anthropic-beta` header (server-side tools, the MCP connector and betas that

