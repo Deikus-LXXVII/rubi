@@ -206,8 +206,9 @@ func run(h *home.Helper) {
 			log.Printf("Claude Code requests: %v", err)
 		}
 	}()
-	h.Agent.Resume() // deliver what the agent queue still holds from an earlier run
-	go func() {      // a sign-in container left by a crash
+	h.Agent.SweepShields() // role snapshots of an earlier run: only the daemon removes them (status, pair... never)
+	h.Agent.Resume()       // deliver what the agent queue still holds from an earlier run
+	go func() {            // a sign-in container left by a crash
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		h.SweepAgent(ctx)

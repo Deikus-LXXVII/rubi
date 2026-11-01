@@ -39,6 +39,8 @@ type Project struct {
 	// /work/CLAUDE.md stays writable (docs/design/agent-roles.md section 3).
 	EmptyDir string
 	ReadOnly []ShieldMount
+	// snapFailed names the ReadOnly places whose copy came out empty (set by roleShield; Home tells the plugin).
+	snapFailed []string
 }
 
 // ShieldMount is one read-only overlay: the project-relative place and the Home-owned host directory shown there.
