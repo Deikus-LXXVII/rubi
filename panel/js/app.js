@@ -9,6 +9,7 @@ import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
 import { icon } from "./icons.js";
 import { celebrate, lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
+import { createRefresher, unchanged } from "./viewrefresh.js";
 import { isRoutineURL, missingHint, parseWebhook } from "./webhook.js";
 
 const root = document.getElementById("app");
@@ -47,7 +48,7 @@ function screen(...children) {
     hero.style.viewTransitionName = "rubi";
     hero.dataset.vt = "rubi";
   }
-  const viaVT = !!(document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden);
+  const viaVT = !opts.quiet && !!(document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden);
   const morph = !!(hero && before && viaVT);
   // During a view transition the browser fades the card in itself, and Rubi's flight ends where it stood
   // when the transition began: nothing around Rubi may still be moving then, or it would jump on landing.
@@ -55,6 +56,12 @@ function screen(...children) {
   const swap = () => {
     root.replaceChildren(main);
     window.scrollTo({ top: opts.keepScroll || 0 });
+    if (opts.quiet) {
+      // A redraw of the page on screen (its refresh): no entrance, and the control that had the focus keeps it.
+      const again = opts.refocus && controlByKey(main, opts.refocus);
+      if (again) again.focus({ preventScroll: true });
+      return;
+    }
     animateIn(main, morph ? hero : null);
     for (const svg of main.querySelectorAll(".mascot")) svg.enter?.(morph && svg === hero);
     // Focus the first field; otherwise the title, so screen readers announce the new screen.
@@ -74,6 +81,20 @@ function screen(...children) {
   } else {
     swap();
   }
+}
+
+// controlKey names a button or field on screen by its kind, text and place among its namesakes, so a redraw can find
+// the same one again; controlByKey finds it.
+function controlKey(el) {
+  if (!el || el === document.body || !root.contains(el) || !el.matches?.("button, input, textarea, select, a")) return null;
+  const name = el.tagName + "|" + (el.textContent || el.getAttribute("aria-label") || el.name || "").trim();
+  const same = [...root.querySelectorAll(el.tagName)].filter((x) => x.tagName + "|" + (x.textContent || x.getAttribute("aria-label") || x.name || "").trim() === name);
+  return { name, i: same.indexOf(el) };
+}
+function controlByKey(main, key) {
+  const [tag] = key.name.split("|");
+  const same = [...main.querySelectorAll(tag)].filter((x) => x.tagName + "|" + (x.textContent || x.getAttribute("aria-label") || x.name || "").trim() === key.name);
+  return same[key.i] || null;
 }
 
 const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -2054,9 +2075,10 @@ const objs = (v, max) => (Array.isArray(v) ? v : []).filter((x) => x && typeof x
 // chatAuthor is the name a chat line shows. The panel says "you" for the user's own lines itself; a name a plugin
 // gives to anyone else can't pose as the user or as Rubi, or mention a password, passkey or PIN: it becomes "Bot".
 const chatAuthor = (v) => { const t = clip(v, 60).trim(); return !t || PROMPT_FORBIDDEN.test(t) || /\b(you|your|me|user|admin|administrator)\b/i.test(t) ? "Bot" : t; };
-async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
+async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = false) {
   const mine = () => pluginViewScreen(ctx, id, name, back, viewArgs);
   currentView = mine;
+  if (!byRefresh) viewRefresh.cancel(); // a click or another page: the waiting refresh of the page before is moot
   const err = errorBox();
   const call = (op, args) => ctx.client.call("plugin.panel", { id, op, args });
   let data;
@@ -2068,8 +2090,28 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
   }
   if (currentView !== mine) return; // another page was opened while this one loaded
   if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
-  // The chat's scroll position survives a reload of the same page: the user who scrolled up to read isn't pulled down.
   const key = JSON.stringify([id, viewArgs]);
+  const json = JSON.stringify(data);
+  const refresh = Number(data.refresh) || 0;
+  const tick = () => {
+    if (currentView !== mine) return; // another page has been opened
+    // Not while the user is in the middle of something on the page: typing, a question box, a field in focus.
+    if ([...document.querySelectorAll("textarea.chat-input")].some((t) => t.value) || document.querySelector(".ask-overlay") ||
+      root.contains(document.activeElement) && document.activeElement.matches?.("input, textarea, select")) {
+      return viewRefresh.arm(2, tick);
+    }
+    pluginViewScreen(ctx, id, name, back, viewArgs, true);
+  };
+  // A refresh that brings nothing new draws nothing: the page, its focus and its error message stay as they are.
+  if (byRefresh && unchanged(chatKey, viewJSON, key, json)) {
+    if (refresh > 0) viewRefresh.arm(refresh, tick);
+    return;
+  }
+  const same = chatKey === key;
+  const refocus = same ? controlKey(document.activeElement) : null;
+  const oldErr = same && byRefresh ? root.querySelector("main > p.error:not([hidden])")?.textContent : "";
+  viewJSON = json;
+  // The chat's scroll position survives a reload of the same page: the user who scrolled up to read isn't pulled down.
   const oldLog = document.querySelector(".chat-log");
   const keep = oldLog && chatKey === key ? { top: oldLog.scrollTop, bottom: oldLog.scrollHeight - oldLog.scrollTop - oldLog.clientHeight < 24 } : null;
   // A reload of the same page (its own refresh, or after a button) keeps the page where the user scrolled it.
@@ -2157,8 +2199,9 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
         : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here."));
   });
   const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
+  if (oldErr) { err.textContent = oldErr; err.hidden = false; } // an error the user hasn't read yet stays
   screen(
-    { cls: "wide", focus: false, keepScroll: pageTop },
+    { cls: "wide", focus: false, keepScroll: pageTop, quiet: same && byRefresh, refocus },
     header(ctx.hello),
     up ? backBar(clip(up.label, 40) || "Back", () => go(up.open)) : backBar("Settings", back),
     h("div", { class: "section-head" }, h("h1", {}, clip(data.title, 120) || name)),
@@ -2166,18 +2209,12 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
     err,
     ...sections,
   );
-  const refresh = Number(data.refresh) || 0;
-  if (refresh > 0) {
-    const tick = () => {
-      if (currentView !== mine) return; // another page has been opened
-      if ([...document.querySelectorAll("textarea.chat-input")].some((t) => t.value)) return setTimeout(tick, 2000); // keep the draft
-      if (document.querySelector(".ask-overlay")) return setTimeout(tick, 2000); // a reload would drop the answer being typed
-      again();
-    };
-    setTimeout(tick, Math.max(refresh, 2) * 1000);
-  }
+  if (refresh > 0) viewRefresh.arm(refresh, tick);
+  else viewRefresh.cancel();
 }
 let chatKey = ""; // which plugin page the chat on screen belongs to
+let viewJSON = ""; // what that page showed, as the plugin sent it
+const viewRefresh = createRefresher(); // the one refresh to come of the plugin page on screen
 
 function noteEditor(ctx, id, n, done) {
   const err = errorBox();

@@ -3,6 +3,7 @@ package panelapi
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -106,3 +107,54 @@ process.stdin.on("end", () => { console.log(JSON.stringify(JSON.parse(s).map((x)
 }
 
 func strconvQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+// TestPanelPluginPageRefresh runs the plugin page's refresh (panel/js/viewrefresh.js) under Node the way the page
+// uses it: every draw arms a refresh, and a click draws the page again. The page used to start one more reload loop
+// with every click and refresh, until it redrew itself all the time and wiped what the user was doing. Skipped
+// without node.
+func TestPanelPluginPageRefresh(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	mod, _ := filepath.Abs("../../panel/js/viewrefresh.js")
+	script := `import { createRefresher, unchanged } from ` + strconvQuote("file://"+mod) + `;
+let pending = [];
+const r = createRefresher((f) => { const t = { f }; pending.push(t); return t; }, (t) => { pending = pending.filter((x) => x !== t); });
+let draws = 0;
+const draw = () => { draws++; r.arm(3, draw); };
+draw();
+for (let i = 0; i < 5; i++) draw(); // five clicks
+const afterClicks = draws;
+for (let round = 0; round < 10; round++) { const now = pending; pending = []; now.forEach((t) => t.f()); }
+const waiting = pending.length;
+r.cancel();
+const now = pending; pending = []; now.forEach((t) => t.f());
+console.log(JSON.stringify({ byRefresh: draws - afterClicks, waiting, afterCancel: pending.length,
+  same: unchanged("k", "{}", "k", "{}"), other: unchanged("k", "{}", "j", "{}"), changed: unchanged("k", "{}", "k", "{\"a\":1}") }));`
+	out, err := exec.Command(node, "--input-type=module", "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+	var got struct {
+		ByRefresh, Waiting, AfterCancel int
+		Same, Other, Changed            bool
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node output: %v\n%s", err, out)
+	}
+	if got.ByRefresh != 10 || got.Waiting != 1 || got.AfterCancel != 0 {
+		t.Errorf("10 refresh rounds after 5 clicks drew %d times with %d refreshes waiting (want 10 and 1); %d after cancel", got.ByRefresh, got.Waiting, got.AfterCancel)
+	}
+	if !got.Same || got.Other || got.Changed {
+		t.Errorf("unchanged: %+v", got)
+	}
+	// The page arms its refresh only through the refresher: a bare timer would start a loop of its own again.
+	app, err := os.ReadFile("../../panel/js/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(app), "setTimeout(tick") {
+		t.Error("panel/js/app.js arms a refresh with a bare setTimeout")
+	}
+}
