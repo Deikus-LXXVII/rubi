@@ -40,7 +40,11 @@ func (s *Setup) Handle(ctx context.Context, op string, args json.RawMessage) (an
 		}
 		return map[string]any{"opened": true}, nil
 	case "project.add":
-		dir, err := s.AddProject(ctx)
+		add := s.AddProject
+		if in.Dir != "" { // a folder the user approved by name (core checks the approval); else the folder chooser
+			add = func(context.Context) (string, error) { return s.AddProjectDir(in.Dir) }
+		}
+		dir, err := add(ctx)
 		if err != nil {
 			return nil, err
 		}

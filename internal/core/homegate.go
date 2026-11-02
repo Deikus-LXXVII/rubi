@@ -23,13 +23,17 @@ import (
 //     (roleApprovalKinds), that the user is deciding on or has decided (executing or executed). A made-up, foreign,
 //     denied, expired or wrong-kind id is refused. Spending an id once is Home's job (roles/used.json);
 //   - an ssh.register matches the payload of an approval of kind claude-code.ssh_target that is being executed for
-//     this plugin right now (host, port, user, name and the host key fingerprint the user confirmed).
+//     this plugin right now (host, port, user, name and the host key fingerprint the user confirmed);
+//   - an agent-setup.project.add that names a folder (dir) matches the payload of an approval of kind
+//     claude-code.setup.project that is being executed for this plugin right now. Without dir, Home shows the Mac's
+//     folder chooser and the user picks the folder there.
 //
 // The capability itself is reserved for the official plugin (plugins.ReservedHomeCapability), so these gates are
 // what stands between the official plugin's bugs and Home, and the reserved list is what keeps others out.
 
 const (
 	kindSSHTarget   = "claude-code.ssh_target"
+	kindSetupFolder = "claude-code.setup.project"
 	kindSkillAccept = "claude-code.role_skill_accept"
 
 	// attestedKindsField is the role.put argument core owns: id -> approval kind of every id it attested.
@@ -37,6 +41,7 @@ const (
 
 	opRolePut     = "claude-agent.role.put"
 	opSSHRegister = "claude-agent.ssh.register"
+	opProjectAdd  = "agent-setup.project.add"
 )
 
 // roleApprovalKinds are the approval kinds whose ids a role.put may name.
@@ -192,8 +197,41 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.Raw
 			return nil, errors.New("Rubi Home refused: bad ssh.register arguments")
 		}
 		return args, c.attestSSHRegister(plugin, args)
+	case opProjectAdd:
+		if err := noFoldedDuplicates(args); err != nil {
+			return nil, errors.New("Rubi Home refused: bad project.add arguments")
+		}
+		return args, c.attestProjectAdd(plugin, args)
 	}
 	return args, nil
+}
+
+// attestProjectAdd lets a project.add with a folder through only while the user's approval of exactly that folder
+// is being executed. Home decodes the arguments with encoding/json too, so both read the same dir.
+func (c *Core) attestProjectAdd(plugin string, args json.RawMessage) error {
+	var want struct {
+		Dir string `json:"dir"`
+	}
+	if len(args) > 0 && string(args) != "null" && json.Unmarshal(args, &want) != nil {
+		return errors.New("Rubi Home refused: bad project.add arguments")
+	}
+	if want.Dir == "" {
+		return nil // the folder chooser on the Mac: the user picks the folder there
+	}
+	c.execMu.Lock()
+	defer c.execMu.Unlock()
+	for _, g := range c.execs[plugin] {
+		if g.kind != kindSetupFolder {
+			continue
+		}
+		var got struct {
+			Dir string `json:"dir"`
+		}
+		if json.Unmarshal(g.payload, &got) == nil && got.Dir == want.Dir {
+			return nil
+		}
+	}
+	return errors.New("Rubi refused: no approval from the user is being executed for adding this folder")
 }
 
 // checkApprovalID accepts an id that is (a) a core approval of this plugin, of a role kind, that is executing or

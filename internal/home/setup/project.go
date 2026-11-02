@@ -73,6 +73,24 @@ func (s *Setup) refuseFolder(dir string, existing []string) (string, error) {
 	return real, nil
 }
 
+// AddProjectDir adds dir (an absolute path, the folder a Bot named and the user approved) to the projects, with
+// the same checks as a chosen folder. It returns the folder's real path.
+func (s *Setup) AddProjectDir(dir string) (string, error) {
+	if !s.mac() {
+		return "", errNotMac
+	}
+	var real string
+	var rerr error
+	if uerr := s.opt.Update(func(c *Settings) {
+		if real, rerr = s.refuseFolder(dir, c.Projects); rerr == nil {
+			c.Projects = append(c.Projects, real)
+		}
+	}); uerr != nil {
+		return "", uerr
+	}
+	return real, rerr
+}
+
 // AddProject shows the macOS folder chooser and adds the chosen folder to the projects. It returns the
 // folder, or "" when the chooser was cancelled.
 func (s *Setup) AddProject(ctx context.Context) (string, error) {

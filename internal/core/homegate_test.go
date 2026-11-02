@@ -113,6 +113,44 @@ func TestHomeGateSSHRegister(t *testing.T) {
 	}
 }
 
+// A project.add that names a folder needs the user's approval of exactly that folder, being executed now; without a
+// folder Home shows the Mac's folder chooser and needs none.
+func TestHomeGateProjectAdd(t *testing.T) {
+	c := targetCore(t)
+	if err := attest(c, "claude-code", opProjectAdd, json.RawMessage(`{}`)); err != nil {
+		t.Errorf("the folder chooser was refused: %v", err)
+	}
+	args := json.RawMessage(`{"dir":"/Users/alice/work/app"}`)
+	if err := attest(c, "claude-code", opProjectAdd, args); err == nil {
+		t.Fatal("a folder was added with no approval")
+	}
+	payload := json.RawMessage(`{"device":"d","device_name":"Mac","dir":"/Users/alice/work/app"}`)
+	decide(t, c, "claude-code", kindSetupFolder, payload, func(string) {
+		if err := attest(c, "claude-code", opProjectAdd, args); err != nil {
+			t.Errorf("the approved folder was refused: %v", err)
+		}
+		for name, a := range map[string]string{
+			"another folder":   `{"dir":"/Users/alice"}`,
+			"a folded dir key": `{"dir":"/Users/alice/work/app","DIR":"/Users/alice"}`,
+		} {
+			if attest(c, "claude-code", opProjectAdd, json.RawMessage(a)) == nil {
+				t.Errorf("%s was accepted", name)
+			}
+		}
+		if err := attest(c, "other-plugin", opProjectAdd, args); err == nil {
+			t.Error("another plugin used the grant")
+		}
+	})
+	decide(t, c, "claude-code", kindSSHTarget, payload, func(string) {
+		if err := attest(c, "claude-code", opProjectAdd, args); err == nil {
+			t.Error("an approval of another kind allowed a folder")
+		}
+	})
+	if err := attest(c, "claude-code", opProjectAdd, args); err == nil {
+		t.Fatal("the grant outlived the approval")
+	}
+}
+
 // Every field Home's ssh.register takes is bound to the approval: widening one that the user did not see is refused.
 func TestHomeGateSSHRegisterAllFields(t *testing.T) {
 	c := targetCore(t)

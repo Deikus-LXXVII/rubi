@@ -105,11 +105,29 @@ func TestProjectAddRefusals(t *testing.T) {
 		if res, err := e.op("project.add", nil); err == nil || len(e.cfg.Projects) != 0 {
 			t.Errorf("%s accepted: %v %v", name, res, e.cfg.Projects)
 		}
+		// The same folder named by a Bot (dir) gets the same checks.
+		if c != "" {
+			if res, err := e.op("project.add", map[string]any{"dir": c}); err == nil || len(e.cfg.Projects) != 0 {
+				t.Errorf("%s accepted as dir: %v %v", name, res, e.cfg.Projects)
+			}
+		}
 	}
 	// a folder in the home is fine
 	e.m.extra = chooser(filepath.Join(realHome, "work", "app"))
 	if res, err := e.op("project.add", nil); err != nil || res["added"] != filepath.Join(realHome, "work", "app") {
 		t.Errorf("fine folder: %v %v", res, err)
+	}
+	// and named by a Bot: added without the folder chooser
+	e.cfg.Projects = nil
+	e.cmd.calls = nil
+	e.m.extra = nil
+	if res, err := e.op("project.add", map[string]any{"dir": filepath.Join(realHome, "work", "app")}); err != nil || res["added"] != filepath.Join(realHome, "work", "app") {
+		t.Errorf("fine folder as dir: %v %v", res, err)
+	}
+	for _, c := range e.cmd.calls {
+		if c[0] == "/usr/bin/osascript" {
+			t.Errorf("the folder chooser was shown for a named folder: %v", c)
+		}
 	}
 }
 

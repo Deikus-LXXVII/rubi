@@ -105,8 +105,10 @@ func (s *Setup) Status(ctx context.Context) Status {
 	test := Step{ID: StepSelfTest, Title: stepTitles[StepSelfTest]}
 	projs := s.opt.Agents.Projects()
 	switch {
-	case !base || !projectsDone:
-		test.State, test.Reason = Todo, fmt.Sprintf("Needs step %d first", firstNotDone(st.Steps[:5])+1)
+	case !base:
+		test.State, test.Reason = Todo, fmt.Sprintf("Needs step %d first", firstNotDone(st.Steps[:4])+1)
+	case !projectsDone:
+		test.State, test.Reason = Todo, st.Steps[4].Reason
 	default:
 		for _, p := range projs {
 			test.Projects = append(test.Projects, s.selfTestRow(p, jb, login.State == Done))
@@ -410,6 +412,9 @@ func (s *Setup) probeImage(ctx context.Context) Step {
 	return Step{State: Done, Reason: "The runner image " + tag + " is built."}
 }
 
+// noFolderYet: the agents' folders are added by a Bot the user asks (with the user's approval), not by the setup.
+const noFolderYet = "No project folder yet. Ask your Grok Bot to add the folder you want the agents to work in; you approve it."
+
 func (s *Setup) probeProjects() Step {
 	ps := s.opt.Agents.Projects()
 	st := Step{Action: "add"}
@@ -422,7 +427,7 @@ func (s *Setup) probeProjects() Step {
 	case len(s.opt.Settings().Projects) > 0:
 		st.State, st.Reason = Todo, "None of the configured folders can be used. Add another folder."
 	default:
-		st.State, st.Reason = Todo, "Choose a folder the agents may work in."
+		st.State, st.Reason = Todo, noFolderYet
 	}
 	if len(ps) >= MaxProjects {
 		st.Action = ""

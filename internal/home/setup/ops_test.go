@@ -261,14 +261,39 @@ func TestImageJobFailureShowsTheLastLinesWithoutSecrets(t *testing.T) {
 func TestRunAllStopsAtTheFirstStepThatNeedsTheUser(t *testing.T) {
 	e := newTestEnv(t)
 	e.ready()
-	// no project: steps 1 to 4 are done, step 5 needs the user
+	// No project and not signed in: "all" doesn't stop at the folders (a Bot adds them); it reaches the sign-in,
+	// which needs the user to choose how.
 	if _, err := e.op("run", map[string]any{"step": "all"}); err != nil {
 		t.Fatal(err)
 	}
 	e.wait()
-	st := e.step("projects")
-	if st.State != NeedsUser || !strings.Contains(st.Reason, "Add a project folder") {
-		t.Errorf("%+v", st)
+	if st := e.step("login"); st.State != NeedsUser {
+		t.Errorf("login %+v", st)
+	}
+	if st := e.step("projects"); st.State == NeedsUser {
+		t.Errorf("the setup asks for a folder: %+v", st)
+	}
+	if st := e.step("selftest"); st.State != Todo || !strings.Contains(st.Reason, "Grok Bot") {
+		t.Errorf("selftest %+v", st)
+	}
+}
+
+// A signed-in computer without a project: "all" finishes without asking for a folder.
+func TestRunAllWithoutAProjectNeedsNoFolder(t *testing.T) {
+	e := newTestEnv(t)
+	e.ready()
+	e.ag.token, e.ag.expires = true, time.Now().Add(time.Hour)
+	if _, err := e.op("run", map[string]any{"step": "all"}); err != nil {
+		t.Fatal(err)
+	}
+	e.wait()
+	if st := e.step("login"); st.State != Done {
+		t.Errorf("login %+v", st)
+	}
+	for _, c := range e.cmd.calls {
+		if c[0] == "/usr/bin/osascript" {
+			t.Errorf("a folder chooser was shown: %v", c)
+		}
 	}
 }
 

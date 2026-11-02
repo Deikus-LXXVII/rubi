@@ -344,7 +344,7 @@ func needs(step string) int {
 	case StepLogin, StepSignOut:
 		return 4
 	case StepSelfTest:
-		return 5
+		return 4 // and a project (Run looks it up)
 	}
 	return 0
 }
@@ -413,21 +413,19 @@ func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method stri
 		!runStep(StepImage, func() outcome { return s.runImage(ctx, j) }) || !gate(4) {
 		return
 	}
-	if p.Dir == "" {
-		ps := s.opt.Agents.Projects()
-		if len(ps) == 0 {
-			s.mu.Lock()
-			s.last[key(StepProjects, "")] = result{outcome: outcome{NeedsUser, "Add a project folder first."}}
-			s.mu.Unlock()
-			return
-		}
-		p = ps[0]
-	}
+	// The sign-in is one for the computer and needs no folder; only the self-test runs in a project.
 	s.setStep(j, StepLogin, agent.Project{})
 	out := s.runLogin(ctx, j, method, true)
 	s.record(ctx, StepLogin, "", j, out)
 	if out.State != Done || !gate(4) {
 		return
+	}
+	if p.Dir == "" {
+		ps := s.opt.Agents.Projects()
+		if len(ps) == 0 {
+			return // the self-test row says a Bot adds the folder
+		}
+		p = ps[0]
 	}
 	s.setStep(j, StepSelfTest, p)
 	s.record(ctx, StepSelfTest, p.Dir, j, s.runSelfTest(ctx, j, p))
