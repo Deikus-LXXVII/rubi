@@ -79,7 +79,7 @@ pieces:
    - T3's injected MCP bridge points at the host. The wrapper relays it through the runner channel, the same way
      rubi-netpipe works today.
    - Codex gets the same treatment later with its own binary.
-3. **Plugin `rubi-t3agents`** (the successor of rubi-claude-code).
+3. **Plugin "T3 Agents"** (`rubi-t3agents`, the successor of rubi-claude-code).
    - It gives Bots tools for start, send, status, sessions and bind, built on t3bridge.
    - It carries over roles, modes, mandates, project trust, the skill library, SSH and briefs (section 3).
 
@@ -241,7 +241,8 @@ of under 50 lines, with a test, kept in `t3/patches/`.
    variable or the folder layout (`.credentials.json`, `.oauth_refresh.lock`) changes, and a live token refresh
    check in S2. One sign-in per role stays a documented fallback.
 5. Codex comes after v1, but the provider layer is generic from the start.
-6. Plugin name: `rubi-t3agents`.
+6. Naming: the core stays Rubi. The plugin's display name is "T3 Agents"; its package and repository id is
+   `rubi-t3agents`.
 7. The hook path for desktop Claude Code sessions stays in rubi-claude-code for now.
 
 ## 9. S0 results (2026-11-03)
