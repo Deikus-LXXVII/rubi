@@ -403,3 +403,10 @@ egress allow-list, approvals, sign-in folder); the wrapper is a thin client.
   timeout or a malformed answer is a deny (checked in S0).
 - **Concurrency.** One VM per T3 provider session; per-role and global caps from the existing limits; a session
   over the cap is refused with a plain error that T3 shows in the thread.
+
+KVM access on a server host (decided 2026-11-03): some hosts give `/dev/kvm` to a group the service user is not in,
+and a hand-set ACL is lost on reboot or system update. `internal/kvm.Ensure` checks that the device opens
+read-write; with the opt-in install setting `GrantWithSudo` it re-applies `sudo -n setfacl -m u:<current user>:rw
+/dev/kvm` at every start, logs it, and checks again; without the setting, or without passwordless sudo, it refuses
+with a message that says what to do. No user or group name is hard-coded. The microVM backend calls it before it
+starts a VM.
