@@ -1663,6 +1663,12 @@ async function settingsScreen(ctx, tab) {
     const target = e.target.closest("button") || e.target;
     await busy(target, async () => confirmChange(ctx, await ctx.client.call(op, args()), back)).catch((x) => showError(err, x));
   };
+  // After the approval the install only starts; the next screen watches it until macOS is done asking.
+  const installHook = (d) => async (e) => {
+    const target = e.target.closest("button") || e.target;
+    await busy(target, async () => confirmChange(ctx, await ctx.client.call("device.hook.install", { id: d.id }),
+      () => hookProgressScreen(ctx, d, back), "Continue", { autoContinue: true })).catch((x) => showError(err, x));
+  };
 
   // ----- requests waiting for the user: one a plugin asked for on its own may have reached no one.
   // The list has no previews; opening one fetches a ticket for that request alone.
@@ -1766,16 +1772,19 @@ async function settingsScreen(ctx, tab) {
       h("p", { class: "muted" }, "A helper on a computer at home (a Mac that stays on) lets plugins control Philips Hue and run your Shortcuts."),
       devices?.devices?.length ? h("ul", { class: "acct-list" }, devices.devices.map((d) => {
         const state = h("span", { class: "status-dot", title: "Not checked" });
-        return h("li", {}, h("span", { class: "avatar-dot small" }, icon("home", 14)), h("span", { class: "acct-name" }, d.name, state),
+        const hookBox = h("div", { class: "device-hook" });
+        return h("li", { class: "device-row" }, h("span", { class: "avatar-dot small" }, icon("home", 14)), h("span", { class: "acct-name" }, d.name, state),
           h("button", { class: "ghost small", onclick: async (e) => {
             await busy(e.target, async () => {
               const r = await ctx.client.call("device.check", { id: d.id });
               state.className = "status-dot " + (r.online ? "on" : "off");
               state.title = r.online ? `Online · ${r.version || ""}` : "Not answering";
               state.textContent = r.online ? "Online" : "Not answering";
+              hookBox.replaceChildren(...(r.online ? hookLines(r.hook, installHook(d)) : []));
             }).catch((x) => showError(err, x));
           } }, "Check"),
-          menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]));
+          menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]),
+          hookBox);
       })) : null,
       h("button", { class: "secondary", onclick: () => homeDeviceScreen(ctx, back) }, icon("plus", 16), "Add a home computer"),
     ],
@@ -1843,6 +1852,58 @@ async function settingsScreen(ctx, tab) {
     h("div", { class: "settings-layout" }, nav, body),
   );
   show(tab);
+}
+
+const HOOK_WORDS = { current: "up to date", dev: "a development build", stale: "older than Rubi Home", missing: "not installed", insecure: "not secure" };
+
+// What is wrong with a hook Rubi can't fix from the panel, in plain words (no command).
+function hookProblem(hook) {
+  if (hook.state === "insecure" && hook.why === "symlink") return "The hook on that computer is a link, not a file, so Rubi can't replace it. Remove it on that computer first.";
+  if (hook.state === "insecure" && hook.why === "dir") return "A folder above the hook on that computer can be changed by other users, so Rubi won't install the hook there.";
+  return "Rubi can't fix this from here. Rubi Home's log on that computer says why.";
+}
+
+// hookLines say, after a check, how the Claude Code hook on a Home computer stands, and offer the button
+// that installs or updates it (macOS asks for the administrator password on that computer).
+function hookLines(hook, install) {
+  if (!hook) return [];
+  const lines = [h("small", { class: "muted" }, `Claude Code hook: ${HOOK_WORDS[hook.state] || "unknown"}`)];
+  if (hook.installing) {
+    lines.push(h("small", { class: "muted" }, "macOS is asking for the administrator password on that computer."));
+    return lines;
+  }
+  if (hook.last && hook.last.result !== "ok") lines.push(h("small", { class: "muted" }, hook.last.message));
+  if (hook.state === "missing" || hook.state === "stale" || hook.state === "insecure") {
+    if (hook.fixable === true) {
+      lines.push(
+        h("button", { class: "secondary small", type: "button", onclick: install }, hook.state === "missing" ? "Install the Claude Code hook" : "Update the hook"),
+        h("small", { class: "muted" }, "macOS asks for the administrator password on that computer."));
+    } else {
+      lines.push(h("small", { class: "muted" }, hookProblem(hook)));
+    }
+  }
+  return lines;
+}
+
+// hookProgressScreen follows an installation that was just approved: macOS asks for the administrator
+// password on the Home computer, which can take a while. It looks every 2 seconds and gives up after 6 minutes.
+async function hookProgressScreen(ctx, d, back) {
+  const status = h("p", { role: "status" }, `macOS is asking for the administrator password on ${d.name}. Answer it there.`);
+  screen(header(ctx.hello), h("h1", {}, "Claude Code hook"), status, h("button", { class: "primary", type: "button", onclick: back }, "Back to settings"));
+  const until = Date.now() + 6 * 60e3;
+  // screen() may put the page in place a moment later (a view transition), so wait before asking whether
+  // the user has left it.
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (!status.isConnected) return;
+    const r = await ctx.client.call("device.check", { id: d.id }).catch(() => null); // a missed answer is tried again
+    const hook = r?.online ? r.hook : null;
+    if (hook && !hook.installing) {
+      status.textContent = [hook.last?.message, `Claude Code hook: ${HOOK_WORDS[hook.state] || "unknown"}.`].filter(Boolean).join(" ");
+      return;
+    }
+  }
+  if (status.isConnected) status.textContent = "Rubi didn't hear back from that computer. Check it there, or try again.";
 }
 
 const HOME_INSTALL = "curl -fsSL https://rubi-panel.com/install-home.sh | sh";

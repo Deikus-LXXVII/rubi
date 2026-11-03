@@ -234,7 +234,7 @@ The helper does only what it was built for, whatever Rubi asks:
   `tool_input` and its digest are untouched; the fields never reach what Rubi shows. The helper reads them
   before anything else. No protocol: a legacy hook (v0.12), served and marked stale. A protocol outside the
   supported range: refused. PermissionRequest is denied with "the Claude Code hook binary speaks protocol N,
-  Rubi Home speaks M: run `~/.rubi-home/bin/rubi-home install-hook`; denied."; events and `RubiWait` get
+  Rubi Home speaks M: update the hook in the Rubi panel (Settings, Home); denied."; events and `RubiWait` get
   `{}`. Stale means the hook's version is older than the helper's (numeric semver; `dev` or unparseable is
   never stale). The last hook seen (`version`, `path`, `protocol`, `at`) lives under its own small lock, never
   held with the others and with no I/O under it; a mismatch or stale hook is logged once per distinct
@@ -253,19 +253,21 @@ The helper does only what it was built for, whatever Rubi asks:
   status` hashes only a regular file of at most 256 MiB, so a FIFO or device can't hang it, and runs the hook
   with a minimal environment.
 
-  `rubi-home install-hook [--dry-run] [--to PATH] [--sudo]` plans a copy of the running binary (symlinks
+  The panel's "Install the Claude Code hook" button (`device.hook.install`: a `rubi.settings` approval, then Home's
+  `hook.plan` op for the approval's preview and a `hook.install` op that only starts the install in the background, 5 minutes at most, on its own context; `hello` reports `hook: {state, version, plugin, installing, last, why, fixable}`; the target is always `/usr/local/bin/rubi-home`, a new install is refused for 2 minutes after a cancelled or timed-out dialog and when nothing changes, and errors are a code and a fixed sentence) and the maintainer command
+  `rubi-home install-hook [--dry-run] [--to PATH]` plan a copy of the running binary (symlinks
   resolved) to the hook path. The privileged part is one script run by `/usr/bin/osascript` ("do shell script
   ... with administrator privileges", the script passed as an argument so no AppleScript quoting is involved)
-  or, with `--sudo` in a terminal, `/usr/bin/sudo /bin/sh -c`, both with `PATH` reduced to the system
-  directories and every tool in the script an absolute path. The script, as root: checks that the target
-  directory and every ancestor are root-owned and not group/world-writable; reads the source once into a temp
+  (there is no sudo path), with `PATH` reduced to the system directories and every tool in the script an absolute path. The script, as root: checks that the target
+  directory (or, when it is missing, its nearest existing ancestor, and then creates it with `mkdir -p`) and every
+  ancestor are root-owned and not group/world-writable; reads the source once into a temp
   file in the target directory; checks that file's sha256 against the hash the user was shown (computed
   earlier from the same path); only then `chown root:wheel` (`root:root` off macOS), `chmod 0755` and an atomic
   `mv -f` over the target; the temp file is removed on any failure. So a source swapped after the hash was
   shown is not installed. The hash is of the file at the source path: it shows what will be installed, not that
   it is genuine; the output says to compare it with the release's `SHA256SUMS`. The target must be a
-  plain file or absent (a symlink is refused), its directory must exist and have root-owned, closed
-  ancestors (otherwise install-hook refuses and says how to create the directory; it creates nothing). Paths
+  plain file or absent (a symlink is refused), its directory has root-owned, closed
+  ancestors (otherwise the install is refused; a missing directory is created by the root script). Paths
   with quotes, backslashes, backticks, `$`, control, format or line-separator characters, invalid UTF-8, or
   relative paths are refused instead of escaped. Afterwards it re-checks, as confirmation only, the target's
   sha256, that `DST version` prints the same version, and that the target and its ancestors are secure, and exits

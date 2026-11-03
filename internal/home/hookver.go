@@ -33,8 +33,8 @@ const (
 	hookFieldMax    = 300
 )
 
-// InstallHookCommand is what the refusal and the plugin tell the user to run.
-const InstallHookCommand = "~/.rubi-home/bin/rubi-home install-hook"
+// UpdateHookHint is what a refusal, a log line or the plugin tells the user to do about the hook binary.
+const UpdateHookHint = "update the hook in the Rubi panel (Settings, Home)"
 
 // hookSelf is this binary's version and path as a hook reports them (a variable for tests).
 var hookSelf = func() (string, string) {
@@ -125,7 +125,7 @@ func (c *Claude) noteHookRec(line []byte, record bool) string {
 			if record {
 				c.hooks.set(&hookSeen{Protocol: -1, Refused: true, At: time.Now().UTC()})
 			}
-			return fmt.Sprintf("the Claude Code hook binary sent a line Rubi Home can't read: run `%s`; denied.", InstallHookCommand)
+			return fmt.Sprintf("the Claude Code hook binary sent a line Rubi Home can't read: %s; denied.", UpdateHookHint)
 		}
 		return ""
 	}
@@ -156,7 +156,7 @@ func (c *Claude) noteHookRec(line []byte, record bool) string {
 	switch {
 	case p == "" || p == "null":
 		seen.Legacy, seen.Stale = true, true
-		logMsg = "the Claude Code hook binary (" + where + ") is a legacy one without version information; it works, but run `" + InstallHookCommand + "` to update it"
+		logMsg = "the Claude Code hook binary (" + where + ") is a legacy one without version information; it works, but " + UpdateHookHint
 	default:
 		n, err := strconv.Atoi(p)
 		shown := cleanField(p)
@@ -166,12 +166,12 @@ func (c *Claude) noteHookRec(line []byte, record bool) string {
 		seen.Protocol = n
 		if n < claudeMinProtocol || n > claudeMaxProtocol {
 			seen.Refused, seen.Stale = true, versionOlder(seen.Version, home)
-			refuse = fmt.Sprintf("the Claude Code hook binary speaks protocol %s, Rubi Home speaks %d: run `%s`; denied.",
-				shown, claudeMaxProtocol, InstallHookCommand)
+			refuse = fmt.Sprintf("the Claude Code hook binary speaks protocol %s, Rubi Home speaks %d: %s; denied.",
+				shown, claudeMaxProtocol, UpdateHookHint)
 			logMsg = "the Claude Code hook binary (" + where + ") speaks protocol " + shown + ", Rubi Home speaks " + strconv.Itoa(claudeMaxProtocol) + "; refused"
 		} else if versionOlder(seen.Version, home) {
 			seen.Stale = true
-			logMsg = "the Claude Code hook binary (" + where + ") is " + seen.Version + ", older than Rubi Home " + home + "; run `" + InstallHookCommand + "`"
+			logMsg = "the Claude Code hook binary (" + where + ") is " + seen.Version + ", older than Rubi Home " + home + "; " + UpdateHookHint
 		}
 	}
 	if !record {

@@ -149,12 +149,12 @@ if [ -x "$hook" ]; then
   wait "$hook_pid" 2>/dev/null || true
   if [ "$old_v" != "$new_v" ]; then
     say "warning: the Claude Code hook binary $hook is ${old_v:-of an unknown version}, Rubi Home is now ${new_v:-$version}."
-    say "update it (asks for your administrator password): ~/.rubi-home/bin/rubi-home install-hook"
+    say "update it in the Rubi panel (Settings, Home); macOS asks for your administrator password there."
   fi
 elif [ -e "$hook" ]; then
-  say "warning: $hook exists but isn't an executable file; check it, then run: ~/.rubi-home/bin/rubi-home install-hook"
+  say "warning: $hook exists but isn't an executable file; check it, then install the hook again from the Rubi panel (Settings, Home)."
 else
-  say "Claude Code hook (optional): not set up. To let Bots ask for approvals and message your Claude Code sessions, follow the rubi-claude-code plugin's README, which ends with: ~/.rubi-home/bin/rubi-home install-hook"
+  say "Claude Code hook (optional): not set up. To let Bots ask for approvals and message your Claude Code sessions, install the hook from the Rubi panel (Settings, Home)."
 fi
 echo
 "$bin" pair

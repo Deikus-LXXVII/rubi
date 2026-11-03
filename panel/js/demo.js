@@ -84,6 +84,13 @@ const APPROVALS = {
     preview: { "computer (as it calls itself)": "Mac mini", fingerprint: "pX3k-9QaL (rubi-home status shows the same)",
       allows: "control Philips Hue on your home network and run the shortcuts in the folder \"Rubi\"" },
   },
+  hook: {
+    kind: "rubi.settings", summary: "Install the Claude Code hook on Mac mini",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { computer: "Mac mini", target: "/usr/local/bin/rubi-home", version: "v0.6.0",
+      sha256: "3f9a6c1e0b7d4a2f8e5c9b1d0a6f3e7c2b8d4f1a9e6c3b0d7f2a5e8c1b4d9f6a",
+      check: "macOS will ask for the administrator password on that computer; approve only if you asked for this" },
+  },
 };
 
 function approval(id) {
@@ -157,7 +164,13 @@ export class DemoClient {
       case "devices.get":
         return { devices: [{ id: "d1", name: "Mac mini", paired: iso(now() - 86400e3) }] };
       case "device.check":
-        return { online: true, version: "v0.6.0" };
+        // After the demo's install the hook is "being installed" for a few seconds, then current.
+        if (this.hookStartedAt) {
+          const going = now() - this.hookStartedAt < 4000;
+          return { online: true, version: "v0.6.0", hook: going ? { state: "stale", version: "v0.5.0", plugin: false, installing: true }
+            : { state: "current", version: "v0.6.0", plugin: false, installing: false, last: { result: "ok", message: "The Claude Code hook is installed." } } };
+        }
+        return { online: true, version: "v0.6.0", hook: { state: "stale", version: "v0.5.0", plugin: false, installing: false, fixable: true } };
       case "updates.list":
         return { updates: [
           { id: "rubi", name: "Rubi", current: "v0.6.0", available: false, notify: true },
@@ -202,6 +215,9 @@ export class DemoClient {
       case "updates.plugin":
       case "updates.rubi":
         return { approval_id: "settings", ticket: "demo" };
+      case "device.hook.install":
+        this.hookStartedAt = now();
+        return { approval_id: "hook", ticket: "demo" };
       case "agent.add":
         return { approval_id: "bot", ticket: "demo" };
       case "library.list": case "library.entry": case "library.version": case "library.queue": case "library.curator.set": case "library.withdraw":

@@ -13,17 +13,6 @@ internal/home/home.go || start it with: rubi-home run || T-01: Home starts itsel
 internal/home/home.go || run `rubi-home pair` again || T-01: the panel asks Home for a new code, or pairs by link
 cmd/rubi-home/main.go || Pair again with: rubi-home pair || T-01: pairing is a panel step
 
-# T-02: installing or updating the root-owned Claude Code hook asks for a terminal and sudo
-internal/home/hookver.go || ~/.rubi-home/bin/rubi-home install-hook || T-02: Home installs and updates the hook from the panel (administrator dialog), no command
-internal/home/hookver.go || sent a line Rubi Home can't read || T-02: say "update the hook in the panel", no command
-internal/home/hookver.go || speaks protocol || T-02: say "update the hook in the panel", no command
-internal/home/hookcheck.go || stale: older than this binary || T-02: say "update the hook in the panel", no command
-internal/home/hookcheck.go || is %s, older than Rubi Home || T-02: say "update the hook in the panel", no command
-internal/home/claudemcp.go || run `~/.rubi-home || T-02: Home updates itself; the panel shows a button, not a command
-internal/home/installhook.go || sudo mkdir -p || T-02: Home creates the hook folder with the administrator dialog
-internal/home/installhook.go || asks for your password in this terminal || T-02: drop the terminal path (--sudo); the administrator dialog is the only way
-cmd/rubi-home/main.go || --sudo needs a terminal || T-02: drop the terminal path (--sudo); the administrator dialog is the only way
-
 # T-03: forgetting a Hue bridge asks for a command
 internal/home/hue.go || run `rubi-home hue-forget || T-03: a "Forget this bridge" button on the Hue page
 

@@ -57,7 +57,7 @@ type Envelope struct {
 
 // sensitiveOps carry the vault key or service passwords; they must be sealed to this process's session
 // key too, so a leaked identity.json and recorded relay traffic can't reveal them later.
-var sensitiveOps = map[string]bool{"pair": true, "unlock": true, "integration.setup": true}
+var sensitiveOps = map[string]bool{"pair": true, "unlock": true, "integration.setup": true, "device.pair": true}
 
 // Sensitive reports whether op must be sealed with forward secrecy (see sensitiveOps).
 func Sensitive(op string) bool { return sensitiveOps[op] }
@@ -327,7 +327,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel",
+		"devices.get", "device.pair", "device.remove", "device.check", "device.hook.install", "account.agents", "watch.set", "plugin.panel",
 		"approval.list", "approval.open",
 		"library.list", "library.entry", "library.version", "library.queue", "library.curator.set", "library.withdraw":
 		return s.settings(ctx, purpose, env)
@@ -860,6 +860,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return s.core.CheckDevice(ctx, args.ID)
 	case "device.pair":
 		approvalID, err = s.core.PairDevice(ctx, args.Code)
+	case "device.hook.install":
+		approvalID, err = s.core.InstallHookOnDevice(ctx, args.ID)
 	case "device.remove":
 		approvalID, err = s.core.RemoveDevice(ctx, args.ID)
 	case "plugin.config.set":

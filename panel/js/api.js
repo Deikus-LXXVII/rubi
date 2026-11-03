@@ -37,7 +37,7 @@ function relayFor(link) {
 }
 
 // Operations that must use forward secrecy (panelapi.sensitiveOps).
-const SENSITIVE = new Set(["pair", "unlock", "integration.setup"]);
+const SENSITIVE = new Set(["pair", "unlock", "integration.setup", "device.pair"]);
 
 export class RubiClient {
   constructor(link) {

@@ -62,7 +62,7 @@ var (
 )
 
 // errSendHelperTooOld is the client's error when the helper doesn't know the RubiSend line.
-var errSendHelperTooOld = errors.New("Rubi Home is too old for claude-send (or speaks another hook protocol): update it with the installer, restart it, and run `" + InstallHookCommand + "`")
+var errSendHelperTooOld = errors.New("Rubi Home is too old for claude-send (or speaks another hook protocol): update Rubi Home, and then " + UpdateHookHint)
 
 func isLocalSender(s string) bool {
 	return len(s) >= len(localPrefix) && strings.EqualFold(s[:len(localPrefix)], localPrefix)

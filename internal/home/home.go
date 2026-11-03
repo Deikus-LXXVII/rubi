@@ -155,6 +155,18 @@ type Helper struct {
 	// T3 is the T3 server Home installs and runs, and the t3-agent.* and t3-setup.* ops on it (see t3home.go).
 	T3 *T3Home
 
+	// hook state and installation (hookstate.go); the lower-case fields are seams for tests.
+	hookMu    sync.Mutex  // guards hookBusy, hookLast and hookSeen
+	hookBusy  bool        // an installation is running
+	hookLast  *hookResult // how the last installation ended, until the next one starts
+	hookSeen  hookCached  // the last inspection of the hook file
+	hookPath  string      // the hook binary's path ("" is DefaultHookBinary)
+	pluginAt  string      // the Claude Code plugin's directory ("" is DefaultClaudePluginDir)
+	hookOpts  func(*InstallOptions)
+	hookTweak func(*HookBinary) // changes what the inspection found (a test cannot make a root-owned file)
+	hookLimit time.Duration     // how long an installation may take (hookInstallLimit when zero)
+	hookClock func() time.Time  // the time the cooldown and the cache use (time.Now when nil)
+
 	mu  sync.Mutex
 	cfg Config
 
@@ -490,6 +502,10 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 	switch env.Op {
 	case "hello":
 		return h.hello(), nil
+	case "hook.plan":
+		return h.planHook(env.Args)
+	case "hook.install":
+		return h.installHook(env.Args)
 	case "library.key":
 		return h.pinLibraryKey(env.Args)
 	case "library.revoked":
@@ -656,7 +672,8 @@ func (h *Helper) setLibraryRevoked(args json.RawMessage) (any, error) {
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
-		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup", "t3-agent", "t3-setup"}}
+		"can":  []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup", "t3-agent", "t3-setup"},
+		"hook": h.hookStatus()}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {

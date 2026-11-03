@@ -10,7 +10,7 @@
 //	rubi-home claude-hook    Claude Code's hooks: PermissionRequest asks Rubi and prints allow or deny;
 //	                         SessionStart, UserPromptSubmit, Stop and SessionEnd report the session and
 //	                         deliver messages waiting for it
-//	rubi-home install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]]
+//	rubi-home install-hook [--dry-run] [--to PATH] [--with-claude-plugin [--plugin-to PATH]]
 //	                         copy this binary to the root-owned hook path (default /usr/local/bin/rubi-home)
 //	                         with administrator rights, then verify it; --with-claude-plugin also installs the
 //	                         embedded Claude Code plugin (the sister tools) to a root-owned directory
@@ -39,7 +39,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -171,7 +170,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | agent-vm --role ID -- CLAUDE-ARGUMENTS... | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | agent-vm --role ID -- CLAUDE-ARGUMENTS... | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
 	os.Exit(2)
 }
 
@@ -259,8 +258,6 @@ func runInstallHook(args []string) int {
 		switch args[i] {
 		case "--dry-run":
 			o.DryRun = true
-		case "--sudo":
-			o.Sudo = true
 		case "--with-claude-plugin":
 			o.WithPlugin = true
 		case "--plugin-to":
@@ -279,21 +276,12 @@ func runInstallHook(args []string) int {
 			usage()
 		}
 	}
-	exe, err := os.Executable()
-	if err == nil {
-		exe, err = filepath.EvalSymlinks(exe)
-	}
+	exe, err := home.RunningExecutable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rubi-home: can't find this binary: %v\n", err)
 		return 1
 	}
 	o.Src = exe
-	if o.Sudo && !o.DryRun {
-		if fi, err := os.Stdin.Stat(); err != nil || fi.Mode()&os.ModeCharDevice == 0 {
-			fmt.Fprintln(os.Stderr, "rubi-home: --sudo needs a terminal on stdin (sudo asks for a password); run it in a terminal, or leave out --sudo")
-			return 1
-		}
-	}
 	if err := home.InstallHook(context.Background(), os.Stdout, o); err != nil {
 		fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
 		return 1

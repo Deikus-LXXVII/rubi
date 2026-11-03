@@ -155,8 +155,19 @@ func insecureAncestors(path string) string {
 	}
 }
 
-// InspectHookBinary looks at the hook binary at path.
+// InspectHookBinary looks at the hook binary at path (hash and version, whoever owns it).
 func InspectHookBinary(path string, timeout time.Duration) HookBinary {
+	return inspectHook(path, timeout, inspectOpts{Hash: true, VersionIfInsecure: true})
+}
+
+// inspectOpts says how much of the binary inspectHook looks at.
+type inspectOpts struct {
+	Hash              bool              // read the whole file for its SHA-256
+	VersionIfInsecure bool              // run `version` on a binary that isn't Secure (the panel's check does not)
+	afterSecure       func(*HookBinary) // a test seam: changes what the file checks found, before `version` runs
+}
+
+func inspectHook(path string, timeout time.Duration, o inspectOpts) HookBinary {
 	b := HookBinary{Path: path, Owner: -1}
 	li, err := os.Lstat(path)
 	if err != nil {
@@ -184,8 +195,16 @@ func InspectHookBinary(path string, timeout time.Duration) HookBinary {
 			b.Secure, b.WhyInsecure = false, why
 		}
 	}
-	if b.SHA256, err = fileSHA256(path); err != nil {
-		b.VersionE = err.Error()
+	if o.afterSecure != nil {
+		o.afterSecure(&b)
+	}
+	if o.Hash {
+		if b.SHA256, err = fileSHA256(path); err != nil {
+			b.VersionE = err.Error()
+			return b
+		}
+	}
+	if !b.Secure && !o.VersionIfInsecure {
 		return b
 	}
 	if b.Version, err = runVersion(path, timeout); err != nil {
@@ -197,7 +216,7 @@ func InspectHookBinary(path string, timeout time.Duration) HookBinary {
 // WritePlain prints the hook binary's state for `rubi-home status`; self is this binary's version.
 func (b HookBinary) WritePlain(w io.Writer, self string) {
 	if b.Missing {
-		fmt.Fprintf(w, "Claude Code hook binary: none at %s (see the claude-code plugin's README to set it up)\n", b.Path)
+		fmt.Fprintf(w, "Claude Code hook binary: none at %s (install it from the Rubi panel: Settings, Home)\n", b.Path)
 		return
 	}
 	fmt.Fprintf(w, "Claude Code hook binary: %s\n", b.Path)
@@ -221,7 +240,7 @@ func (b HookBinary) WritePlain(w io.Writer, self string) {
 		}
 	}
 	if versionOlder(b.Version, self) {
-		fmt.Fprintf(w, "  stale: older than this binary (%s); run `%s`\n", self, InstallHookCommand)
+		fmt.Fprintf(w, "  stale: older than this binary (%s); %s\n", self, UpdateHookHint)
 	}
 }
 
@@ -233,6 +252,6 @@ func WarnIfHookOlder(path, self string, logf func(format string, args ...any)) {
 		return
 	}
 	if versionOlder(b.Version, self) {
-		logf("the Claude Code hook binary %s is %s, older than Rubi Home %s: run `%s`", path, b.Version, self, InstallHookCommand)
+		logf("the Claude Code hook binary %s is %s, older than Rubi Home %s: %s", path, b.Version, self, UpdateHookHint)
 	}
 }

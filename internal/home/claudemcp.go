@@ -93,7 +93,7 @@ func RunClaudeMCP(ctx context.Context, sock string) error {
 }
 
 // ErrHelperTooOld is the tools' error for a helper that doesn't know RubiTool lines.
-var ErrHelperTooOld = errors.New("the Rubi Home running on this computer is too old (or newer than this plugin) for the sister tools: update it with the installer, restart it, and run `~/.rubi-home/bin/rubi-home install-hook`")
+var ErrHelperTooOld = errors.New("the Rubi Home running on this computer is too old (or newer than this plugin) for the sister tools: update Rubi Home and then the hook in the Rubi panel (Settings, Home)")
 
 // callTool sends one tool call to the helper and returns its result.
 func callTool(ctx context.Context, cfg ToolsConfig, tool string, args map[string]any) (map[string]any, error) {

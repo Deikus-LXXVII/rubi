@@ -315,3 +315,27 @@ func TestPanelDrawsEverythingAPluginPageCanSay(t *testing.T) {
 		}
 	}
 }
+
+// screen() may put a new page in place a moment later (inside a view transition), so an element made for that
+// page is not in the document yet when screen() returns. A loop that runs "while the element is on the page"
+// ends before its first round: the hook progress screen never showed the result that way. Such a loop waits
+// first and then asks whether the user has left the page.
+var whileConnected = regexp.MustCompile(`while\s*\([^)]*\.isConnected`)
+
+func TestNoPanelLoopStopsBeforeItsPageIsShown(t *testing.T) {
+	if !whileConnected.MatchString("  while (status.isConnected && Date.now() < until) {") {
+		t.Fatal("the pattern no longer matches the loop it was written for")
+	}
+	files, _ := filepath.Glob(filepath.Join(root(t), "panel/js/*.js"))
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(b), "\n") {
+			if whileConnected.MatchString(line) {
+				t.Errorf("%s:%d: a loop conditioned on isConnected stops before screen() has shown its page; wait first, then check", filepath.Base(f), i+1)
+			}
+		}
+	}
+}

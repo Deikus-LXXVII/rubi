@@ -931,7 +931,7 @@ func TestToolsWithAnOlderHelper(t *testing.T) {
 	for _, tool := range []string{"rubi_sisters", "rubi_inbox_status"} {
 		e.fails(tool, nil, "too old")
 	}
-	e.fails("rubi_ask", map[string]any{"text": "q"}, "install-hook")
+	e.fails("rubi_ask", map[string]any{"text": "q"}, "hook in the Rubi panel")
 	// No helper at all.
 	e.connect(filepath.Join(shortDir(t), "none.sock"))
 	e.fails("rubi_sisters", nil, "isn't running")

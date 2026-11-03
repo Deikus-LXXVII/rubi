@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
@@ -32,8 +34,9 @@ var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Sho
 	"t3-setup":        "setting up Claude agents through T3 on that computer: downloading and starting the pinned T3 server and Node (checked against fixed hashes), pairing with it, installing Apple's container tool (macOS asks for the administrator password itself), creating its network, building the image, adding project folders and signing in to Claude in the virtual machine"}
 
 type deviceClients struct {
-	mu      sync.Mutex
-	clients map[string]*homeproto.Client
+	mu       sync.Mutex
+	clients  map[string]*homeproto.Client
+	hookSeen map[string]float64 // when the last installation result of each computer was audited
 }
 
 func (c *Core) deviceClient(d *vault.Device) (*homeproto.Client, error) {
@@ -195,7 +198,131 @@ func (c *Core) CheckDevice(ctx context.Context, id string) (map[string]any, erro
 		return map[string]any{"online": false, "problem": err.Error()}, nil
 	}
 	hello["online"] = true
+	c.auditHookResult(dev.ID, hello)
 	return hello, nil
+}
+
+// hookCallTimeout bounds each call to Home about the hook. Both answer at once: the install only starts
+// (the administrator dialog stays open on Home for minutes; the panel watches `hello.hook` for the end).
+const hookCallTimeout = 30 * time.Second
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// clipRunes shortens text from Home to n runes (never in the middle of one).
+func clipRunes(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
+}
+
+// InstallHookOnDevice asks the user to approve installing (or updating) the root-owned Claude Code hook on a
+// Home computer. Home is asked first, without a prompt, what it would install (hook.plan: where, which version,
+// the SHA-256 of the file), and that goes into the approval. Nothing is installed before the approval; its
+// execute step starts the installation on Home, where macOS shows the administrator dialog.
+func (c *Core) InstallHookOnDevice(ctx context.Context, id string) (string, error) {
+	dev, err := c.device(id)
+	if err != nil || id == "" {
+		return "", errors.New("unknown Rubi Home")
+	}
+	cl, err := c.deviceClient(dev)
+	if err != nil {
+		return "", err
+	}
+	pctx, cancel := context.WithTimeout(ctx, hookCallTimeout)
+	defer cancel()
+	var plan struct {
+		Target  string `json:"target"`
+		Version string `json:"version"`
+		SHA256  string `json:"sha256"`
+	}
+	if err := cl.Call(pctx, "hook.plan", map[string]any{}, &plan); err != nil {
+		c.Audit.Record("device.hook.failed", audit.Fields{"device": dev.ID, "reason": "refused"})
+		return "", err
+	}
+	preview := map[string]any{"computer": dev.Name,
+		"what": "Rubi Home copies itself to a protected place on that computer, so Claude Code can ask Rubi before it acts"}
+	if plan.Target != "" {
+		preview["target"] = clipRunes(plan.Target, 200)
+	}
+	if plan.Version != "" {
+		preview["version"] = clipRunes(plan.Version, 40)
+	}
+	if sha256Hex.MatchString(plan.SHA256) {
+		preview["sha256"] = plan.SHA256
+	}
+	preview["check"] = "macOS will ask for the administrator password on that computer; approve only if you asked for this"
+	return c.requestSettings(ctx, "Install the Claude Code hook on "+dev.Name, preview,
+		func(ctx context.Context) (any, error) {
+			cctx, cancel := context.WithTimeout(ctx, hookCallTimeout)
+			defer cancel()
+			var res map[string]any
+			if err := cl.Call(cctx, "hook.install", map[string]any{}, &res); err != nil {
+				c.Audit.Record("device.hook.failed", audit.Fields{"device": dev.ID, "reason": hookCallReason(err)})
+				return nil, err
+			}
+			if started, _ := res["started"].(bool); !started {
+				c.Audit.Record("device.hook.failed", audit.Fields{"device": dev.ID, "reason": "refused"})
+				return nil, errors.New("Rubi Home didn't start the installation")
+			}
+			c.Audit.Record("device.hook.started", audit.Fields{"device": dev.ID})
+			return map[string]any{"started": true,
+				"receipt": "macOS is asking for the administrator password on " + dev.Name + "."}, nil
+		})
+}
+
+// auditHookResult records how an installation ended, once, when a check of the computer first shows it.
+func (c *Core) auditHookResult(devID string, hello map[string]any) {
+	hook, _ := hello["hook"].(map[string]any)
+	last, _ := hook["last"].(map[string]any)
+	at, _ := last["at"].(float64)
+	result, _ := last["result"].(string)
+	event, reason := hookResultAudit(result)
+	if event == "" {
+		return
+	}
+	c.devs.mu.Lock()
+	if c.devs.hookSeen == nil || len(c.devs.hookSeen) > 1000 {
+		c.devs.hookSeen = map[string]float64{}
+	}
+	seen := c.devs.hookSeen[devID] == at
+	c.devs.hookSeen[devID] = at
+	c.devs.mu.Unlock()
+	if seen {
+		return
+	}
+	if reason == "" {
+		c.Audit.Record(event, audit.Fields{"device": devID})
+		return
+	}
+	c.Audit.Record(event, audit.Fields{"device": devID, "reason": reason})
+}
+
+// hookCallReason is the audit reason for a call to Home that failed: "failed" when Home couldn't be reached,
+// "refused" when it answered and said no.
+func hookCallReason(err error) string {
+	if errors.Is(err, homeproto.ErrOffline) {
+		return "failed"
+	}
+	return "refused"
+}
+
+// hookResultAudit maps a result Home reports to the audit event and its short reason code ("" for none).
+// Anything unknown is not recorded.
+func hookResultAudit(result string) (event, reason string) {
+	switch result {
+	case "ok":
+		return "device.hook.installed", ""
+	case "cancelled", "timeout", "failed":
+		return "device.hook.failed", result
+	}
+	return "", ""
 }
 
 // homeCall runs one helper operation for a plugin, within what its manifest declares.

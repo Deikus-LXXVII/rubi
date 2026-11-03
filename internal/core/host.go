@@ -25,18 +25,25 @@ import (
 // Settings never change without the user's passkey or password.
 func (c *Core) RequestChange(ctx context.Context, summary string, preview map[string]any,
 	apply func(*vault.Data) error, after func()) (string, error) {
+	return c.requestSettings(ctx, summary, preview, func(context.Context) (any, error) {
+		if err := c.Vault.Update(apply); err != nil {
+			return nil, err
+		}
+		if after != nil {
+			after()
+		}
+		return map[string]any{"applied": true}, nil
+	})
+}
+
+// requestSettings is RequestChange for an action that is not a vault change (it runs when the user approves
+// and its error is the approval's error).
+func (c *Core) requestSettings(ctx context.Context, summary string, preview map[string]any,
+	run func(context.Context) (any, error)) (string, error) {
 	out, err := c.Approvals.Submit(ctx, approvals.Request{
 		Integration: "rubi", Kind: "rubi.settings", Summary: summary, Preview: preview,
 		Options: []approvals.Option{{Key: "apply", Label: "Approve"}},
-		Execute: func(context.Context, string) (any, error) {
-			if err := c.Vault.Update(apply); err != nil {
-				return nil, err
-			}
-			if after != nil {
-				after()
-			}
-			return map[string]any{"applied": true}, nil
-		},
+		Execute: func(ctx context.Context, _ string) (any, error) { return run(ctx) },
 	})
 	if err != nil {
 		return "", err
