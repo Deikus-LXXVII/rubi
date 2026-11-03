@@ -90,7 +90,7 @@ Properties:
 
 ## 6. Transport
 
-- **The user picks one option at install** (the agent asks; `rubi transport` changes it later):
+- **The user picks one option at install** (the agent asks; the user changes it later in the panel, Settings, Security, Connection, behind a passkey approval; the agent can still use `rubi transport`, which stops Rubi so that it restarts locked and needs a new unlock link, while the panel path restarts Rubi the way an update does and keeps it unlocked):
   - **Rubi Gateway** (default): `wss://gateway.rubi-panel.com`, a relay that carries only Rubi's traffic
     (`internal/gateway`), with the public relays below as a fallback. Only its name is built into Rubi.
   - **Public relays** only.

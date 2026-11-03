@@ -23,6 +23,7 @@ type fakeHook struct {
 	planErr         error
 	installErr      error
 	last            atomic.Value // map[string]any: hello.hook.last
+	home            *home.Helper // the real Rubi Home behind the fake ops
 }
 
 const fakeSHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -43,6 +44,7 @@ func pairedFakeHomeVia(t *testing.T, c *Core, f *fakeHook, link bool) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.home = h
 	_ = h.Update(func(cfg *home.Config) { cfg.Relays = []string{rl.URL()} })
 	key, _ := h.RelayKey()
 	ctx, cancel := context.WithCancel(context.Background())

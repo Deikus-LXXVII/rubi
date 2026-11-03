@@ -82,9 +82,6 @@ Exempt by path, with the reason in `userTextExempt` in the test:
 | Task | Where | What |
 | ---- | ----- | ---- |
 | T-01L | `panel/js/app.js` (2 texts) | Linux has no desktop installer yet: its box still gets `curl ... \| sh` in a terminal, shown only under "On Linux" (a Mac installs by downloading the app, H3) |
-| T-03 | `internal/home/hue.go` | forgetting a Hue bridge: `rubi-home hue-forget` |
-| T-04 | `internal/core/hooks.go`, `internal/daemon/daemon.go` | choosing the transport: `rubi transport` |
-| T-05 | `internal/kvm/kvm.go` | the KVM device needs a sudo setting |
 | T-07 | `cmd/rubi/main.go` | the `--help` text names `rubi dev-panel` and the terminal; a development tool, to keep out of what a Bot shows |
 
 Not found in this branch: the roster pin instruction (`rubi-home roster pin`) from the pod work; when it lands, the

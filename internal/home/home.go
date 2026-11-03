@@ -213,7 +213,7 @@ func Open(dir string) (*Helper, error) {
 	if err := h.load(); err != nil {
 		return nil, err
 	}
-	h.Hue = &Hue{Pins: h.huePins, SetPin: h.setHuePin}
+	h.Hue = &Hue{Pins: h.huePins, SetPin: h.setHuePin, Unpin: h.unsetHuePin}
 	h.Claude = &Claude{}
 	h.Claude.DesktopStore, h.Claude.Transcripts = DefaultClaudeDirs()
 	h.Claude.QueueFile = filepath.Join(dir, ClaudeQueueFile)
@@ -567,6 +567,14 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 			return nil, errors.New("bad arguments")
 		}
 		return h.Hue.Pair(ctx, in.IP)
+	case "hue.forget":
+		var in struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(env.Args, &in); err != nil {
+			return nil, errors.New("bad arguments")
+		}
+		return h.Hue.Forget(in.ID)
 	case "hue.request":
 		var in HueRequest
 		if err := json.Unmarshal(env.Args, &in); err != nil {
@@ -698,7 +706,7 @@ func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
 		"can":  []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup", "t3-agent", "t3-setup"},
-		"hook": h.hookStatus()}
+		"hook": h.hookStatus(), "hue_bridges": h.Hue.Bridges()}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {
@@ -762,6 +770,10 @@ func (h *Helper) setHuePin(bridge, pin string) error {
 		}
 		c.HuePins[bridge] = pin
 	})
+}
+
+func (h *Helper) unsetHuePin(bridge string) error {
+	return h.Update(func(c *Config) { delete(c.HuePins, bridge) })
 }
 
 // computerName is how this computer introduces itself to Rubi (and through it to plugins and the

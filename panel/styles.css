@@ -667,6 +667,7 @@ button.small .icon { margin-right: 6px; vertical-align: -3px; }
 .acct-list li.device-row { flex-wrap: wrap; }
 .device-hook { flex-basis: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding-left: 38px; }
 .device-hook:empty { display: none; }
+.device-hue { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .acct-name { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow-wrap: anywhere; font-size: 0.94rem; }
 .acct-name small { width: 100%; }
 .avatar-dot.small { width: 28px; height: 28px; font-size: 0.8rem; }

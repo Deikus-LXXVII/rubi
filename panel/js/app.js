@@ -1667,13 +1667,14 @@ async function settingsScreen(ctx, tab) {
   ctx.settingsTab = tab;
   currentView = () => settingsScreen(ctx);
   const err = errorBox();
-  let store, policy, hook, st, devices, waitingList;
+  let store, policy, hook, st, devices, waitingList, transport;
   try {
-    [store, policy, hook, st, devices, waitingList] = await Promise.all([
+    [store, policy, hook, st, devices, waitingList, transport] = await Promise.all([
       ctx.client.call("store.list"), ctx.client.call("policy.get"),
       ctx.client.call("agents.get").catch(() => ctx.client.call("webhook.get")), ctx.client.call("status"),
       ctx.client.call("devices.get").catch(() => null), // older Rubi: no Rubi Home
       ctx.client.call("approval.list").catch(() => null), // older Rubi, or a view-only link
+      ctx.client.call("transport.get").catch(() => null), // older Rubi: no choice of connection
     ]);
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
@@ -1800,7 +1801,7 @@ async function settingsScreen(ctx, tab) {
               state.className = "status-dot " + (r.online ? "on" : "off");
               state.title = r.online ? `Online · ${r.version || ""}` : "Not answering";
               state.textContent = r.online ? "Online" : "Not answering";
-              hookBox.replaceChildren(...(r.online ? hookLines(r.hook, installHook(d)) : []));
+              hookBox.replaceChildren(...(r.online ? [...hookLines(r.hook, installHook(d)), ...hueLines(r.hue_bridges, (b) => change("device.hue.forget", () => ({ id: d.id, bridge: b })))] : []));
             }).catch((x) => showError(err, x));
           } }, "Check"),
           menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]),
@@ -1823,6 +1824,7 @@ async function settingsScreen(ctx, tab) {
       receipts.length ? h("ul", { class: "acct-list" }, receipts.map((r) => h("li", {}, h("span", { class: "avatar-dot small" }, icon(r.method === "passkey" ? "passkey" : "key", 14)),
         h("span", { class: "acct-name" }, `${r.event} with ${r.method}`, h("small", { class: "muted" }, fmtTime(r.at)))))) : null,
       h("p", { class: "muted small" }, "Don't recognize one of these? Lock Rubi and tell your agent."),
+      ...connectionBlock(transport, (choice) => change("transport.set", () => ({ choice }))),
       h("button", { class: "danger", onclick: async (e) => {
         await busy(e.target, () => ctx.client.call("lock"));
         statusScreen(ctx, "Rubi is locked.");
@@ -1905,6 +1907,32 @@ function hookLines(hook, install) {
     }
   }
   return lines;
+}
+
+// hueLines list the Hue Bridges whose certificate Rubi Home recorded, each with the button that forgets it
+// (after a bridge was replaced or reset). `forget(bridge)` makes the click handler.
+function hueLines(bridges, forget) {
+  if (!Array.isArray(bridges) || !bridges.length) return [];
+  return bridges.map((b) => h("div", { class: "device-hue" },
+    h("small", { class: "muted" }, `Hue Bridge ${b}`),
+    h("button", { class: "ghost small", type: "button", onclick: forget(b) }, "Forget this bridge"),
+    h("small", { class: "muted" }, "Only if you replaced or reset it: Rubi then trusts the bridge again the next time you set Hue up.")));
+}
+
+// connectionBlock shows how the panel reaches Rubi (gateway, public relays or Tailscale) and offers the others;
+// `choose(key)` makes the click handler, which asks for the passkey first.
+function connectionBlock(t, choose) {
+  if (!t || !Array.isArray(t.options)) return [];
+  return [
+    h("h3", {}, "Connection"),
+    h("p", { class: "muted small" }, "How this panel reaches Rubi. Changing it restarts Rubi; you approve it with your passkey, and the approval says which link to use next."),
+    t.notice ? h("p", { class: "error" }, t.notice) : null,
+    h("ul", { class: "acct-list" }, t.options.map((o) => h("li", { class: "device-row" },
+      h("span", { class: "acct-name" }, o.label, h("small", { class: "muted" }, o.help || "")),
+      o.key === t.current ? h("span", { class: "tag" }, "In use")
+        : o.available === false ? null
+          : h("button", { class: "secondary small", type: "button", onclick: choose(o.key) }, "Use this")))),
+  ];
 }
 
 // hookProgressScreen follows an installation that was just approved: macOS asks for the administrator

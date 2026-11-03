@@ -7,18 +7,5 @@
 panel/js/app.js || curl -fsSL https://rubi-panel.com/install-home.sh || T-01L: no desktop installer for Linux yet
 panel/js/app.js || open a terminal and run: || T-01L: no desktop installer for Linux yet
 
-# T-03: forgetting a Hue bridge asks for a command
-internal/home/hue.go || run `rubi-home hue-forget || T-03: a "Forget this bridge" button on the Hue page
-
-# T-04: choosing how the panel reaches Rubi asks for a command
-internal/core/hooks.go || see `rubi transport` || T-04: a transport choice in the panel settings
-internal/daemon/daemon.go || switch transport: ~/.rubi/bin/rubi transport gateway || T-04: a transport choice in the panel settings
-
-# T-05: the KVM device needs a sudo setting
-internal/kvm/kvm.go || turn on the setting that lets Rubi grant access with sudo || T-05: grant the device access from the Home/VM setup step in the panel, with the administrator dialog
-internal/kvm/kvm.go || with sudo failed || T-05: grant the device access from the Home/VM setup step in the panel, with the administrator dialog
-internal/kvm/kvm.go || user ACL through sudo || T-05: grant the device access from the Home/VM setup step in the panel, with the administrator dialog
-
-
 # T-07: development tool, not part of the user path; move it out of the user-facing help
 cmd/rubi/main.go || self-hosted integrations for AI agents, gated by your approval || T-07: keep dev-panel out of the help the Bot shows

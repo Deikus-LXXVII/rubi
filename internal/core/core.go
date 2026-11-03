@@ -79,10 +79,12 @@ type Core struct {
 	relays         []string
 	relayUp        int // relays currently connected
 	// transport is the user's chosen transport (gateway, relays, tailscale).
-	transport string
-	transErr  string // why there is no endpoint, if the transport can't start
-	pairCode  string
-	pairExp   time.Time
+	transport       string
+	startedBySwitch bool   // this process was started by the restart of a panel connection change
+	transportFB     string // set while the chosen transport failed and another one carries the panel
+	transErr        string // why there is no endpoint, if the transport can't start
+	pairCode        string
+	pairExp         time.Time
 	// tickets are short-lived random tokens embedded in panel links. The panel API serves anything
 	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
 	// can't even fetch the wrapped keys.
@@ -94,6 +96,7 @@ type Core struct {
 	announced map[string]bool
 	toolCalls map[string]int
 	upd       updateState
+	tr        TransportHooks // guarded by upd.mu
 	mkt       marketState
 	integ     integrity.Result
 	hookHit   map[string][]time.Time // recent deliveries per hook, for rate limiting
@@ -180,6 +183,9 @@ func Open(layout paths.Layout) (*Core, error) {
 			if s.Kind == "rubi.update" && s.State == approvals.Executed {
 				return // Rubi restarts; the new process reports update.completed instead
 			}
+			if restartingSettings(s) {
+				return // a connection change that restarts Rubi: the new process reports transport.changed instead
+			}
 			time.Sleep(seenGrace)
 			if c.takeSeen(s.ID) {
 				return
@@ -238,6 +244,20 @@ func (c *Core) SetTransportName(t string) {
 	c.mu.Unlock()
 }
 
+// SetTransportFallback records that the chosen transport failed to start and Rubi is reachable through another one
+// ("" = none).
+func (c *Core) SetTransportFallback(t string) {
+	c.mu.Lock()
+	c.transportFB = t
+	c.mu.Unlock()
+}
+
+func (c *Core) transportFallback() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.transportFB
+}
+
 // TransportInfo describes how the panel is reached right now.
 func (c *Core) TransportInfo() map[string]any {
 	c.mu.Lock()
@@ -245,6 +265,9 @@ func (c *Core) TransportInfo() map[string]any {
 	info := map[string]any{"transport": c.transport, "relays_connected": c.relayUp, "relays": len(c.relays)}
 	if c.endpoint != "" {
 		info["https"] = true
+	}
+	if c.transportFB != "" {
+		info["fallback"] = c.transportFB
 	}
 	if c.transErr != "" && c.endpoint == "" && c.relayUp == 0 {
 		info["problem"] = c.transErr

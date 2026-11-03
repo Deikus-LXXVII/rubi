@@ -51,14 +51,14 @@ func Ensure(ctx context.Context, o Options) error {
 		return fmt.Errorf("kvm: the user name %q can't be used in an ACL", name)
 	}
 	if !o.GrantWithSudo {
-		return fmt.Errorf("kvm: %s belongs to group %q and %s can't open it; turn on the setting that lets Rubi grant access with sudo at start, or give %s access yourself", dev, o.owner(dev), name, name)
+		return fmt.Errorf("kvm: %s belongs to group %q and %s can't open it; this is for the agent that looks after this machine, not for the person using the panel: Rubi grants the access itself at start when its install setting for that is on, or the agent gives %s access", dev, o.owner(dev), name, name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	if err := o.run(ctx, "sudo", "-n", "setfacl", "-m", "u:"+name+":rw", dev); err != nil {
-		return fmt.Errorf("kvm: granting %s access to %s with sudo failed (passwordless sudo and setfacl are needed): %w", name, dev, err)
+		return fmt.Errorf("kvm: couldn't give %s access to %s (the agent that looks after this machine needs passwordless administrator rights for it): %w", name, dev, err)
 	}
-	o.Logf("kvm: granted %s read-write access to %s (user ACL through sudo; lost on reboot, re-applied at the next start)", name, dev)
+	o.Logf("kvm: granted %s read-write access to %s (a user ACL; lost on reboot, re-applied at the next start)", name, dev)
 	if err := o.usable(dev); err != nil {
 		return fmt.Errorf("kvm: %s is still not usable after the grant: %w", dev, err)
 	}

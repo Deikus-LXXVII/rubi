@@ -84,6 +84,20 @@ const APPROVALS = {
     preview: { "computer (as it calls itself)": "Mac mini", fingerprint: "pX3k-9QaL (Rubi Home shows the same fingerprint when you open it)",
       allows: "control Philips Hue on your home network and run the shortcuts in the folder \"Rubi\"" },
   },
+  hue: {
+    kind: "rubi.settings", summary: "Forget the Hue Bridge 001788fffe123456 on Mac mini",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { computer: "Mac mini", bridge: "001788fffe123456",
+      what: "Rubi Home forgets the certificate it recorded for this bridge, and trusts what the bridge shows the next time you set Hue up",
+      check: "Approve only if you replaced or reset this bridge; otherwise something else on your network may be pretending to be it" },
+  },
+  transport: {
+    kind: "rubi.settings", summary: "Reach Rubi through Public relays only",
+    options: [{ key: "apply", label: "Approve" }],
+    preview: { now: "gateway", after: "relays", what: "Changes how this panel reaches Rubi: Public relays only",
+      effect: "Rubi restarts in a few seconds and stays unlocked. This page keeps working: both choices use the same public relays.",
+      hooks: "Hook addresses (for example an iPhone Shortcut reporting that you arrived home) stop working until you choose Rubi Gateway or Tailscale again" },
+  },
   hook: {
     kind: "rubi.settings", summary: "Install the Claude Code hook on Mac mini",
     options: [{ key: "apply", label: "Approve" }],
@@ -144,6 +158,10 @@ export class DemoClient {
         return { challenge: "" };
       case "approval.decide": {
         const a = approval(args.approval_id);
+        if (args.approve && args.approval_id === "transport" && this.pendingTransport) { // the change happens when it is approved
+          this.transport = this.pendingTransport;
+          this.pendingTransport = null;
+        }
         return { ...a, state: args.approve ? "executed" : "denied", result: args.option === "send_track" ? { tracking: {} } : {} };
       }
       case "unlock.keys":
@@ -163,14 +181,24 @@ export class DemoClient {
             { name: "Gamer", host: "routines.grok.example", subscriptions: ["steam"] }] };
       case "devices.get":
         return { devices: [{ id: "d1", name: "Mac mini", paired: iso(now() - 86400e3) }] };
+      case "transport.get":
+        return { current: this.transport || "gateway", options: [
+          { key: "gateway", label: "Rubi Gateway", available: true, help: "A relay run for Rubi only, with public relays as a backup. Works from any network, and gives plugins private hook addresses." },
+          { key: "relays", label: "Public relays only", available: true, help: "No Rubi-run server in the path. Works from any network, but plugins can't have hook addresses." },
+          { key: "tailscale", label: "Tailscale", available: false, help: "Reachable only from your own devices on your Tailscale network, which must be signed in on the phone or computer you use. Tailscale isn't installed on the machine where Rubi runs: ask your agent to set it up, then come back here." },
+        ], info: { transport: this.transport || "gateway", relays_connected: 3, relays: 4 } };
+      case "transport.set":
+        this.pendingTransport = args.choice;
+        return { approval_id: "transport", ticket: "demo" };
       case "device.check":
         // After the demo's install the hook is "being installed" for a few seconds, then current.
         if (this.hookStartedAt) {
           const going = now() - this.hookStartedAt < 4000;
           return { online: true, version: "v0.6.0", hook: going ? { state: "stale", version: "v0.5.0", plugin: false, installing: true }
-            : { state: "current", version: "v0.6.0", plugin: false, installing: false, last: { result: "ok", message: "The Claude Code hook is installed." } } };
+            : { state: "current", version: "v0.6.0", plugin: false, installing: false, last: { result: "ok", message: "The Claude Code hook is installed." } },
+            hue_bridges: ["001788fffe123456"] };
         }
-        return { online: true, version: "v0.6.0", hook: { state: "stale", version: "v0.5.0", plugin: false, installing: false, fixable: true } };
+        return { online: true, version: "v0.6.0", hue_bridges: ["001788fffe123456"], hook: { state: "stale", version: "v0.5.0", plugin: false, installing: false, fixable: true } };
       case "updates.list":
         return { updates: [
           { id: "rubi", name: "Rubi", current: "v0.6.0", available: false, notify: true },
@@ -215,6 +243,8 @@ export class DemoClient {
       case "updates.plugin":
       case "updates.rubi":
         return { approval_id: "settings", ticket: "demo" };
+      case "device.hue.forget":
+        return { approval_id: "hue", ticket: "demo" };
       case "device.hook.install":
         this.hookStartedAt = now();
         return { approval_id: "hook", ticket: "demo" };

@@ -277,6 +277,43 @@ func (c *Core) InstallHookOnDevice(ctx context.Context, id string) (string, erro
 		})
 }
 
+var hueBridgeID = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// ForgetHueBridge asks the user to approve forgetting the certificate Rubi Home recorded for one Hue Bridge. That
+// record is what keeps a look-alike device on the home network from taking the bridge's place, so forgetting it
+// lets the next pairing trust whatever the bridge then shows. Only the approval's execute step asks Home; a plugin
+// can't (the home gate refuses hue.forget).
+func (c *Core) ForgetHueBridge(ctx context.Context, id, bridge string) (string, error) {
+	dev, err := c.device(id)
+	if err != nil || id == "" {
+		return "", errors.New("unknown Rubi Home")
+	}
+	bridge = strings.ToLower(strings.TrimSpace(bridge))
+	if !hueBridgeID.MatchString(bridge) {
+		return "", errors.New("not a Hue Bridge id")
+	}
+	cl, err := c.deviceClient(dev)
+	if err != nil {
+		return "", err
+	}
+	return c.requestSettings(ctx, "Forget the Hue Bridge "+bridge+" on "+dev.Name, map[string]any{
+		"computer": dev.Name, "bridge": bridge,
+		"what":  "Rubi Home forgets the certificate it recorded for this bridge, and trusts what the bridge shows the next time you set Hue up",
+		"check": "Approve only if you replaced or reset this bridge; otherwise something else on your network may be pretending to be it"},
+		func(ctx context.Context) (any, error) {
+			cctx, cancel := context.WithTimeout(ctx, hookCallTimeout)
+			defer cancel()
+			var res map[string]any
+			if err := cl.Call(cctx, "hue.forget", map[string]string{"id": bridge}, &res); err != nil {
+				c.Audit.Record("device.hue.forget.failed", audit.Fields{"device": dev.ID, "bridge": bridge, "reason": hookCallReason(err)})
+				return nil, err
+			}
+			c.Audit.Record("device.hue.forgotten", audit.Fields{"device": dev.ID, "bridge": bridge})
+			return map[string]any{"forgotten": res["forgotten"] == true,
+				"receipt": "Rubi Home on " + dev.Name + " forgot that bridge. Set Hue up again."}, nil
+		})
+}
+
 // auditHookResult records how an installation ended, once, when a check of the computer first shows it.
 func (c *Core) auditHookResult(devID string, hello map[string]any) {
 	hook, _ := hello["hook"].(map[string]any)

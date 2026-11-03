@@ -514,3 +514,67 @@ func TestOpenExistingCreatesNothing(t *testing.T) {
 		t.Errorf("existing home: %v", err)
 	}
 }
+
+func huePaired(t *testing.T) *Helper {
+	t.Helper()
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Update(func(c *Config) {
+		c.Paired = []Pairing{{TokenHash: tokenHash("tok")}}
+		c.HuePins = map[string]string{"001788fffe123456": "aa", "001788fffe654321": "bb"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func TestHueForgetRemovesOnlyThatPin(t *testing.T) {
+	h := huePaired(t)
+	v, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: "tok", Args: json.RawMessage(`{"id":"001788FFFE123456"}`)})
+	if err != nil || v.(map[string]any)["forgotten"] != true {
+		t.Fatalf("%v %v", v, err)
+	}
+	if pins := h.Config().HuePins; len(pins) != 1 || pins["001788fffe654321"] != "bb" {
+		t.Fatalf("pins: %v", pins)
+	}
+	// forgetting a bridge again, or one never paired, changes nothing and says so
+	v, err = h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: "tok", Args: json.RawMessage(`{"id":"001788fffe123456"}`)})
+	if err != nil || v.(map[string]any)["forgotten"] != false || len(h.Config().HuePins) != 1 {
+		t.Fatalf("%v %v", v, err)
+	}
+	for _, bad := range []string{`{"id":""}`, `{"id":"nope"}`, `{}`, `[]`} {
+		if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: "tok", Args: json.RawMessage(bad)}); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	if len(h.Config().HuePins) != 1 {
+		t.Fatal("a bad request removed a pin")
+	}
+}
+
+func TestHueForgetRefusesAnUnpairedCaller(t *testing.T) {
+	h := huePaired(t)
+	for _, tok := range []string{"", "someone-else"} {
+		_, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: tok, Args: json.RawMessage(`{"id":"001788fffe123456"}`)})
+		if err == nil || err.Error() != homeproto.NotPairedMessage {
+			t.Errorf("token %q: %v", tok, err)
+		}
+	}
+	if len(h.Config().HuePins) != 2 {
+		t.Fatal("an unpaired caller removed a pin")
+	}
+}
+
+func TestHelloListsThePinnedBridges(t *testing.T) {
+	h := huePaired(t)
+	v, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hello", Token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := v.(map[string]any)["hue_bridges"].([]string)
+	if len(got) != 2 || got[0] != "001788fffe123456" || got[1] != "001788fffe654321" {
+		t.Fatalf("hue_bridges: %v", got)
+	}
+}

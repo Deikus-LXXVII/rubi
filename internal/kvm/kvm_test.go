@@ -71,7 +71,8 @@ func TestEnsureDoesNothingWhenUsable(t *testing.T) {
 func TestEnsureRefusesWithoutTheSetting(t *testing.T) {
 	f := &fake{usableAfterGrant: true}
 	err := Ensure(context.Background(), f.opts(t, false))
-	if err == nil || len(f.calls) != 0 || !strings.Contains(err.Error(), "kvmgroup") || !strings.Contains(err.Error(), "setting") {
+	if err == nil || len(f.calls) != 0 || !strings.Contains(err.Error(), "kvmgroup") || !strings.Contains(err.Error(), "setting") ||
+		!strings.Contains(err.Error(), "agent") || strings.Contains(err.Error(), "sudo") {
 		t.Errorf("err = %v, calls = %v", err, f.calls)
 	}
 }
@@ -79,7 +80,7 @@ func TestEnsureRefusesWithoutTheSetting(t *testing.T) {
 func TestEnsureFailsClosedWithoutSudo(t *testing.T) {
 	f := &fake{runErr: errors.New("sudo: a password is required")}
 	err := Ensure(context.Background(), f.opts(t, true))
-	if err == nil || !strings.Contains(err.Error(), "passwordless sudo") || !strings.Contains(err.Error(), "password is required") {
+	if err == nil || !strings.Contains(err.Error(), "passwordless administrator") || !strings.Contains(err.Error(), "password is required") {
 		t.Errorf("err = %v", err)
 	}
 }

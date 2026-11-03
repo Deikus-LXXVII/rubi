@@ -126,6 +126,15 @@ its usage. The home folder comes from the account database (`user.Current`), els
 Opening a newer app later replaces the binary and restarts the helper: this is the update. After an update the panel
 shows **Update the hook** (the root-owned hook copy is separate).
 
+### Forgetting a Hue Bridge
+
+Rubi Home records each Hue Bridge's certificate when it is paired and refuses a different one later. After a bridge is
+replaced or reset, Settings, Rubi Home lists the bridges (`hello.hue_bridges`, after Check) with **Forget this
+bridge**. That is `device.hue.forget`: a `rubi.settings` approval naming the computer and the bridge, whose execute step
+calls `hue.forget {id}` on Home (only that pin; the next pairing records the new certificate). Core refuses `hue.forget`
+in a plugin's `home.call` (`homegate.go`), so a plugin cannot drop the pin; `hue.pair` itself stays plugin-callable
+because it only records a pin and never replaces one (a changed certificate is refused until the user forgets it).
+
 ### Opening an unsigned app (Gatekeeper and codesign)
 
 Checked on macOS (Darwin 27, arm64) with the release's build flags, `codesign` reading files in a temporary folder:

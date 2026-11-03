@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
@@ -65,6 +66,9 @@ func SaveTransport(l paths.Layout, transport string) error {
 
 // relaysFor returns the relays a transport uses (none for Tailscale).
 func relaysFor(transport string) []string {
+	if transport == TransportTailscale {
+		return nil // not even RUBI_RELAYS: the panel opens only on the tailnet
+	}
 	if r := os.Getenv("RUBI_RELAYS"); r != "" {
 		return strings.Split(r, ",")
 	}
@@ -75,6 +79,29 @@ func relaysFor(transport string) []string {
 		return relay.DefaultRelays
 	}
 	return nil
+}
+
+// runCmd is a seam: how a command is run (tests replace it).
+var runCmd = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+// tailscaleReady says whether Tailscale runs and is signed in on this machine: `tailscale status --json` answers
+// within a few seconds with BackendState "Running" and a name for this machine.
+func tailscaleReady() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := runCmd(ctx, "tailscale", "status", "--json")
+	if err != nil {
+		return false
+	}
+	var st struct {
+		BackendState string `json:"BackendState"`
+		Self         struct {
+			DNSName string `json:"DNSName"`
+		} `json:"Self"`
+	}
+	return json.Unmarshal(out, &st) == nil && st.BackendState == "Running" && strings.TrimSuffix(st.Self.DNSName, ".") != ""
 }
 
 // setupTailscale serves the panel API on this machine's tailnet name and returns the URL. It needs

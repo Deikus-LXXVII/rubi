@@ -41,7 +41,9 @@ const (
 
 	opRolePut     = "claude-agent.role.put"
 	opSSHRegister = "claude-agent.ssh.register"
-	opProjectAdd  = "agent-setup.project.add"
+	// opHueForget drops a bridge's pinned certificate. Only the user does that, in the panel (ForgetHueBridge).
+	opHueForget  = "hue.forget"
+	opProjectAdd = "agent-setup.project.add"
 )
 
 // roleApprovalKinds are the approval kinds whose ids a role.put may name.
@@ -129,6 +131,9 @@ func (c *Core) beginExec(plugin, kind string, payload json.RawMessage) func() {
 func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.RawMessage, error) {
 	ns := kindNS(plugin)
 	switch homeOp(op) {
+	case opHueForget:
+		// A plugin that could forget the pin could then pair a look-alike device: the pin is what stops it.
+		return nil, errors.New("Rubi refused: forgetting a Hue Bridge's certificate is done by the user, in the Rubi panel")
 	case opRolePut:
 		// encoding/json matches keys ignoring case (Unicode folding too: the Kelvin sign is a k), and which of two
 		// such keys wins depends on their order. Core checks one reading and forwards the original, so two keys that

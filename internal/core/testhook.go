@@ -12,3 +12,6 @@ func SetSeenGraceForTests(d time.Duration) {
 		seenGrace = d
 	}
 }
+
+// ArmRestartForTests plans a restart with the given reason ("update" or "transport") without a change behind it.
+func (c *Core) ArmRestartForTests(exe, reason string) { c.armRestart(exe, reason) }

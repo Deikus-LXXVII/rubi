@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +29,8 @@ type UpdateInfo struct {
 type updateState struct {
 	mu       sync.Mutex
 	info     UpdateInfo
-	handoff  string // binary to exec into after an approved update
+	handoff  string          // binary to exec into after an approved update (or a changed transport)
+	reasons  map[string]bool // why Rubi restarts itself: restartUpdate, restartTransport (both can be pending)
 	shutdown func()
 }
 
@@ -132,15 +134,45 @@ func (c *Core) applyUpdate(ctx context.Context, target string) (any, error) {
 		return nil, err
 	}
 	c.Audit.Record("rubi.updated", audit.Fields{"from": version.Version, "to": target})
-	c.upd.mu.Lock()
-	c.upd.handoff = exe
-	shutdown := c.upd.shutdown
-	c.upd.mu.Unlock()
-	if shutdown != nil {
+	if shutdown := c.armRestart(exe, restartUpdate); shutdown != nil {
 		// Give the panel a moment to receive the result before the process restarts.
 		time.AfterFunc(1500*time.Millisecond, shutdown)
 	}
 	return map[string]any{"status": "updated", "from": version.Version, "to": target, "restarting": true}, nil
+}
+
+// The reasons Rubi restarts itself into a binary with its vault key handed over.
+const (
+	restartUpdate    = "update"
+	restartTransport = "transport"
+)
+
+// armRestart plans the restart into exe and records why; it returns the function that stops the daemon (nil when
+// there is none). Reasons add up: if an update and a transport change are both waiting, the one restart carries both
+// (it is the same binary, the new transport is already stored), so neither is lost and the new process reports both.
+func (c *Core) armRestart(exe, reason string) (shutdown func()) {
+	c.upd.mu.Lock()
+	defer c.upd.mu.Unlock()
+	c.upd.handoff = exe
+	if c.upd.reasons == nil {
+		c.upd.reasons = map[string]bool{}
+	}
+	c.upd.reasons[reason] = true
+	return c.upd.shutdown
+}
+
+// HandoffReason says why the restart that is pending happens: "" for none, else "update", "transport" or
+// "transport,update".
+func (c *Core) HandoffReason() string {
+	c.upd.mu.Lock()
+	defer c.upd.mu.Unlock()
+	var out []string
+	for _, r := range []string{restartTransport, restartUpdate} {
+		if c.upd.reasons[r] {
+			out = append(out, r)
+		}
+	}
+	return strings.Join(out, ",")
 }
 
 // PendingHandoff returns the binary to restart into, if an update was just installed.

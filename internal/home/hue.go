@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,8 @@ import (
 type Hue struct {
 	Pins   func() map[string]string
 	SetPin func(bridge, pin string) error
+	// Unpin drops a bridge's recorded certificate (nil: not supported).
+	Unpin func(bridge string) error
 	// Discovery is the cloud fallback for finding bridges (a variable for tests).
 	Discovery string
 	// Insecure is for tests: addresses may carry a port and certificates aren't matched to the bridge id.
@@ -198,12 +201,39 @@ func (h *Hue) Pair(ctx context.Context, ip string) (any, error) {
 	}
 	if old := h.Pins()[id]; old != "" && old != pin {
 		return nil, fmt.Errorf("this bridge's certificate differs from the one recorded when it was first paired; if you "+
-			"replaced or reset the bridge, run `rubi-home hue-forget %s` on the home computer and set Hue up again", id)
+			"replaced or reset the bridge, open the Rubi panel, go to Settings, then Rubi Home, choose \"Forget\" next to the bridge %s, and set Hue up again", id)
 	}
 	if err := h.SetPin(id, pin); err != nil {
 		return nil, err
 	}
 	return map[string]any{"bridge": id, "ip": ip, "key": out[0].Success.Username}, nil
+}
+
+// Bridges lists the ids of the bridges whose certificate is recorded, sorted.
+func (h *Hue) Bridges() []string {
+	ids := []string{}
+	for id := range h.Pins() {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// Forget drops the recorded certificate of one bridge (and only that one): the next pairing records whatever
+// certificate the bridge then shows. It says whether there was one. Core asks the user first; a plugin can't call it.
+func (h *Hue) Forget(id string) (any, error) {
+	id = normBridge(id)
+	if !bridgeIDRe.MatchString(id) {
+		return nil, errors.New("not a Hue Bridge id")
+	}
+	if h.Unpin == nil {
+		return nil, errors.New("forgetting a bridge is not supported here")
+	}
+	_, had := h.Pins()[id]
+	if err := h.Unpin(id); err != nil {
+		return nil, err
+	}
+	return map[string]any{"forgotten": had}, nil
 }
 
 func (h *Hue) url(ip, path string) string {

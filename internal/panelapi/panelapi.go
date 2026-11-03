@@ -327,7 +327,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "device.hook.install", "account.agents", "watch.set", "plugin.panel",
+		"devices.get", "device.pair", "device.remove", "device.check", "device.hook.install", "device.hue.forget", "transport.get", "transport.set", "account.agents", "watch.set", "plugin.panel",
 		"approval.list", "approval.open",
 		"library.list", "library.entry", "library.version", "library.queue", "library.curator.set", "library.withdraw":
 		return s.settings(ctx, purpose, env)
@@ -728,6 +728,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Account string            `json:"account"`
 		Code    string            `json:"code"`
 		Pin     string            `json:"pin"`
+		Bridge  string            `json:"bridge"`
+		Choice  string            `json:"choice"`
 		// ApprovalID is for approval.open.
 		ApprovalID string `json:"approval_id"`
 		Wait       bool   `json:"wait"`
@@ -863,6 +865,12 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		approvalID, err = s.core.PairDevice(ctx, args.Code, args.Pin)
 	case "device.hook.install":
 		approvalID, err = s.core.InstallHookOnDevice(ctx, args.ID)
+	case "transport.get":
+		return s.core.TransportSettings(), nil
+	case "transport.set":
+		approvalID, err = s.core.ChooseTransport(ctx, args.Choice)
+	case "device.hue.forget":
+		approvalID, err = s.core.ForgetHueBridge(ctx, args.ID, args.Bridge)
 	case "device.remove":
 		approvalID, err = s.core.RemoveDevice(ctx, args.ID)
 	case "plugin.config.set":
