@@ -1,0 +1,444 @@
+{
+  "t3_project_create": {
+    "properties": {
+      "createWorkspaceRootIfMissing": {
+        "type": "boolean"
+      },
+      "defaultModelSelection": {
+        "properties": {
+          "instanceId": {},
+          "model": {},
+          "options": {},
+          "provider": {}
+        },
+        "required": [
+          "model"
+        ],
+        "type": "object"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "scripts": {
+        "items": {
+          "properties": {
+            "async": {
+              "type": "boolean"
+            },
+            "autoOpenPreview": {
+              "type": "boolean"
+            },
+            "command": {
+              "type": "string"
+            },
+            "icon": {
+              "enum": [
+                "play",
+                "test",
+                "lint",
+                "configure",
+                "build",
+                "debug"
+              ],
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "previewUrl": {
+              "type": "string"
+            },
+            "runOnSettle": {
+              "type": "boolean"
+            },
+            "runOnWorktreeCreate": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "command",
+            "icon",
+            "runOnWorktreeCreate"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "title": {
+        "type": "string"
+      },
+      "workspaceRoot": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "title"
+    ],
+    "type": "object"
+  },
+  "t3_project_list": {
+    "properties": {
+      "cursor": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "limit": {
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "type": "object"
+  },
+  "t3_thread_interrupt": {
+    "properties": {
+      "clientRequestId": {
+        "type": "string"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "reason": {
+        "maxLength": 2000,
+        "type": "string"
+      },
+      "runId": {
+        "type": "string"
+      },
+      "stop": {
+        "type": "boolean"
+      },
+      "threadId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "threadId"
+    ],
+    "type": "object"
+  },
+  "t3_thread_launch": {
+    "properties": {
+      "attachments": {
+        "items": {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "mimeType": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "sizeBytes": {
+              "anyOf": [
+                {
+                  "maximum": 10485760,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "maximum": 52428800,
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              ]
+            },
+            "source": {
+              "properties": {
+                "_tag": {
+                  "enum": [
+                    "pasted-text"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "_tag"
+              ],
+              "type": "object"
+            },
+            "type": {
+              "enum": [
+                "image",
+                "file"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "name",
+            "mimeType",
+            "sizeBytes"
+          ],
+          "type": "object"
+        },
+        "maxItems": 8,
+        "type": "array"
+      },
+      "clientRequestId": {
+        "type": "string"
+      },
+      "delegatedFrom": {
+        "properties": {
+          "environmentId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "environmentId",
+          "threadId",
+          "title"
+        ],
+        "type": "object"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "interactionMode": {
+        "enum": [
+          "default",
+          "plan"
+        ],
+        "type": "string"
+      },
+      "message": {
+        "description": "First prompt. Omit it and `attachments` for idle.",
+        "maxLength": 120000,
+        "type": "string"
+      },
+      "modelSelection": {
+        "properties": {
+          "instanceId": {},
+          "model": {},
+          "options": {},
+          "provider": {}
+        },
+        "required": [
+          "model"
+        ],
+        "type": "object"
+      },
+      "projectId": {
+        "type": "string"
+      },
+      "runtimeMode": {
+        "enum": [
+          "approval-required",
+          "auto-accept-edits",
+          "auto",
+          "full-access"
+        ],
+        "type": "string"
+      },
+      "scratch": {
+        "description": "No project: a new Scratch folder. Not with `projectId` or `workspaceStrategy`.",
+        "type": "boolean"
+      },
+      "title": {
+        "type": "string"
+      },
+      "workspaceStrategy": {
+        "description": "'worktree': new checkout from `baseRef`. 'existing_worktree': bind `worktreePath`, a project worktree. 'root': project checkout, the default, not your worktree. Stack: parent branch as `baseRef`, `startFromOrigin: false`. Uncommitted edits are not copied.",
+        "properties": {
+          "baseRef": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "startFromOrigin": {
+            "type": "boolean"
+          },
+          "type": {
+            "enum": [
+              "root",
+              "existing_worktree",
+              "worktree"
+            ],
+            "type": "string"
+          },
+          "worktreePath": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      }
+    },
+    "required": [
+      "title"
+    ],
+    "type": "object"
+  },
+  "t3_thread_read": {
+    "properties": {
+      "afterPosition": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "itemId": {
+        "type": "string"
+      },
+      "limit": {
+        "description": "Max items, 1 to 100.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "maxCharsPerItem": {
+        "description": "Max chars per item, 1 to 50000.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "runLimit": {
+        "description": "Max recent runs, 1 to 50.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "textOffset": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "threadId": {
+        "type": "string"
+      },
+      "view": {
+        "enum": [
+          "messages",
+          "activity"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "threadId"
+    ],
+    "type": "object"
+  },
+  "t3_thread_send": {
+    "properties": {
+      "clientRequestId": {
+        "type": "string"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "message": {
+        "type": "string"
+      },
+      "mode": {
+        "enum": [
+          "auto",
+          "queue",
+          "steer",
+          "restart"
+        ],
+        "type": "string"
+      },
+      "threadId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "threadId",
+      "message"
+    ],
+    "type": "object"
+  },
+  "t3_thread_transfer": {
+    "properties": {
+      "action": {
+        "enum": [
+          "fork",
+          "merge_back",
+          "status"
+        ],
+        "type": "string"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "sourcePoint": {
+        "properties": {
+          "checkpointId": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "latest_stable",
+              "run",
+              "checkpoint"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "type": "object"
+      },
+      "targetThreadId": {
+        "type": "string"
+      },
+      "threadId": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  },
+  "t3_thread_wait": {
+    "properties": {
+      "environmentId": {
+        "type": "string"
+      },
+      "runId": {
+        "type": "string"
+      },
+      "threadId": {
+        "type": "string"
+      },
+      "timeoutMs": {
+        "type": "number"
+      },
+      "untilDelegatedWorkSettled": {
+        "description": "Also wait for its delegated and background tasks and their completions to settle. `resultRun` then names the run with its final answer.",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "threadId"
+    ],
+    "type": "object"
+  }
+}

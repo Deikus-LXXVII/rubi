@@ -286,7 +286,11 @@ embedded from a small root package `t3` (`t3/embed.go`: `upstream.json`, `contra
   `String`/`GoString`/`MarshalText` redact it except for saving to disk, which uses an explicit method). Errors
   carry T3's message, never the pairing code.
 - **Client** (`client.go`). `New(base string, tok Token, ceiling Mode) *Client`. Every request carries
-  `Authorization: Bearer` and `t3-mode-limit: <ceiling>`. The session connects lazily and reconnects once if the
+  `Authorization: Bearer` and `t3-mode-limit: <ceiling>/default` (the header is `<runtimeMode>/<interactionMode>`;
+  `default` is the wider of `plan`/`default`). The bearer never leaves the base: no redirects are followed and the
+  transport refuses any other host. Launch and Send always carry a request id (generated if the caller gives none),
+  so the one retry can't duplicate a thread or message; after Launch the thread's mode is read back and checked
+  against the ceiling. The session connects lazily and reconnects once if the
   server dropped it. A result with `isError` becomes `*ToolError{Tool, Message}`. Results are read from
   `structuredContent` into typed structs.
 - **Ops** (`ops.go`), typed requests only (finding F2):
@@ -319,3 +323,9 @@ embedded from a small root package `t3` (`t3/embed.go`: `upstream.json`, `contra
     (`RUBI_T3_UPDATE=1` rewrites it);
   - with a mock-backed Claude instance written into `settings.json`: create a project, launch, wait, read the
     reply, send twice with one request id (one message), fork, run a turn in the fork and see the history.
+
+S1 notes (as built): `/oauth/mcp/register` answers 201; `Pair` follows no redirects and refuses endpoints outside the
+base. `t3 serve` prints a pairing QR code at start, so the server's output goes only to `<base-dir>/server.log`
+(0600), never into errors. The server runs in its own process group; Stop signals the group only while the leader
+is not yet reaped, and a dead server is noticed (`Done`, `Alive`). The contract test merges its instance into the
+`settings.json` T3 writes on first start.
