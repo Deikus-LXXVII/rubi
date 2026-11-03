@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
+	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 )
 
 // Core vouches for the approvals Rubi Home relies on.
@@ -39,10 +40,49 @@ const (
 )
 
 // roleApprovalKinds are the approval kinds whose ids a role.put may name.
-var roleApprovalKinds = map[string]bool{
-	"claude-code.role_widen":        true,
-	"claude-code.role_foreign":      true,
-	"claude-code.role_skill_accept": true,
+var roleApprovalKinds = roleKinds(claudeNS)
+
+// The T3 Agents plugin has the same ops under other names (t3-agent.*, t3-setup.*) and the same approval kinds under
+// its own namespace (t3agents.role_widen...). One set of rules serves both: homeOp turns a T3 op into the claude one
+// it mirrors, and the kind names are built from the plugin's namespace. What Home is told is always the claude-code
+// spelling of a kind (see canonKind), so Home's rules need no second set of names.
+const claudeNS = "claude-code"
+
+var roleKindSuffixes = []string{"role_widen", "role_foreign", "role_skill_accept"}
+
+func roleKinds(ns string) map[string]bool {
+	m := map[string]bool{}
+	for _, s := range roleKindSuffixes {
+		m[ns+"."+s] = true
+	}
+	return m
+}
+
+// kindNS is the namespace of the approval kinds a plugin raises for the agent ops.
+func kindNS(plugin string) string {
+	if plugin == plugins.OfficialT3PluginID {
+		return plugin
+	}
+	return claudeNS
+}
+
+// canonKind is an approval kind in the claude-code namespace (Home's names).
+func canonKind(plugin, kind string) string {
+	if ns := kindNS(plugin); ns != claudeNS && strings.HasPrefix(kind, ns+".") {
+		return claudeNS + kind[len(ns):]
+	}
+	return kind
+}
+
+// homeOp is the claude-agent / agent-setup op that an op of the T3 families mirrors (any other op is itself).
+func homeOp(op string) string {
+	if rest, ok := strings.CutPrefix(op, "t3-agent."); ok {
+		return "claude-agent." + rest
+	}
+	if rest, ok := strings.CutPrefix(op, "t3-setup."); ok {
+		return "agent-setup." + rest
+	}
+	return op
 }
 
 // execGrant is an approval of a plugin whose execute is running: the user has decided it.
@@ -82,7 +122,8 @@ func (c *Core) beginExec(plugin, kind string, payload json.RawMessage) func() {
 // replaced by core's own map from each attested id to its approval kind, which Home uses to keep an id from covering
 // more than its kind allows (roles/approvals.go).
 func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.RawMessage, error) {
-	switch op {
+	ns := kindNS(plugin)
+	switch homeOp(op) {
 	case opRolePut:
 		// encoding/json matches keys ignoring case (Unicode folding too: the Kelvin sign is a k), and which of two
 		// such keys wins depends on their order. Core checks one reading and forwards the original, so two keys that
@@ -121,11 +162,11 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.Raw
 			if id == "" {
 				continue
 			}
-			kind, err := c.checkApprovalID(plugin, id, roleApprovalKinds)
+			kind, err := c.checkApprovalID(plugin, id, roleKinds(ns))
 			if err != nil {
 				return nil, err
 			}
-			kinds[id] = kind
+			kinds[id] = canonKind(plugin, kind)
 		}
 		var top map[string]json.RawMessage
 		if err := json.Unmarshal(args, &top); err != nil {
@@ -176,7 +217,7 @@ func (c *Core) checkApprovalID(plugin, id string, kinds map[string]bool) (string
 		var p struct {
 			ApprovalID string `json:"approval_id"`
 		}
-		if g.kind == kindSkillAccept && kinds[g.kind] && json.Unmarshal(g.payload, &p) == nil && p.ApprovalID != "" && p.ApprovalID == id {
+		if g.kind == kindNSSkill(plugin) && kinds[g.kind] && json.Unmarshal(g.payload, &p) == nil && p.ApprovalID != "" && p.ApprovalID == id {
 			return g.kind, nil
 		}
 	}
@@ -222,6 +263,8 @@ func (a sshTarget) same(b sshTarget) bool {
 	return true
 }
 
+func kindNSSkill(plugin string) string { return kindNS(plugin) + ".role_skill_accept" }
+
 func (c *Core) attestSSHRegister(plugin string, args json.RawMessage) error {
 	var want sshTarget
 	dec := json.NewDecoder(bytes.NewReader(args))
@@ -232,7 +275,7 @@ func (c *Core) attestSSHRegister(plugin string, args json.RawMessage) error {
 	c.execMu.Lock()
 	defer c.execMu.Unlock()
 	for _, g := range c.execs[plugin] {
-		if g.kind != kindSSHTarget {
+		if g.kind != kindNS(plugin)+".ssh_target" {
 			continue
 		}
 		var got sshTarget // the payload has more fields (device, key_type); they are not Home's

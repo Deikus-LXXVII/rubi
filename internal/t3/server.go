@@ -25,6 +25,10 @@ type Server struct {
 	Bin     string // the pinned t3 bin (a JS file)
 	BaseDir string // T3's data folder
 	Port    int
+	// RuntimeHome, when set, is T3CODE_HOME: where the npm launcher keeps the T3 executable it runs
+	// (runtime/versions/<version>). Rubi Home puts a checked executable there itself, so the launcher never
+	// downloads one; unset, the launcher uses the user's ~/.t3.
+	RuntimeHome string
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -88,12 +92,16 @@ func (s *Server) Base() string { return "http://127.0.0.1:" + strconv.Itoa(s.Por
 
 // Env is the whole environment of the server and of the pairing command.
 func (s *Server) Env() []string {
-	return []string{
+	env := []string{
 		"PATH=" + filepath.Dir(s.Node) + ":/usr/bin:/bin",
 		"HOME=" + os.Getenv("HOME"),
 		"T3CODE_TELEMETRY_ENABLED=false",
 		"OTEL_SDK_DISABLED=true",
 	}
+	if s.RuntimeHome != "" {
+		env = append(env, "T3CODE_HOME="+s.RuntimeHome)
+	}
+	return env
 }
 
 // tail keeps the last bytes written to it.

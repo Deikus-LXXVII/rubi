@@ -205,3 +205,25 @@ func TestReservedHomeCapabilityReason(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// The T3 capabilities are the T3 Agents plugin's: its id and the official key.
+func TestT3HomeCapabilitiesAreReserved(t *testing.T) {
+	key := `"publisher":{"name":"x","key":"` + OfficialPublisherKey + `"}`
+	other := `"publisher":{"name":"x","key":"MCowBQYDK2VwAyEAkG4bjWz38ru0Wpsihr0VVFTAMPjRvK8darUtybopFdk="}`
+	ok := manifest(t, `{"id":"`+OfficialT3PluginID+`","actions":[],"tools":[],"home":["t3-agent","t3-setup"],`+key+`}`)
+	if err := Check(&ok); err != nil {
+		t.Fatalf("the T3 plugin: %v", err)
+	}
+	for name, patch := range map[string]string{
+		"third party t3-agent":     `{"home":["t3-agent"]}`,
+		"third party t3-setup":     `{"home":["t3-setup"]}`,
+		"claude-code id, t3-agent": `{"id":"` + OfficialPluginID + `","actions":[],"tools":[],"home":["t3-agent"],` + key + `}`,
+		"t3 id, own key":           `{"id":"` + OfficialT3PluginID + `","actions":[],"tools":[],"home":["t3-agent"],` + other + `}`,
+		"t3 id, claude-agent":      `{"id":"` + OfficialT3PluginID + `","actions":[],"tools":[],"home":["claude-agent"],` + key + `}`,
+	} {
+		m := manifest(t, patch)
+		if err := Check(&m); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

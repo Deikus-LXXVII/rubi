@@ -103,6 +103,102 @@ func (m *Manager) T3Caps() (perRole, total int) {
 	return c.For("").PerProfile, c.Machine()
 }
 
+// T3Limits are the caps on running T3 threads for one Bot: per role, per project (all its roles), the Bot's own and
+// the computer's. 0 means no cap.
+type T3Limits struct{ PerRole, PerProject, PerBot, Total int }
+
+// T3LimitsFor resolves the caps for a Bot ("" is the user's own sessions) from the usage mode and the limits.
+func (m *Manager) T3LimitsFor(bot string) T3Limits {
+	c := m.usageNow()
+	l := c.For(bot)
+	return T3Limits{PerRole: l.PerProfile, PerProject: l.PerProject, PerBot: l.Sessions, Total: c.Machine()}
+}
+
+// T3ProjectRow is one role of a project as the T3 ops list it.
+type T3ProjectRow struct{ Project, Dir, Role, RoleName string }
+
+// T3Projects lists the active isolated roles that are bound to their project directory now (the T3 ops have no
+// legacy role: a T3 session always runs in a role's VM).
+func (m *Manager) T3Projects() []T3ProjectRow {
+	if m.roles == nil || m.opt.Dir == "" {
+		return nil
+	}
+	var out []T3ProjectRow
+	for _, row := range m.roles.List("") {
+		if row.Legacy || row.Status != "active" {
+			continue
+		}
+		r, err := m.roles.Get(row.ID, 0)
+		if err != nil || m.roleBoundTo(r, r.Project) != nil {
+			continue
+		}
+		out = append(out, T3ProjectRow{Project: r.Project, Dir: m.projectDir(r.Project), Role: row.ID, RoleName: row.Name})
+	}
+	return out
+}
+
+// T3ModeSel is a claude permission mode as a T3 thread takes it: T3's runtime mode, and whether the thread plans.
+type T3ModeSel struct {
+	Claude  string // the mode as the plugin spells it (default, acceptEdits, auto, plan, bypassPermissions)
+	Runtime string // approval-required, auto-accept-edits, auto or full-access
+	Plan    bool
+}
+
+// T3Mode maps a claude-agent mode to T3's. "" is default; dontAsk counts as auto. The bypass modes follow
+// agent_allow_bypass like the runner's.
+func (m *Manager) T3Mode(s string) (T3ModeSel, error) {
+	switch s {
+	case "", "default":
+		return T3ModeSel{"default", "approval-required", false}, nil
+	case "acceptEdits":
+		return T3ModeSel{s, "auto-accept-edits", false}, nil
+	case "auto":
+		return T3ModeSel{s, "auto", false}, nil
+	case "plan":
+		return T3ModeSel{s, "approval-required", true}, nil
+	case "bypassPermissions", "dontAsk":
+		if m.opt.AllowBypass != nil && !m.opt.AllowBypass() {
+			return T3ModeSel{}, fmt.Errorf("the mode %s is switched off on this computer (agent_allow_bypass)", s)
+		}
+		if s == "dontAsk" {
+			return T3ModeSel{"auto", "auto", false}, nil
+		}
+		return T3ModeSel{s, "full-access", false}, nil
+	}
+	return T3ModeSel{}, fmt.Errorf("unknown mode %q", clip(s, 32))
+}
+
+// T3ClaudeMode is the claude-agent spelling of a T3 runtime mode (plan is a thread's interaction mode, kept apart).
+func T3ClaudeMode(runtime string) string {
+	switch runtime {
+	case "auto-accept-edits":
+		return "acceptEdits"
+	case "auto":
+		return "auto"
+	case "full-access":
+		return "bypassPermissions"
+	}
+	return "default"
+}
+
+// OkBot and OkID are the checks the claude-agent ops make on a Bot id and a session id; MaxText is the longest prompt
+// or message they take.
+func OkBot(s string) bool { return okBot(s) }
+func OkID(s string) bool  { return okID(s) }
+
+// MaxText is the longest prompt or message text.
+const MaxText = maxQueueText
+
+// SeeBot notes a Bot the first time it is met (its usage mode is then listed), like the claude-agent ops do.
+func (m *Manager) SeeBot(bot string) { m.seeBot(bot) }
+
+// Emit hands the plugin an item through claude-agent.next's queue (a T3 thread's turn finishing, for instance).
+func (m *Manager) Emit(it Item) {
+	m.mu.Lock()
+	m.pushLocked(it)
+	m.mu.Unlock()
+}
+
 // T3RoleRef names a role for a T3 instance.
 type T3RoleRef struct{ ID, Name, ClaudeDir string }
 

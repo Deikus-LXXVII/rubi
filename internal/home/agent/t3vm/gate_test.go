@@ -313,3 +313,47 @@ func (d *decider) get() (string, string) {
 	defer d.mu.Unlock()
 	return d.b, d.msg
 }
+
+// With the T3 thread known, asks are filed under it, not under claude's own session id.
+func TestGateFilesAsksUnderTheT3Thread(t *testing.T) {
+	f := &fakeAsker{res: agent.AskResult{Behavior: "allow"}}
+	g := NewGate(f, Target{Project: "proj", Role: "role-1", Cwd: "/w/proj", Thread: "thread-42"})
+	g.Logf = func(string, ...any) {}
+	post(g, "/ask", goodInput)
+	if len(f.calls) != 1 || f.calls[0].P.SessionID != "thread-42" {
+		t.Fatalf("calls: %+v", f.calls)
+	}
+	// Without it, claude's id stays.
+	f2 := &fakeAsker{res: agent.AskResult{Behavior: "allow"}}
+	post(testGate(f2), "/ask", goodInput)
+	if f2.calls[0].P.SessionID != "sess-1" {
+		t.Errorf("session %q", f2.calls[0].P.SessionID)
+	}
+}
+
+// T3_AGENT_THREAD is a claim in the shim's request: only something shaped like an id becomes the thread.
+func TestServerGateTakesOnlyAnIdAsTheThread(t *testing.T) {
+	s := &Server{opt: Options{Backend: &fakeBackend{}}}
+	role := &agent.T3Role{ID: "r_1", Project: "p"}
+	for in, want := range map[string]string{"thr-123": "thr-123", "a:b.c_d-e": "a:b.c_d-e", "": "", "bad id": "", "x\ny": "", "../x": "", strings.Repeat("a", 129): ""} {
+		g := s.gate(role, "/w", in).(*Gate)
+		if g.target.Thread != want {
+			t.Errorf("thread %q became %q, want %q", in, g.target.Thread, want)
+		}
+	}
+}
+
+func TestThreadOfPrefersT3sOwnVariable(t *testing.T) {
+	for _, c := range []struct {
+		env  map[string]string
+		want string
+	}{
+		{map[string]string{"T3CODE_THREAD_ID": "mcp:launch:abc", "T3_AGENT_THREAD": "old"}, "mcp:launch:abc"},
+		{map[string]string{"T3_AGENT_THREAD": "old"}, "old"},
+		{map[string]string{}, ""},
+	} {
+		if got := threadOf(c.env); got != c.want {
+			t.Errorf("threadOf(%v) = %q", c.env, got)
+		}
+	}
+}

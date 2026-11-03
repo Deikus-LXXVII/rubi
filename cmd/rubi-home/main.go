@@ -218,11 +218,7 @@ func run(h *home.Helper) {
 			log.Printf("Claude Code requests: %v", err)
 		}
 	}()
-	go func() { // T3 sessions of the roles' instances (only while a T3 server is configured)
-		if err := h.ServeAgentVM(ctx); err != nil {
-			log.Printf("T3 sessions: %v", err)
-		}
-	}()
+	go h.T3.Run(ctx)       // T3 (when it was set up): its server, the pairing, the roles' instances and their sessions
 	h.Agent.SweepShields() // role snapshots of an earlier run: only the daemon removes them (status, pair... never)
 	h.Agent.Resume()       // deliver what the agent queue still holds from an earlier run
 	go func() {            // a sign-in container left by a crash

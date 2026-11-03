@@ -24,6 +24,9 @@ type Target struct {
 	Project string
 	Role    string
 	Cwd     string
+	// Thread is the T3 thread the VM serves (T3 names it in T3_AGENT_THREAD). When set, asks are filed under it instead
+	// of under claude's own session id, so a plugin sees the id the thread is known by.
+	Thread string
 }
 
 const (
@@ -135,8 +138,12 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// r.Context() ends when the hook (and so the call) is gone: the ask is dropped with it.
 	ctx, cancel := context.WithTimeout(r.Context(), wait)
 	defer cancel()
+	session := in.SessionID
+	if g.target.Thread != "" {
+		session = g.target.Thread
+	}
 	res := g.asker.AskTool(ctx, g.target.Project, g.target.Role, agent.AskParams{
-		SessionID: in.SessionID, AgentID: in.AgentID, AgentType: in.AgentType, Tool: in.ToolName, ToolUseID: in.ToolUseID,
+		SessionID: session, AgentID: in.AgentID, AgentType: in.AgentType, Tool: in.ToolName, ToolUseID: in.ToolUseID,
 		Via: "hook", Input: in.ToolInput, Cwd: in.Cwd, Mode: in.PermissionMode,
 	})
 	switch {

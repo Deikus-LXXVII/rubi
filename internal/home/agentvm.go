@@ -31,7 +31,8 @@ func (h *Helper) SyncT3Instances() (t3vm.SyncResult, error) {
 	return t3vm.SyncInstances(t3vm.InstanceOptions{T3Base: c.T3BaseDir, Dir: h.Dir, RubiHome: self}, want)
 }
 
-// ServeAgentVM serves the T3 session socket until ctx ends. It returns at once, serving nothing, while no T3 server
+// ServeAgentVM serves the T3 session socket until ctx ends (T3Home.Run starts it with the T3 server it runs; for a server
+// someone else runs, Run serves it when the configuration names one). It returns at once, serving nothing, while no T3 server
 // is configured (T3Port is 0).
 func (h *Helper) ServeAgentVM(ctx context.Context) error {
 	c := h.Fresh()

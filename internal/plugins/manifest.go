@@ -36,9 +36,22 @@ var (
 	OfficialPublisherKey = "MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="
 )
 
+// OfficialT3PluginID is the id of the T3 Agents plugin, the one plugin (signed with the same key) that may declare
+// the T3 capabilities. Like OfficialPluginID, a var only so tests can stand in another.
+var OfficialT3PluginID = "t3agents"
+
 // ReservedHomeCapability lists the Rubi Home capabilities only the official plugin may declare: running agents in
-// a VM (roles, SSH targets, MCP servers) and setting up that path (installing software, creating networks).
-var ReservedHomeCapability = map[string]bool{"claude-agent": true, "agent-setup": true}
+// a VM (roles, SSH targets, MCP servers) and setting up that path (installing software, creating networks). The T3
+// pair (t3-agent, t3-setup) is the same power through T3, reserved for the T3 Agents plugin.
+var ReservedHomeCapability = map[string]bool{"claude-agent": true, "agent-setup": true, "t3-agent": true, "t3-setup": true}
+
+// officialFor is the id of the plugin that may declare a reserved capability.
+func officialFor(capability string) string {
+	if capability == "t3-agent" || capability == "t3-setup" {
+		return OfficialT3PluginID
+	}
+	return OfficialPluginID
+}
 
 // Check enforces the manifest rules: valid id, everything in the plugin's own namespace, a usable key.
 var panelPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
@@ -126,10 +139,11 @@ func Check(m *Manifest) error {
 		}
 	}
 	for _, h := range m.Home {
-		if ReservedHomeCapability[h] && (m.ID != OfficialPluginID || strings.TrimSpace(m.Publisher.Key) != OfficialPublisherKey) {
-			return fmt.Errorf("the Rubi Home capability %q is reserved for the official %s plugin", h, OfficialPluginID)
+		if ReservedHomeCapability[h] && (m.ID != officialFor(h) || strings.TrimSpace(m.Publisher.Key) != OfficialPublisherKey) {
+			return fmt.Errorf("the Rubi Home capability %q is reserved for the official %s plugin", h, officialFor(h))
 		}
-		if h != "hue" && h != "shortcuts" && h != "claude" && h != "claude-sessions" && h != "claude-start" && h != "claude-agent" && h != "agent-setup" {
+		if h != "hue" && h != "shortcuts" && h != "claude" && h != "claude-sessions" && h != "claude-start" && h != "claude-agent" && h != "agent-setup" &&
+			h != "t3-agent" && h != "t3-setup" {
 			return fmt.Errorf("unknown Rubi Home capability %q", h)
 		}
 	}

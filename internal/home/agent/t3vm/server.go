@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,17 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
+
+// threadOf is the T3 thread the session serves, from T3's environment: T3CODE_THREAD_ID (what the pinned T3 sets, checked
+// live) or T3_AGENT_THREAD.
+func threadOf(env map[string]string) string {
+	if v := env["T3CODE_THREAD_ID"]; v != "" {
+		return v
+	}
+	return env["T3_AGENT_THREAD"]
+}
+
+var threadRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 // SocketName is the session server's socket in Home's directory.
 const SocketName = "agent-vm.sock"
@@ -606,7 +618,7 @@ func (s *Server) start(ctx context.Context, end func(), req StartRequest) (_ *se
 		return nil, rep, err
 	}
 	ses.onEnd(func() { px.Close() })
-	hook := &http.Server{Handler: s.gate(role, req.Cwd), ReadHeaderTimeout: 10 * time.Second}
+	hook := &http.Server{Handler: s.gate(role, req.Cwd, threadOf(req.Env)), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = hook.Serve(hookL) }()
 	ses.onEnd(func() { hook.Close(); hookL.Close() })
 	fwd := &forwarder{dial: o.DialT3}
@@ -658,8 +670,11 @@ func (s *Server) start(ctx context.Context, end func(), req StartRequest) (_ *se
 
 func (x *session) giveUpNow() { x.giveUp() }
 
-func (s *Server) gate(role *agent.T3Role, cwd string) http.Handler {
-	g := NewGate(s.opt.Backend, Target{Project: role.Project, Role: role.ID, Cwd: cwd})
+func (s *Server) gate(role *agent.T3Role, cwd, thread string) http.Handler {
+	if !threadRE.MatchString(thread) {
+		thread = "" // not an id T3 would make: asks keep claude's own session id
+	}
+	g := NewGate(s.opt.Backend, Target{Project: role.Project, Role: role.ID, Cwd: cwd, Thread: thread})
 	g.Logf = s.opt.Logf
 	return g
 }

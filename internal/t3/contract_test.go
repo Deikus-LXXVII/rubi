@@ -110,7 +110,7 @@ func TestContractToolSchemas(t *testing.T) {
 		}
 		got[n] = v
 	}
-	path := filepath.Join("..", "..", "..", "t3", "contract", "tools.json")
+	path := filepath.Join("..", "..", "t3", "contract", "tools.json")
 	if os.Getenv("RUBI_T3_UPDATE") == "1" {
 		b, _ := json.MarshalIndent(got, "", "  ")
 		if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {

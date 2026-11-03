@@ -154,6 +154,8 @@ type Helper struct {
 	Agent *agent.Manager
 	// Setup is the button-only setup of the agent path (see setup/ and the agent-setup.* ops).
 	Setup *setup.Setup
+	// T3 is the T3 server Home installs and runs, and the t3-agent.* and t3-setup.* ops on it (see t3home.go).
+	T3 *T3Home
 
 	mu  sync.Mutex
 	cfg Config
@@ -203,6 +205,8 @@ func Open(dir string) (*Helper, error) {
 	h.Claude.loadQueue()
 	h.Agent = h.newAgent()
 	h.Setup = h.newSetup()
+	h.T3 = newT3Home(h)
+	h.T3Pid = h.T3.Pid
 	if s := h.Config().ClaudeWaitSeconds; s >= 10 && s <= 590 {
 		h.Claude.Wait = time.Duration(s) * time.Second
 	}
@@ -512,6 +516,15 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		"claude-agent.role.list", "claude-agent.role.get", "claude-agent.role.history", "claude-agent.role.diff", "claude-agent.role.put",
 		"claude-agent.ssh.scan", "claude-agent.ssh.register", "claude-agent.ssh.list", "claude-agent.ssh.remove", "claude-agent.ssh.audit":
 		return h.Agent.Handle(ctx, env.Op, env.Args)
+	case "t3-agent.projects", "t3-agent.sessions", "t3-agent.messages", "t3-agent.start", "t3-agent.send",
+		"t3-agent.rename", "t3-agent.fork", "t3-agent.interrupt", "t3-agent.close", "t3-agent.mode",
+		"t3-agent.next", "t3-agent.decide", "t3-agent.status", "t3-agent.usage_mode", "t3-agent.limits",
+		"t3-agent.role.list", "t3-agent.role.get", "t3-agent.role.history", "t3-agent.role.diff", "t3-agent.role.put",
+		"t3-agent.ssh.scan", "t3-agent.ssh.register", "t3-agent.ssh.list", "t3-agent.ssh.remove", "t3-agent.ssh.audit":
+		return h.T3.handleAgent(ctx, env.Op, env.Args)
+	case "t3-setup.status", "t3-setup.run", "t3-setup.login.code", "t3-setup.login.open", "t3-setup.project.add",
+		"t3-setup.project.remove", "t3-setup.cancel":
+		return h.T3.handleSetup(ctx, env.Op, env.Args)
 	case "agent-setup.status", "agent-setup.run", "agent-setup.login.code", "agent-setup.login.open",
 		"agent-setup.project.add", "agent-setup.project.remove", "agent-setup.cancel":
 		return h.Setup.Handle(ctx, env.Op, env.Args)
@@ -619,7 +632,7 @@ func (h *Helper) setLibraryRevoked(args json.RawMessage) (any, error) {
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
-		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup"}}
+		"can": []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup", "t3-agent", "t3-setup"}}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {

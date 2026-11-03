@@ -23,11 +23,12 @@ const (
 	toolThreadRead      = "t3_thread_read"
 	toolThreadInterrupt = "t3_thread_interrupt"
 	toolThreadTransfer  = "t3_thread_transfer"
+	toolThreadUpdate    = "t3_thread_update"
 )
 
 // UsedTools lists the tool names above.
 var UsedTools = []string{toolProjectList, toolProjectCreate, toolThreadLaunch, toolThreadSend, toolThreadWait,
-	toolThreadRead, toolThreadInterrupt, toolThreadTransfer}
+	toolThreadRead, toolThreadInterrupt, toolThreadTransfer, toolThreadUpdate}
 
 // Project is a T3 project.
 type Project struct {
@@ -96,6 +97,8 @@ type LaunchIn struct {
 	Instance  string
 	Model     string
 	Mode      Mode
+	// Plan starts the thread in T3's plan interaction mode (a claude "plan" session); the runtime mode still applies.
+	Plan      bool
 	Message   string
 	RequestID string
 }
@@ -167,8 +170,13 @@ func (c *Client) Launch(ctx context.Context, l LaunchIn) (Run, error) {
 		Title          string `json:"title"`
 		ModelSelection sel    `json:"modelSelection"`
 		RuntimeMode    Mode   `json:"runtimeMode"`
+		Interaction    string `json:"interactionMode,omitempty"`
 		Message        string `json:"message"`
 		ClientRequest  string `json:"clientRequestId"`
+	}
+	interaction := ""
+	if l.Plan {
+		interaction = "plan"
 	}
 	if l.RequestID == "" {
 		// Chosen before the first attempt, so a retry after a dropped connection cannot start a second thread.
@@ -179,7 +187,7 @@ func (c *Client) Launch(ctx context.Context, l LaunchIn) (Run, error) {
 		l.RequestID = id
 	}
 	var r Run
-	err := c.call(ctx, toolThreadLaunch, in{l.ProjectID, l.Title, sel{l.Instance, l.Model}, Clamp(l.Mode, c.ceiling), l.Message, l.RequestID}, &r)
+	err := c.call(ctx, toolThreadLaunch, in{l.ProjectID, l.Title, sel{l.Instance, l.Model}, Clamp(l.Mode, c.ceiling), interaction, l.Message, l.RequestID}, &r)
 	if err != nil {
 		return r, err
 	}
@@ -205,6 +213,12 @@ func newRequestID() (string, error) {
 
 // Send adds a message to a thread. The same requestID sends it once; an empty one is made up.
 func (c *Client) Send(ctx context.Context, threadID, message, requestID string) (Run, error) {
+	return c.SendWith(ctx, threadID, message, requestID, "")
+}
+
+// SendWith is Send with T3's delivery mode for a thread that is running: "" (T3 decides: auto), "queue", "steer" or
+// "restart".
+func (c *Client) SendWith(ctx context.Context, threadID, message, requestID, mode string) (Run, error) {
 	if requestID == "" {
 		id, err := newRequestID()
 		if err != nil {
@@ -215,21 +229,28 @@ func (c *Client) Send(ctx context.Context, threadID, message, requestID string) 
 	type in struct {
 		ThreadID      string `json:"threadId"`
 		Message       string `json:"message"`
+		Mode          string `json:"mode,omitempty"`
 		ClientRequest string `json:"clientRequestId"`
 	}
 	var r Run
-	err := c.call(ctx, toolThreadSend, in{threadID, message, requestID}, &r)
+	err := c.call(ctx, toolThreadSend, in{threadID, message, mode, requestID}, &r)
 	return r, err
 }
 
 // Wait blocks until the thread's run ends or the timeout passes (then TimedOut is set).
 func (c *Client) Wait(ctx context.Context, threadID string, timeout time.Duration) (WaitResult, error) {
+	return c.WaitRun(ctx, threadID, "", timeout)
+}
+
+// WaitRun is Wait for one run of the thread (an empty runID waits for the thread's latest).
+func (c *Client) WaitRun(ctx context.Context, threadID, runID string, timeout time.Duration) (WaitResult, error) {
 	type in struct {
 		ThreadID  string `json:"threadId"`
+		RunID     string `json:"runId,omitempty"`
 		TimeoutMs int64  `json:"timeoutMs"`
 	}
 	var w WaitResult
-	err := c.call(ctx, toolThreadWait, in{threadID, timeout.Milliseconds()}, &w)
+	err := c.call(ctx, toolThreadWait, in{threadID, runID, timeout.Milliseconds()}, &w)
 	return w, err
 }
 
@@ -273,4 +294,14 @@ func (c *Client) Fork(ctx context.Context, threadID, title string) (string, erro
 		return "", errors.New("t3: fork gave no thread")
 	}
 	return out.Target, nil
+}
+
+// Rename gives a thread a new title.
+func (c *Client) Rename(ctx context.Context, threadID, title string) error {
+	type in struct {
+		Action   string `json:"action"`
+		ThreadID string `json:"threadId"`
+		Title    string `json:"title"`
+	}
+	return c.call(ctx, toolThreadUpdate, in{"rename", threadID, title}, nil)
 }

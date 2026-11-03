@@ -134,6 +134,12 @@ func TestServerEnvironmentIsMinimal(t *testing.T) {
 	if got := s.Env(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Env() = %v", got)
 	}
+	// A runtime home (where Rubi Home keeps the checked T3 executable) adds exactly one variable.
+	s.RuntimeHome = "/rt/home"
+	if got := s.Env(); !reflect.DeepEqual(got, append(append([]string{}, want...), "T3CODE_HOME=/rt/home")) {
+		t.Errorf("Env() with a runtime home = %v", got)
+	}
+	s.RuntimeHome = ""
 	if _, err := s.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}

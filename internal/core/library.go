@@ -540,15 +540,15 @@ func (c *Core) pushLibraryRevocations() { c.startLibrarySync(true) }
 // ---- host method library.get ----
 
 // libraryHostGet serves a plugin's library.get {id, version}: an admitted (or deprecated) version with its
-// signature, so the plugin can build role.put. Read-only. Only a plugin that declares the claude-agent Rubi Home
-// capability (the one that has roles) may ask. Asking also makes sure Rubi Home has the key to verify with.
+// signature, so the plugin can build role.put. Read-only. Only a plugin that declares the claude-agent or t3-agent Rubi
+// Home capability (the ones that have roles) may ask. Asking also makes sure Rubi Home has the key to verify with.
 func (c *Core) libraryHostGet(ctx context.Context, home []string, params json.RawMessage) (any, error) {
 	ok := false
 	for _, h := range home {
-		ok = ok || h == "claude-agent"
+		ok = ok || h == "claude-agent" || h == "t3-agent"
 	}
 	if !ok {
-		return nil, errors.New("the manifest doesn't declare the claude-agent Rubi Home capability")
+		return nil, errors.New("the manifest doesn't declare the claude-agent or t3-agent Rubi Home capability")
 	}
 	var in struct {
 		ID      string `json:"id"`

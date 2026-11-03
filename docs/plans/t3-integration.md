@@ -518,3 +518,29 @@ The fastest way to carry every concept over is to keep the plugin-to-Home contra
   - capability `t3-agent`;
   - the setup page's steps: container, image, T3 installed and pinned, T3 paired, provider sign-in per role, self-test.
   - The desktop hook path is not part of it.
+
+S3 part 1 notes (as built: Home and core; the plugin repository is separate):
+- **Install** (`internal/home/t3install.go`). Into `<helper>/t3/runtime/`: Node from nodejs.org (SHA-256 per platform in
+  `t3/upstream.json`), the T3 npm package (the pinned sha512 integrity) and the T3 release archive the package's launcher would
+  download on its first run (SHA-256 per platform, from the tag's SHA256SUMS). Each is hashed while it downloads and unpacked
+  only if it matches; the unpacker refuses paths and links that leave the folder; all three are staged beside the final
+  folder and swapped in together. The server runs with `T3CODE_HOME=<runtime>/t3home` (`t3.Server.RuntimeHome`), where Home
+  put a checked executable and the completion marker, so the launcher downloads nothing and never touches `~/.t3`.
+  Supported: darwin-arm64, linux-arm64, linux-x64. Live check: `RUBI_T3_INSTALL_LIVE=1`.
+- **Lifecycle** (`t3home.go`). `Run` (Home's start) brings T3 up when it was set up before; a port is chosen once
+  (never 3773; replaced only if taken), the base folder is `<helper>/t3/home`, the bridge is paired at full access with a
+  code minted on the computer and the token kept 0600 in `<helper>/t3/token.json` (a token T3 refuses, a garbled one or one
+  with under a day left is paired again), then the instances are synced and the session socket served.
+- **t3-setup.\*** is the agent setup plus T3: `status` is `agent-setup.status` with the steps `t3` (install or upgrade, then
+  start) and `pair` after `image`, a `login` row per role (one shared state) and the T3 facts at the top; `run` takes
+  `t3|install|start|pair|stop|all` for T3 and passes every other step and login/project/cancel to `agent-setup.*`.
+  **Role sign-in is not built**: the state is read from the shared folder (the file's size, never its content); starting a
+  sign-in answers a plain error.
+- **t3-agent.\*** keeps the claude-agent names, arguments and results. Deviations: no legacy role (a role is required, `projects`
+  lists roles only); no Home queue (a start over a limit is refused); `mode` can confirm but not change a started session's
+  mode (T3's `t3_thread_configure` keeps permission modes); `close` interrupts and forgets the thread (T3 has no archive tool);
+  `sessions` times are RFC 3339; session rows carry `dir`; `send` also returns `id` and takes `message_id`.
+- **Asks** are filed under the T3 thread (`T3CODE_THREAD_ID`, checked live), not claude's session id.
+- **Core**: capabilities `t3-agent`, `t3-setup` reserved for the plugin `t3agents`; the home gate maps `t3-agent.*` and
+  `t3-setup.*` to the claude ones, with the plugin's own approval-kind namespace (`t3agents.*`) attested to Home as the
+  claude-code kind.

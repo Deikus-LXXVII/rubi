@@ -351,3 +351,52 @@ func TestCapBody(t *testing.T) {
 		t.Errorf("read %q", got)
 	}
 }
+
+func TestRenameSendModeWaitRunAndPlanSendOnlyWhatTheToolsDeclare(t *testing.T) {
+	f := newFake(t, allTools...)
+	c := f.client(FullAccess)
+	ctx := context.Background()
+	if err := c.Rename(ctx, "th1", "New title"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.last(); got.Tool != "t3_thread_update" || !reflect.DeepEqual(got.Args, map[string]any{"action": "rename", "threadId": "th1", "title": "New title"}) {
+		t.Errorf("rename: %v %v", got.Tool, got.Args)
+	}
+	if _, err := c.SendWith(ctx, "th1", "now", "req-3", "steer"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.last().Args; !reflect.DeepEqual(keys(got), []string{"clientRequestId", "message", "mode", "threadId"}) || got["mode"] != "steer" {
+		t.Errorf("send with mode: %v", got)
+	}
+	if _, err := c.Send(ctx, "th1", "plain", "req-4"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.last().Args; got["mode"] != nil {
+		t.Errorf("a plain send carried a mode: %v", got)
+	}
+	if _, err := c.WaitRun(ctx, "th1", "run-9", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.last().Args; !reflect.DeepEqual(keys(got), []string{"runId", "threadId", "timeoutMs"}) || got["runId"] != "run-9" {
+		t.Errorf("wait for a run: %v", got)
+	}
+	// Plan is T3's interaction mode; without it the key is not sent.
+	f.reply["t3_thread_launch"] = func(map[string]any) (any, string) {
+		return map[string]any{"threadId": "th1", "runId": "r1", "status": "running"}, ""
+	}
+	f.reply["t3_thread_read"] = func(map[string]any) (any, string) {
+		return map[string]any{"thread": map[string]any{"threadId": "th1", "runtimeMode": "approval-required"}}, ""
+	}
+	if _, err := c.Launch(ctx, LaunchIn{Mode: ApprovalRequired, Plan: true, RequestID: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.lastOf("t3_thread_launch").Args; got["interactionMode"] != "plan" {
+		t.Errorf("plan launch: %v", got)
+	}
+	if _, err := c.Launch(ctx, LaunchIn{Mode: ApprovalRequired, RequestID: "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.lastOf("t3_thread_launch").Args; got["interactionMode"] != nil {
+		t.Errorf("a launch without plan sent an interaction mode: %v", got)
+	}
+}

@@ -417,6 +417,33 @@
     ],
     "type": "object"
   },
+  "t3_thread_update": {
+    "properties": {
+      "action": {
+        "enum": [
+          "rename",
+          "regenerate_title"
+        ],
+        "type": "string"
+      },
+      "clientRequestId": {
+        "type": "string"
+      },
+      "environmentId": {
+        "type": "string"
+      },
+      "threadId": {
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "type": "object"
+  },
   "t3_thread_wait": {
     "properties": {
       "environmentId": {
