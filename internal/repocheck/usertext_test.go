@@ -36,6 +36,7 @@ var userTextExempt = map[string]string{
 	"internal/t3bump/":                   "CI tool that opens the T3 pin pull request",
 	"cmd/rubi-gateway/":                  "the hosted gateway's own command line, run by the host operator",
 	"cmd/rubi-announce/":                 "release tool run by the maintainer",
+	"cmd/rubi/usage.go":                  "rubi's --help, read by the Bot that runs Rubi on its machine, not by the user",
 	"internal/plugins/plugintest/":       "test helper plugins, never shipped",
 	"internal/e2e/":                      "test support",
 	"sdk/skillscan/":                     "the skill scanner's own rules: it names sudo and friends to flag them",

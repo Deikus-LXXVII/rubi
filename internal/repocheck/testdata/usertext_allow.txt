@@ -7,5 +7,3 @@
 panel/js/app.js || curl -fsSL https://rubi-panel.com/install-home.sh || T-01L: no desktop installer for Linux yet
 panel/js/app.js || open a terminal and run: || T-01L: no desktop installer for Linux yet
 
-# T-07: development tool, not part of the user path; move it out of the user-facing help
-cmd/rubi/main.go || self-hosted integrations for AI agents, gated by your approval || T-07: keep dev-panel out of the help the Bot shows
