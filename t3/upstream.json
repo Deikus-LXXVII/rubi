@@ -1,0 +1,9 @@
+{
+  "package": "t3",
+  "version": "0.1.7-nightly.20261102.4093",
+  "tag": "v0.1.7-nightly.20261102.4093",
+  "commit": "84537c4dd976a89b6ec094f43ae3ef7bee12cb1a",
+  "integrity": "sha512-HLYtCLtIQZNMp9uKYYHoiqGe8VIwYgHtSC0qte9xiLSQ3ktotZwtWEo41thNl6AUbZWZN3TICySROOEkTw5xlg==",
+  "license": "MIT, Copyright (c) 2026 T3 Tools Inc.",
+  "checked": "2026-11-03"
+}
