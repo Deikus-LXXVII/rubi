@@ -350,3 +350,17 @@ base. `t3 serve` prints a pairing QR code at start, so the server's output goes 
 (0600), never into errors. The server runs in its own process group; Stop signals the group only while the leader
 is not yet reaped, and a dead server is noticed (`Done`, `Alive`). The contract test merges its instance into the
 `settings.json` T3 writes on first start.
+
+## 11. S2 notes
+
+Shared sign-in layout, checked behaviorally on the claude in the runner image (no network, a fake credential file):
+- `auth status` with `CLAUDE_SECURESTORAGE_CONFIG_DIR=<dir>` holding `.credentials.json` says `loggedIn: true`;
+  without the variable (same `CLAUDE_CONFIG_DIR`) it says `loggedIn: false`.
+- With an expired credential and a `.oauth_refresh.lock` directory already held in that folder, claude refuses to
+  refresh ("another Claude Code process is refreshing it") within seconds; without the held lock it tries the
+  network. So the credential and the refresh lock both live in that folder.
+- These two checks become the loud contract test for decision 4 (it runs on every image or pin bump).
+
+Hosting (decided 2026-11-03): `t3.host` is a setting. The control plane may run on a server host, execution runs on
+the user's PC when it is online, and provider logins never live on a machine shared with Grok Bots (they all have
+sudo there). The options for running without the PC are in the hosting notes kept outside the repository.
