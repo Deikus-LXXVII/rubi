@@ -61,7 +61,7 @@ Grok Bot ──MCP──> Rubi core (VPS) ──relay──> Rubi Home (Mac) ─
 The upstream T3 server stays unmodified, pinned to one nightly. Everything Rubi adds lives outside it, in three
 pieces:
 
-1. **`t3bridge` in Rubi Home** (Go, new package `internal/home/t3`).
+1. **`t3bridge` in Rubi Home** (Go, package `internal/t3`, host-neutral).
    - It is an OAuth MCP client of T3's `/mcp` on `localhost`. The user approves its sign-in once with a pairing code,
      and the scope they choose there is the ceiling. The default is Full access: Rubi's role modes, approvals, the
      container and the egress allow-list still apply on top.
@@ -290,7 +290,7 @@ Findings that become requirements:
 
 ## 10. S1 design: the bridge package and contract tests
 
-Package `internal/home/t3` (Go). No new module dependencies: the MCP client is the go-sdk already in `go.mod`
+Package `internal/t3` (Go; moved from `internal/home/t3` so a server host can use it too). No new module dependencies: the MCP client is the go-sdk already in `go.mod`
 (`mcp.NewClient` + `mcp.StreamableClientTransport`, standalone SSE off). The pin and the contract snapshot are
 embedded from a small root package `t3` (`t3/embed.go`: `upstream.json`, `contract/*.json`).
 

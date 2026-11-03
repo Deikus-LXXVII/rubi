@@ -137,7 +137,7 @@ func TestContractToolSchemas(t *testing.T) {
 func startMock(t *testing.T, node string) string {
 	t.Helper()
 	urlFile := filepath.Join(t.TempDir(), "mock.url")
-	cmd := exec.Command(node, filepath.Join("..", "..", "..", "t3", "contract", "mockserve.mjs"), urlFile)
+	cmd := exec.Command(node, filepath.Join(repoRoot(t), "t3", "contract", "mockserve.mjs"), urlFile)
 	cmd.Env = []string{"PATH=" + filepath.Dir(node) + ":/usr/bin:/bin"}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -151,6 +151,25 @@ func startMock(t *testing.T, node string) string {
 	}
 	t.Fatal("the mock did not start")
 	return ""
+}
+
+// repoRoot is the module's root (the folder with go.mod), so the test doesn't depend on where its package lives.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found above the test")
+		}
+		dir = parent
+	}
 }
 
 // addInstance writes a Claude provider instance backed by the mock into T3's settings, which T3 watches.

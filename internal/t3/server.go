@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-// Server is a T3 server Rubi Home starts and stops.
+// Server is a T3 server Rubi starts and stops (Rubi Home on the PC, or the daemon on a server host).
 type Server struct {
 	Node    string // the node binary
 	Bin     string // the pinned t3 bin (a JS file)

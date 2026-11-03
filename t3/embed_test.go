@@ -6,7 +6,7 @@ import (
 	"sort"
 	"testing"
 
-	home "github.com/Deikus-LXXVII/rubi/internal/home/t3"
+	bridge "github.com/Deikus-LXXVII/rubi/internal/t3"
 )
 
 func TestEmbedded(t *testing.T) {
@@ -35,7 +35,7 @@ func TestEmbedded(t *testing.T) {
 			t.Errorf("%s has no input schema in tools.json", n)
 		}
 	}
-	want := append([]string(nil), home.UsedTools...)
+	want := append([]string(nil), bridge.UsedTools...)
 	sort.Strings(have)
 	sort.Strings(want)
 	if len(want) != 8 || !reflect.DeepEqual(have, want) {
