@@ -483,3 +483,38 @@ S2 part 2 review fixes (as built):
   folder synced after.
 - **Version probes** run one at a time per image, are named `rubi-t3-ver-*`, and a failure is remembered for 30 s.
 - **Answers carry an absolute container path**, and the shim runs only a program named `container` with `exec`.
+
+## 13. S3 design: the T3 Agents plugin on the same op surface
+
+The fastest way to carry every concept over is to keep the plugin-to-Home contract and change what is behind it.
+
+- **Home: op family `t3-agent.*`** with the same names, arguments and results as `claude-agent.*`: `start`, `send`,
+  `messages`, `next`, `status`, `close`, `interrupt`, `fork`, `mode`, `rename`, `sessions`, `projects`, `limits`,
+  `usage_mode`, `decide`, `role.*`, `ssh.*`. They are backed by T3 instead of the Agent SDK runner:
+  - start → `t3_thread_launch` on instance `claude-<role>` in the T3 project for the approved folder (created on first
+    use), with the mode clamped (role ceiling and bridge ceiling). The session id is T3's thread id.
+  - send → `t3_thread_send` (request id from the plugin's message id).
+  - messages / next → `t3_thread_read` (after position) plus the approval queue. Tool asks arrive through the VM hook
+    gate into `Manager.AskTool`, the same queue `claude-agent.next` serves, so `decide` is unchanged.
+  - status, interrupt, fork, rename, close → read, interrupt, transfer fork, update title, archive.
+  - mode → `t3_thread_configure` runtime mode, clamped.
+  - role.*, ssh.*, limits, usage_mode → the existing Home stores, unchanged. Role changes re-sync the T3 instances.
+  - A turn-finished signal is a `t3_thread_wait` long-poll per running thread inside Home. It turns into the same item
+    `next` already returns for a finished turn, so Bots are woken by events.
+- **Home: the T3 lifecycle.**
+  - Install the pinned T3 and Node from `t3/upstream.json` into Home's folder, with integrity checked.
+  - Start the server (its own home, a free port other than 3773, R5).
+  - Pair the bridge with a pairing code minted on the host, keeping the token 0600.
+  - Sync the role instances and serve `agent-vm.sock`.
+  - Report all of it in `agent-setup.status`-style ops, `t3-setup.*`, for the setup page.
+- **Core.**
+  - Capability `t3-agent` in the Home capability list.
+  - The same attestation rules as for `claude-agent` (role widen, project add, SSH register).
+- **Plugin `rubi-t3agents` ("T3 Agents").** It is a copy of the latest claude-code plugin (roles, mandates, project
+  trust, library, SSH, briefs, distinct binding errors R1, bindings that survive restarts R2, project add by approval
+  R3, the setup page R4), with:
+  - tool prefix `t3_`;
+  - the Home op prefix `t3-agent.`;
+  - capability `t3-agent`;
+  - the setup page's steps: container, image, T3 installed and pinned, T3 paired, provider sign-in per role, self-test.
+  - The desktop hook path is not part of it.
