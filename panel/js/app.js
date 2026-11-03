@@ -579,6 +579,14 @@ function demoScreen(ctx, which) {
       return updatesScreen(ctx);
     case "notes":
       return notesScreen(ctx, "notes", back);
+    // the pages of the T3 Agents plugin (demo.js answers for the plugin id t3agents)
+    case "t3trust": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, {});
+    case "t3setup": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "setup", device: "dev_mac" });
+    case "t3sessions": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "agent", device: "dev_mac" });
+    case "t3chat": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "chat", device: "dev_mac", project: "web-app", session_id: "s1" });
+    case "t3roles": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "roles", device: "dev_mac" });
+    case "t3ssh": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "ssh", device: "dev_mac" });
+    case "t3usage": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "usage", device: "dev_mac" });
     case "status":
       return statusScreen(ctx, "Unlocked. You can go back to your agent.");
     case "sent": case "declined": case "failed": {

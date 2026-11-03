@@ -56,11 +56,23 @@ connect (the screen with a pasted webhook), Settings, Approval levels, Security,
 Connect with a code, Add a home computer, Grok Bot connections, Skill library, Connect a Bot, Updates, Notes, Sent,
 Declined, It didn't work.
 
-Also check the screens the demo cannot show, against a real Rubi (see `panel/README.md`, "Local development"):
+The demo also shows the pages of a plugin (the made-up T3 Agents plugin; it is listed in Settings, Plugins, and each
+page has its own tile). Open each at both sizes:
+
+| `#demo=`     | What to look at                                                                                     |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| `t3trust`    | The plugin's first page: five link rows, trusted sessions and projects (one UNTIL REVOKED), bound Bots. Long notes wrap. |
+| `t3setup`    | Setup rows. Press Set up everything or Build: a Working row with Cancel and progress lines, the page refreshes by itself. Sign in on a role: a link as text, then Open the sign-in page and Paste the code (the question box, with the keyboard up), then done. Run self-test: ok lines. Self-test before any sign-in: a warning row. |
+| `t3sessions` | Projects with their sessions, RUNNING now, two warning rows, New session (question box), Manage (a row with up to 8 buttons: they wrap, none is cut off). |
+| `t3chat`     | The chat: a Bot's message marked "untrusted text", the Message box above the keyboard, Send, Interrupt. |
+| `t3roles`    | Roles of two projects; Open a role: about 20 tool rows, deny rules, SSH grants, History and Show changes. |
+| `t3ssh`      | Targets with long host-key lines and a changed-key warning; "Targets being added" with six buttons per row and **Check all host keys**; the public key line (a long unbroken string must wrap or scroll inside its box); Audit. |
+| `t3usage`    | Usage and sign-in rows. |
+
+Also check what the demo cannot show, against a real Rubi (see `panel/README.md`, "Local development"):
 
 - an approval with a batch of items (untick one, approve the rest in one go);
-- a plugin's own page (`view`): a long list, a button with a prompt box, a chat section;
-- a sign-in step shown by a plugin page (a link to open and a code to copy) with the link opened on the same phone.
+- a sign-in step shown by a plugin page with the link opened on the same phone (the demo only shows the page; its link is made up).
 
 ## Record
 
