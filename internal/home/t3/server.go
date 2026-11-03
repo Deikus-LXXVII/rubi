@@ -32,6 +32,57 @@ type Server struct {
 	version string
 }
 
+// UserPort is the port of the user's own T3: its desktop app scans up from there.
+const UserPort = 3773
+
+// apartFromTheUsersT3 refuses a base dir that is, or is inside, the user's own T3 home (~/.t3) and the user's
+// port. A T3 server locks its state dir, so sharing it would stop the user's desktop app or service, or ours.
+func apartFromTheUsersT3(base string, port int) error {
+	if port == UserPort {
+		return fmt.Errorf("t3: port %d is the user's own T3; Rubi's server uses another", UserPort)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	user, err := resolved(filepath.Join(home, ".t3"))
+	if err != nil {
+		return err
+	}
+	dir, err := resolved(base)
+	if err != nil {
+		return err
+	}
+	if rel, err := filepath.Rel(user, dir); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("t3: the base dir is the user's own T3 home (~/.t3); Rubi's server needs its own")
+	}
+	return nil
+}
+
+// resolved is p made absolute with every symlink in its existing part followed.
+func resolved(p string) (string, error) {
+	p, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for {
+		r, err := filepath.EvalSymlinks(p)
+		if err == nil {
+			return filepath.Join(r, rest), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return filepath.Join(p, rest), nil
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
+}
+
 // Base is the server's address.
 func (s *Server) Base() string { return "http://127.0.0.1:" + strconv.Itoa(s.Port) }
 
@@ -127,6 +178,9 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 	}
 	if s.Node == "" || s.Bin == "" || s.BaseDir == "" || s.Port <= 0 {
 		return "", errors.New("t3: server needs node, bin, base dir and port")
+	}
+	if err := apartFromTheUsersT3(s.BaseDir, s.Port); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(s.BaseDir, 0o700); err != nil {
 		return "", err

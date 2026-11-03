@@ -444,3 +444,37 @@ func contains(l []string, s string) bool {
 	}
 	return false
 }
+
+func TestServerStaysApartFromTheUsersT3(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	user := filepath.Join(home, ".t3")
+	if err := os.MkdirAll(filepath.Join(user, "userdata"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, "elsewhere")
+	if err := os.Symlink(user, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{user, filepath.Join(user, "rubi"), link, filepath.Join(link, "x", "y"), filepath.Join(user, "..", ".t3"), filepath.Join(user, "..x")} {
+		s := helperServer(t)
+		s.BaseDir = dir
+		if _, err := s.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "own T3 home") {
+			t.Errorf("base dir %s: err = %v", dir, err)
+		}
+	}
+	s := helperServer(t)
+	s.Port = UserPort
+	if _, err := s.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "port 3773") {
+		t.Errorf("port 3773: err = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(user, "userdata", "server.log")); err == nil {
+		t.Error("something was written into the user's T3 home")
+	}
+	// A folder next to it, even one whose name starts the same, is fine.
+	s = helperServer(t)
+	s.BaseDir = filepath.Join(home, ".t3-rubi")
+	if _, err := s.Start(context.Background()); err != nil {
+		t.Errorf("own home: %v", err)
+	}
+}

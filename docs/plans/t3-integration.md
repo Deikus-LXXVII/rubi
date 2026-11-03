@@ -149,7 +149,7 @@ allow-list (api.anthropic.com, claude.ai, claude.com, platform.claude.com and th
   (core 20ba8b4). The provider sign-in relay always shows the code box as soon as the link appears (plugin 687f00f).
   The relay must survive TUI drawing changes such as cursor-move gaps (core ad69e81).
 
-- **R5 Coexist with the user's own T3.** T3's desktop app never attaches to a running server: it always spawns
+- **R5 Coexist with the user's own T3** (approved 2026-11-03). T3's desktop app never attaches to a running server: it always spawns
   its own bundled server, on the first free port from 3773 up (`apps/desktop/src/app/DesktopApp.ts:41,78-108`),
   with state in `T3CODE_HOME` or `~/.t3/userdata` (`app/DesktopStatePaths.ts:13-32`). A server holds an exclusive
   lock on its state dir (`server-owner.sqlite`, `apps/server/src/serverOwnership.ts:39-47,183-199`); a second
@@ -159,11 +159,15 @@ allow-list (api.anthropic.com, claude.ai, claude.com, platform.claude.com and th
     3773 (recorded in Home's config). The user's desktop app or `t3 service` keeps `~/.t3` and both run side by
     side: two servers, two states, no port clash, no shared sessions.
   - To watch Bot-started threads in the desktop app, the user pairs the app with Rubi's server: the Rubi panel
-    shows a pairing link minted by Home (`t3 auth pairing create --base-url ...`), approved by the user.
+    shows a pairing link minted by Home (`t3 pair` / `t3 auth pairing create --base-url ...`) to paste into Add
+    environment or open as `t3code://pair` (`docs/user/remote-access.md:84-98`), plus a hint: to use only Rubi's
+    server, switch off Settings → Environments → Local environment (`remote-access.md:455-464`;
+    `apps/desktop/src/app/DesktopApp.ts:190-196`). Rubi never edits the desktop app's settings.
   - Optional later ("use my own T3"): Home pairs with the user's own server instead, only if its version equals the
     pin; the role instances then live in the user's settings. Not in v1.
-  - A test: Home refuses to start its T3 with a base dir of `~/.t3` or the port 3773, and starts fine while another
-    server owns `~/.t3` (simulated with a temp home).
+  - Tests (done): `TestServerStaysApartFromTheUsersT3` (a base dir that is or is inside `~/.t3`, also through a
+    symlink, and the port 3773 are refused) and the contract test `TestContractBesideTheUsersT3` (the pinned T3
+    owns `~/.t3` of a throwaway home; Rubi's server starts beside it; a second server on that home exits 78).
 
 ## 4. Where things live; what happens to rubi-claude-code
 
