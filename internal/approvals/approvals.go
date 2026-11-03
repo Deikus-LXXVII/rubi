@@ -326,10 +326,15 @@ func New(cfg Config, hooks Hooks) *Engine {
 	if hooks.Audit == nil {
 		hooks.Audit = func(string, map[string]any) {}
 	}
-	return &Engine{cfg: cfg, hooks: hooks, now: time.Now, items: map[string]*approval{}}
+	return &Engine{cfg: cfg, hooks: hooks, now: wallNow, items: map[string]*approval{}}
 }
 
 // SetClock replaces the engine's clock (tests: expiry without waiting).
+// wallNow is the current time without Go's monotonic reading. An approval's expiry is wall-clock time (the user
+// sees it, the panel shows it): a time.Now() with its monotonic reading compares by the monotonic clock, which stops
+// while the machine sleeps or hibernates, so after a nap an approval stayed pending long past its expiry.
+func wallNow() time.Time { return time.Now().Round(0) }
+
 func (e *Engine) SetClock(now func() time.Time) {
 	e.mu.Lock()
 	e.now = now

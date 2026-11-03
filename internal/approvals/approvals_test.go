@@ -277,3 +277,28 @@ func TestPendingListsOnlyWaitingPanelApprovals(t *testing.T) {
 		t.Fatalf("first: %s", s.State)
 	}
 }
+
+// Expiry must follow the wall clock: a time carrying Go's monotonic reading compares by the monotonic clock, which
+// stops while the machine sleeps or hibernates (seen live: an approval stayed pending 19 minutes past its expiry
+// after the agent computer hibernated). The engine's clock and the expiries it stores carry no monotonic reading.
+func TestExpiryFollowsTheWallClock(t *testing.T) {
+	e := New(Config{TTL: time.Minute}, Hooks{})
+	if strings.Contains(e.now().String(), "m=") {
+		t.Fatal("the engine's clock carries a monotonic reading")
+	}
+	if _, err := e.Submit(context.Background(), Request{Integration: "p", Kind: "p.k", Summary: "s",
+		Options: []Option{{Key: "ok", Label: "OK"}},
+		Execute: func(context.Context, string) (any, error) { return nil, nil }}); err != nil {
+		t.Fatal(err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.items) != 1 {
+		t.Fatalf("%d approvals", len(e.items))
+	}
+	for _, a := range e.items {
+		if strings.Contains(a.expires.String(), "m=") {
+			t.Fatal("a stored expiry carries a monotonic reading")
+		}
+	}
+}
