@@ -10,7 +10,7 @@ import (
 )
 
 // What the claude-code plugin's users are told; the plugin's own wording and Home's must stay the same.
-const retiredWording = "The agent path moved to the T3 Agents plugin (id t3agents): use t3_start, t3_role_start, t3_send, t3_fork, t3_mode. " +
+const retiredWording = "The agent path moved to the T3 Agents plugin (id t3agents): use t3agents_start, t3agents_role_start, t3agents_send, t3agents_fork, t3agents_mode. " +
 	"Roles, the skill library and SSH grants carry over; bindings, project trusts and mandates are granted again in T3 Agents."
 
 // The Agent SDK runner path is retired: it needed a stored token and an auth gateway. start, send, fork and mode answer a plain

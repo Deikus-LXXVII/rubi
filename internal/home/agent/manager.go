@@ -49,8 +49,8 @@ const (
 // ErrRunnerRetired is what the Agent SDK runner path answers to a start, send, fork or mode: it ran claude in a VM through an
 // auth gateway that held a long-lived token, and that design is gone. Sessions run in T3 now (the T3 Agents plugin), where
 // claude signs in with its own CLI and Rubi never holds the credential. Reading what is there still works.
-var ErrRunnerRetired = errors.New("The agent path moved to the T3 Agents plugin (id t3agents): use t3_start, t3_role_start, t3_send, " +
-	"t3_fork, t3_mode. Roles, the skill library and SSH grants carry over; bindings, project trusts and mandates are granted again in T3 Agents.")
+var ErrRunnerRetired = errors.New("The agent path moved to the T3 Agents plugin (id t3agents): use t3agents_start, t3agents_role_start, t3agents_send, " +
+	"t3agents_fork, t3agents_mode. Roles, the skill library and SSH grants carry over; bindings, project trusts and mandates are granted again in T3 Agents.")
 
 // Options configures a Manager.
 type Options struct {

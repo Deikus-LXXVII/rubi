@@ -602,8 +602,8 @@ Before this, the T3 Agents plugin is installed and Rubi Home is paired. Open the
    (building the image takes a few minutes the first time).
 2. **T3.** The "T3" row: press **Install** (or **Upgrade**). Home downloads the pinned Node and T3, checks each against the
    pinned hash, starts T3 and shows the row as done. Then press **Pair** on the "T3 paired" row. No approval is needed.
-3. **A project folder.** A Bot asks for the folder with `t3_project_add`, or the setup page offers it; approve with your
-   passkey. Make a role for the project (a Bot does that with `t3_role_create`; you approve what it needs approval for).
+3. **A project folder.** A Bot asks for the folder with `t3agents_project_add`, or the setup page offers it; approve with your
+   passkey. Make a role for the project (a Bot does that with `t3agents_role_create`; you approve what it needs approval for).
 4. **Sign in to Claude.** The "Claude sign-in" row: press **Sign in**.
    1. After a few seconds the row shows a link and says "Open the link and sign in." Press **Open** (the link opens in this
       Mac's browser) or copy it into any browser. The link is on claude.com or claude.ai; if it is anywhere else, do not use it.
@@ -648,7 +648,7 @@ Kept: `internal/home/agent/secrets.go` (its redaction helpers have callers); `ro
 `status`, `next`, `decide`, `rename`, `interrupt`, `close`, `limits`, `usage_mode` of `claude-agent.*`.
 
 Refused: `claude-agent.start`, `send`, `fork` and `mode` answer *"The agent path moved to the T3 Agents plugin (id t3agents): use
-t3_start, t3_role_start, t3_send, t3_fork, t3_mode. Roles, the skill library and SSH grants carry over; bindings, project trusts
+t3agents_start, t3agents_role_start, t3agents_send, t3agents_fork, t3agents_mode. Roles, the skill library and SSH grants carry over; bindings, project trusts
 and mandates are granted again in T3 Agents."* Nothing is started or queued, and an item an earlier Home left in `agent-queue.json`
 fails with the same words when Home delivers it. The slot, queue and limit machinery of the runner path is still in the code,
 behind `Options.AllowRunnerSessions` (only the tests set it); it is a candidate for deletion in a later pass.
