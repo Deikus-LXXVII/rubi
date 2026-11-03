@@ -30,21 +30,6 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
 
-func liveRepoRoot(t *testing.T) string {
-	t.Helper()
-	dir, _ := os.Getwd()
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		if parent := filepath.Dir(dir); parent != dir {
-			dir = parent
-			continue
-		}
-		t.Fatal("go.mod not found")
-	}
-}
-
 func liveMock(t *testing.T, node, dir string) (string, func() string) {
 	t.Helper()
 	urlFile, logFile := filepath.Join(dir, "mock.url"), filepath.Join(dir, "mock.log")
@@ -64,7 +49,26 @@ func liveMock(t *testing.T, node, dir string) (string, func() string) {
 	return "", nil
 }
 
-func TestLiveT3AgentThroughHome(t *testing.T) {
+// liveEnv is a Rubi Home with a real T3 server (paired the way Home pairs it), a role pinned to a project, the role's
+// instance running this checkout's rubi-home, and the real session server.
+type liveEnv struct {
+	h        *Helper
+	base     string
+	project  string
+	roleID   string
+	ctx      context.Context
+	node     string
+	mock     func() string
+	sessions *t3vm.Server
+}
+
+func (e *liveEnv) call(t *testing.T, op string, args any) (map[string]any, error) {
+	return handle(t, e.h, "tok", op, args)
+}
+
+// liveStart builds the environment; withMock points the VMs' claude at the scripted Messages API.
+func liveStart(t *testing.T, withMock bool) *liveEnv {
+	t.Helper()
 	if os.Getenv("RUBI_T3VM_LIVE") != "1" || os.Getenv("RUBI_T3_CONTRACT") != "1" {
 		t.Skip("set RUBI_T3VM_LIVE=1 and RUBI_T3_CONTRACT=1 (with RUBI_T3_BIN and RUBI_T3_NODE) for the live path")
 	}
@@ -88,7 +92,7 @@ func TestLiveT3AgentThroughHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	h, err := Open(homeDir)
 	if err != nil {
@@ -105,14 +109,13 @@ func TestLiveT3AgentThroughHome(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	call := func(op string, args any) (map[string]any, error) { return handle(t, h, "tok", op, args) }
-
-	put, err := call("t3-agent.role.put", map[string]any{"base_version": 0, "by": "test",
+	e := &liveEnv{h: h, base: base, project: project, ctx: ctx, node: node}
+	put, err := e.call(t, "t3-agent.role.put", map[string]any{"base_version": 0, "by": "test",
 		"spec": map[string]any{"project": "my-project", "name": "e2e", "description": "end to end"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	roleID := put["id"].(string)
+	e.roleID = put["id"].(string)
 
 	// T3 itself, paired the way Home pairs it (a code minted on this computer, full access).
 	srv := &t3.Server{Node: node, Bin: bin, BaseDir: t3Base, Port: t3port}
@@ -129,36 +132,53 @@ func TestLiveT3AgentThroughHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	rc, stop := context.WithCancel(ctx)
-	defer stop()
+	t.Cleanup(stop)
 	cl := t3.New(srv.Base(), tok, t3.FullAccess)
 	t.Cleanup(func() { _ = cl.Close() })
 	h.T3.mu.Lock()
 	h.T3.srv, h.T3.cl, h.T3.runCtx, h.T3.runStop = srv, cl, rc, stop
 	h.T3.mu.Unlock()
 	h.T3Pid = srv.Pid
+	if err := h.Update(func(c *Config) { c.T3Port, c.T3BaseDir = t3port, t3Base }); err != nil {
+		t.Fatal(err)
+	}
 
-	// The role's instance runs this checkout's rubi-home; the session server has the scripted API behind the VM.
+	// The role's instance runs this checkout's rubi-home.
 	rubiHome := filepath.Join(base, "rubi-home")
 	build := exec.Command("go", "build", "-o", rubiHome, "./cmd/rubi-home")
 	build.Dir = liveRepoRoot(t)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building rubi-home: %v\n%s", err, out)
 	}
+	h.T3.SelfPath = func() (string, error) { return rubiHome, nil }
 	if res, err := t3vm.SyncInstances(t3vm.InstanceOptions{T3Base: t3Base, Dir: homeDir, RubiHome: rubiHome},
-		[]t3vm.RoleInstance{{ID: roleID, Name: "e2e", ClaudeDir: filepath.Join(homeDir, "agent-roles", roleID, "claude")}}); err != nil || len(res.Added) != 1 {
+		[]t3vm.RoleInstance{{ID: e.roleID, Name: "e2e", ClaudeDir: filepath.Join(homeDir, "agent-roles", e.roleID, "claude")}}); err != nil || len(res.Added)+len(res.Updated) != 1 {
 		t.Fatalf("instances: %+v %v", res, err)
 	}
-	mockURL, mockLog := liveMock(t, node, base)
-	mu, _ := url.Parse(mockURL)
 	opt := t3vm.Options{Dir: homeDir, Backend: h.Agent, Host: ac, T3Port: t3port, T3Pid: srv.Pid, Attachments: filepath.Join(t3Base, "userdata", "attachments"), Logf: t.Logf}
-	opt.SetTestAPI(map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:3129", "ANTHROPIC_API_KEY": "sk-ant-mock-not-a-key-0000000000"},
-		func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", mu.Host) })
-	sessions := t3vm.NewServer(opt)
+	if withMock {
+		mockURL, mockLog := liveMock(t, node, base)
+		e.mock = mockLog
+		mu, _ := url.Parse(mockURL)
+		opt.SetTestAPI(map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:3129", "ANTHROPIC_API_KEY": "sk-ant-mock-not-a-key-0000000000"},
+			func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", mu.Host) })
+	}
+	e.sessions = t3vm.NewServer(opt)
 	sctx, stopSessions := context.WithCancel(ctx)
 	served := make(chan error, 1)
-	go func() { served <- sessions.Serve(sctx, AgentVMSocketPath(homeDir)) }()
-	defer func() { stopSessions(); <-served }()
+	go func() { served <- e.sessions.Serve(sctx, AgentVMSocketPath(homeDir)) }()
+	t.Cleanup(func() { stopSessions(); <-served })
+	h.sessMu.Lock()
+	h.sess = e.sessions
+	h.sessMu.Unlock()
+	return e
+}
 
+func TestLiveT3AgentThroughHome(t *testing.T) {
+	e := liveStart(t, true)
+	project, roleID, mockLog := e.project, e.roleID, e.mock
+	call := func(op string, args any) (map[string]any, error) { return e.call(t, op, args) }
+	var err error
 	// Start a session through the op, in the mode that makes claude run commands itself.
 	var started map[string]any
 	for i := 0; ; i++ { // T3 watches its settings file: the instance may need a moment
@@ -238,4 +258,38 @@ func freeTestPort(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// The self-test against the real VM: a role VM starts through the session server, has no network of its own, reaches the
+// API through the proxy, and its hook gate and managed settings are as the test expects. No account is used, so the
+// only open row is the sign-in; with a (made-up) credential file in the shared folder the role passes.
+func TestLiveT3SelfTest(t *testing.T) {
+	e := liveStart(t, false)
+	run := func() map[string]any {
+		if _, err := e.call(t, "t3-setup.run", map[string]any{"step": "selftest", "role": e.roleID}); err != nil {
+			t.Fatal(err)
+		}
+		e.h.T3.Wait()
+		st, err := e.call(t, "t3-setup.status", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stepByID(t, st, "selftest")
+	}
+	step := run()
+	row := rowOf(t, step, e.roleID)
+	t.Logf("self-test lines:\n%s", lines(row))
+	if row["state"] != "needs_user" || strings.Contains(lines(row), "FAILED") {
+		t.Fatalf("without a sign-in: %v", row)
+	}
+	dir := agent.SignInDirOf(e.h.Dir)
+	if err := os.WriteFile(filepath.Join(dir, agent.CredentialFile), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if step = run(); step["state"] != "done" {
+		t.Fatalf("with the sign-in file: %v", rowOf(t, step, e.roleID))
+	}
+	if n := liveContainers("rubi-t3-"); len(n) != 0 {
+		t.Errorf("VMs left behind: %v", n)
+	}
 }

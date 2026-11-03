@@ -48,5 +48,22 @@ func (h *Helper) ServeAgentVM(ctx context.Context) error {
 	ac := &agent.AppleContainer{RunnerDir: agentCfg.AgentRunnerDir, EnvDir: h.Dir, AuthDir: agentCfg.AgentAuthDir}
 	srv := t3vm.NewServer(t3vm.Options{Dir: h.Dir, Backend: h.Agent, Host: ac, T3Port: c.T3Port, T3Pid: h.T3Pid,
 		Attachments: filepath.Join(c.T3BaseDir, "userdata", "attachments")})
+	h.sessMu.Lock()
+	h.sess = srv
+	h.sessMu.Unlock()
+	defer func() {
+		h.sessMu.Lock()
+		if h.sess == srv {
+			h.sess = nil
+		}
+		h.sessMu.Unlock()
+	}()
 	return srv.Serve(ctx, AgentVMSocketPath(h.Dir))
+}
+
+// sessionServer is the T3 session server while it serves (nil otherwise).
+func (h *Helper) sessionServer() *t3vm.Server {
+	h.sessMu.Lock()
+	defer h.sessMu.Unlock()
+	return h.sess
 }

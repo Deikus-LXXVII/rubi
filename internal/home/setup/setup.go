@@ -115,6 +115,10 @@ type Options struct {
 	GOOS string
 	// Now is the clock.
 	Now func() time.Time
+	// LoginHelper is the sign-in helper run in the sign-in container (agent.AuthHelper when empty) and LoginEnv the
+	// environment it gets besides the proxy's (loginEnv when nil). The T3 roles' sign-in sets both.
+	LoginHelper string
+	LoginEnv    func() map[string]string
 }
 
 // Setup runs the steps. It is safe for concurrent use; one job runs at a time.

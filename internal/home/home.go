@@ -27,6 +27,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
@@ -159,6 +160,9 @@ type Helper struct {
 
 	mu  sync.Mutex
 	cfg Config
+
+	sessMu sync.Mutex
+	sess   *t3vm.Server // the T3 session server while it serves (see ServeAgentVM)
 }
 
 // DefaultDir is ~/Library/Application Support/Rubi Home on a Mac (the user config dir elsewhere). It fails
@@ -213,11 +217,15 @@ func Open(dir string) (*Helper, error) {
 	return h, nil
 }
 
+// sweepSignIn removes the sign-in containers of both paths (a variable so that a test can see that SweepAgent calls it).
+var sweepSignIn = (*agent.AppleContainer).Sweep
+
 // SweepAgent removes what a crash of an earlier run can have left in the container tool: the sign-in
 // container. It is for Rubi Home's start (not for tests, which never run the real tool).
 func (h *Helper) SweepAgent(ctx context.Context) {
 	c := h.Fresh()
-	(&agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}).SweepAuth(ctx)
+	ac := &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
+	sweepSignIn(ac, ctx)
 }
 
 // AgentCredFile is the git credential file for agents in the helper's directory (see agent.FileCredSource).

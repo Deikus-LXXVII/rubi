@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
@@ -64,6 +66,15 @@ type T3Home struct {
 	PickPort func() (int, error)
 	// ServeSessions serves the session socket until ctx ends (Helper.ServeAgentVM when nil).
 	ServeSessions func(ctx context.Context) error
+	// SelfPath is the rubi-home binary the role shims run (os.Executable when nil; a live test builds its own).
+	SelfPath func() (string, error)
+	// VMVersion and VMProbe replace the session server in the self-test (tests).
+	VMVersion func(ctx context.Context, role string) (string, error)
+	VMProbe   func(ctx context.Context, role string, cmd []string) ([]byte, error)
+	// LoginAgents replaces the container the T3 sign-in runs in, and LoginOptions changes the options of its job engine
+	// (tests).
+	LoginAgents  setup.Agents
+	LoginOptions func(*setup.Options)
 	// AgentSetup answers the agent-setup.* ops t3-setup.* passes on (Helper.Setup.Handle when nil).
 	AgentSetup func(ctx context.Context, op string, args json.RawMessage) (any, error)
 	Now        func() time.Time
@@ -87,6 +98,9 @@ type T3Home struct {
 	phase    string
 	bytes    atomic.Int64
 	wg       sync.WaitGroup // the background step
+
+	loginSetup *setup.Setup
+	selfRows   map[string]selfRow // the last self-test, per role
 
 	threads t3Threads
 	projMu  sync.Mutex // one project lookup/creation at a time
@@ -445,9 +459,12 @@ func (t *T3Home) setClient(cl *t3.Client) {
 
 // RunStep starts a setup step in the background (a download takes minutes) and returns at once; the status says how
 // it goes. Only one step runs at a time.
-func (t *T3Home) RunStep(step string) error {
+func (t *T3Home) RunStep(step string) error { return t.RunStepFor(step, "", "") }
+
+// RunStepFor is RunStep with the project and role a self-test is for (both empty: every role).
+func (t *T3Home) RunStepFor(step, project, role string) error {
 	switch step {
-	case T3StepInstall, T3StepStart, T3StepPair, T3StepStop, T3StepAll, T3StepT3:
+	case T3StepInstall, T3StepStart, T3StepPair, T3StepStop, T3StepAll, T3StepT3, T3StepSelfTest:
 	default:
 		return fmt.Errorf("unknown T3 setup step %q (install, start, pair, stop or all)", clipStr(step, 24))
 	}
@@ -464,7 +481,7 @@ func (t *T3Home) RunStep(step string) error {
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
-		err := t.runStep(ctx, step)
+		err := t.runStep(ctx, step, project, role)
 		t.mu.Lock()
 		t.job, t.phase = nil, ""
 		if err != nil {
@@ -476,7 +493,7 @@ func (t *T3Home) RunStep(step string) error {
 	return nil
 }
 
-func (t *T3Home) runStep(ctx context.Context, step string) error {
+func (t *T3Home) runStep(ctx context.Context, step, project, role string) error {
 	t.opMu.Lock()
 	defer t.opMu.Unlock()
 	switch step {
@@ -492,6 +509,8 @@ func (t *T3Home) runStep(ctx context.Context, step string) error {
 	case T3StepStop:
 		t.stopLocked()
 		return nil
+	case T3StepSelfTest:
+		return t.runSelfTest(ctx, project, role)
 	case T3StepAll, T3StepT3:
 		if _, ok := t.installedNow(); !ok {
 			if err := t.Install(ctx); err != nil {
@@ -608,11 +627,7 @@ func (t *T3Home) Status() map[string]any {
 }
 
 // agentSetupStep are the steps t3-setup.run passes to the agent setup.
-var agentSetupStep = map[string]bool{"container": true, "service": true, "network": true, "image": true, "projects": true, "selftest": true,
-	"signout": true}
-
-var errNoRoleLogin = errors.New("signing in for T3 roles is not available in this Rubi Home yet; run `claude auth login` with " +
-	"CLAUDE_SECURESTORAGE_CONFIG_DIR set to the agent-signin folder in Rubi Home's folder, then check the sign-in again")
+var agentSetupStep = map[string]bool{"container": true, "service": true, "network": true, "image": true, "projects": true, "signout": true}
 
 // t3Step says whether a t3-setup.run step is one of T3's own (the others belong to the agent setup).
 func t3Step(s string) bool {
@@ -655,14 +670,34 @@ func (t *T3Home) setupStatus(ctx context.Context) (any, error) {
 		merged = append(merged, s)
 	}
 	merged = append(merged, steps[at:]...)
+	testAt := -1
+	for i, s := range merged {
+		if m, ok := s.(map[string]any); ok && m["id"] == "selftest" {
+			testAt = i
+		}
+	}
+	if testAt >= 0 {
+		merged[testAt] = t.selfTestStep()
+	} else {
+		merged = append(merged, t.selfTestStep())
+	}
 	// The sign-in of T3 roles is the shared folder's, not the runner path's token: Home reports it itself.
+	loginAt := -1
 	for i, s := range merged {
 		if m, ok := s.(map[string]any); ok && m["id"] == "login" {
-			merged[i] = t.loginStep()
+			loginAt = i
 		}
+	}
+	if loginAt >= 0 {
+		merged[loginAt] = t.loginStep()
+	} else { // the agent setup was not heard from: the row is still ours to show
+		merged = append(merged, t.loginStep())
 	}
 	out["steps"] = merged
 	out["login"] = nil
+	if li := t.login().LoginProgress(); li.Working && li.URL != "" {
+		out["login"] = map[string]any{"url": li.URL, "wants_code": li.WantsCode}
+	}
 	out["t3_job"], out["t3_error"] = mine["job"], mine["error"]
 	delete(mine, "steps")
 	delete(mine, "job")
@@ -673,48 +708,97 @@ func (t *T3Home) setupStatus(ctx context.Context) (any, error) {
 	return out, nil
 }
 
-// signedIn says whether the shared sign-in folder holds a credential. It looks at the file's size and never reads it.
-func (t *T3Home) signedIn() bool {
-	st, err := os.Stat(filepath.Join(t.h.Dir, "agent-signin", ".credentials.json"))
-	return err == nil && st.Mode().IsRegular() && st.Size() > 0
-}
-
 // loginStep is the "login" row: one row per role (the id is the role's), all with the one shared state, because the
-// sign-in folder is shared by every role (docs/plans/t3-integration.md decision 4).
+// sign-in folder is shared by every role (docs/plans/t3-integration.md decision 4). While a sign-in runs the rows carry
+// its link and whether it waits for the code.
 func (t *T3Home) loginStep() map[string]any {
-	in := t.signedIn()
-	state, reason, action := "todo", "Not signed in to Claude. One sign-in serves every role.", "login"
+	in := agent.SignedInAt(t.signInDir())
+	li := t.login().LoginProgress()
+	state, reason, action := "todo", "No credential file yet. One sign-in serves every role.", "login"
 	if in {
-		state, reason, action = "done", "Signed in (shared by every role).", "login_again"
+		state, reason, action = "done", "A credential file is present (shared by every role).", "login_again"
+	}
+	var progress []string
+	switch {
+	case li.Working:
+		state, reason, action, progress = "working", "Signing in...", "cancel", li.Progress
+		if li.URL != "" {
+			reason = "Open the link and sign in."
+			if li.WantsCode {
+				reason = "Paste the code the browser shows."
+			}
+		}
+	case !in && li.State != "":
+		state, reason = li.State, li.Reason
+		progress = li.Progress
+	}
+	if progress == nil {
+		progress = []string{}
 	}
 	rows := []map[string]any{}
 	for _, r := range t.h.Agent.T3Projects() {
-		rows = append(rows, map[string]any{"id": r.Role, "dir": r.Dir, "state": state, "reason": reason, "action": action})
+		row := map[string]any{"id": r.Role, "dir": r.Dir, "state": state, "reason": reason, "action": action}
+		if li.Working && li.URL != "" {
+			row["url"], row["wants_code"] = li.URL, li.WantsCode
+		}
+		rows = append(rows, row)
 	}
-	return map[string]any{"id": "login", "title": "Claude sign-in", "state": state, "reason": reason, "action": action,
-		"action2": "check", "projects": rows, "progress": []string{}}
+	step := map[string]any{"id": "login", "title": "Claude sign-in", "state": state, "reason": reason, "action": action,
+		"action2": "check", "projects": rows, "progress": progress}
+	if li.Working && li.URL != "" {
+		step["url"], step["wants_code"] = li.URL, li.WantsCode
+	}
+	return step
 }
 
 // handleSetup serves t3-setup.*: T3's install, start, pair and stop steps, and everything agent-setup.* does.
 func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessage) (any, error) {
 	var in struct {
-		Step   string `json:"step"`
-		Method string `json:"method"`
+		Step    string `json:"step"`
+		Method  string `json:"method"`
+		Role    string `json:"role"`
+		Code    string `json:"code"`
+		Project string `json:"project"`
 	}
 	if len(args) > 0 && string(args) != "null" && json.Unmarshal(args, &in) != nil {
 		return nil, errors.New("bad arguments")
 	}
 	name := strings.TrimPrefix(op, "t3-setup.")
 	switch {
+	case name == "run" && in.Step == T3StepSelfTest:
+		if err := t.checkSelfTarget(in.Project, in.Role); err != nil {
+			return nil, err
+		}
+		if err := t.RunStepFor(T3StepSelfTest, in.Project, in.Role); err != nil {
+			return nil, err
+		}
+		return map[string]any{"started": true}, nil
 	case name == "run" && in.Step == "login":
-		// Checking is the status above. Signing in (claude auth login in a role's VM against the shared folder) is not
-		// built in this Home yet.
+		// Without a method it only checks (the status above looks at the folder).
 		if in.Method == "" {
 			return map[string]any{"started": true}, nil
 		}
-		return nil, errNoRoleLogin
-	case name == "login.code", name == "login.open":
-		return nil, errNoRoleLogin
+		if err := t.startLogin(in.Role, in.Method); err != nil {
+			return nil, err
+		}
+		return map[string]any{"started": true}, nil
+	case name == "login.code":
+		if err := t.login().LoginCode(in.Code); err != nil {
+			return nil, err
+		}
+		return map[string]any{"sent": true}, nil
+	case name == "login.open":
+		if err := t.login().LoginOpen(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]any{"opened": true}, nil
+	case name == "cancel":
+		stopped := t.login().Cancel()
+		res, err := t.agentSetup(ctx, "agent-setup.cancel", args)
+		if m, ok := res.(map[string]any); ok && stopped {
+			m["stopped"] = true
+		}
+		return res, err
 	case name == "status":
 		return t.setupStatus(ctx)
 	case name == "run" && t3Step(in.Step):
@@ -730,7 +814,7 @@ func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessag
 		return t.agentSetup(ctx, "agent-setup.run", args)
 	case name == "run" && !agentSetupStep[in.Step]:
 		return nil, fmt.Errorf("unknown setup step %q", clipStr(in.Step, 32))
-	case name == "run", name == "project.add", name == "project.remove", name == "cancel":
+	case name == "run", name == "project.add", name == "project.remove":
 		return t.agentSetup(ctx, "agent-setup."+name, args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)

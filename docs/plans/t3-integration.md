@@ -544,3 +544,80 @@ S3 part 1 notes (as built: Home and core; the plugin repository is separate):
 - **Core**: capabilities `t3-agent`, `t3-setup` reserved for the plugin `t3agents`; the home gate maps `t3-agent.*` and
   `t3-setup.*` to the claude ones, with the plugin's own approval-kind namespace (`t3agents.*`) attested to Home as the
   claude-code kind.
+
+S3 part 2 notes (as built):
+- **Provider sign-in** (`t3-setup.run {step: "login", method: "claudeai"}`, `t3-setup.login.code {code}`,
+  `t3-setup.login.open`, `t3-setup.cancel`). One sign-in for every role (decision 4): Home starts a sign-in container
+  (`rubi-t3-login-<random>`; no project; `<helper>/agent-signin` mounted read-write at its own real path; `--network none`; a
+  throwaway `CLAUDE_CONFIG_DIR` in memory) and runs `rubi-claude-login` in it (runner/container). Each sign-in has its own
+  container name and deletes only that one; Home's start (`SweepAgent`) removes every `rubi-t3-login-*` a crash left.
+  The network is only the allow-list proxy, for these hosts and no others:
+  - `claude.com`: the link `claude auth login` prints (`claude.com/cai/oauth/authorize`) starts there and is passed on;
+  - `claude.ai`: the sign-in and authorise pages the link leads to;
+  - `platform.claude.com` and `console.anthropic.com`: the page that shows the code and the token exchange (claude 2.1 uses
+    one name or the other; the older name is kept so a version that still uses it works);
+  - `api.anthropic.com`: the profile and role lookups claude makes to finish a login.
+  The first is the one seen in the S0 (d) prompt; the others are what claude's login is known to use and are kept to the
+  smallest list that lets a login finish. A host that is added needs a reason here.
+  The helper runs `claude auth login --claudeai` under `script`, reads the link and the paste prompt with the cursor-move
+  handling of the setup-token helper (`ESC[nG`, `ESC[nC` read as spaces, `paste\s+code\s+here`) and prints only `URL <link>`,
+  `CODE?`, `SAVED` or `FAILED <reason>`. It takes nothing from its environment that chooses what it runs: claude's path is a
+  constant, passed to `script -qfc` as a variable in a fixed command line (tests run a copy with the constant changed). A code
+  is one chunk, the code and at most one line end; anything else is refused with a `FAILED` line and a new `CODE?`. `SAVED`
+  needs claude to end well with a new, non-empty `.credentials.json` in the shared folder; a claude that stays up after
+  writing it gets 10 seconds to end by itself, and only then a file that is there and has stopped changing is enough. Neither
+  the helper nor Home opens that file. Home's status says "a credential file is present", which is all it knows (the
+  credential may be expired or revoked; claude is the one to say). The Go side also refuses any link containing `sk-ant`.
+  Role argument: checked, but the sign-in is the one shared folder, whichever role is named. The status `login` step has one
+  row per role (row id = role id) with the one shared state, and the link and `wants_code` while a sign-in runs (also in a
+  top-level `login` block like the agent setup's).
+- **Self-test** (`t3-setup.run {step: "selftest", project?, role?}`): one row per role, each with its checks as progress lines:
+  T3 runs and the bridge answers; the role's instance is in T3's settings; the shim is the current one; `claude --version`
+  through the session server (the image's, no VM of the role); a VM for the role started by `t3vm.Server.Probe`, which is the
+  session path (same role checks, caps, mounts, proxy and hook gate) running a node script instead of claude, which shows:
+  - no way out of its own: connections to two public IPv4 addresses and an IPv6 address, and a name lookup, must all end in
+    "no route" kinds of error (ENETUNREACH, EHOSTUNREACH, EADDRNOTAVAIL, EAI_*, ENOTFOUND...); a refused or reset connection
+    or a timeout counts as a way out, not as blocked;
+  - the allow-list proxy: CONNECT to api.anthropic.com:443 works, and CONNECT to `downloads.claude.ai:443` (a host the proxy
+    refuses for good, without asking anyone) and to `api.anthropic.com:8443` are both refused with 403. An unlisted ordinary
+    host is not used for this because the proxy would ask the owner about it;
+  - the hook gate answers a malformed call with a deny (it asks nobody; its address comes from `agent.PipeHookAddr`);
+  - the managed settings are *configured*: only the managed hook, and Read, Edit and Bash deny rules naming the sign-in folder.
+    These rules bind the agent's tools, not a shell in the VM; the check says "configured", not "protected";
+  - whether the agent user can open the shared sign-in file (one byte is read and dropped). If it can, the row says "the agent
+    can read the shared sign-in file: residual risk of decision 4" and still passes: that is the accepted cost of one shared
+    folder, shown instead of hidden;
+  then the sign-in state (no credential file alone is `needs_user`, not a failure). A test stops at its first failure.
+- **Residual risk of decision 4.** The shared sign-in folder is mounted read-write in every role VM (a refresh rotates the
+  token), so agent code in a VM can read the credential, whatever the managed deny rules say. The boundary is the VM's
+  network: no route out, and the allow-list proxy only for listed hosts. A credential taken that way is the owner's whole
+  subscription sign-in. The fallback in decision 4 (one sign-in per role) removes the sharing at the price of one sign-in each.
+
+### The first real sign-in: what the owner does
+
+Before this, the T3 Agents plugin is installed and Rubi Home is paired. Open the plugin's setup page in the Rubi panel.
+
+1. **Container.** The "Apple container" row: press its button and approve with your passkey. macOS asks for the administrator
+   password itself. Wait until the row says done. Do the same for the "Container service" row and the "Runner image" row
+   (building the image takes a few minutes the first time).
+2. **T3.** The "T3" row: press **Install** (or **Upgrade**). Home downloads the pinned Node and T3, checks each against the
+   pinned hash, starts T3 and shows the row as done. Then press **Pair** on the "T3 paired" row. No approval is needed.
+3. **A project folder.** A Bot asks for the folder with `t3_project_add`, or the setup page offers it; approve with your
+   passkey. Make a role for the project (a Bot does that with `t3_role_create`; you approve what it needs approval for).
+4. **Sign in to Claude.** The "Claude sign-in" row: press **Sign in**.
+   1. After a few seconds the row shows a link and says "Open the link and sign in." Press **Open** (the link opens in this
+      Mac's browser) or copy it into any browser. The link is on claude.com or claude.ai; if it is anywhere else, do not use it.
+   2. Sign in to your Claude account in the browser and press the authorise button. The page then shows a **code**.
+   3. Copy that code. Back in the Rubi panel the row now says "Paste the code the browser shows." Paste the code into the box
+      on the "Claude sign-in" row and press **Send**. Only the code goes anywhere; it is not stored or shown again.
+   4. Within a few seconds the row says "A credential file is present (shared by every role)." That is all Home can tell; the
+      Self-test (step 5) is what checks the rest. One sign-in covers every role.
+   If the row says it failed, read its reason, press **Sign in** again and use a fresh link and code (a code works once and
+   for a few minutes). **Cancel** stops a sign-in that you do not want to finish.
+5. **Check it.** On the "Self-test" row press **Self-test** (for all roles, or for one). Each role should end "done" with its
+   lines all "ok:". The test starts a VM for the role, so the first run takes a minute. A role that says "needs you" is only
+   missing step 4.
+6. **Verify by hand (optional).** In Rubi Home's folder (`~/Library/Application Support/Rubi Home` on a Mac) the folder
+   `agent-signin` holds a file `.credentials.json` that is not empty. Do not open it or send it anywhere. In T3's own app (if
+   you paired it with Rubi's server) a thread of a role answers without asking you to sign in. To sign out, delete that file
+   and, to revoke the token, remove the session in your Claude account settings at claude.ai.

@@ -27,7 +27,7 @@ func TestLoginURLAllowList(t *testing.T) {
 	for _, bad := range []string{
 		"http://claude.com/x", "https://evil.example.com/claude.com", "https://claude.com.evil.example.com/x", "https://evilclaude.com/x",
 		"https://user@claude.com/x", "https://claude.com:8443/x", "https://claude.com@evil.example.com/x", "javascript:alert(1)",
-		"https://anthropic.com/x", "https://sub.claude.com/x", "", "file:///etc/passwd", "https://claude.com\\@evil.example.com/",
+		"https://claude.com/x?state=sk-ant-oat01-ABCDEF", "https://claude.ai/SK-ANT-x", "https://anthropic.com/x", "https://sub.claude.com/x", "", "file:///etc/passwd", "https://claude.com\\@evil.example.com/",
 	} {
 		if _, err := loginURL(bad); err == nil {
 			t.Errorf("%q accepted", bad)

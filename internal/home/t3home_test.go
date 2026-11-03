@@ -581,14 +581,14 @@ func TestT3SetupPassesTheAgentSetupOn(t *testing.T) {
 		return map[string]any{"ok": true}, nil
 	}
 	for _, c := range []struct{ op, args string }{
-		{"run", `{"step":"image"}`}, {"run", `{"step":"selftest","project":"p"}`},
+		{"run", `{"step":"image"}`}, {"run", `{"step":"projects"}`},
 		{"project.add", `{}`}, {"project.remove", `{"dir":"/x"}`}, {"cancel", `{}`},
 	} {
 		if _, err := handle(t, l.h, "tok", "t3-setup."+c.op, json.RawMessage(c.args)); err != nil {
 			t.Fatalf("%s: %v", c.op, err)
 		}
 	}
-	want := []string{`agent-setup.run {"step":"image"}`, `agent-setup.run {"step":"selftest","project":"p"}`,
+	want := []string{`agent-setup.run {"step":"image"}`, `agent-setup.run {"step":"projects"}`,
 		`agent-setup.project.add {}`, `agent-setup.project.remove {"dir":"/x"}`, `agent-setup.cancel {}`}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("passed on:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -700,24 +700,5 @@ func TestT3SetupT3StepAndActions(t *testing.T) {
 	st, _ = handle(t, l.h, "tok", "t3-setup.status", nil)
 	if r := stepByID(t, st, "t3"); r["action"] != "upgrade" || !strings.Contains(r["reason"].(string), "pinned") {
 		t.Errorf("pin moved: %v", r)
-	}
-}
-
-// Signing in for roles is reported as not built; checking works; the code and link ops say the same.
-func TestT3SetupLoginIsNotBuiltYet(t *testing.T) {
-	l := newLife(t)
-	if res, err := handle(t, l.h, "tok", "t3-setup.run", map[string]any{"step": "login"}); err != nil || res["started"] != true {
-		t.Errorf("check: %v %v", res, err)
-	}
-	for _, c := range []struct {
-		op   string
-		args map[string]any
-	}{
-		{"run", map[string]any{"step": "login", "role": "r", "method": "claudeai"}},
-		{"login.code", map[string]any{"code": "abc"}}, {"login.open", map[string]any{}},
-	} {
-		if _, err := handle(t, l.h, "tok", "t3-setup."+c.op, c.args); err == nil || !strings.Contains(err.Error(), "not available in this Rubi Home yet") {
-			t.Errorf("%s: %v", c.op, err)
-		}
 	}
 }

@@ -34,6 +34,9 @@ COPY container/git-credential-rubi /usr/local/bin/git-credential-rubi
 # The sign-in helper of the setup wizard (it runs `claude setup-token` under `script`, from util-linux); it is
 # run in the short-lived auth container, never by the runner.
 COPY container/rubi-claude-token /usr/local/bin/rubi-claude-token
+# The same for the T3 roles' sign-in: `claude auth login --claudeai`, whose credential claude writes itself into the
+# shared sign-in folder (docs/plans/t3-integration.md decision 4).
+COPY container/rubi-claude-login /usr/local/bin/rubi-claude-login
 # `ssh <target> <command>`: no ssh client is installed; this wrapper speaks to the runner's socket (RUBI_SSH_SOCK) and Rubi
 # Home is the SSH client (docs/design/agent-roles.md section 9). It is also found as `ssh`, first in PATH. Git over
 # ssh is therefore not supported (git would call the wrapper, which refuses options); remotes are https, with the
@@ -45,7 +48,7 @@ COPY container/rubi-ssh /usr/local/bin/rubi-ssh
 # server on the host), and multiplexes every connection over its stdio to Rubi Home (docs/design/agent-roles.md
 # section 10, docs/plans/t3-integration.md section 12).
 COPY container/rubi-netpipe /usr/local/bin/rubi-netpipe
-RUN chmod 0755 /usr/local/bin/git-credential-rubi /usr/local/bin/rubi-claude-token /usr/local/bin/rubi-ssh /usr/local/bin/rubi-netpipe \
+RUN chmod 0755 /usr/local/bin/git-credential-rubi /usr/local/bin/rubi-claude-token /usr/local/bin/rubi-claude-login /usr/local/bin/rubi-ssh /usr/local/bin/rubi-netpipe \
  && mkdir -p /usr/local/rubi/bin \
  && ln -s /usr/local/bin/rubi-ssh /usr/local/rubi/bin/ssh \
  && git config --system credential.helper /usr/local/bin/git-credential-rubi \

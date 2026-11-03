@@ -30,7 +30,9 @@ type loginState struct {
 // loginURL validates a sign-in link: https, one of loginHosts, no user info, no port.
 func loginURL(raw string) (string, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || !slices.Contains(loginHosts, u.Hostname()) || len(raw) > 4096 {
+	if err != nil || u.Scheme != "https" || u.User != nil || u.Port() != "" || !slices.Contains(loginHosts, u.Hostname()) || len(raw) > 4096 ||
+		strings.Contains(strings.ToLower(raw), "sk-ant") { // a credential-shaped string is never part of a link we show
+
 		return "", errors.New("the sign-in link doesn't point to a Claude or Anthropic sign-in page")
 	}
 	return raw, nil
@@ -109,7 +111,14 @@ func (s *Setup) runLogin(ctx context.Context, j *job, method string, skipIfSigne
 	defer sess.Close() // ends the helper, claude and the proxy, whatever happens
 	lctx, cancel := context.WithTimeout(ctx, loginLimit)
 	defer cancel()
-	conn, err := sess.Exec(lctx, []string{agent.AuthHelper}, loginEnv)
+	helper, env := agent.AuthHelper, loginEnv
+	if s.opt.LoginHelper != "" {
+		helper = s.opt.LoginHelper
+	}
+	if s.opt.LoginEnv != nil {
+		env = s.opt.LoginEnv()
+	}
+	conn, err := sess.Exec(lctx, []string{helper}, env)
 	if err != nil {
 		return outcome{Failed, "Couldn't start the sign-in: " + safeText(err.Error())}
 	}
@@ -257,4 +266,51 @@ func (s *Setup) LoginOpen(ctx context.Context) error {
 		return errors.New("couldn't open the browser")
 	}
 	return nil
+}
+
+// StartLogin starts the sign-in as a job without looking at the other steps first (the sign-in container fails closed
+// if the container tool or the image isn't there). It is for a Setup that has only the sign-in to do (the T3 roles'
+// own); method is "claudeai".
+func (s *Setup) StartLogin(method string) error {
+	if method != "claudeai" {
+		return errors.New(`method must be "claudeai" (a Claude subscription)`)
+	}
+	j, jctx, err := s.begin(StepLogin, agent.Project{})
+	if err != nil {
+		return err
+	}
+	go func() {
+		defer s.release(j)
+		s.record(jctx, StepLogin, "", j, s.runLogin(jctx, j, method, false))
+	}()
+	return nil
+}
+
+// LoginProgress is the sign-in as the status shows it.
+type LoginProgress struct {
+	// Working says a sign-in job runs; URL is its link and WantsCode says it waits for the code.
+	Working   bool
+	URL       string
+	WantsCode bool
+	// State and Reason are the last finished attempt's outcome (empty before one, or after a success).
+	State, Reason string
+	Progress      []string
+}
+
+// LoginProgress reports the running sign-in, else the last attempt's outcome.
+func (s *Setup) LoginProgress() LoginProgress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var li LoginProgress
+	if j := s.job; j != nil && j.step == StepLogin {
+		li.Working, li.Progress = true, j.prog.snapshot()
+		if l := j.login; l != nil {
+			li.URL, li.WantsCode = l.url, l.wantsCode
+		}
+		return li
+	}
+	if r, ok := s.last[key(StepLogin, "")]; ok {
+		li.State, li.Reason, li.Progress = r.State, r.Reason, r.Progress
+	}
+	return li
 }
