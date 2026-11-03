@@ -203,7 +203,7 @@ of under 50 lines, with a test, kept in `t3/patches/`.
 
 | Stage | Done when |
 |---|---|
-| S0 spikes (≈2 days) | (a) The pinned nightly runs headless in a temp user-data dir with telemetry off. (b) A Go client completes the OAuth sign-in to localhost `/mcp` with a pairing code, then runs launch/send/wait/read on a fake-claude instance. (c) `binaryPath` = wrapper runs the real claude in Apple container with the cwd mount; history and fork work in T3. (d) `claude auth login` in the container stores credentials in the host-mounted config dir, and Rubi never reads them. (e) The PreToolUse hook in the VM reaches Rubi and a denial blocks the tool. Each spike gives yes or no, with logs. |
+| S0 spikes | (a) The pinned nightly runs headless in a temp user-data dir with telemetry off. (b) A Go client completes the OAuth sign-in to localhost `/mcp` with a pairing code, then runs launch/send/wait/read on a fake-claude instance. (c) `binaryPath` = wrapper runs the real claude in Apple container with the cwd mount; history and fork work in T3. (d) `claude auth login` in the container stores credentials in the host-mounted config dir, and Rubi never reads them. (e) The PreToolUse hook in the VM reaches Rubi and a denial blocks the tool. Each spike gives yes or no, with logs. |
 | S1 | The `t3bridge` ops and the contract tests are green against the pinned nightly. |
 | S2 | The wrapper plus role instances work. Live: two roles have isolated skills and MCP on one repo, and the egress allow-list holds (the existing isolation probe). |
 | S3 | Plugin rubi-t3agents: start/send/bind/status, events, briefs. Live: a Bot starts a thread, gets turn-finished, and sends a follow-up. |
