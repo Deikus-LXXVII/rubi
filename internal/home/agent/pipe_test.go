@@ -231,6 +231,45 @@ func TestNetlessAStreamToAMissingServiceIsReset(t *testing.T) {
 	}
 }
 
+// The hook and T3 services are offered to their own listeners, and a stream to one nobody serves is reset.
+func TestNetlessHookAndT3StreamsGoToTheirListeners(t *testing.T) {
+	fastPipe(t)
+	vm := newVMPipes(t, nil)
+	hook := netpipe.NewListener("hook", 1)
+	a, _, c, err := startNetless(t, vm, StartSpec{Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1), Hook: hook}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Stop(context.Background())
+	defer c.Close()
+	h, err := vm.latest().Open(netpipe.SvcHook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan byte, 1)
+	go func() {
+		conn, err := hook.Accept()
+		if err != nil {
+			return
+		}
+		got <- conn.(*netpipe.Stream).Service()
+	}()
+	select {
+	case svc := <-got:
+		if svc != netpipe.SvcHook {
+			t.Fatalf("service %d", svc)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the hook listener got no stream")
+	}
+	h.Close()
+	s, _ := vm.latest().Open(netpipe.SvcT3) // no T3 listener in this spec
+	s.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := s.Read(make([]byte, 1)); !errors.Is(err, netpipe.ErrReset) {
+		t.Fatalf("stream to the T3 service nobody serves: %v", err)
+	}
+}
+
 // The forwarder's process dies: its streams fail, Home starts it again, and new streams work.
 func TestNetlessPipeRestartsAfterItsProcessDies(t *testing.T) {
 	fastPipe(t)

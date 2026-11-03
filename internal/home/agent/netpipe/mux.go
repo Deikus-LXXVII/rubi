@@ -26,6 +26,8 @@ const (
 const (
 	SvcProxy   byte = 1
 	SvcGateway byte = 2
+	SvcHook    byte = 3 // the approval hook gate (127.0.0.1:3130 in the VM)
+	SvcT3      byte = 4 // T3's own MCP server on the host (127.0.0.1:$RUBI_T3_PORT in the VM)
 )
 
 // Wire parameters. Both sides must use the same Window.

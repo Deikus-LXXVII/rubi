@@ -110,6 +110,10 @@ func (s *pipeSup) open(svc byte, st *netpipe.Stream) bool {
 		ln = s.spec.Proxy
 	case netpipe.SvcGateway:
 		ln = s.spec.Gateway
+	case netpipe.SvcHook:
+		ln = s.spec.Hook
+	case netpipe.SvcT3:
+		ln = s.spec.T3
 	}
 	return ln != nil && ln.Offer(st)
 }

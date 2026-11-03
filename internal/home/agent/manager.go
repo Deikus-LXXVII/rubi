@@ -1272,12 +1272,19 @@ func (h *handler) Ask(ctx context.Context, a AskParams) AskResult {
 		h.m.mu.Unlock()
 		cancel()
 	}()
+	return h.m.AskTool(ctx, h.p.ID, h.p.key(), a)
+}
+
+// AskTool is a tool call's approval: the runner's perm.ask, and the hook gate of a T3 session's VM (package t3vm),
+// take this one path. project is the project's id and role the key of the role (the project id for the legacy
+// role); anything but an allow from the plugin is a deny.
+func (m *Manager) AskTool(ctx context.Context, project, role string, a AskParams) AskResult {
 	if len(a.Input) > maxInput {
 		return deny("Rubi: the tool input is too large to review, so the call was denied.")
 	}
-	it := Item{Type: "perm.ask", Project: h.p.ID, Role: h.p.key(), SessionID: a.SessionID, AgentID: a.AgentID, AgentType: a.AgentType,
+	it := Item{Type: "perm.ask", Project: project, Role: role, SessionID: a.SessionID, AgentID: a.AgentID, AgentType: a.AgentType,
 		Tool: a.Tool, ToolUseID: a.ToolUseID, Via: a.Via, Input: RedactCredentials(a.Input), Cwd: a.Cwd, Mode: a.Mode}
-	return h.m.waitDecision(ctx, h.p.ID, it)
+	return m.waitDecision(ctx, project, it)
 }
 
 func (h *handler) Event(ev Event) { h.m.onEvent(h.p, ev) }

@@ -75,12 +75,16 @@ type StartSpec struct {
 type PipeSpec struct {
 	Proxy   *netpipe.Listener
 	Gateway *netpipe.Listener
+	// Hook is the approval gate of a T3 session's VM (package t3vm) and T3 the relay to T3's own MCP server.
+	Hook *netpipe.Listener
+	T3   *netpipe.Listener
 }
 
-// The runner's view of its two services: the forwarder (runner/container/rubi-netpipe) listens on these in the VM.
+// The runner's view of its services: the forwarder (runner/container/rubi-netpipe) listens on these in the VM.
 const (
 	PipeProxyAddr   = "127.0.0.1:3128"
 	PipeGatewayAddr = "127.0.0.1:3129"
+	PipeHookAddr    = "127.0.0.1:3130"
 )
 
 // NetlessVM is implemented by a VM that has no network at all (`container run --network none`). Its

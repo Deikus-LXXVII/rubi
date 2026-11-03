@@ -38,8 +38,9 @@ func TestInteropWithTheNodeForwarder(t *testing.T) {
 	if _, err := os.Stat(script); err != nil {
 		t.Skip("no forwarder script")
 	}
-	pp, gp := freePort(t), freePort(t)
-	cmd := exec.Command(node, script, "--proxy-port", pp, "--gateway-port", gp)
+	pp, gp, hp, tp := freePort(t), freePort(t), freePort(t), freePort(t)
+	cmd := exec.Command(node, script, "--proxy-port", pp, "--gateway-port", gp, "--hook-port", hp)
+	cmd.Env = append(os.Environ(), "RUBI_T3_PORT="+tp)
 	in, _ := cmd.StdinPipe()
 	out, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -98,9 +99,23 @@ func TestInteropWithTheNodeForwarder(t *testing.T) {
 	if string(back) != "echo:hello" {
 		t.Fatalf("gateway answer %q", back)
 	}
+	// The hook and T3 services are named by their ports, and carry bytes like the others.
+	for port, svc := range map[string]byte{hp: SvcHook, tp: SvcT3} {
+		x, err := net.Dial("tcp", "127.0.0.1:"+port)
+		if err != nil {
+			t.Fatal(err)
+		}
+		x.Write([]byte("ping"))
+		x.(*net.TCPConn).CloseWrite()
+		within(t, "echo on service", 10*time.Second, func() { back, _ = io.ReadAll(x) })
+		x.Close()
+		if string(back) != "ping" {
+			t.Fatalf("service %d echoed %q", svc, back)
+		}
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if got[SvcProxy] != 1 || got[SvcGateway] != 1 {
+	if got[SvcProxy] != 1 || got[SvcGateway] != 1 || got[SvcHook] != 1 || got[SvcT3] != 1 {
 		t.Fatalf("services seen: %v", got)
 	}
 

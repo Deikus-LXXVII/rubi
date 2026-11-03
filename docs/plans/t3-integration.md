@@ -410,3 +410,25 @@ read-write; with the opt-in install setting `GrantWithSudo` it re-applies `sudo 
 /dev/kvm` at every start, logs it, and checks again; without the setting, or without passwordless sudo, it refuses
 with a message that says what to do. No user or group name is hard-coded. The microVM backend calls it before it
 starts a VM.
+
+S2 part 1 notes (as built, `internal/home/agent/t3vm`):
+- **Hook behaviour, checked with the real claude 2.1.314 in the runner image** (managed settings at
+  `/etc/claude-code/managed-settings.json`, a Bash call, `bypassPermissions`): deny JSON with exit 0 blocks the tool;
+  exit 2 blocks it (with or without JSON); exit 1, a throw, an unhandled rejection and non-JSON output with exit 0 let
+  the tool **run**. So the hook script prints the deny JSON and exits 2 on every failure, and has crash handlers that
+  do the same. A hook's `updatedInput` without a `permissionDecision` is honoured (the changed command ran, the
+  original did not), so the gate returns it that way. The script has its address and timeout as constants and reads no
+  environment: a repository's settings `env` block reaches hook processes.
+- **Gate per VM.** One `Gate` per session VM, bound to that VM's hook listener and target; the session id and cwd in a
+  hook input are claims from inside the VM and never route an ask.
+- **MCP.** Sessions always run with `--strict-mcp-config` and only an inline T3 server (`http`/`sse` at
+  `127.0.0.1:<T3 port>`) is accepted. The managed key `allowManagedMcpServersOnly` exists in this version but is not
+  set: it would also gate T3's own server, which is not verified.
+- **Residual.** The sign-in folder is mounted read-write because a refresh rotates the token, so agent code in the VM
+  can read the credential. The managed deny rules for it are best effort (a shell can still reach it by a path the
+  rule does not match); the boundary is that the VM has no network except the allow-list proxy.
+
+T3's own MCP for a session (checked at the pin): T3 hands it to claude through the SDK control channel on stdin
+(`setMcpServers`), not on argv, at `http://<server bind host>:<port>/mcp`; with Rubi's server bound to 127.0.0.1
+that is `http://127.0.0.1:<T3 port>/mcp`, which the VM reaches through netpipe service 4. The argv check covers only
+what arrives as flags.
