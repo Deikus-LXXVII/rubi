@@ -221,7 +221,7 @@ func (c *Core) attestProjectAdd(plugin string, args json.RawMessage) error {
 	c.execMu.Lock()
 	defer c.execMu.Unlock()
 	for _, g := range c.execs[plugin] {
-		if g.kind != kindSetupFolder {
+		if canonKind(plugin, g.kind) != kindSetupFolder {
 			continue
 		}
 		var got struct {

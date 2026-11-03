@@ -195,3 +195,23 @@ func TestLibraryGetIsForRolePlugins(t *testing.T) {
 		}
 	}
 }
+
+// The T3 plugin's project add raises its own kind (t3agents.setup.project) and calls t3-setup.project.add; the gate
+// reads both as the claude ones, so the approved folder passes and any other is refused.
+func TestHomeGateT3ProjectAdd(t *testing.T) {
+	c := targetCore(t)
+	p := plugins.OfficialT3PluginID
+	args := json.RawMessage(`{"dir":"/home/u/work/app"}`)
+	if err := attest(c, p, "t3-setup.project.add", args); err == nil {
+		t.Fatal("a folder was added with no approval")
+	}
+	payload := json.RawMessage(`{"device":"d","device_name":"Mac","dir":"/home/u/work/app"}`)
+	decide(t, c, p, p+".setup.project", payload, func(string) {
+		if err := attest(c, p, "t3-setup.project.add", args); err != nil {
+			t.Errorf("the approved folder was refused: %v", err)
+		}
+		if attest(c, p, "t3-setup.project.add", json.RawMessage(`{"dir":"/home/u"}`)) == nil {
+			t.Error("another folder was accepted")
+		}
+	})
+}
