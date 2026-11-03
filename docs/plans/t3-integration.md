@@ -364,3 +364,42 @@ Shared sign-in layout, checked behaviorally on the claude in the runner image (n
 Hosting (decided 2026-11-03): `t3.host` is a setting. The control plane may run on a server host, execution runs on
 the user's PC when it is online, and provider logins never live on a machine shared with Grok Bots (they all have
 sudo there). The options for running without the PC are in the hosting notes kept outside the repository.
+
+## 12. S2 design: running T3's claude in a role VM on the user's PC
+
+T3 runs one `claude` per provider session through the instance's `binaryPath`. Rubi Home owns every policy (VM,
+egress allow-list, approvals, sign-in folder); the wrapper is a thin client.
+
+- **Role instance.** For each role Home writes a T3 provider instance `claude-<role>` into its T3 server's
+  `settings.json`: `binaryPath` = a per-role shim `<helper>/t3/bin/claude-<role>` (`exec <rubi-home> agent-vm --role
+  <id> -- "$@"`), `homePath` = the role's claude dir (`agent-roles/<id>/claude`). No secrets in the instance env.
+- **Session start.** `rubi-home agent-vm` dials `<helper>/agent-vm.sock` (0600, peer-checked like `claude.sock`) and
+  sends `{op: "session.start", role, cwd, argv, t3_thread}`. Home checks: the role exists and is pinned to `cwd`
+  (project trust, `DirHash`), `cwd` passes the same folder checks as a chosen folder, and `argv` is clamped
+  (`--permission-mode` lowered to the role's ceiling; `--dangerously-skip-permissions` dropped below full access).
+  Home then starts a detached VM for this session only (unique name `rubi-t3-<role>-<random>`; the netpipe exec
+  started by Home), and answers with the container name and an env file (0600). The wrapper runs
+  `container exec -i --user 10001 --workdir <cwd> --env-file <f> <name> <claude> <argv...>` with stdio passed
+  straight through, keeps the socket open for the session, and Home stops and deletes the VM when the socket closes
+  (or the exec ends). A wrapper that can't reach Home exits non-zero with a plain message; it never runs claude
+  outside a VM.
+- **Mounts (same paths, finding (c)).** `cwd` read-write at its host path; the role's claude dir read-write at its
+  host path (T3's host-side history worker reads the session files there); the shared sign-in folder
+  `<helper>/agent-signin` read-write at its host path; the role content read-only (as today); managed settings
+  read-only as a single file at `/etc/claude-code/managed-settings.json` (a single-file bind worked in S0 with
+  container 1.6.1); the hook script read-only.
+- **Env (finding F1).** Only: `CLAUDE_CONFIG_DIR` (role claude dir), `CLAUDE_SECURESTORAGE_CONFIG_DIR` (sign-in
+  folder), `HTTPS_PROXY`/`NO_PROXY` (the allow-list proxy through netpipe), `CLAUDE_CODE_*` and
+  `CLAUDE_AGENT_SDK_*` from T3 minus names with TOKEN, OAUTH, ACCOUNT, ORGANIZATION, HOST_AUTH or API_KEY_HELPER,
+  `T3_AGENT_THREAD`, and the image's `DISABLE_*` telemetry switches. A test pins the list.
+- **netpipe services.** Today: proxy (1) and gateway (2). Added: hook (3) on `127.0.0.1:3130` and T3 MCP (4) on
+  `127.0.0.1:<T3 port>` (finding F3: T3's injected `t3-code` MCP points at host loopback). The gateway service goes in S5.
+- **Egress.** The proxy's allow-list for a T3 role VM adds `api.anthropic.com` (no gateway any more) to the login
+  hosts, the base hosts, git and forge hosts and the role's hosts; unlisted hosts still ask.
+- **Approvals.** Managed settings: `allowManagedHooksOnly: true` and one PreToolUse command hook (matcher `*`) that
+  POSTs the hook input to `127.0.0.1:3130`. Home maps it to the same approval path as the runner's `perm.ask`
+  (`Manager.Ask` / `waitDecision`, tiers and modes unchanged) and answers in the PreToolUse shape
+  (`hookSpecificOutput{hookEventName, permissionDecision, permissionDecisionReason}`). An unreachable gate, a
+  timeout or a malformed answer is a deny (checked in S0).
+- **Concurrency.** One VM per T3 provider session; per-role and global caps from the existing limits; a session
+  over the cap is refused with a plain error that T3 shows in the thread.
