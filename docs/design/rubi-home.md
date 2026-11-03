@@ -1,5 +1,10 @@
 # Rubi Home
 
+> **Note (T3 Agents, S5).** The auth gateway, the stored subscription token (`agent-auth`) and `setup-token` sign-in this
+> document mentions are gone; the user signs in with the unmodified Claude Code CLI and Rubi never stores, reads or proxies
+> the credential. See docs/design/agent-runner.md and docs/plans/t3-integration.md.
+
+
 Rubi runs on the agent's machine, far from the user's home. Some things can only be reached from the home
 network: a Philips Hue Bridge, or Apple Home, which Apple opens only to apps on the user's own devices.
 Rubi Home is a small helper for a computer at home (a Mac that stays on, or a Linux box) that does those

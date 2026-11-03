@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -45,18 +44,24 @@ const (
 	DenyNoAnswer = "Rubi: no answer in time, so the call was denied."
 	DenyBusy     = "Rubi: too many calls are already waiting for approval; denied."
 	DenyGone     = "Rubi: the request was cancelled."
-	DenySelfTest = "Rubi: this is the setup self-test; every call is denied."
 )
+
+// ErrRunnerRetired is what the Agent SDK runner path answers to a start, send, fork or mode: it ran claude in a VM through an
+// auth gateway that held a long-lived token, and that design is gone. Sessions run in T3 now (the T3 Agents plugin), where
+// claude signs in with its own CLI and Rubi never holds the credential. Reading what is there still works.
+var ErrRunnerRetired = errors.New("The agent path moved to the T3 Agents plugin (id t3agents): use t3_start, t3_role_start, t3_send, " +
+	"t3_fork, t3_mode. Roles, the skill library and SSH grants carry over; bindings, project trusts and mandates are granted again in T3 Agents.")
 
 // Options configures a Manager.
 type Options struct {
+	// AllowRunnerSessions switches the retired Agent SDK runner path back on: start, send and fork, and delivering what the
+	// queue holds. It is for the tests of the slot, queue and limit machinery that path still has; Rubi Home never sets it.
+	AllowRunnerSessions bool
+
 	// Dir is the helper's directory (the queue file lives there) and Protected more directories no
 	// project may contain or be (the user's home, by default).
 	Dir       string
 	Protected []string
-	// AuthDir is the shared sign-in's directory (Dir/agent-auth by default): no project may be, contain or be
-	// inside it. The auth gateway reads the token in it; a VM never sees it.
-	AuthDir string
 
 	// Projects returns the directories agents may work in (config agent_projects); GitHosts the git hosts
 	// the proxy and the credential helper serve (config agent_git_hosts).
@@ -159,7 +164,6 @@ type projState struct {
 	vm      VM
 	runner  *Runner // guarded by Manager.mu
 	proxy   *Proxy
-	gateway *Gateway // the auth gateway of this start (gateway.go); guarded by Manager.mu like runner
 	hosts   []string
 	// lastUse is the last time something used a role's VM (guarded by Manager.mu); pins hold the role versions
 	// this VM may be reading, released when it stops.
@@ -233,7 +237,6 @@ type Manager struct {
 	usage      usageDay
 	lastCost   map[string]float64
 	closed     bool
-	self       *selfTest // the self-test that holds a slot, if any (setup.go)
 
 	cancels    map[string]context.CancelFunc
 	netFlights map[string]*netFlight
@@ -359,8 +362,8 @@ func (m *Manager) shutdown(p *projState) {
 	m.mu.Lock()
 	r := p.runner
 	p.runner = nil
-	px, gw := p.proxy, p.gateway
-	p.proxy, p.gateway = nil, nil
+	px := p.proxy
+	p.proxy = nil
 	m.unpinLocked(p)
 	m.mu.Unlock()
 	if r != nil {
@@ -368,9 +371,6 @@ func (m *Manager) shutdown(p *projState) {
 	}
 	if px != nil {
 		px.Close()
-	}
-	if gw != nil {
-		gw.Close()
 	}
 	if p.vm != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -473,7 +473,7 @@ func (m *Manager) protected(dir string) bool {
 		return true
 	}
 	// Nothing inside the helper's directory (its keys, the shared sign-in) is a project either.
-	for _, p := range []string{m.opt.Dir, m.opt.AuthDir, AuthDirOf(m.opt.Dir)} {
+	for _, p := range []string{m.opt.Dir} {
 		if p == "" {
 			continue
 		}
@@ -774,7 +774,6 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	}
 	var roleHosts []string
 	var shield Project
-	allowWebSearch := true // the legacy role has Claude Code's default tools
 	var shieldGuard *fileGuard
 	if p.Role == "" {
 		if err := prepareWorkDir(p.Dir); err != nil {
@@ -819,7 +818,6 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			return nil, err
 		}
 		roleHosts = role.Hosts
-		allowWebSearch = roleAllowsWebSearch(role)
 	}
 	// A VM start can take minutes (the image); it must not die with the request that asked for it.
 	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Minute)
@@ -837,15 +835,6 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	// address on its network; a VM without one (the real thing) is served through its pipe, started below.
 	var px *Proxy
 	var penv map[string]string
-	var gw *Gateway
-	gwSecret, err := NewToken()
-	if err != nil {
-		return nil, err
-	}
-	authDir := m.opt.AuthDir
-	if authDir == "" {
-		authDir = AuthDirOf(m.opt.Dir)
-	}
 	prepare := func(ctx context.Context, gateway string) (map[string]string, error) {
 		listen := m.opt.ProxyListen
 		if listen == "" && gateway != "" {
@@ -864,26 +853,8 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 			host, _, _ = net.SplitHostPort(px.Addr())
 		}
 		proxyURL := "http://rubi:" + proxyToken + "@" + net.JoinHostPort(host, port)
-		// The auth gateway: the VM talks to the model API only through it, with a secret that is good for this start.
-		// It listens on the proxy's host; claude is told not to send it through the CONNECT proxy (NO_PROXY).
-		// The gateway has its own listener, always on the Mac's address on the VM network when the VM reports one
-		// (the CONNECT proxy may have been given another address by agent_proxy_listen); the VM reaches it there.
-		lhost, _, _ := net.SplitHostPort(px.Addr())
-		vmHost := host
-		if gateway != "" {
-			lhost, vmHost = gateway, gateway
-		}
-		upstream, client := gatewaySeam()
-		gw, err = StartGateway(GatewayConfig{Listen: net.JoinHostPort(lhost, "0"), Secret: gwSecret, TokenFile: TokenFileOf(authDir), AllowWebSearch: allowWebSearch,
-			upstream: upstream, client: client, Logf: log.Printf})
-		if err != nil {
-			px.Close()
-			return nil, fmt.Errorf("gateway: %w", err)
-		}
-		_, gport, _ := net.SplitHostPort(gw.Addr())
 		penv = map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL,
-			"ANTHROPIC_BASE_URL": "http://" + net.JoinHostPort(vmHost, gport), "CLAUDE_CODE_OAUTH_TOKEN": gwSecret,
-			"NO_PROXY": vmHost, "no_proxy": vmHost}
+			"NO_PROXY": host, "no_proxy": host}
 		return penv, nil
 	}
 	env := map[string]string{"RUBI_RUN_TOKEN": token, "GIT_TERMINAL_PROMPT": "0"}
@@ -894,50 +865,38 @@ func (m *Manager) ensure(ctx context.Context, p *projState) (*Runner, error) {
 	pj.EmptyDir, pj.ReadOnly = shield.EmptyDir, shield.ReadOnly
 	spec := StartSpec{Project: pj, Env: env, Prepare: prepare}
 	if nv, ok := p.vm.(NetlessVM); ok && nv.Netless() {
-		// A VM without a network: the proxy and the gateway serve streams of its pipe, not a socket, so they start now
-		// (there is no address to wait for). The VM reaches them on its own loopback (the forwarder in the image).
-		pl, gl := netpipe.NewListener("proxy", 16), netpipe.NewListener("gateway", 16)
-		upstream, client := gatewaySeam()
+		// A VM without a network: the proxy serves streams of its pipe, not a socket, so it starts now (there is no
+		// address to wait for). The VM reaches it on its own loopback (the forwarder in the image).
+		pl := netpipe.NewListener("proxy", 16)
 		px, err = StartProxy(ProxyConfig{Listener: pl, AuthToken: proxyToken, Hosts: hosts, Exempt: m.opt.GitHosts(),
 			Resolve: m.opt.Resolve, Dial: m.opt.Dial, Logf: log.Printf,
 			Ask: func(ctx context.Context, host string) bool { return m.askHost(ctx, p, host) }})
 		if err != nil {
 			return nil, fmt.Errorf("proxy: %w", err)
 		}
-		gw, err = StartGateway(GatewayConfig{Listener: gl, Secret: gwSecret, TokenFile: TokenFileOf(authDir), AllowWebSearch: allowWebSearch,
-			upstream: upstream, client: client, Logf: log.Printf})
-		if err != nil {
-			px.Close()
-			return nil, fmt.Errorf("gateway: %w", err)
-		}
 		proxyURL := "http://rubi:" + proxyToken + "@" + PipeProxyAddr
 		penv = map[string]string{"HTTPS_PROXY": proxyURL, "https_proxy": proxyURL,
-			"ANTHROPIC_BASE_URL": "http://" + PipeGatewayAddr, "CLAUDE_CODE_OAUTH_TOKEN": gwSecret,
 			"NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"}
 		for k, v := range penv {
 			env[k] = v
 		}
-		spec.Prepare, spec.Pipe = nil, &PipeSpec{Proxy: pl, Gateway: gl}
+		spec.Prepare, spec.Pipe = nil, &PipeSpec{Proxy: pl}
 	}
 	conn, err := p.vm.Start(sctx, spec)
 	if err != nil {
 		if px != nil {
 			px.Close()
 		}
-		if gw != nil {
-			gw.Close()
-		}
 		return nil, fmt.Errorf("starting the VM: %w", err)
 	}
 	r, err = Connect(sctx, conn, token, &handler{m: m, p: p})
 	if err != nil {
 		px.Close()
-		gw.Close()
 		_ = p.vm.Stop(sctx)
 		return nil, err
 	}
 	m.mu.Lock()
-	p.runner, p.proxy, p.gateway, p.hosts, p.proxyEnv = r, px, gw, hosts, penv
+	p.runner, p.proxy, p.hosts, p.proxyEnv = r, px, hosts, penv
 	p.lastUse = m.opt.Now()
 	m.mu.Unlock()
 	if p.Role != "" {
@@ -1023,8 +982,8 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 		return
 	}
 	p.runner = nil
-	px, gw := p.proxy, p.gateway
-	p.proxy, p.gateway = nil, nil
+	px := p.proxy
+	p.proxy = nil
 	m.unpinLocked(p)
 	if m.dropRoleSlotsLocked(p.key()) {
 		m.pushLocked(Item{Type: "event", Project: p.ID, Role: p.key(), Event: json.RawMessage(`{"kind":"status","status":"closed","reason":"runner ended"}`)})
@@ -1032,9 +991,6 @@ func (m *Manager) runnerGone(p *projState, r *Runner) {
 	m.mu.Unlock()
 	if px != nil {
 		px.Close()
-	}
-	if gw != nil {
-		gw.Close() // the per-start secret dies with the runner
 	}
 	m.wake()
 }
@@ -1083,15 +1039,6 @@ func (m *Manager) waitDecision(ctx context.Context, project string, it Item) Ask
 		it.RoleName = m.roleName(project, it.Role) // may read the role: before the lock
 	}
 	m.mu.Lock()
-	if st := m.self; st != nil && st.project == project { // the whole project, whatever the role
-		// A self-test (setup.go) denies everything itself: the question never reaches the plugin, so no
-		// decision of the plugin's can answer it.
-		if it.Type == "perm.ask" {
-			st.denied = append(st.denied, it.Tool)
-		}
-		m.mu.Unlock()
-		return deny(DenySelfTest)
-	}
 	if !m.connectedLocked() {
 		m.mu.Unlock()
 		return deny(DenyLocked)
@@ -1383,8 +1330,6 @@ func (m *Manager) fullLocked(c UsageConfig, project, rk, bot string, start bool)
 		}
 	}
 	switch {
-	case m.self != nil && m.self.project == project: // its questions are answered by the self-test, never by a user
-		return "waiting: project " + project + " is running its self-test"
 	case start && pending:
 		return fmt.Sprintf("waiting: role %s (%s) is still starting a session", m.roleName(project, rk), project)
 	case nr >= l.PerProfile:
@@ -1512,10 +1457,6 @@ func (m *Manager) onEvent(p *projState, ev Event) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if st := m.self; st != nil && st.project == p.ID && p.Role == "" {
-		st.event(ev, f.Result, f.IsError, f.Status) // the self-test's own events stay with it
-		return
-	}
 	s := m.ownerLocked(p, ev.SessionID)
 	if s != nil {
 		s.last = m.opt.Now()
@@ -1689,6 +1630,9 @@ func (m *Manager) takeSlotLocked(it QueueItem) *slotState {
 
 // deliver hands the item to the runner; slot is the slot a start booked (nil for a send to a running session).
 func (m *Manager) deliver(ctx context.Context, p *projState, it QueueItem, slot *slotState) (map[string]any, error) {
+	if !m.opt.AllowRunnerSessions && (it.Op == "start" || it.Op == "send") { // an item an earlier Home queued
+		return nil, ErrRunnerRetired
+	}
 	if p.Role != "" { // an archived role takes no new start or send; a turn that is running continues
 		if sel, err := m.selectRole(p.ID, p.Role); err != nil || sel.archived {
 			return nil, archivedErr(p.RoleName, err)
@@ -2023,6 +1967,56 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 			return nil, errors.New("bad session id")
 		}
 		return m.forwardAs(ctx, fwdRead, in.Project, in.Role, "session.messages", map[string]any{"id": in.ID, "limit": min(max(in.Limit, 0), 500)})
+	case "start", "send", "fork":
+		// A fork is a session waiting to be sent to; none of them can do anything without the model, and the runner
+		// path has none any more.
+		if !m.opt.AllowRunnerSessions {
+			return nil, ErrRunnerRetired
+		}
+		return m.runnerSessionOp(ctx, op, in.Prompt, in.Text, in.Name, in.From, in.Mode, in.Bot, in.Project, in.Role, in.ID, in.Steer)
+	case "rename":
+		if !okID(in.ID) || strings.TrimSpace(in.Name) == "" {
+			return nil, errors.New("a session id and a name are needed")
+		}
+		return m.forward(ctx, in.Project, in.Role, "session.rename", map[string]any{"id": in.ID, "name": in.Name})
+	case "interrupt":
+		if !okID(in.ID) {
+			return nil, errors.New("bad session id")
+		}
+		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.interrupt", map[string]any{"id": in.ID})
+	case "close":
+		if !okID(in.ID) {
+			return nil, errors.New("bad session id")
+		}
+		res, err := m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.close", map[string]any{"id": in.ID})
+		if err == nil {
+			m.mu.Lock()
+			if sl := m.exactLocked(m.roleKey(in.Project, in.Role), in.ID); sl != nil {
+				m.releaseLocked(sl)
+			}
+			m.mu.Unlock()
+		}
+		return res, err
+	case "mode":
+		if !m.opt.AllowRunnerSessions {
+			return nil, ErrRunnerRetired
+		}
+		mode, err := m.checkMode(in.Mode)
+		if err != nil || !okID(in.ID) || in.Mode == "" {
+			return nil, errors.New("a session id and a valid mode are needed")
+		}
+		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.mode", map[string]any{"id": in.ID, "mode": mode})
+	}
+	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
+}
+
+// runnerSessionOp is start, send and fork of the retired runner path (see AllowRunnerSessions).
+func (m *Manager) runnerSessionOp(ctx context.Context, op, prompt, text, name, from, modeArg, bot, project, role, id string, steer bool) (any, error) {
+	in := struct {
+		Prompt, Text, Name, From, Mode, Bot, Project, Role, ID string
+		Steer                                                  bool
+	}{prompt, text, name, from, modeArg, bot, project, role, id, steer}
+	switch strings.TrimPrefix(op, "claude-agent.") {
 	case "start":
 		if strings.TrimSpace(in.Prompt) == "" {
 			return nil, errors.New("the prompt is empty")
@@ -2062,40 +2056,11 @@ func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (
 		}
 		m.seeBot(in.Bot)
 		return m.submit(ctx, QueueItem{Op: "send", Bot: in.Bot, Project: in.Project, Role: sel.id, Session: in.ID, Text: in.Text, From: in.From, Steer: in.Steer})
-	case "rename":
-		if !okID(in.ID) || strings.TrimSpace(in.Name) == "" {
-			return nil, errors.New("a session id and a name are needed")
-		}
-		return m.forward(ctx, in.Project, in.Role, "session.rename", map[string]any{"id": in.ID, "name": in.Name})
 	case "fork":
 		if !okID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
 		return m.forward(ctx, in.Project, in.Role, "session.fork", map[string]any{"id": in.ID, "name": in.Name})
-	case "interrupt":
-		if !okID(in.ID) {
-			return nil, errors.New("bad session id")
-		}
-		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.interrupt", map[string]any{"id": in.ID})
-	case "close":
-		if !okID(in.ID) {
-			return nil, errors.New("bad session id")
-		}
-		res, err := m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.close", map[string]any{"id": in.ID})
-		if err == nil {
-			m.mu.Lock()
-			if sl := m.exactLocked(m.roleKey(in.Project, in.Role), in.ID); sl != nil {
-				m.releaseLocked(sl)
-			}
-			m.mu.Unlock()
-		}
-		return res, err
-	case "mode":
-		mode, err := m.checkMode(in.Mode)
-		if err != nil || !okID(in.ID) || in.Mode == "" {
-			return nil, errors.New("a session id and a valid mode are needed")
-		}
-		return m.forwardAs(ctx, fwdLive, in.Project, in.Role, "session.mode", map[string]any{"id": in.ID, "mode": mode})
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)
 }
@@ -2560,19 +2525,4 @@ func prepareWorkDir(dir string) error {
 	defer f.Close()
 	_, err = f.WriteString("*\n")
 	return err
-}
-
-// roleAllowsWebSearch says whether the gateway of a role's VM passes on the server-side web search tool: only when
-// the role grants WebSearch and has no deny rule for all of it. It is read when the VM starts; a role version put
-// later that adds WebSearch applies at the next start.
-func roleAllowsWebSearch(r *roles.Role) bool {
-	if r == nil || !slices.Contains(r.Tools, "WebSearch") {
-		return false
-	}
-	for _, d := range r.Deny {
-		if strings.TrimSpace(d.Rule) == "WebSearch" {
-			return false
-		}
-	}
-	return true
 }

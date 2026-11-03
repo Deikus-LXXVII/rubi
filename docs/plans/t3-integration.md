@@ -621,3 +621,65 @@ Before this, the T3 Agents plugin is installed and Rubi Home is paired. Open the
    `agent-signin` holds a file `.credentials.json` that is not empty. Do not open it or send it anywhere. In T3's own app (if
    you paired it with Rubi's server) a thread of a role answers without asking you to sign in. To sign out, delete that file
    and, to revoke the token, remove the session in your Claude account settings at claude.ai.
+
+## S5. Auth cleanup (as built)
+
+The subscription credential is claude's own. The user signs in with the unmodified CLI (`claude auth login --claudeai`, run in the
+sign-in container by `rubi-claude-login`); claude writes `.credentials.json` into `<helper>/agent-signin`. **Rubi never stores,
+reads or proxies that credential**: Home stats the file to say whether it is there, and nothing else touches it. This is the
+terms-of-service position of the project: no token store, no request signing, no gateway that adds a credential to requests.
+
+Removed:
+- the auth gateway (`internal/home/agent/gateway*.go`, `gatewaytest`, its wiring in `manager.go`, `PipeSpec.Gateway`,
+  `PipeGatewayAddr`, `rubi-netpipe`'s listener on 3129). Service 2 of the netpipe (`SvcGateway`) stays reserved and is never
+  offered: a stream to it is reset. A new service 5 (`SvcTestAPI`, 127.0.0.1:$RUBI_TEST_API_PORT in the VM, only when that variable
+  is set, which only the `t3vmtest` hook does) carries the scripted Messages API of the live tests;
+- the token store and its readers (`AuthStatus`, `AuthSignOut`, `StartAuth`, `AuthDirOf`, `TokenFileOf`, `agent_auth_dir`),
+  `rubi-claude-token` and its Dockerfile line, the setup's `setup-token` login path, sign-out and the runner-path self-test
+  (`agent-setup.run` refuses `login`, `signout`, `selftest`; the T3 setup has its own, see S3 part 2). A leftover `agent-auth`
+  folder of an earlier Home is deleted at Home's start (the folder is named, nothing in it is opened), and a leftover
+  `rubi-agent-auth` container is swept;
+- in the runner: `CLAUDE_CODE_OAUTH_TOKEN` and its rule against `ANTHROPIC_API_KEY`. `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_API_KEY` are still passed to claude, only so that the runner's tests can point it at a scripted API; Home sets neither;
+- the runner path's live tests that needed the gateway (`TestLiveRoleSecurity`, the runner live test, `TestLiveIsolationProbe`,
+  `oauth-traffic.mjs`). The isolation they checked is now the T3 self-test's (S3 part 2).
+
+Kept: `internal/home/agent/secrets.go` (its redaction helpers have callers); `role.*`, `ssh.*`, `projects`, `sessions`, `messages`,
+`status`, `next`, `decide`, `rename`, `interrupt`, `close`, `limits`, `usage_mode` of `claude-agent.*`.
+
+Refused: `claude-agent.start`, `send`, `fork` and `mode` answer *"The agent path moved to the T3 Agents plugin (id t3agents): use
+t3_start, t3_role_start, t3_send, t3_fork, t3_mode. Roles, the skill library and SSH grants carry over; bindings, project trusts
+and mandates are granted again in T3 Agents."* Nothing is started or queued, and an item an earlier Home left in `agent-queue.json`
+fails with the same words when Home delivers it. The slot, queue and limit machinery of the runner path is still in the code,
+behind `Options.AllowRunnerSessions` (only the tests set it); it is a candidate for deletion in a later pass.
+
+Tests that keep it so:
+- `internal/repocheck`: the Go and runner sources (docs and the changelog are not read) must not name `oauth-token`, `setup-token`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `rubi-claude-token`, or the gateway's symbols; a short allow-list names the files that must say so
+  to prove a negative (each with its reason, and an entry that stops matching fails the test), and the removed files must stay gone;
+- `TestHomeNeverOpensTheSignInFolderOrItsCredential` (source level: no call into `os` names the sign-in folder or the file except
+  `EnsureSignInDir` and `SignedInAt`'s `Lstat`) and `TestHomeNeverOpensTheCredentialFile` (a FIFO sits where the file is; the
+  status, the sign-in and the self-test all finish, so none of them opened it).
+
+## S6. Bumping the pin (as built)
+
+`go run ./cmd/t3-bump` (library: `internal/t3bump`):
+1. finds the newest published nightly (tag `vX.Y.Z-nightly.YYYYMMDD.N`, ordered by date, then N as a number, then the version) that
+   has a `SHA256SUMS` asset, from the GitHub releases API; it never moves the pin back;
+2. takes the SHA-256 of the three release archives Rubi Home installs (darwin-arm64, linux-arm64, linux-x64) from `SHA256SUMS`, the
+   npm `dist.integrity` (checked by downloading the tarball the registry points to and hashing it) and the tag's commit;
+3. writes `t3/upstream.json` (version, tag, commit, integrity, runtime sums and the date; the Node pin and the license stay);
+4. unless `-skip-contract`: installs the pin the way Home does into a temporary folder (`TestLiveT3Install` with
+   `RUBI_T3_INSTALL_DIR`), reads the tool schemas of the new server (`TestContractToolSchemas` with `RUBI_T3_TOOLS_OUT`, so the
+   snapshot is not rewritten), diffs them against `t3/contract/tools.json` for the tools Rubi uses, and runs the contract tests;
+5. writes a Markdown report: before and after, the sums, the install and contract results, every changed input schema, and the log
+   of a failure. A failed install or contract run is in the report, not an exit code: the pull request is how a person reviews it.
+
+`.github/workflows/t3-bump.yml` runs it weekly (and by hand), and if `t3/upstream.json` changed it pushes a branch
+`t3-bump/<tag>` and opens a pull request with the report as its text (`gh pr create`). It uses no action but GitHub's own, merges
+nothing and enables no auto-merge; a pull request made with the job's token does not start `ci` by itself (the workflow's header
+says how to run it). Taking a bump also means: read the schema changes, update the snapshot on the branch
+(`RUBI_T3_UPDATE=1`), run the live tests (`RUBI_T3VM_LIVE=1`, with the container tool) and read T3's release notes.
+The tests use an httptest GitHub and npm and a fake command runner; nothing in them reaches the real services. (A manual
+`-skip-contract` run against the real services, on a copy of the repository, found the nightly of 2026-11-03 with the same
+formats the stand-ins use.)

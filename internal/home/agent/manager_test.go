@@ -44,7 +44,7 @@ func newEnv(t *testing.T, mods ...func(*Options)) *env {
 	t.Cleanup(e.cancel)
 	e.opt = Options{Dir: e.dir, Projects: func() []string { return []string{e.proj} },
 		GitHosts: func() []string { return []string{"git.example.com"} },
-		NewVM:    func(Project) VM { return e.fake }, Wait: 5 * time.Second}
+		NewVM:    func(Project) VM { return e.fake }, Wait: 5 * time.Second, AllowRunnerSessions: true}
 	for _, f := range mods {
 		f(&e.opt)
 	}

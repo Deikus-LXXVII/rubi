@@ -28,7 +28,7 @@ import (
 // by shelling out to its CLI. Every container gets the image below, the project at /work, a non-root
 // user, no capabilities and no network at all (`--network none`: loopback only, no route to the Mac or anywhere).
 // The only way out is a stream through the stdio of a long-lived `container exec -i ... rubi-netpipe` to the
-// allow-list proxy and the auth gateway inside Rubi Home (pipe.go, internal/home/agent/netpipe).
+// allow-list proxy inside Rubi Home (pipe.go, internal/home/agent/netpipe).
 type AppleContainer struct {
 	// Bin is the container CLI ("container" when empty, looked up in PATH).
 	Bin string
@@ -40,9 +40,6 @@ type AppleContainer struct {
 	// CPUs and Memory limit the VM ("" = the CLI's defaults).
 	CPUs   string
 	Memory string
-	// AuthDir is the host directory holding the sign-in shared by all projects (EnvDir/agent-auth when empty).
-	// Only the sign-in container mounts it; a project VM never does (auth.go, gateway.go).
-	AuthDir string
 	// EnvDir is where the exec's environment file is written (0600, in a 0700 directory of its own).
 	EnvDir string
 
@@ -249,7 +246,7 @@ func (a *AppleContainer) RunArgs(p Project) []string {
 		"--mount", "type=bind,source=" + p.Dir + ",target=/work"}
 	if p.Role != "" {
 		// A role VM sees its own content (read-only) and its own config directory, nothing of any other role, no
-		// sign-in (the auth gateway holds it) and never the user's SSH agent (no --ssh). The legacy role's state
+		// sign-in and never the user's SSH agent (no --ssh). The legacy role's state
 		// (/work/.rubi) is covered by an empty read-only directory and the project's own .claude is read-only, so a
 		// role can't rewrite what the other roles load. These binds sit on top of the read-write one of /work.
 		if p.EmptyDir != "" {

@@ -22,15 +22,15 @@ type Step struct {
 	Reason   string   `json:"reason"`
 	Progress []string `json:"progress,omitempty"`
 	// Action is the one button the row offers: install, upgrade, start, create, use_auto_address, build,
-	// add, check, login, login_again, cancel (while it works).
+	// add, check, cancel (while it works).
 	Action string `json:"action,omitempty"`
-	// Action2 is the second button, when there is one (sign_out beside login_again).
+	// Action2 is the second button, when there is one.
 	Action2 string `json:"action2,omitempty"`
-	// Projects are the rows of the project steps (projects, login, selftest).
+	// Projects are the rows of the project step.
 	Projects []Row `json:"projects,omitempty"`
 }
 
-// Row is a project's row. Action is remove (projects) or selftest.
+// Row is a project's row. Action is remove (projects).
 type Row struct {
 	ID       string   `json:"id"`
 	Dir      string   `json:"dir"`
@@ -83,110 +83,11 @@ func (s *Setup) Status(ctx context.Context) Status {
 	}
 	s.mu.Unlock()
 
-	base := true // steps 1 to 4: what the sign-in container needs
-	for i, r := range raw {
+	for _, r := range raw {
 		s.overlay(&r, jb, last)
-		if r.State != Done && i < 4 {
-			base = false
-		}
 		st.Steps = append(st.Steps, r)
 	}
-	projectsDone := st.Steps[4].State == Done
-	// The sign-in is one for the whole computer.
-	login := Step{ID: StepLogin, Title: stepTitles[StepLogin]}
-	switch {
-	case !base:
-		login.State, login.Reason = Todo, fmt.Sprintf("Needs step %d first", firstNotDone(st.Steps)+1)
-	default:
-		login = s.loginStep(ctx, login, jb, last)
-	}
-	st.Steps = append(st.Steps, login)
-	// The self-test is per project and uses the shared sign-in.
-	test := Step{ID: StepSelfTest, Title: stepTitles[StepSelfTest]}
-	projs := s.opt.Agents.Projects()
-	switch {
-	case !base:
-		test.State, test.Reason = Todo, fmt.Sprintf("Needs step %d first", firstNotDone(st.Steps[:4])+1)
-	case !projectsDone:
-		test.State, test.Reason = Todo, st.Steps[4].Reason
-	default:
-		for _, p := range projs {
-			test.Projects = append(test.Projects, s.selfTestRow(p, jb, login.State == Done))
-		}
-		test.State, test.Reason = aggregate(test.Projects)
-	}
-	st.Steps = append(st.Steps, test)
 	return st
-}
-
-// loginStep is the row of the shared sign-in: probed (a throwaway container that tests the token file
-// without reading it), cached for a minute, never probed while a job runs.
-func (s *Setup) loginStep(ctx context.Context, r Step, jb *job, last map[string]result) Step {
-	if jb != nil && (jb.step == StepLogin || jb.step == "signout") {
-		r.State, r.Reason, r.Action, r.Progress = Working, "Working...", "cancel", jb.prog.snapshot()
-		return r
-	}
-	st, errText, known := s.authProbe(ctx, jb == nil)
-	now := s.opt.Now()
-	switch {
-	case !known:
-		r.State, r.Reason, r.Action = Todo, "Not checked yet.", "check"
-	case errText != "":
-		r.State, r.Reason, r.Action = Todo, "Couldn't check the sign-in: "+errText, "check"
-	case !st.SignedIn:
-		r.State, r.Reason, r.Action = Todo, "Not signed in.", "login"
-	case st.Expired(now):
-		r.State, r.Reason, r.Action, r.Action2 = Todo, "The sign-in expired on "+st.Expires.Format("2006-01-02")+". Sign in again.", "login_again", "sign_out"
-	case st.Expires.IsZero():
-		r.State, r.Reason, r.Action, r.Action2 = Done, "Signed in (one sign-in for every project).", "login_again", "sign_out"
-	default:
-		r.State, r.Reason, r.Action, r.Action2 = Done, "Signed in until "+st.Expires.Format("2006-01-02")+" (one sign-in for every project).", "login_again", "sign_out"
-	}
-	if l, ok := last[key(StepLogin, "")]; ok && r.State != Done {
-		r.State, r.Reason, r.Progress = l.State, l.Reason, l.Progress
-	}
-	return r
-}
-
-// authTTL is how long a probe of the sign-in is reused.
-const authTTL = time.Minute
-
-// authProbe returns the sign-in state, probing when the cached one is older than a minute (and probing is
-// allowed). errText is the reason a probe failed, known says there is any answer.
-func (s *Setup) authProbe(ctx context.Context, allowed bool) (agent.AuthStatus, string, bool) {
-	s.mu.Lock()
-	c := s.auth
-	s.mu.Unlock()
-	if allowed && (!c.known || s.opt.Now().Sub(c.at) > authTTL) {
-		pctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		st, err := s.opt.Agents.AuthStatus(pctx)
-		cancel()
-		c = authCache{known: true, at: s.opt.Now(), st: st}
-		if err != nil {
-			c.err = safeText(err.Error())
-			if c.err == "" {
-				c.err = "the check failed"
-			}
-		}
-		s.mu.Lock()
-		s.auth = c
-		s.mu.Unlock()
-	}
-	return c.st, c.err, c.known
-}
-
-// forgetAuth drops the cached sign-in state (after a sign-in or sign-out).
-func (s *Setup) forgetAuth() {
-	s.mu.Lock()
-	s.auth = authCache{}
-	s.mu.Unlock()
-}
-
-type authCache struct {
-	known bool
-	at    time.Time
-	st    agent.AuthStatus
-	err   string
 }
 
 func firstNotDone(steps []Step) int {
@@ -228,28 +129,6 @@ func (s *Setup) overlay(r *Step, jb *job, last map[string]result) {
 	if l, ok := last[key(r.ID, "")]; ok {
 		r.State, r.Reason, r.Progress = l.State, l.Reason, l.Progress
 	}
-}
-
-func (s *Setup) selfTestRow(p agent.Project, jb *job, loggedIn bool) Row {
-	row := Row{ID: p.ID, Dir: p.Dir}
-	if jb != nil && jb.step == StepSelfTest && jb.project.Dir == p.Dir {
-		row.State, row.Reason, row.Action, row.Progress = Working, "Working...", "cancel", jb.prog.snapshot()
-		return row
-	}
-	row.Action = "selftest"
-	if !loggedIn {
-		row.State, row.Reason, row.Action = Todo, "Needs step 6 first", ""
-		return row
-	}
-	s.mu.Lock()
-	t, ok := s.tests[p.Dir]
-	s.mu.Unlock()
-	if ok {
-		row.State, row.Reason, row.Progress = t.State, t.Reason, t.Progress
-	} else {
-		row.State, row.Reason = Todo, "Not run yet."
-	}
-	return row
 }
 
 // rawAll probes steps 1 to 5 (a step whose earlier step isn't done isn't probed).
@@ -392,7 +271,7 @@ func (s *Setup) probeService(ctx context.Context) Step {
 // networkNotNeeded is the network step's reason. VMs run with `--network none` and reach the proxy and the Claude
 // gateway through Rubi Home (docs/design/agent-runner.md), so there is nothing to create or to check. The step keeps its
 // id so that the plugin's list of steps stays the same.
-const networkNotNeeded = "Not needed: VMs run with no network at all. They reach the proxy and the Claude gateway through Rubi Home."
+const networkNotNeeded = "Not needed: VMs run with no network at all. They reach the allow-list proxy through Rubi Home."
 
 func (s *Setup) probeNetwork(ctx context.Context) Step {
 	return Step{State: Done, Reason: networkNotNeeded}

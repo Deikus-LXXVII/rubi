@@ -25,11 +25,11 @@ const (
 	StepNetwork   = "network"
 	StepImage     = "image"
 	StepProjects  = "projects"
-	StepLogin     = "login"
-	StepSelfTest  = "selftest"
+	// StepLogin is the name of the sign-in job. It is no row of this status: the T3 roles' sign-in (t3-setup) reports its own.
+	StepLogin = "login"
 )
 
-var stepOrder = []string{StepContainer, StepService, StepNetwork, StepImage, StepProjects, StepLogin, StepSelfTest}
+var stepOrder = []string{StepContainer, StepService, StepNetwork, StepImage, StepProjects}
 
 var stepTitles = map[string]string{
 	StepContainer: "Apple container",
@@ -37,8 +37,6 @@ var stepTitles = map[string]string{
 	StepNetwork:   "VM network (none needed)",
 	StepImage:     "Runner image",
 	StepProjects:  "Projects",
-	StepLogin:     "Claude sign-in",
-	StepSelfTest:  "Self-test",
 }
 
 // States of a step.
@@ -67,13 +65,6 @@ type Box interface {
 	Exec(ctx context.Context, argv []string, extra map[string]string) (agent.Conn, error)
 }
 
-// SelfTestRun is the agent manager's self-test (agent.SelfTest).
-type SelfTestRun interface {
-	Sandbox(ctx context.Context) (Box, error)
-	Turn(ctx context.Context, prompt string, d time.Duration) (agent.TurnResult, error)
-	End()
-}
-
 // AuthSession is the running sign-in container (agent.AuthSession).
 type AuthSession interface {
 	Exec(ctx context.Context, argv []string, extra map[string]string) (agent.Conn, error)
@@ -83,11 +74,10 @@ type AuthSession interface {
 // Agents is what setup needs from the agent manager and the container tool.
 type Agents interface {
 	Projects() []agent.Project
-	BeginSelfTest(id string) (SelfTestRun, error)
-	// AuthStatus probes the shared sign-in (it never reads the token), AuthSignOut deletes it and StartAuth
-	// starts the container the sign-in runs in.
-	AuthStatus(ctx context.Context) (agent.AuthStatus, error)
-	AuthSignOut(ctx context.Context) error
+	// SignedIn says whether the shared sign-in folder holds a credential file. It only looks at the file (a stat);
+	// nothing here ever opens it.
+	SignedIn(ctx context.Context) bool
+	// StartAuth starts the container the sign-in runs in.
 	StartAuth(ctx context.Context) (AuthSession, error)
 }
 
@@ -115,8 +105,8 @@ type Options struct {
 	GOOS string
 	// Now is the clock.
 	Now func() time.Time
-	// LoginHelper is the sign-in helper run in the sign-in container (agent.AuthHelper when empty) and LoginEnv the
-	// environment it gets besides the proxy's (loginEnv when nil). The T3 roles' sign-in sets both.
+	// LoginHelper is the sign-in helper run in the sign-in container and LoginEnv the environment it gets besides the
+	// proxy's. Without them no sign-in runs (the T3 roles' sign-in sets both).
 	LoginHelper string
 	LoginEnv    func() map[string]string
 }
@@ -128,8 +118,6 @@ type Setup struct {
 	mu       sync.Mutex
 	job      *job
 	last     map[string]result // a finished job's outcome, per step (or step|project dir)
-	tests    map[string]result // self-test outcomes, per project dir (memory only)
-	auth     authCache         // the last probe of the shared sign-in
 	choosing bool              // a folder chooser is open
 }
 
@@ -145,7 +133,7 @@ type result struct {
 
 type job struct {
 	step    string
-	project agent.Project // for login and selftest
+	project agent.Project // for "all" with a project
 	started time.Time
 	cancel  context.CancelFunc
 	prog    ring
@@ -175,7 +163,7 @@ func New(opt Options) *Setup {
 	if len(opt.RedirectHosts) == 0 {
 		opt.RedirectHosts = []string{"objects.githubusercontent.com", "release-assets.githubusercontent.com"}
 	}
-	return &Setup{opt: opt, last: map[string]result{}, tests: map[string]result{}}
+	return &Setup{opt: opt, last: map[string]result{}}
 }
 
 func (s *Setup) mac() bool { return s.opt.GOOS == "darwin" }
@@ -200,12 +188,7 @@ func (s *Setup) begin(step string, p agent.Project) (*job, context.Context, erro
 	return j, ctx, nil
 }
 
-func key(step, project string) string {
-	if step == StepSelfTest {
-		return step + "|" + project
-	}
-	return step
-}
+func key(step, project string) string { return step }
 
 // record keeps a step's outcome until the next job of that step (a done step or a cancelled job leaves
 // nothing: the probe shows what is there).
@@ -258,20 +241,19 @@ func (s *Setup) Cancel() bool {
 	return true
 }
 
-// StepSignOut is the job that deletes the shared sign-in (it is no row of the status).
-const StepSignOut = "signout"
-
-// Run starts a step as a job. project is a project id (selftest, all; the first project when empty for
-// all; the sign-in is one for the whole computer and ignores it); method is "claudeai" (a Claude
-// subscription) for login (empty: only check); option is "auto-address" for the network step (accepted and ignored: there is no address any more).
+// Run starts a step as a job. project is a project id ("all" with one names it); method is not used by any step here
+// (the sign-in and the self-test of the T3 roles are t3-setup's); option is "auto-address" for the network step
+// (accepted and ignored: there is no address any more).
 func (s *Setup) Run(ctx context.Context, step, project, method, option string) error {
 	switch step {
-	case StepContainer, StepService, StepNetwork, StepImage, StepLogin, StepSignOut, StepSelfTest, "all":
+	case StepContainer, StepService, StepNetwork, StepImage, "all":
+	case StepLogin, "signout", "selftest":
+		return errors.New("the sign-in and the self-test are part of the T3 Agents setup (t3-setup.run), not of this one")
 	default:
 		return fmt.Errorf("unknown step %q", clip(step, 32))
 	}
-	if method != "" && method != "claudeai" {
-		return errors.New(`method must be "claudeai" (a Claude subscription); a console account signs in with claude auth login in a project`)
+	if method != "" {
+		return errors.New("this step takes no method")
 	}
 	if option != "" && (option != optAutoAddress || step != StepNetwork) {
 		return errors.New("unknown option")
@@ -280,7 +262,7 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 		return errBusy
 	}
 	var p agent.Project
-	if step == StepSelfTest || step == "all" && project != "" {
+	if step == "all" && project != "" {
 		var ok bool
 		if p, ok = s.findProject(project); !ok {
 			if project == "" {
@@ -291,11 +273,6 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 	}
 	if n := s.firstUnmet(ctx, needs(step)); n > 0 && step != "all" {
 		return fmt.Errorf("needs step %d first", n)
-	}
-	if step == StepSelfTest {
-		if st, errText, known := s.authProbe(ctx, true); !known || errText != "" || !st.SignedIn || st.Expired(s.opt.Now()) {
-			return fmt.Errorf("needs step %d first", 6)
-		}
 	}
 	j, jctx, err := s.begin(step, p)
 	if err != nil {
@@ -312,14 +289,8 @@ func (s *Setup) Run(ctx context.Context, step, project, method, option string) e
 			s.record(jctx, step, "", j, s.runNetwork(jctx, j))
 		case StepImage:
 			s.record(jctx, step, "", j, s.runImage(jctx, j))
-		case StepLogin:
-			s.record(jctx, step, "", j, s.runLogin(jctx, j, method, false))
-		case StepSignOut:
-			s.record(jctx, step, "", j, s.runSignOut(jctx, j))
-		case StepSelfTest:
-			s.record(jctx, step, p.Dir, j, s.runSelfTest(jctx, j, p))
 		default:
-			s.runAll(jctx, j, p, method)
+			s.runAll(jctx, j, p)
 		}
 	}()
 	return nil
@@ -341,10 +312,6 @@ func needs(step string) int {
 		return 2
 	case StepImage:
 		return 3
-	case StepLogin, StepSignOut:
-		return 4
-	case StepSelfTest:
-		return 4 // and a project (Run looks it up)
 	}
 	return 0
 }
@@ -373,11 +340,10 @@ func clip(s string, n int) string {
 // when it isn't done.
 var privileged = map[string]bool{StepContainer: true}
 
-// runAll runs the service and image steps, then the sign-in and the self-test for the project (the first when
-// none is named), skipping what is done. It stops at the first step that isn't done. It never installs the
-// container tool: if it is missing, also if it goes missing while "all" runs, it stops
-// there ("needs step N (asks for approval)").
-func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method string) {
+// runAll runs the service and image steps, skipping what is done. It stops at the first step that isn't done. It never
+// installs the container tool: if it is missing, also if it goes missing while "all" runs, it stops there ("needs step
+// N (asks for approval)").
+func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project) {
 	// gate checks that the steps up to and including n are done, now. A privileged one that isn't stops "all".
 	gate := func(n int) bool {
 		raw := s.rawAll(ctx)
@@ -413,20 +379,4 @@ func (s *Setup) runAll(ctx context.Context, j *job, p agent.Project, method stri
 		!runStep(StepImage, func() outcome { return s.runImage(ctx, j) }) || !gate(4) {
 		return
 	}
-	// The sign-in is one for the computer and needs no folder; only the self-test runs in a project.
-	s.setStep(j, StepLogin, agent.Project{})
-	out := s.runLogin(ctx, j, method, true)
-	s.record(ctx, StepLogin, "", j, out)
-	if out.State != Done || !gate(4) {
-		return
-	}
-	if p.Dir == "" {
-		ps := s.opt.Agents.Projects()
-		if len(ps) == 0 {
-			return // the self-test row says a Bot adds the folder
-		}
-		p = ps[0]
-	}
-	s.setStep(j, StepSelfTest, p)
-	s.record(ctx, StepSelfTest, p.Dir, j, s.runSelfTest(ctx, j, p))
 }

@@ -6,6 +6,8 @@ package t3
 //	RUBI_T3_NODE    the node binary
 //	RUBI_T3_CLAUDE  an unmodified claude binary (only for the run part)
 //	RUBI_T3_UPDATE  1 rewrites t3/contract/tools.json instead of comparing
+//	RUBI_T3_RUNTIME_HOME  T3CODE_HOME for the server (a folder holding a checked executable)
+//	RUBI_T3_TOOLS_OUT  a file to write the server's tool schemas to, instead of comparing (cmd/t3-bump)
 //
 // The run part points claude at the scripted Messages API stand-in (runner/test/support/mock.mjs) with a
 // throwaway config folder, so no account is used.
@@ -51,7 +53,8 @@ func contractServer(t *testing.T) *contractEnv {
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close()
-	s := &Server{Node: node, Bin: bin, BaseDir: t.TempDir(), Port: port}
+	// RUBI_T3_RUNTIME_HOME is where a checked T3 executable is (Rubi Home's install): the launcher then downloads nothing.
+	s := &Server{Node: node, Bin: bin, BaseDir: t.TempDir(), Port: port, RuntimeHome: os.Getenv("RUBI_T3_RUNTIME_HOME")}
 	t.Cleanup(s.Stop)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -109,6 +112,14 @@ func TestContractToolSchemas(t *testing.T) {
 			continue
 		}
 		got[n] = v
+	}
+	// RUBI_T3_TOOLS_OUT writes the schemas the server gives to a file and compares nothing (cmd/t3-bump diffs them).
+	if out := os.Getenv("RUBI_T3_TOOLS_OUT"); out != "" {
+		b, _ := json.MarshalIndent(got, "", "  ")
+		if err := os.WriteFile(out, append(b, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
 	path := filepath.Join("..", "..", "t3", "contract", "tools.json")
 	if os.Getenv("RUBI_T3_UPDATE") == "1" {

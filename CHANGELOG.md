@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Agents now run through T3 (the T3 Agents plugin). You sign in with the unmodified Claude Code CLI and Rubi never stores, reads or proxies the subscription credential. Rubi Home no longer keeps a long-lived token, and its auth gateway, the `setup-token` sign-in and the old token folder (`agent-auth`, removed at the next start) are gone. Sign in again for T3 Agents from its setup page.
+- The Agent SDK runner path (`claude-agent.start`, `send`, `fork`, `mode`) answers that the agent path moved to the T3 Agents plugin; listing sessions, reading messages, approvals, roles and SSH grants still work.
+- `go run ./cmd/t3-bump` and a weekly workflow look for a newer T3 nightly and open a pull request with the pin, the contract-test result and the changed tool schemas. Nothing is merged by a program.
+
 ## v0.14.0-rc.2 (2026-11-01)
 
 Release candidate 2. Same features as rc.1, which never got release assets because its Linux tests failed.

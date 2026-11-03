@@ -100,8 +100,8 @@ func (f *Fake) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 			switch svc {
 			case netpipe.SvcProxy:
 				return spec.Pipe.Proxy != nil && spec.Pipe.Proxy.Offer(s)
-			case netpipe.SvcGateway:
-				return spec.Pipe.Gateway != nil && spec.Pipe.Gateway.Offer(s)
+			case netpipe.SvcTestAPI:
+				return spec.Pipe.TestAPI != nil && spec.Pipe.TestAPI.Offer(s)
 			case netpipe.SvcHook:
 				return spec.Pipe.Hook != nil && spec.Pipe.Hook.Offer(s)
 			case netpipe.SvcT3:

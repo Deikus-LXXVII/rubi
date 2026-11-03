@@ -738,13 +738,14 @@ func TestNetpipeServiceIDsMatch(t *testing.T) {
 	}
 }
 
-// A session VM has no auth gateway; the gateway port only exists when a test asks for a scripted API.
-func TestServerGatewayServiceExistsOnlyForTests(t *testing.T) {
+// A session VM has no listener for the model API; the test API service only exists when a test asks for a scripted API,
+// and then the forwarder is told its port.
+func TestServerTestAPIServiceExistsOnlyForTests(t *testing.T) {
 	w := newWorld(t)
 	c, rep := w.start(nil)
 	defer c.Close()
-	if !rep.OK || w.host.pipes[0].Gateway != nil {
-		t.Fatalf("%+v gateway %v", rep, w.host.pipes[0].Gateway)
+	if !rep.OK || w.host.pipes[0].TestAPI != nil || w.host.pipeEnvs[0]["RUBI_TEST_API_PORT"] != "" {
+		t.Fatalf("%+v test API %v %v", rep, w.host.pipes[0].TestAPI, w.host.pipeEnvs[0])
 	}
 	w2 := newWorld(t, func(o *Options) {
 		o.testAPI = func(context.Context) (net.Conn, error) {
@@ -756,7 +757,7 @@ func TestServerGatewayServiceExistsOnlyForTests(t *testing.T) {
 	})
 	c2, rep2 := w2.start(nil)
 	defer c2.Close()
-	if !rep2.OK || w2.host.pipes[0].Gateway == nil {
+	if !rep2.OK || w2.host.pipes[0].TestAPI == nil || w2.host.pipeEnvs[0]["RUBI_TEST_API_PORT"] != "3129" {
 		t.Fatalf("%+v", rep2)
 	}
 	b, _ := os.ReadFile(rep2.EnvFile)
@@ -764,7 +765,7 @@ func TestServerGatewayServiceExistsOnlyForTests(t *testing.T) {
 		t.Errorf("env: %s", b)
 	}
 	a, bb := net.Pipe()
-	if !w2.host.pipes[0].Gateway.Offer(bb) {
+	if !w2.host.pipes[0].TestAPI.Offer(bb) {
 		t.Fatal("refused")
 	}
 	a.SetDeadline(time.Now().Add(5 * time.Second))

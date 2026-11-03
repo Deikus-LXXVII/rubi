@@ -627,7 +627,7 @@ func (t *T3Home) Status() map[string]any {
 }
 
 // agentSetupStep are the steps t3-setup.run passes to the agent setup.
-var agentSetupStep = map[string]bool{"container": true, "service": true, "network": true, "image": true, "projects": true, "signout": true}
+var agentSetupStep = map[string]bool{"container": true, "service": true, "network": true, "image": true, "projects": true}
 
 // t3Step says whether a t3-setup.run step is one of T3's own (the others belong to the agent setup).
 func t3Step(s string) bool {

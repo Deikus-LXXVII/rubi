@@ -78,7 +78,7 @@ func TestRoundTripBothDirections(t *testing.T) {
 
 func TestBinarySafe(t *testing.T) {
 	a, _ := pair(t, Config{}, Config{OnOpen: echo})
-	s, _ := a.Open(SvcGateway)
+	s, _ := a.Open(SvcTestAPI)
 	all := make([]byte, 0, 256*4)
 	for i := 0; i < 1024; i++ {
 		all = append(all, byte(i))
@@ -95,7 +95,7 @@ func TestBinarySafe(t *testing.T) {
 func TestServiceIsPassed(t *testing.T) {
 	seen := make(chan byte, 2)
 	a, _ := pair(t, Config{}, Config{OnOpen: func(svc byte, s *Stream) bool { seen <- svc; return echo(svc, s) }})
-	for _, svc := range []byte{SvcProxy, SvcGateway} {
+	for _, svc := range []byte{SvcProxy, SvcTestAPI} {
 		if _, err := a.Open(svc); err != nil {
 			t.Fatal(err)
 		}
@@ -332,14 +332,14 @@ func TestResetFromThePeer(t *testing.T) {
 
 func TestOnOpenRefuses(t *testing.T) {
 	a, _ := pair(t, Config{}, Config{OnOpen: func(svc byte, s *Stream) bool { return false }})
-	s, _ := a.Open(SvcGateway)
+	s, _ := a.Open(SvcTestAPI)
 	s.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if _, err := s.Read(make([]byte, 1)); !errors.Is(err, ErrReset) {
 		t.Fatalf("refused stream: %v", err)
 	}
 	// No OnOpen at all: the same.
 	c, _ := pair(t, Config{}, Config{})
-	s, _ = c.Open(SvcGateway)
+	s, _ = c.Open(SvcTestAPI)
 	s.SetReadDeadline(time.Now().Add(3 * time.Second))
 	if _, err := s.Read(make([]byte, 1)); !errors.Is(err, ErrReset) {
 		t.Fatalf("stream to a mux with no handler: %v", err)
@@ -562,7 +562,7 @@ func TestStreamLevelViolationsResetOnlyTheStream(t *testing.T) {
 	}
 	// Frames for streams that don't exist are ignored, and the channel still works.
 	r.write(fr(tData, 99, 1, 2, 3), fr(tClose, 99), fr(tReset, 99), fr(tAck, 99, 0, 0, 0, 1))
-	r.write(fr(tOpen, 3, SvcGateway))
+	r.write(fr(tOpen, 3, SvcTestAPI))
 	<-r.opened
 	if r.m.Err() != nil {
 		t.Fatalf("the channel ended: %v", r.m.Err())

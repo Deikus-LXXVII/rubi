@@ -1,5 +1,10 @@
 # Rubi Home: first-time setup of the agent path
 
+> **Note (T3 Agents, S5).** The auth gateway, the stored subscription token (`agent-auth`) and `setup-token` sign-in this
+> document mentions are gone; the user signs in with the unmodified Claude Code CLI and Rubi never stores, reads or proxies
+> the credential. See docs/design/agent-runner.md and docs/plans/t3-integration.md.
+
+
 The agent path (agent-runner.md) needs Apple's `container` tool, its service and kernel, the runner image, one shared Claude sign-in for all projects and a working proxy. This page is the button-only setup of
 all of it: the user never types a command in a terminal. It is a page of the `claude-code` plugin in the Rubi
 panel, backed by `agent-setup.*` operations of Rubi Home. Rubi Home has no web server of its own and gets none

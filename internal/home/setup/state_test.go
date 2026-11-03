@@ -9,10 +9,10 @@ import (
 func TestStatusOnABareMac(t *testing.T) {
 	e := newTestEnv(t)
 	st := e.s.Status(context.Background())
-	if len(st.Steps) != 7 || st.Job != nil || st.Login != nil {
+	if len(st.Steps) != 5 || st.Job != nil || st.Login != nil {
 		t.Fatalf("status: %+v", st)
 	}
-	want := []string{"container", "service", "network", "image", "projects", "login", "selftest"}
+	want := []string{"container", "service", "network", "image", "projects"}
 	for i, s := range st.Steps {
 		if s.ID != want[i] || s.Title == "" || s.State != Todo {
 			t.Errorf("step %d: %+v", i, s)
@@ -28,9 +28,6 @@ func TestStatusOnABareMac(t *testing.T) {
 	}
 	if st.Steps[4].Action != "add" || st.Steps[4].State != Todo {
 		t.Errorf("projects: %+v", st.Steps[4])
-	}
-	if st.Steps[5].Reason != "Needs step 1 first" || st.Steps[6].Reason != "Needs step 1 first" {
-		t.Errorf("login/selftest: %+v %+v", st.Steps[5], st.Steps[6])
 	}
 }
 

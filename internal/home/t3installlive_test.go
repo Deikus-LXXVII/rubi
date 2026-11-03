@@ -10,13 +10,18 @@ import (
 
 // TestLiveT3Install does the real install of the pinned Node and T3 into a temporary folder (about 300 MB of
 // downloads), starts the server from it, pairs and stops it. HOME is a temporary folder too, so nothing is written to
-// the user's own. Run with RUBI_T3_INSTALL_LIVE=1.
+// the user's own. Run with RUBI_T3_INSTALL_LIVE=1 (and RUBI_T3_INSTALL_DIR=<folder> to keep the install).
 func TestLiveT3Install(t *testing.T) {
 	if os.Getenv("RUBI_T3_INSTALL_LIVE") != "1" {
 		t.Skip("set RUBI_T3_INSTALL_LIVE=1 to download and install the pinned T3 (about 300 MB)")
 	}
 	t.Setenv("HOME", t.TempDir())
-	h, err := Open(t.TempDir())
+	// RUBI_T3_INSTALL_DIR keeps the install where the caller says (cmd/t3-bump runs the contract tests against it).
+	dir := os.Getenv("RUBI_T3_INSTALL_DIR")
+	if dir == "" {
+		dir = t.TempDir()
+	}
+	h, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

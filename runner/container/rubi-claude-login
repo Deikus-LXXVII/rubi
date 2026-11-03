@@ -10,7 +10,7 @@
 // claude writes the credential itself, to $CLAUDE_SECURESTORAGE_CONFIG_DIR/.credentials.json (the folder Rubi Home
 // shares between the roles, decision 4 of docs/plans/t3-integration.md). This helper only looks at whether that file is
 // there and how big it is; it never opens it.
-// claude draws its prompt with cursor moves instead of spaces ("Paste\x1b[8Gcode\x1b[13Ghere"), as `setup-token` does.
+// claude draws its prompt with cursor moves instead of spaces ("Paste\x1b[8Gcode\x1b[13Ghere"),, as the terminal UIs of claude do.
 // Plain script, no imports: runs as CommonJS (the image) or ESM (a checkout), Node >= 22.
 const fs = process.getBuiltinModule("fs");
 const path = process.getBuiltinModule("path");

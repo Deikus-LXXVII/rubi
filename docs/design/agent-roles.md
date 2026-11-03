@@ -1,5 +1,10 @@
 # Agent roles (profiles) for the Agent SDK path
 
+> **Note (T3 Agents, S5).** The auth gateway, the stored subscription token (`agent-auth`) and `setup-token` sign-in this
+> document mentions are gone; the user signs in with the unmodified Claude Code CLI and Rubi never stores, reads or proxies
+> the credential. See docs/design/agent-runner.md and docs/plans/t3-integration.md.
+
+
 Status: DRAFT for review, 2026-10-31. Implemented so far in the core repo: runner role mode (R1), the role store
 (R3), the VM per role with per-role hosts and approvals, version pins, idle stop and the `role` argument of the ops
 (R4), slots per profile with `claude-agent.limits` (R5), the shared skill library in core with signing, the curator

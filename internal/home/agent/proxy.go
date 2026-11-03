@@ -21,7 +21,7 @@ import (
 // proxy sees the host name and nothing else. Everything else is refused and logged.
 
 // BaseHosts are always allowed: the registries the runner's tools use. The model API is not among them: the
-// runner reaches it only through the auth gateway (gateway.go), which is the only holder of the Claude token.
+// runner path has no model access any more, and a T3 session VM adds api.anthropic.com to its own list (t3host.go).
 var BaseHosts = []string{"registry.npmjs.org", "pypi.org", "files.pythonhosted.org"}
 
 // LoginHosts are the candidates for signing in and refreshing the login. TO CONFIRM with a real login

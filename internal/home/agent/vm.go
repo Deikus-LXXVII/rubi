@@ -67,24 +67,26 @@ type StartSpec struct {
 	// An error stops the VM.
 	Prepare func(ctx context.Context, gateway string) (map[string]string, error)
 	// Pipe is what a VM without a network (NetlessVM) reaches: the listeners its streams are offered to. The
-	// proxy and the auth gateway already serve them, so nothing on the Mac listens for the VM.
+	// proxy (and, for a T3 session, the hook gate and the relay to T3) already serve them, so nothing on the Mac
+	// listens for the VM.
 	Pipe *PipeSpec
 }
 
 // PipeSpec names the services of a netless VM's pipe (netpipe): a stream to a nil one is reset.
 type PipeSpec struct {
-	Proxy   *netpipe.Listener
-	Gateway *netpipe.Listener
+	Proxy *netpipe.Listener
 	// Hook is the approval gate of a T3 session's VM (package t3vm) and T3 the relay to T3's own MCP server.
 	Hook *netpipe.Listener
 	T3   *netpipe.Listener
+	// TestAPI serves a stand-in for the model API in the live tests (127.0.0.1:RUBI_TEST_API_PORT in the VM, set only by
+	// the t3vmtest hook). Rubi Home has no listener for the model API in production: claude reaches it through the proxy.
+	TestAPI *netpipe.Listener
 }
 
 // The runner's view of its services: the forwarder (runner/container/rubi-netpipe) listens on these in the VM.
 const (
-	PipeProxyAddr   = "127.0.0.1:3128"
-	PipeGatewayAddr = "127.0.0.1:3129"
-	PipeHookAddr    = "127.0.0.1:3130"
+	PipeProxyAddr = "127.0.0.1:3128"
+	PipeHookAddr  = "127.0.0.1:3130"
 )
 
 // NetlessVM is implemented by a VM that has no network at all (`container run --network none`). Its

@@ -13,8 +13,8 @@ import (
 
 // A VM started with --network none has loopback and nothing else. Its way out is rubi-netpipe, a forwarder in the
 // image that Rubi Home runs with `container exec -i` and keeps running: every TCP connection the runner makes to
-// 127.0.0.1:3128 (the CONNECT proxy) or 127.0.0.1:3129 (the auth gateway) becomes a stream over that process's
-// stdio, and Home hands the stream, as a net.Conn, to the proxy or the gateway (netpipe.Listener). Nothing listens
+// 127.0.0.1:3128 (the CONNECT proxy) or 127.0.0.1:3130 (the hook gate) becomes a stream over that process's
+// stdio, and Home hands the stream, as a net.Conn, to the proxy or the hook gate (netpipe.Listener). Nothing listens
 // on the Mac for the VM.
 
 // pipeBin is the forwarder's place in the image (runner/container/Dockerfile).
@@ -114,8 +114,8 @@ func (s *pipeSup) open(svc byte, st *netpipe.Stream) bool {
 	switch svc {
 	case netpipe.SvcProxy:
 		ln = s.spec.Proxy
-	case netpipe.SvcGateway:
-		ln = s.spec.Gateway
+	case netpipe.SvcTestAPI:
+		ln = s.spec.TestAPI
 	case netpipe.SvcHook:
 		ln = s.spec.Hook
 	case netpipe.SvcT3:

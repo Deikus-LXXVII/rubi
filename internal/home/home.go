@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -63,7 +64,7 @@ type Config struct {
 	// example "git.example.com".
 	AgentGitHosts []string `json:"agent_git_hosts,omitempty"`
 	// AgentNetwork, AgentProxyListen and AgentProxyVMHost are obsolete and ignored: VMs run with no network at all
-	// (`container run --network none`) and reach the proxy and the auth gateway through a stream pipe to Rubi Home
+	// (`container run --network none`) and reach the proxy through a stream pipe to Rubi Home
 	// (docs/design/agent-runner.md, "No network: rubi-netpipe"), so there is no host-only network, no listener on the
 	// Mac and no address to choose. They are still read so that an old configuration file parses.
 	AgentNetwork     string `json:"agent_network,omitempty"`
@@ -74,10 +75,6 @@ type Config struct {
 	// role instances.
 	T3Port    int    `json:"t3_port,omitempty"`
 	T3BaseDir string `json:"t3_base_dir,omitempty"`
-	// AgentAuthDir is the directory that holds the sign-in shared by all projects (<helper dir>/agent-auth by
-	// default, 0700, made by Home). The token in it is used only by Home's auth gateway; a project VM never
-	// mounts it or holds the token. No project may be, contain or sit inside it.
-	AgentAuthDir string `json:"agent_auth_dir,omitempty"`
 	// AgentRunnerDir is the runner/ directory the VM image is built from when it isn't built yet.
 	AgentRunnerDir string `json:"agent_runner_dir,omitempty"`
 	// AgentAllowedHosts are extra hosts (port 443) the agents' proxy allows for every project, for example
@@ -217,14 +214,33 @@ func Open(dir string) (*Helper, error) {
 	return h, nil
 }
 
+// legacyAuthDirName is the folder the earlier design kept its long-lived token in. That design is gone (the credential is
+// claude's own, in the sign-in folder); the old folder is removed at Home's start so no stale token stays on disk. Only the
+// folder is named here, nothing in it is opened.
+const legacyAuthDirName = "agent-auth"
+
+// removeLegacyAuthDir deletes the old token folder if it is a plain folder of Home's directory.
+func (h *Helper) removeLegacyAuthDir() {
+	dir := filepath.Join(h.Dir, legacyAuthDirName)
+	if st, err := os.Lstat(dir); err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("agent: removing the old sign-in folder %s: %v", legacyAuthDirName, err)
+		return
+	}
+	log.Printf("agent: removed the old sign-in folder %s (the earlier design's token); sign in again for T3 Agents", legacyAuthDirName)
+}
+
 // sweepSignIn removes the sign-in containers of both paths (a variable so that a test can see that SweepAgent calls it).
 var sweepSignIn = (*agent.AppleContainer).Sweep
 
 // SweepAgent removes what a crash of an earlier run can have left in the container tool: the sign-in
 // container. It is for Rubi Home's start (not for tests, which never run the real tool).
 func (h *Helper) SweepAgent(ctx context.Context) {
+	h.removeLegacyAuthDir()
 	c := h.Fresh()
-	ac := &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
+	ac := &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir}
 	sweepSignIn(ac, ctx)
 }
 
@@ -237,7 +253,6 @@ func (h *Helper) newAgent() *agent.Manager {
 	return agent.New(agent.Options{
 		Dir:       h.Dir,
 		Protected: []string{home},
-		AuthDir:   h.Fresh().AgentAuthDir,
 		Projects:  func() []string { return h.Fresh().AgentProjects },
 		GitHosts:  func() []string { return h.Fresh().AgentGitHosts },
 		NewVM: func(p agent.Project) agent.VM {
@@ -245,7 +260,7 @@ func (h *Helper) newAgent() *agent.Manager {
 				return h.vmOverride(p)
 			}
 			c := h.Fresh()
-			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
+			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir}
 		},
 		AllowedHosts:    func() []string { return h.Fresh().AgentAllowedHosts },
 		NoDefaultForges: func() bool { return h.Fresh().AgentNoDefaultForges },
@@ -277,10 +292,11 @@ func (h *Helper) newAgent() *agent.Manager {
 func (h *Helper) newSetup() *setup.Setup {
 	return setup.New(setup.Options{
 		Dir: h.Dir,
-		Agents: setup.ManagerAgents{M: h.Agent, Auth: func() *agent.AppleContainer {
-			c := h.Fresh()
-			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir, AuthDir: c.AgentAuthDir}
-		}},
+		Agents: setup.ManagerAgents{M: h.Agent, SignInDir: func() string { return agent.SignInDirOf(h.Dir) },
+			Auth: func() *agent.AppleContainer {
+				c := h.Fresh()
+				return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir}
+			}},
 		Settings: func() setup.Settings {
 			c := h.Fresh()
 			return setup.Settings{Projects: c.AgentProjects, ProxyListen: c.AgentProxyListen,

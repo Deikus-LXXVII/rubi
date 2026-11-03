@@ -38,9 +38,9 @@ func TestInteropWithTheNodeForwarder(t *testing.T) {
 	if _, err := os.Stat(script); err != nil {
 		t.Skip("no forwarder script")
 	}
-	pp, gp, hp, tp := freePort(t), freePort(t), freePort(t), freePort(t)
-	cmd := exec.Command(node, script, "--proxy-port", pp, "--gateway-port", gp, "--hook-port", hp)
-	cmd.Env = append(os.Environ(), "RUBI_T3_PORT="+tp)
+	pp, gp, hp, tp := freePort(t), freePort(t), freePort(t), freePort(t) // gp: the test API service
+	cmd := exec.Command(node, script, "--proxy-port", pp, "--hook-port", hp)
+	cmd.Env = append(os.Environ(), "RUBI_T3_PORT="+tp, "RUBI_TEST_API_PORT="+gp)
 	in, _ := cmd.StdinPipe()
 	out, _ := cmd.StdoutPipe()
 	if err := cmd.Start(); err != nil {
@@ -54,7 +54,7 @@ func TestInteropWithTheNodeForwarder(t *testing.T) {
 		mu.Lock()
 		got[svc]++
 		mu.Unlock()
-		if svc == SvcGateway { // the gateway answers a request after the client half-closes, then closes
+		if svc == SvcTestAPI { // the test API answers a request after the client half-closes, then closes
 			go func() {
 				b, _ := io.ReadAll(s)
 				s.Write(append([]byte("echo:"), b...))
@@ -95,9 +95,9 @@ func TestInteropWithTheNodeForwarder(t *testing.T) {
 	defer g.Close()
 	g.Write([]byte("hello"))
 	g.(*net.TCPConn).CloseWrite()
-	within(t, "gateway answer", 10*time.Second, func() { back, _ = io.ReadAll(g) })
+	within(t, "test API answer", 10*time.Second, func() { back, _ = io.ReadAll(g) })
 	if string(back) != "echo:hello" {
-		t.Fatalf("gateway answer %q", back)
+		t.Fatalf("test API answer %q", back)
 	}
 	// The hook and T3 services are named by their ports, and carry bytes like the others.
 	for port, svc := range map[string]byte{hp: SvcHook, tp: SvcT3} {
@@ -115,7 +115,7 @@ func TestInteropWithTheNodeForwarder(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if got[SvcProxy] != 1 || got[SvcGateway] != 1 || got[SvcHook] != 1 || got[SvcT3] != 1 {
+	if got[SvcProxy] != 1 || got[SvcTestAPI] != 1 || got[SvcHook] != 1 || got[SvcT3] != 1 {
 		t.Fatalf("services seen: %v", got)
 	}
 

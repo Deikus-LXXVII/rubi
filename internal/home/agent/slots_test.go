@@ -38,7 +38,7 @@ func newMulti(t *testing.T, names []string, mods ...func(*Options)) *multi {
 	t.Cleanup(mu.cancel)
 	mu.opt = Options{Dir: mu.dir, Projects: func() []string { return dirs },
 		GitHosts: func() []string { return []string{"git.example.com"} },
-		NewVM:    func(p Project) VM { return mu.fakes[p.ID] }, Wait: 5 * time.Second}
+		NewVM:    func(p Project) VM { return mu.fakes[p.ID] }, Wait: 5 * time.Second, AllowRunnerSessions: true}
 	for _, f := range mods {
 		f(&mu.opt)
 	}
@@ -427,26 +427,6 @@ func TestQueueKeepsOrderPerRoleAndBot(t *testing.T) {
 		if got := string(calls[i+1].Params); !strings.Contains(got, `"`+want+`"`) {
 			t.Fatalf("start %d: %s", i+2, got)
 		}
-	}
-}
-
-func TestSelfTestHoldsTheWholeProject(t *testing.T) {
-	re := newRoleEnv(t, setRoleLimits(1, 0, 8))
-	a, _ := re.put("role-a", nil)
-	st, err := re.m.BeginSelfTest("my-project")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := re.startRole(a, "x")
-	if r["queued"] != true || !strings.Contains(r["reason"].(string), "self-test") {
-		t.Fatalf("a role started during the self-test: %v", r)
-	}
-	st.End()
-	// A role's running session keeps the self-test from beginning.
-	re.vm(a) // (the queued start is delivered once the self-test ends)
-	eventually(t, "queued start delivered", func() bool { return re.running() == 1 })
-	if _, err := re.m.BeginSelfTest("my-project"); err == nil {
-		t.Fatal("a self-test began while a role ran a session")
 	}
 }
 

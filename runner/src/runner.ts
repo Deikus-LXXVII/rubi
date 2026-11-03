@@ -140,10 +140,14 @@ export function toolSummary(name: string, input: unknown): string {
   }
 }
 
-/** Environment of every `claude` child: explicit, never the runner's whole env (M0 surprise 1). */
+/**
+ * Environment of every `claude` child: explicit, never the runner's whole env (M0 surprise 1). Home gives it no credential
+ * and no API address (the earlier auth gateway is gone); ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY are passed on only so the
+ * tests can point claude at a scripted API.
+ */
 export function buildChildEnv(env: NodeJS.ProcessEnv, configDir: string): Record<string, string> {
   const out: Record<string, string> = {};
-  const keep = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "NO_PROXY", "no_proxy"];
+  const keep = ["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TERM", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "NO_PROXY", "no_proxy"];
   for (const k of keep) {
     const v = env[k];
     if (v !== undefined) out[k] = v;
@@ -155,10 +159,6 @@ export function buildChildEnv(env: NodeJS.ProcessEnv, configDir: string): Record
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     GIT_TERMINAL_PROMPT: "0",
   });
-  // Claude Code prefers ANTHROPIC_API_KEY to an OAuth token. Home gives the runner a per-start secret as the
-  // OAuth token and the address of its auth gateway as the base URL (the gateway holds the real token): a key must
-  // not take the requests around it.
-  if (out.CLAUDE_CODE_OAUTH_TOKEN !== undefined) delete out.ANTHROPIC_API_KEY;
   const proxy = env.HTTPS_PROXY ?? env.https_proxy;
   if (proxy) {
     out.HTTPS_PROXY = proxy;

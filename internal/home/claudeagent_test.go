@@ -35,7 +35,7 @@ func agentHelper(t *testing.T) (*Helper, *agent.Fake, string) {
 	h.Agent.Close()
 	h.Agent = agent.New(agent.Options{Dir: h.Dir, Projects: func() []string { return h.Fresh().AgentProjects },
 		GitHosts: func() []string { return h.Fresh().AgentGitHosts },
-		NewVM:    func(agent.Project) agent.VM { return fake }, Wait: 5 * time.Second})
+		NewVM:    func(agent.Project) agent.VM { return fake }, Wait: 5 * time.Second, AllowRunnerSessions: true})
 	t.Cleanup(h.Agent.Close)
 	return h, fake, proj
 }
@@ -170,15 +170,19 @@ func TestUsageModeOpSavesTheConfig(t *testing.T) {
 	if _, err := handle(t, h, "wrong", "claude-agent.usage_mode", map[string]any{"all": true, "mode": "light"}); err == nil {
 		t.Fatal("an unpaired caller switched the mode")
 	}
-	// A Bot is met on its first start and gets the default; then the user changes it.
 	if _, err := handle(t, h, "tok", "claude-agent.usage_mode", map[string]any{"default": true, "mode": "light"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := handle(t, h, "tok", "claude-agent.start", map[string]any{"project": "my-project", "prompt": "x", "bot": "bot-a"}); err != nil {
-		t.Fatal(err)
+	// The runner path starts nothing any more, so it meets no Bot (T3 start does: see the t3-agent tests); a start is refused.
+	if _, err := handle(t, h, "tok", "claude-agent.start", map[string]any{"project": "my-project", "prompt": "x", "bot": "bot-a"}); err == nil ||
+		!strings.Contains(err.Error(), "moved to the T3 Agents plugin") {
+		t.Fatalf("start: %v", err)
 	}
-	if got := h.Fresh().AgentBotModes["bot-a"]; got != "light" {
-		t.Fatalf("a new Bot's mode %q", got)
+	if _, ok := h.Fresh().AgentBotModes["bot-a"]; ok {
+		t.Fatal("a refused start met the Bot")
+	}
+	if _, err := handle(t, h, "tok", "claude-agent.usage_mode", map[string]any{"bot": "bot-a", "mode": "light"}); err != nil {
+		t.Fatal(err)
 	}
 	st, err := handle(t, h, "tok", "claude-agent.usage_mode", map[string]any{"bot": "bot-a", "mode": "maximum"})
 	if err != nil || h.Fresh().AgentBotModes["bot-a"] != "maximum" || st["usage"].(map[string]any)["default"] != "light" {

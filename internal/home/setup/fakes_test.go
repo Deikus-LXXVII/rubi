@@ -120,42 +120,24 @@ func readFile(t *testing.T, p string) string {
 	return string(b)
 }
 
-// fakeAgents has projects, a self-test and the shared sign-in.
+// fakeAgents has projects and the shared sign-in.
 type fakeAgents struct {
 	mu       sync.Mutex
 	projects []agent.Project
-	box      *fakeBox
-	selftest *fakeSelfTest
-	// the shared sign-in: what the volume holds, and the sign-in container
-	token     bool // a token is stored (the fake never has its text)
-	expires   time.Time
-	statusErr error
-	statusN   int
-	signOutN  int
-	sess      *fakeAuth
-	startErr  error
-	sessions  []*fakeAuth
+	// the shared sign-in: whether a credential file is there (the fake never has its content), and the sign-in container
+	token    bool
+	statusN  int
+	sess     *fakeAuth
+	startErr error
+	sessions []*fakeAuth
 }
 
 func (a *fakeAgents) Projects() []agent.Project { return a.projects }
-func (a *fakeAgents) BeginSelfTest(id string) (SelfTestRun, error) {
-	if a.selftest == nil {
-		return nil, errors.New("an agent session of this project is running or waiting")
-	}
-	return a.selftest, nil
-}
-func (a *fakeAgents) AuthStatus(ctx context.Context) (agent.AuthStatus, error) {
+func (a *fakeAgents) SignedIn(ctx context.Context) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.statusN++
-	return agent.AuthStatus{SignedIn: a.token, Expires: a.expires}, a.statusErr
-}
-func (a *fakeAgents) AuthSignOut(ctx context.Context) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.signOutN++
-	a.token = false
-	return nil
+	return a.token
 }
 func (a *fakeAgents) StartAuth(ctx context.Context) (AuthSession, error) {
 	a.mu.Lock()
@@ -192,25 +174,6 @@ func (f *fakeAuth) isClosed() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.closed
-}
-
-// fakeBox runs scripted processes in a project's "VM" (the self-test's isolation probe).
-type fakeBox struct {
-	mu       sync.Mutex
-	probeOut string
-	execs    [][]string
-	envs     []map[string]string
-}
-
-func (b *fakeBox) Exec(ctx context.Context, argv []string, extra map[string]string) (agent.Conn, error) {
-	b.mu.Lock()
-	b.execs = append(b.execs, argv)
-	b.envs = append(b.envs, extra)
-	out := b.probeOut
-	b.mu.Unlock()
-	c := newFakeConn()
-	go func() { c.out.Write([]byte(out)); c.finish() }()
-	return c, nil
 }
 
 type fakeConn struct {
@@ -263,28 +226,6 @@ func (c *fakeConn) stdinText() string {
 	return c.stdin.String()
 }
 
-type fakeSelfTest struct {
-	hold  chan struct{} // when set, Turn waits for it (or for the context)
-	box   *fakeBox
-	turn  agent.TurnResult
-	err   error
-	ended bool
-	mu    sync.Mutex
-}
-
-func (f *fakeSelfTest) Sandbox(ctx context.Context) (Box, error) { return f.box, nil }
-func (f *fakeSelfTest) Turn(ctx context.Context, prompt string, d time.Duration) (agent.TurnResult, error) {
-	if f.hold != nil {
-		select {
-		case <-f.hold:
-		case <-ctx.Done():
-			return agent.TurnResult{}, ctx.Err()
-		}
-	}
-	return f.turn, f.err
-}
-func (f *fakeSelfTest) End() { f.mu.Lock(); f.ended = true; f.mu.Unlock() }
-
 // env is a Setup on a fake machine.
 type testEnv struct {
 	t      *testing.T
@@ -300,7 +241,7 @@ type testEnv struct {
 func newTestEnv(t *testing.T, mods ...func(*Options)) *testEnv {
 	t.Helper()
 	root := t.TempDir()
-	e := &testEnv{t: t, m: &machine{}, ag: &fakeAgents{box: &fakeBox{}, sess: &fakeAuth{}}, dir: filepath.Join(root, "helper"), appDir: filepath.Join(root, "app")}
+	e := &testEnv{t: t, m: &machine{}, ag: &fakeAgents{sess: &fakeAuth{}}, dir: filepath.Join(root, "helper"), appDir: filepath.Join(root, "app")}
 	if err := os.MkdirAll(e.dir, 0o700); err != nil {
 		t.Fatal(err)
 	}

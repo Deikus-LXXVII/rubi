@@ -74,31 +74,15 @@ func (s *Setup) setLogin(j *job, l *loginState) {
 	s.mu.Unlock()
 }
 
-// loginEnv: the config of the sign-in's claude lives in the container's tmpfs, not in the shared volume.
-var loginEnv = map[string]string{"CLAUDE_CONFIG_DIR": "/tmp/claude-signin"}
-
-// runLogin signs the computer in, once for all projects: it starts the sign-in container (no project, the
-// shared volume read-write, a proxy that allows only the sign-in hosts) and runs the image's helper in it,
-// which runs `claude setup-token` under a terminal and tells Home on stdout only `URL <link>`, `CODE?`,
-// `SAVED` or `FAILED <reason>`. Home shows the link, passes the code the user pastes to the helper's stdin and
-// never sees the token. Without a method it only checks the sign-in; skipIfSignedIn leaves a valid one alone.
-func (s *Setup) runLogin(ctx context.Context, j *job, method string, skipIfSignedIn bool) outcome {
+// runLogin signs the T3 roles in, once for all of them: it starts the sign-in container (no project, the shared sign-in
+// folder read-write, a proxy that allows only the sign-in hosts) and runs the image's helper in it
+// (Options.LoginHelper), which runs the unmodified `claude auth login --claudeai` under a terminal and tells Home on
+// stdout only `URL <link>`, `CODE?`, `SAVED` or `FAILED <reason>`. Home shows the link and passes the code the user
+// pastes to the helper's stdin. claude writes its own credential; neither Home nor the helper reads it.
+func (s *Setup) runLogin(ctx context.Context, j *job) outcome {
 	log := j.log(s)
-	defer s.forgetAuth()
-	if method == "" || skipIfSignedIn {
-		st, err := s.opt.Agents.AuthStatus(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return outcome{Todo, "Cancelled."}
-			}
-			return outcome{Failed, "Couldn't check the sign-in: " + safeText(err.Error())}
-		}
-		if st.SignedIn && !st.Expired(s.opt.Now()) {
-			return outcome{Done, "Signed in."}
-		}
-		if method == "" {
-			return outcome{NeedsUser, "Not signed in. Choose how to sign in."}
-		}
+	if s.opt.LoginHelper == "" || s.opt.LoginEnv == nil {
+		return outcome{Failed, "No sign-in helper is configured."}
 	}
 	log("Starting the sign-in container...")
 	sess, err := s.opt.Agents.StartAuth(ctx)
@@ -111,14 +95,7 @@ func (s *Setup) runLogin(ctx context.Context, j *job, method string, skipIfSigne
 	defer sess.Close() // ends the helper, claude and the proxy, whatever happens
 	lctx, cancel := context.WithTimeout(ctx, loginLimit)
 	defer cancel()
-	helper, env := agent.AuthHelper, loginEnv
-	if s.opt.LoginHelper != "" {
-		helper = s.opt.LoginHelper
-	}
-	if s.opt.LoginEnv != nil {
-		env = s.opt.LoginEnv()
-	}
-	conn, err := sess.Exec(lctx, []string{helper}, env)
+	conn, err := sess.Exec(lctx, []string{s.opt.LoginHelper}, s.opt.LoginEnv())
 	if err != nil {
 		return outcome{Failed, "Couldn't start the sign-in: " + safeText(err.Error())}
 	}
@@ -197,29 +174,13 @@ func (s *Setup) runLogin(ctx context.Context, j *job, method string, skipIfSigne
 		case !gotURL:
 			return outcome{Failed, "The sign-in ended without showing a link."}
 		}
-		return outcome{Failed, "The sign-in ended without a token."}
+		return outcome{Failed, "The sign-in ended without a credential."}
 	}
-	// The helper says it saved; look for the token the way every status does, without reading it.
-	if got, err := s.opt.Agents.AuthStatus(ctx); err != nil || !got.SignedIn {
-		return outcome{Failed, "The sign-in finished, but no token is stored."}
+	// The helper says it saved; look for the file the way every status does, without opening it.
+	if !s.opt.Agents.SignedIn(ctx) {
+		return outcome{Failed, "The sign-in finished, but no credential file is there."}
 	}
-	return outcome{Done, "Signed in."}
-}
-
-// runSignOut deletes the shared token for every project. It can't revoke it: that is done at claude.ai.
-func (s *Setup) runSignOut(ctx context.Context, j *job) outcome {
-	defer s.forgetAuth()
-	j.log(s)("Deleting the stored sign-in...")
-	if err := s.opt.Agents.AuthSignOut(ctx); err != nil {
-		if ctx.Err() != nil {
-			return outcome{Todo, "Cancelled."}
-		}
-		return outcome{Failed, "Couldn't delete the sign-in: " + safeText(err.Error())}
-	}
-	if got, err := s.opt.Agents.AuthStatus(ctx); err != nil || got.SignedIn {
-		return outcome{Failed, "The sign-in is still stored."}
-	}
-	return outcome{Done, "Signed out on this computer. To revoke the token everywhere, also remove it in your Claude account settings at claude.ai."}
+	return outcome{Done, "A credential file is present."}
 }
 
 // LoginCode writes the code Claude asked for to the running sign-in. The sign-in is one for the whole
@@ -275,13 +236,16 @@ func (s *Setup) StartLogin(method string) error {
 	if method != "claudeai" {
 		return errors.New(`method must be "claudeai" (a Claude subscription)`)
 	}
+	if s.opt.LoginHelper == "" {
+		return errors.New("no sign-in helper is configured")
+	}
 	j, jctx, err := s.begin(StepLogin, agent.Project{})
 	if err != nil {
 		return err
 	}
 	go func() {
 		defer s.release(j)
-		s.record(jctx, StepLogin, "", j, s.runLogin(jctx, j, method, false))
+		s.record(jctx, StepLogin, "", j, s.runLogin(jctx, j))
 	}()
 	return nil
 }

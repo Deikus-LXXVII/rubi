@@ -45,7 +45,7 @@ func (h *Helper) ServeAgentVM(ctx context.Context) error {
 		log.Printf("T3 role instances: added %v, updated %v, removed %v", res.Added, res.Updated, res.Removed)
 	}
 	agentCfg := h.Fresh()
-	ac := &agent.AppleContainer{RunnerDir: agentCfg.AgentRunnerDir, EnvDir: h.Dir, AuthDir: agentCfg.AgentAuthDir}
+	ac := &agent.AppleContainer{RunnerDir: agentCfg.AgentRunnerDir, EnvDir: h.Dir}
 	srv := t3vm.NewServer(t3vm.Options{Dir: h.Dir, Backend: h.Agent, Host: ac, T3Port: c.T3Port, T3Pid: h.T3Pid,
 		Attachments: filepath.Join(c.T3BaseDir, "userdata", "attachments")})
 	h.sessMu.Lock()

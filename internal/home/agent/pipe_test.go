@@ -137,7 +137,7 @@ func startNetless(t *testing.T, vm *vmPipes, spec StartSpec) (*AppleContainer, *
 func TestNetlessStartRunsWithoutNetworkAndServesStreams(t *testing.T) {
 	fastPipe(t)
 	vm := newVMPipes(t, nil)
-	pl, gl := netpipe.NewListener("proxy", 4), netpipe.NewListener("gateway", 4)
+	pl := netpipe.NewListener("proxy", 4)
 	px, err := StartProxy(ProxyConfig{Listener: pl, AuthToken: "0123456789abcdef", Hosts: []string{"registry.npmjs.org"},
 		Resolve: func(context.Context, string) ([]net.IP, error) { return []net.IP{net.ParseIP("93.184.216.34")}, nil },
 		Dial: func(ctx context.Context, n, addr string) (net.Conn, error) {
@@ -148,12 +148,7 @@ func TestNetlessStartRunsWithoutNetworkAndServesStreams(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer px.Close()
-	gw, err := StartGateway(GatewayConfig{Listener: gl, Secret: strings.Repeat("s", 40), TokenFile: t.TempDir() + "/none"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer gw.Close()
-	a, f, c, err := startNetless(t, vm, StartSpec{Env: map[string]string{"A": "1"}, Pipe: &PipeSpec{Proxy: pl, Gateway: gl}})
+	a, f, c, err := startNetless(t, vm, StartSpec{Env: map[string]string{"A": "1"}, Pipe: &PipeSpec{Proxy: pl}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,13 +179,13 @@ func TestNetlessStartRunsWithoutNetworkAndServesStreams(t *testing.T) {
 	if got := connectVia(t, m, netpipe.SvcProxy, "CONNECT registry.npmjs.org:443 HTTP/1.1\r\nHost: x\r\nProxy-Authorization: "+basic("0123456789abcdef")+"\r\n\r\n"); !strings.Contains(got, " 200 ") {
 		t.Errorf("listed host: %q", got)
 	}
-	// the gateway: a wrong secret is a 401 (the same checks as on a socket)
-	if got := connectVia(t, m, netpipe.SvcGateway, "POST /v1/messages HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer nope\r\nContent-Length: 0\r\n\r\n"); !strings.Contains(got, " 401 ") {
-		t.Errorf("gateway: %q", got)
+	// service 2 was the auth gateway: nothing answers for it any more
+	if got := connectVia(t, m, netpipe.SvcGateway, "POST /v1/messages HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer nope\r\nContent-Length: 0\r\n\r\n"); !strings.Contains(got, "reset") {
+		t.Errorf("service 2 answered: %q", got)
 	}
 	// nothing listens on the Mac for the VM
-	if px.Addr() != "netpipe:proxy" || gw.Addr() != "netpipe:gateway" {
-		t.Errorf("addresses %q %q", px.Addr(), gw.Addr())
+	if px.Addr() != "netpipe:proxy" {
+		t.Errorf("address %q", px.Addr())
 	}
 }
 
@@ -218,7 +213,7 @@ func TestNetlessStartFailsClosedWhenTheForwarderNeverListens(t *testing.T) {
 func TestNetlessAStreamToAMissingServiceIsReset(t *testing.T) {
 	fastPipe(t)
 	vm := newVMPipes(t, nil)
-	a, _, c, err := startNetless(t, vm, StartSpec{Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1)}}) // no gateway
+	a, _, c, err := startNetless(t, vm, StartSpec{Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1)}}) // service 2 (the auth gateway) is nobody's
 	if err != nil {
 		t.Fatal(err)
 	}

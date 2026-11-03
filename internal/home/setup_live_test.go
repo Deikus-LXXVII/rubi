@@ -350,7 +350,7 @@ func liveNetpipePIDs(t *testing.T) []int {
 // interface besides loopback, that every direct connection fails with ENETUNREACH (a public address, the gateway of
 // the container tool's NAT network, and a port that is open on every address of this Mac), that names don't
 // resolve, that the CONNECT proxy works through the pipe (a real TLS request to an allowed host; an unlisted host is
-// refused), that the auth gateway answers (401 to a wrong secret), that Rubi Home opened no listener for the VM,
+// refused), that nothing answers on 3129 (the auth gateway is gone), that Rubi Home opened no listener for the VM,
 // and that the pipe comes back after its exec process dies. No model call is made. It needs the runner image (built
 // on first use), the container tool and the Internet. Skipped unless RUBI_AGENT_LIVE=1 RUBI_AGENT_LIVE_RUN=netless.
 func TestLiveNetless(t *testing.T) {
@@ -400,7 +400,7 @@ func TestLiveNetless(t *testing.T) {
 	if err != nil {
 		t.Fatalf("starting the VM: %v", err)
 	}
-	// Rubi Home opened no listener for the VM (the proxy and the gateway are on pipe streams).
+	// Rubi Home opened no listener for the VM (the proxy is on pipe streams).
 	after := liveListeners(t)
 	if before == nil {
 		t.Log("lsof unavailable: listeners not compared")
@@ -474,7 +474,7 @@ const tcp = (host, port) => new Promise(r => { const s = net.connect({host, port
 	if ifs, _ := r["ifaces"].([]any); len(ifs) != 1 || ifs[0] != "lo" {
 		t.Errorf("interfaces: %v", r["ifaces"])
 	}
-	if r["proxy"] != "127.0.0.1:3128" || r["base"] != "http://127.0.0.1:3129" || r["no_proxy"] != "127.0.0.1" {
+	if r["proxy"] != "127.0.0.1:3128" || r["base"] != nil && r["base"] != "" || r["no_proxy"] != "127.0.0.1" {
 		t.Errorf("environment: proxy=%v base=%v no_proxy=%v", r["proxy"], r["base"], r["no_proxy"])
 	}
 	if d, _ := r["dns"].(string); d == "" || net.ParseIP(d) != nil {
@@ -508,13 +508,13 @@ const connect = (host, withAuth) => new Promise(res => { const s = net.connect({
     out.tls = await new Promise(res => { t.on("secureConnect", () => t.write("GET / HTTP/1.1\r\nHost: registry.npmjs.org\r\nConnection: close\r\n\r\n"));
       let b = ""; t.on("data", d => { b += d; }); t.on("end", () => res(b.split("\r\n")[0] + " bytes=" + b.length)); t.on("error", e => res(e.code)); });
   }
-  const http = require("http"), g = new URL(process.env.ANTHROPIC_BASE_URL);
-  out.gateway = await new Promise(res => { const r = http.request({host: g.hostname, port: g.port, path: "/v1/messages", method: "POST", headers: {authorization: "Bearer wrong"}},
-    x => { x.resume(); x.on("end", () => res(x.statusCode)); }); r.on("error", e => res(e.code)); r.end("{}"); });
+  // nothing listens on 3129 any more: the auth gateway is gone
+  out.noGateway = await new Promise(res => { const s = net.connect({host: "127.0.0.1", port: 3129, timeout: 3000}); s.on("connect", () => { s.destroy(); res("connected"); });
+    s.on("error", e => res(e.code)); s.on("timeout", () => { s.destroy(); res("timeout"); }); });
   console.log(JSON.stringify(out));
 })();`
 	p := node(proxyProbe)
-	t.Logf("proxy and gateway through the pipe: %v", p)
+	t.Logf("proxy through the pipe: %v", p)
 	if !strings.Contains(p["allowed"].(string), " 200") {
 		t.Errorf("an allowed host through the pipe: %v", p["allowed"])
 	}
@@ -527,8 +527,8 @@ const connect = (host, withAuth) => new Promise(res => { const s = net.connect({
 	if !strings.Contains(p["noauth"].(string), " 407") {
 		t.Errorf("no proxy credentials: %v", p["noauth"])
 	}
-	if p["gateway"] != float64(401) {
-		t.Errorf("the gateway with a wrong secret: %v", p["gateway"])
+	if p["noGateway"] != "ECONNREFUSED" {
+		t.Errorf("something listens on 3129 in the VM: %v", p["noGateway"])
 	}
 
 	// The pipe's exec process dies: Home starts it again and the proxy path works once more.

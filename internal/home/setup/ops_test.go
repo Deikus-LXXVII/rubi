@@ -68,15 +68,8 @@ func TestRunNeedsEarlierSteps(t *testing.T) {
 	e.ready()
 	e.m.image = false
 	e.addProject("my-project")
-	if _, err := e.op("run", map[string]any{"step": "login"}); err == nil || err.Error() != "needs step 4 first" {
-		t.Errorf("login: %v", err)
-	}
-	e.m.image = true
-	if _, err := e.op("run", map[string]any{"step": "selftest", "project": "my-project"}); err == nil || err.Error() != "needs step 6 first" {
-		t.Errorf("selftest: %v", err)
-	}
-	if _, err := e.op("run", map[string]any{"step": "login"}); err != nil {
-		t.Errorf("login with the first project: %v", err)
+	if _, err := e.op("run", map[string]any{"step": "all", "project": "my-project"}); err != nil {
+		t.Errorf("all with a project: %v", err)
 	}
 	e.wait()
 }
@@ -258,57 +251,36 @@ func TestImageJobFailureShowsTheLastLinesWithoutSecrets(t *testing.T) {
 	}
 }
 
-func TestRunAllStopsAtTheFirstStepThatNeedsTheUser(t *testing.T) {
-	e := newTestEnv(t)
-	e.ready()
-	// No project and not signed in: "all" doesn't stop at the folders (a Bot adds them); it reaches the sign-in,
-	// which needs the user to choose how.
-	if _, err := e.op("run", map[string]any{"step": "all"}); err != nil {
-		t.Fatal(err)
-	}
-	e.wait()
-	if st := e.step("login"); st.State != NeedsUser {
-		t.Errorf("login %+v", st)
-	}
-	if st := e.step("projects"); st.State == NeedsUser {
-		t.Errorf("the setup asks for a folder: %+v", st)
-	}
-	if st := e.step("selftest"); st.State != Todo || !strings.Contains(st.Reason, "Grok Bot") {
-		t.Errorf("selftest %+v", st)
-	}
-}
-
-// A signed-in computer without a project: "all" finishes without asking for a folder.
+// "all" without a project doesn't stop at the folders (a Bot adds them); it does the service and the image and ends.
 func TestRunAllWithoutAProjectNeedsNoFolder(t *testing.T) {
 	e := newTestEnv(t)
 	e.ready()
-	e.ag.token, e.ag.expires = true, time.Now().Add(time.Hour)
 	if _, err := e.op("run", map[string]any{"step": "all"}); err != nil {
 		t.Fatal(err)
 	}
 	e.wait()
-	if st := e.step("login"); st.State != Done {
-		t.Errorf("login %+v", st)
+	if st := e.step("projects"); st.State == NeedsUser {
+		t.Errorf("the setup asks for a folder: %+v", st)
 	}
 	for _, c := range e.cmd.calls {
 		if c[0] == "/usr/bin/osascript" {
 			t.Errorf("a folder chooser was shown: %v", c)
 		}
 	}
+	if len(e.ag.sessions) != 0 {
+		t.Error("\"all\" signed in")
+	}
 }
 
 // allEnv is a Mac with the container tool installed, a stopped service, no image, and
-// a signed-in project: what "all" is allowed to finish.
+// a project: what "all" is allowed to finish.
 func allEnv(t *testing.T) *testEnv {
 	e := newTestEnv(t)
 	e.ready()
 	e.m.image = false
 	e.m.sysJSON = ""
 	p := e.addProject("my-project")
-	e.ag.token, e.ag.expires = true, time.Now().Add(time.Hour) // signed in already: the sign-in step is skipped
 	_ = p
-	e.ag.box.probeOut = goodProbe
-	e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn}
 	e.m.extra = func(argv []string) ([]byte, error, bool) {
 		if len(argv) > 2 && argv[1] == "system" && argv[2] == "start" {
 			e.m.sysJSON = strings.ReplaceAll(sysRunning, "%APP%", e.appDir+"/")
@@ -339,7 +311,7 @@ func TestRunAllWholeWay(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.wait()
-	for _, id := range []string{"container", "service", "network", "image", "projects", "login", "selftest"} {
+	for _, id := range []string{"container", "service", "network", "image", "projects"} {
 		if st := e.step(id); st.State != Done {
 			t.Errorf("%s: %+v", id, st)
 		}
@@ -405,7 +377,7 @@ func TestStatusJSONShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	steps := res["steps"].([]any)
-	if len(steps) != 7 {
+	if len(steps) != 5 {
 		t.Fatalf("%v", res)
 	}
 	first := steps[0].(map[string]any)
@@ -422,14 +394,6 @@ func TestStatusJSONShape(t *testing.T) {
 	}
 	if _, ok := res["login"]; ok {
 		t.Error("login present while idle")
-	}
-	login := steps[5].(map[string]any)
-	if _, ok := login["projects"]; ok || login["action"] != "check" && login["action"] != "login" {
-		t.Errorf("login row: %v", login)
-	}
-	row := steps[6].(map[string]any)["projects"].([]any)[0].(map[string]any)
-	if row["id"] != "my-project" || row["dir"] == "" || row["state"] != "todo" || row["reason"] != "Needs step 6 first" {
-		t.Errorf("row: %v", row)
 	}
 }
 

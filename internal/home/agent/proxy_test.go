@@ -161,7 +161,7 @@ func TestProxyUpstreamFailureAndClose(t *testing.T) {
 	}
 }
 
-// The model API isn't reachable through the CONNECT proxy: the runner talks to it through the auth gateway.
+// The model API isn't on the runner path's proxy list; a T3 session VM adds it to its own.
 func TestTheModelAPIIsNotOnTheProxyList(t *testing.T) {
 	for _, h := range AllowList([]string{"git.example.com"}, ForgeHosts) {
 		if h == "api.anthropic.com" {

@@ -24,10 +24,15 @@ const (
 
 // Services a stream can ask for.
 const (
-	SvcProxy   byte = 1
+	SvcProxy byte = 1
+	// SvcGateway is reserved and refused: it was the auth gateway, which is gone (the subscription credential is claude's
+	// own and never passes through Rubi). The number is not reused, and no listener offers it.
 	SvcGateway byte = 2
 	SvcHook    byte = 3 // the approval hook gate (127.0.0.1:3130 in the VM)
 	SvcT3      byte = 4 // T3's own MCP server on the host (127.0.0.1:$RUBI_T3_PORT in the VM)
+	// SvcTestAPI is a stand-in for the model API in live tests (127.0.0.1:$RUBI_TEST_API_PORT in the VM, only when that
+	// variable is set); Home offers it only through the t3vmtest hook.
+	SvcTestAPI byte = 5
 )
 
 // Wire parameters. Both sides must use the same Window.

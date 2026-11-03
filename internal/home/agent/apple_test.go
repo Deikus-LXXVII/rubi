@@ -18,7 +18,7 @@ import (
 // Only the command lines are tested; no container is ever started.
 
 func TestAppleContainerArgs(t *testing.T) {
-	a := &AppleContainer{Bin: "container", RunnerDir: "/opt/rubi/runner", CPUs: "2", Memory: "2G", AuthDir: "/home/alice/rubi-home/agent-auth"}
+	a := &AppleContainer{Bin: "container", RunnerDir: "/opt/rubi/runner", CPUs: "2", Memory: "2G"}
 	p := Project{ID: "my-project", Dir: "/home/alice/my-project"}
 	name := containerName(p)
 	if !strings.HasPrefix(name, "rubi-agent-my-project-") || containerName(p) != name || containerName(Project{ID: "my-project", Dir: "/other"}) == name {
@@ -57,7 +57,7 @@ func TestAppleContainerArgs(t *testing.T) {
 // A role VM mounts the project read-write, its own content read-only and its own config directory read-write; no
 // sign-in, never --ssh; each role has its own container; the legacy role is as it always was.
 func TestAppleContainerRoleArgs(t *testing.T) {
-	a := &AppleContainer{Bin: "container", CPUs: "2", Memory: "2G", AuthDir: "/home/alice/rubi-home/agent-auth"}
+	a := &AppleContainer{Bin: "container", CPUs: "2", Memory: "2G"}
 	legacy := Project{ID: "my-project", Dir: "/home/alice/my-project"}
 	mk := func(id, name string) Project {
 		return Project{ID: "my-project", Dir: legacy.Dir, Role: id, RoleName: name,
@@ -189,7 +189,7 @@ func TestAppleContainerStartSequence(t *testing.T) {
 	// LookPath is skipped because run is set.
 	c, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "my-project", Dir: "/home/alice/my-project"},
 		Env:  map[string]string{"RUBI_RUN_TOKEN": "tok123"},
-		Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1), Gateway: netpipe.NewListener("g", 1)},
+		Pipe: &PipeSpec{Proxy: netpipe.NewListener("p", 1)},
 		Prepare: func(ctx context.Context, gateway string) (map[string]string, error) {
 			if last := cmds[len(cmds)-1]; last[1] != "exec" {
 				t.Errorf("prepared before the pipe ran: %v", last)

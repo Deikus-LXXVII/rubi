@@ -164,9 +164,6 @@ func (s *Setup) RemoveProject(dir string) error {
 	if !found {
 		return errors.New("that folder isn't a project")
 	}
-	s.mu.Lock()
-	delete(s.tests, dir)
-	s.mu.Unlock()
 	return nil
 }
 

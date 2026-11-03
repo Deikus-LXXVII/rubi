@@ -75,7 +75,7 @@ describe("roles: real SDK + real claude against the scripted API", { skip: !enab
       cwd: work,
       roleDir: roleDirs[name]!,
       configDir: claudeDirs[name]!,
-      env: { PATH: process.env.PATH ?? "", RUBI_RUN_TOKEN: TOKEN, HOME: userHome, ANTHROPIC_BASE_URL: mock.url, CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-placeholder-per-start", HTTPS_PROXY: "", NO_PROXY: "127.0.0.1", DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+      env: { PATH: process.env.PATH ?? "", RUBI_RUN_TOKEN: TOKEN, HOME: userHome, ANTHROPIC_BASE_URL: mock.url, ANTHROPIC_API_KEY: "mock-placeholder-not-a-real-key", HTTPS_PROXY: "", NO_PROXY: "127.0.0.1", DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
     } as never);
     homes.push(h);
     await h.up();
@@ -288,7 +288,7 @@ describe("roles: real SDK + real claude against the scripted API", { skip: !enab
       const p = spawn(process.execPath, [path.join(here, "../src/start.js")], {
         cwd: work,
         stdio: "pipe",
-        env: { PATH: process.env.PATH ?? "", HOME: userHome, RUBI_RUN_TOKEN: TOKEN, RUBI_WORK_DIR: work, RUBI_ROLE_DIR: roleDirs[name]!, RUBI_CLAUDE_DIR: cfgDir, ANTHROPIC_BASE_URL: mock.url, CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-placeholder-per-start", NO_PROXY: "127.0.0.1", RUBI_CRED_SOCK: path.join(root, `cred-${name}.sock`) },
+        env: { PATH: process.env.PATH ?? "", HOME: userHome, RUBI_RUN_TOKEN: TOKEN, RUBI_WORK_DIR: work, RUBI_ROLE_DIR: roleDirs[name]!, RUBI_CLAUDE_DIR: cfgDir, ANTHROPIC_BASE_URL: mock.url, ANTHROPIC_API_KEY: "mock-placeholder-not-a-real-key", NO_PROXY: "127.0.0.1", RUBI_CRED_SOCK: path.join(root, `cred-${name}.sock`) },
       });
       const lines: Msg[] = [];
       let buf = "";

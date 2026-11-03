@@ -1,5 +1,17 @@
 # Claude through the Agent SDK: runner, Rubi Home and plugin contract
 
+> **Superseded (T3 Agents, S5).** The runner path described here no longer starts or continues sessions: it needed a
+> long-lived subscription token that Rubi Home stored and an auth gateway that added it to requests, and both are gone.
+> Sessions run in T3 (the `t3agents` plugin, `t3-agent.*` ops), where **the user signs in with the unmodified Claude Code
+> CLI (`claude auth login`) and Rubi never stores, reads or proxies the subscription credential**: claude keeps it in its own
+> sign-in folder, Rubi Home only checks that the file is there. `claude-agent.start`, `send`, `fork` and `mode` answer a plain
+> message that points to the T3 Agents plugin; `projects`, `sessions`, `messages`, `status`, `next`, `decide`, `rename`,
+> `interrupt`, `close`, `role.*` and `ssh.*` still work. The gateway, `rubi-claude-token`, the token store and the runner's
+> OAuth-token variable are removed; service 2 of the netpipe is reserved and refused. The sections below are kept as the
+> record of the runner contract (roles and SSH are shared with T3); where they speak of the gateway or the token they are
+> history. See docs/plans/t3-integration.md (S5).
+
+
 Status: working contract for milestones M1-M6. Background and reasons: the Agent SDK design notes (v2) and
 the M0 spike (`spike/agent-sdk/README.md` on the M0 spike branch).
 Everything here runs only on the user's Mac; Rubi core never starts a runner and never talks to Anthropic.

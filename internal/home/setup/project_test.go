@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,9 +152,6 @@ func TestProjectRemove(t *testing.T) {
 	e := newTestEnv(t)
 	a := e.addProject("a")
 	b := e.addProject("b")
-	e.s.mu.Lock()
-	e.s.tests[a.Dir] = result{outcome: outcome{Done, "ok"}}
-	e.s.mu.Unlock()
 	if _, err := e.op("project.remove", map[string]any{"dir": "/nowhere"}); err == nil {
 		t.Error("removed a folder that isn't a project")
 	}
@@ -165,27 +161,19 @@ func TestProjectRemove(t *testing.T) {
 	if len(e.cfg.Projects) != 1 || e.cfg.Projects[0] != b.Dir {
 		t.Errorf("config: %v", e.cfg.Projects)
 	}
-	if _, ok := e.s.tests[a.Dir]; ok {
-		t.Error("the self-test result of a removed project is kept")
-	}
 	// the folder itself is untouched
 	if _, err := os.Stat(a.Dir); err != nil {
 		t.Error(err)
 	}
 	// not while a job works on it
-	e.ready()
-	e.ag.token = true
-	e.ag.box.probeOut = goodProbe
-	e.ag.selftest = &fakeSelfTest{box: e.ag.box, turn: goodTurn, hold: make(chan struct{})}
-	if _, err := e.op("run", map[string]any{"step": "selftest", "project": b.ID}); err != nil {
+	j, _, err := e.s.begin("all", b)
+	if err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the job", func() bool { return e.s.Status(context.Background()).Job != nil })
 	if _, err := e.op("project.remove", map[string]any{"dir": b.Dir}); err == nil || !strings.HasPrefix(err.Error(), "busy") {
 		t.Errorf("removed during a job: %v", err)
 	}
-	e.s.Cancel()
-	e.wait()
+	e.s.release(j)
 }
 
 func TestSharedPlaces(t *testing.T) {

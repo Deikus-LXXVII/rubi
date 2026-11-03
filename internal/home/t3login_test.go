@@ -79,14 +79,8 @@ type loginBox struct {
 	script   func(b *loginBox, c *loginConn)
 }
 
-func (b *loginBox) Projects() []agent.Project { return nil }
-func (b *loginBox) BeginSelfTest(string) (setup.SelfTestRun, error) {
-	return nil, errors.New("no")
-}
-func (b *loginBox) AuthStatus(context.Context) (agent.AuthStatus, error) {
-	return agent.AuthStatus{SignedIn: agent.SignedInAt(b.dir)}, nil
-}
-func (b *loginBox) AuthSignOut(context.Context) error { return nil }
+func (b *loginBox) Projects() []agent.Project     { return nil }
+func (b *loginBox) SignedIn(context.Context) bool { return agent.SignedInAt(b.dir) }
 func (b *loginBox) StartAuth(context.Context) (setup.AuthSession, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -476,5 +470,57 @@ func TestT3LoginRefusesALinkThatCarriesACredential(t *testing.T) {
 	}
 	if _, err := handle(t, l.h, "tok", "t3-setup.login.open", nil); err == nil || len(op.runs) != 0 {
 		t.Errorf("open: %v %v", err, op.runs)
+	}
+}
+
+// The earlier design's token folder is removed when Home starts, so no stale subscription token stays on disk; only a plain
+// folder of Home's own directory is removed, never what a link points to.
+func TestStartRemovesTheEarlierDesignsTokenFolder(t *testing.T) {
+	old := sweepSignIn
+	sweepSignIn = func(*agent.AppleContainer, context.Context) {}
+	defer func() { sweepSignIn = old }()
+	h, _, _ := agentHelper(t)
+	legacy := filepath.Join(h.Dir, "agent-auth")
+	if err := os.MkdirAll(filepath.Join(legacy, "token"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "token", "some-file"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signin := agent.SignInDirOf(h.Dir)
+	if err := os.MkdirAll(signin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cred := filepath.Join(signin, agent.CredentialFile)
+	if err := os.WriteFile(cred, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.SweepAgent(context.Background())
+	if _, err := os.Lstat(legacy); err == nil {
+		t.Error("the old token folder is still there")
+	}
+	if _, err := os.Stat(cred); err != nil {
+		t.Errorf("the new sign-in was touched: %v", err)
+	}
+	// a link is not followed
+	elsewhere := t.TempDir()
+	if err := os.WriteFile(filepath.Join(elsewhere, "keep"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, legacy); err != nil {
+		t.Fatal(err)
+	}
+	h.SweepAgent(context.Background())
+	if _, err := os.Stat(filepath.Join(elsewhere, "keep")); err != nil {
+		t.Errorf("what a link points to was removed: %v", err)
+	}
+	// a plain file of that name is not a folder: left alone
+	os.Remove(legacy)
+	if err := os.WriteFile(legacy, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h.SweepAgent(context.Background())
+	if _, err := os.Stat(legacy); err != nil {
+		t.Errorf("a file was removed: %v", err)
 	}
 }

@@ -8,45 +8,11 @@ package home
 // there and not empty.
 
 import (
-	"context"
 	"errors"
-	"os"
-	"path/filepath"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 )
-
-// t3LoginAgents is the part of setup.Agents the T3 sign-in uses.
-type t3LoginAgents struct{ t *T3Home }
-
-func (t3LoginAgents) Projects() []agent.Project { return nil }
-func (t3LoginAgents) BeginSelfTest(string) (setup.SelfTestRun, error) {
-	return nil, errors.New("the T3 sign-in has no self-test of its own")
-}
-
-func (a t3LoginAgents) AuthStatus(context.Context) (agent.AuthStatus, error) {
-	return agent.AuthStatus{SignedIn: agent.SignedInAt(a.t.signInDir())}, nil
-}
-
-// AuthSignOut deletes the shared credential file (it can't revoke it: that is done at claude.ai).
-func (a t3LoginAgents) AuthSignOut(context.Context) error {
-	err := os.Remove(filepath.Join(a.t.signInDir(), agent.CredentialFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-func (a t3LoginAgents) StartAuth(ctx context.Context) (setup.AuthSession, error) {
-	c := a.t.h.Fresh()
-	ac := &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: a.t.h.Dir, AuthDir: c.AgentAuthDir}
-	s, err := ac.StartLogin(ctx, a.t.signInDir())
-	if err != nil {
-		return nil, err
-	}
-	return s, nil
-}
 
 func (t *T3Home) signInDir() string { return agent.SignInDirOf(t.h.Dir) }
 
@@ -55,7 +21,9 @@ func (t *T3Home) login() *setup.Setup {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.loginSetup == nil {
-		var agents setup.Agents = t3LoginAgents{t}
+		var agents setup.Agents = setup.ManagerAgents{M: t.h.Agent, SignInDir: t.signInDir, Auth: func() *agent.AppleContainer {
+			return &agent.AppleContainer{RunnerDir: t.h.Fresh().AgentRunnerDir, EnvDir: t.h.Dir}
+		}}
 		if t.LoginAgents != nil {
 			agents = t.LoginAgents
 		}

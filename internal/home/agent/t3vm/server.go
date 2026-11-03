@@ -131,8 +131,8 @@ type Options struct {
 	Logf  func(format string, args ...any)
 
 	// Hooks for tests, set only from this package's tests: testEnv is added to every session's environment (to point
-	// claude at a scripted API) and testAPI serves the VM's 127.0.0.1:3129 (the gateway port of the runner VMs,
-	// unused here) from a dial. Home never sets them.
+	// claude at a scripted API) and testAPI serves the VM's 127.0.0.1:3129 (the test API service of the forwarder) from a
+	// dial. Home never sets them.
 	testEnv map[string]string
 	testAPI func(ctx context.Context) (net.Conn, error)
 }
@@ -627,15 +627,17 @@ func (s *Server) start(ctx context.Context, end func(), req StartRequest) (_ *se
 	ses.onEnd(func() { t3L.Close(); fwd.close() })
 
 	pipe := &agent.PipeSpec{Proxy: proxyL, Hook: hookL, T3: t3L}
+	pipeEnv := spec.PipeEnv()
 	if o.testAPI != nil {
 		apiL := netpipe.NewListener("api", 16)
 		api := &forwarder{dial: o.testAPI}
 		api.wg.Add(1)
 		go api.serve(apiL)
 		ses.onEnd(func() { apiL.Close(); api.close() })
-		pipe.Gateway = apiL
+		pipe.TestAPI = apiL
+		pipeEnv = map[string]string{"RUBI_T3_PORT": pipeEnv["RUBI_T3_PORT"], "RUBI_TEST_API_PORT": "3129"}
 	}
-	stopPipe, err := o.Host.StartSessionPipe(sctx, name, pipe, spec.PipeEnv(),
+	stopPipe, err := o.Host.StartSessionPipe(sctx, name, pipe, pipeEnv,
 		func() {
 			s.opt.Logf("t3vm: the network pipe of %s keeps failing; ending the session", name)
 			ses.giveUpNow()

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
@@ -54,7 +55,8 @@ class Hub {
   exit: Promise<number | null> = Promise.resolve(null);
   exited = false;
   proxyPort = 0;
-  gatewayPort = 0;
+  /** The test API service (5): the forwarder listens for it only when RUBI_TEST_API_PORT is set, which Hub.start always does. */
+  testApiPort = 0;
   hookPort = 0;
   t3Port = 0;
   private buf = Buffer.alloc(0);
@@ -63,15 +65,16 @@ class Hub {
   static async start(t3: "none" | "env" = "none"): Promise<Hub> {
     const h = new Hub();
     h.proxyPort = await freePort();
-    h.gatewayPort = await freePort();
+    h.testApiPort = await freePort();
     h.hookPort = await freePort();
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.RUBI_T3_PORT;
+    env.RUBI_TEST_API_PORT = String(h.testApiPort);
     if (t3 === "env") {
       h.t3Port = await freePort();
       env.RUBI_T3_PORT = String(h.t3Port);
     }
-    h.p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(h.proxyPort), "--gateway-port", String(h.gatewayPort), "--hook-port", String(h.hookPort)], { stdio: ["pipe", "pipe", "pipe"], env });
+    h.p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(h.proxyPort), "--hook-port", String(h.hookPort)], { stdio: ["pipe", "pipe", "pipe"], env });
     h.p.stdout!.on("data", (d: Buffer) => {
       h.buf = Buffer.concat([h.buf, d]);
       while (h.buf.length >= 9 && h.buf.length >= 9 + h.buf.readUInt32BE(5)) {
@@ -129,7 +132,7 @@ describe("rubi-netpipe", () => {
     await h.hello();
     assert.deepEqual(h.of(T.HELLO)[0], { type: T.HELLO, id: 0, payload: Buffer.from([1]) });
     // both ports accept now
-    for (const port of [h.proxyPort, h.gatewayPort, h.hookPort]) {
+    for (const port of [h.proxyPort, h.testApiPort, h.hookPort]) {
       const { c } = await h.client(port);
       c.destroy();
     }
@@ -164,7 +167,7 @@ describe("rubi-netpipe", () => {
     await new Promise<void>((r) => taken.listen(0, "127.0.0.1", () => r()));
     const port = (taken.address() as net.AddressInfo).port;
     const env: NodeJS.ProcessEnv = { ...process.env, RUBI_T3_PORT: String(port) };
-    const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(await freePort()), "--gateway-port", String(await freePort()), "--hook-port", String(await freePort())], { stdio: ["pipe", "pipe", "pipe"], env });
+    const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(await freePort()), "--hook-port", String(await freePort())], { stdio: ["pipe", "pipe", "pipe"], env });
     let out = Buffer.alloc(0);
     p.stdout.on("data", (d: Buffer) => (out = Buffer.concat([out, d])));
     const code = await new Promise((r) => p.on("close", r));
@@ -182,7 +185,7 @@ describe("rubi-netpipe", () => {
     if (!free) return t.skip("port 3130 is in use on this machine");
     const env: NodeJS.ProcessEnv = { ...process.env };
     delete env.RUBI_T3_PORT;
-    const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(await freePort()), "--gateway-port", String(await freePort())], { stdio: ["pipe", "pipe", "pipe"], env });
+    const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(await freePort())], { stdio: ["pipe", "pipe", "pipe"], env });
     p.stdin.on("error", () => {});
     try {
       let out = Buffer.alloc(0);
@@ -202,10 +205,10 @@ describe("rubi-netpipe", () => {
     const h = await Hub.start();
     await h.hello();
     const a = await h.client(h.proxyPort);
-    const b = await h.client(h.gatewayPort);
+    const b = await h.client(h.testApiPort);
     const c = await h.client(h.proxyPort);
     const opens = h.of(T.OPEN);
-    assert.deepEqual(opens.map((f) => f.payload[0]), [1, 2, 1]);
+    assert.deepEqual(opens.map((f) => f.payload[0]), [1, 5, 1]); // proxy, test API, proxy: never 2, the auth gateway that is gone
     assert.equal(new Set([a.id, b.id, c.id]).size, 3);
     assert.ok(a.id > 0);
   });
@@ -343,7 +346,7 @@ describe("rubi-netpipe", () => {
     await h.hello();
     const n = 50;
     const clients: Awaited<ReturnType<Hub["client"]>>[] = [];
-    for (let i = 0; i < n; i++) clients.push(await h.client(i % 2 ? h.gatewayPort : h.proxyPort));
+    for (let i = 0; i < n; i++) clients.push(await h.client(i % 2 ? h.testApiPort : h.proxyPort));
     const payloads = clients.map((_, i) => Buffer.alloc(100_000 + i, i));
     clients.forEach((cl, i) => cl.c.write(payloads[i]!));
     await until("all data", () => clients.every((cl, i) => h.data(cl.id).length === payloads[i]!.length), 10_000);
@@ -409,11 +412,21 @@ describe("rubi-netpipe", () => {
     await until("socket closed", () => cl.gone());
   });
 
+  it("has no gateway: that option is refused (exit 2) and the source has no service 2", async () => {
+    const p = spawn(process.execPath, [SCRIPT, "--gateway-port", String(await freePort())], { stdio: ["pipe", "pipe", "pipe"] });
+    let err = "";
+    p.stderr.on("data", (d: Buffer) => (err += d));
+    assert.equal(await new Promise((r) => p.on("close", r)), 2);
+    assert.match(err, /usage/);
+    const src = readFileSync(SCRIPT, "utf8");
+    assert.ok(!/SVC_GATEWAY|3129/.test(src), "the gateway is back in the forwarder");
+  });
+
   it("exits 1 when a port is taken", async () => {
     const taken = net.createServer();
     await new Promise<void>((r) => taken.listen(0, "127.0.0.1", () => r()));
     const port = (taken.address() as net.AddressInfo).port;
-    const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(port), "--gateway-port", String(await freePort()), "--hook-port", String(await freePort())], { stdio: ["pipe", "pipe", "pipe"] });
+    const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(port), "--hook-port", String(await freePort())], { stdio: ["pipe", "pipe", "pipe"] });
     let err = "";
     p.stderr.on("data", (d: Buffer) => (err += d));
     const code = await new Promise((r) => p.on("close", r));
@@ -423,10 +436,10 @@ describe("rubi-netpipe", () => {
   });
 
   it("refuses a T3 port that is another service's port or privileged, once, with the reason (exit 2)", async () => {
-    for (const [which, want] of [["proxy", /proxy service's port/], ["gateway", /gateway service's port/], ["hook", /hook service's port/], ["low", /privileged/]] as const) {
-      const ports = { proxy: await freePort(), gateway: await freePort(), hook: await freePort() };
+    for (const [which, want] of [["proxy", /proxy service's port/], ["hook", /hook service's port/], ["low", /privileged/]] as const) {
+      const ports = { proxy: await freePort(), hook: await freePort() };
       const t3 = which === "low" ? 80 : ports[which];
-      const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(ports.proxy), "--gateway-port", String(ports.gateway), "--hook-port", String(ports.hook), "--t3-port", String(t3)], { stdio: ["pipe", "pipe", "pipe"] });
+      const p = spawn(process.execPath, [SCRIPT, "--proxy-port", String(ports.proxy), "--hook-port", String(ports.hook), "--t3-port", String(t3)], { stdio: ["pipe", "pipe", "pipe"] });
       let err = "";
       let out = Buffer.alloc(0);
       p.stderr.on("data", (d: Buffer) => (err += d));
