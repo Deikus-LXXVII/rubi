@@ -220,7 +220,10 @@ of under 50 lines, with a test, kept in `t3/patches/`.
    egress allow-list still apply on top.
 2. Telemetry: off by default whenever Rubi installs or manages T3.
 3. Rubi Home's installer installs T3, pinned to `t3/upstream.json`.
-4. Subscription sign-in: shared by all roles if S0 shows it is safe, otherwise one per role (S0 result: section 9).
+4. Subscription sign-in: **shared by all roles** through `CLAUDE_SECURESTORAGE_CONFIG_DIR` (S0 result: section 9),
+   with each role keeping its own `CLAUDE_CONFIG_DIR`. Conditions: a contract test that fails loudly if the
+   variable or the folder layout (`.credentials.json`, `.oauth_refresh.lock`) changes, and a live token refresh
+   check in S2. One sign-in per role stays a documented fallback.
 5. Codex comes after v1, but the provider layer is generic from the start.
 6. Plugin name: `rubi-t3agents`.
 7. The hook path for desktop Claude Code sessions stays in rubi-claude-code for now.
