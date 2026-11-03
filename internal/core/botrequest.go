@@ -84,12 +84,41 @@ type botItem struct {
 	replaces bool
 
 	plugin, account string
+	once            bool     // a one-off access (rubi.access): lasts as long as the user chooses, not for good
+	res             resolved // the account of a one-off item
+}
+
+// onceAsk is a Bot's one-off access ask (rubi.access) that travels with its request: the accounts it wants for
+// a task (items), the ones it is assigned to already (granted), and how long it asked for. It keeps the meaning it
+// has in its own approval: the user picks the duration, and nothing in it is permanent unless they pick "always".
+type onceAsk struct {
+	items   []*botItem
+	granted []resolved
+	task    string
+	d       time.Duration
+}
+
+func (o *onceAsk) has(key string) bool {
+	for _, it := range o.items {
+		if it.key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// pendingOnce is a one-off access approval that waits on its own, so a request of the same Bot that comes
+// later can join it.
+type pendingOnce struct {
+	approvalID string
+	once       *onceAsk
 }
 
 type botBundle struct {
 	agent      string
 	approvalID string
-	items      []*botItem // the webhook first
+	items      []*botItem // the webhook first, then the permanent accounts
+	once       *onceAsk   // the Bot's one-off access, if it joined this request
 	reason     string
 	timer      *time.Timer
 }
@@ -99,7 +128,8 @@ type botRequests struct {
 	mu      sync.Mutex
 	aead    cipher.AEAD
 	byID    map[string]*botBundle
-	byAgent map[string]*botBundle // by lower-cased name
+	byAgent map[string]*botBundle   // by lower-cased name
+	onceBy  map[string]*pendingOnce // waiting one-off access approvals, by lower-cased Bot name
 }
 
 func (b *botRequests) cipher() cipher.AEAD {
@@ -107,7 +137,7 @@ func (b *botRequests) cipher() cipher.AEAD {
 		k := make([]byte, chacha20poly1305.KeySize)
 		_, _ = rand.Read(k)
 		b.aead, _ = chacha20poly1305.NewX(k)
-		b.byID, b.byAgent = map[string]*botBundle{}, map[string]*botBundle{}
+		b.byID, b.byAgent, b.onceBy = map[string]*botBundle{}, map[string]*botBundle{}, map[string]*pendingOnce{}
 	}
 	return b.aead
 }
@@ -165,6 +195,12 @@ func webhookHostPath(raw string) string {
 // ProposeBot records what a Bot asks for itself as a pending strong approval (merged with the Bot's
 // waiting one, if any) and returns what the Bot needs: the approval id and a one-time panel link.
 func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, error) {
+	return c.proposeBot(ctx, r, nil)
+}
+
+// proposeBot is ProposeBot with a one-off access ask that joins the request (from RequestAccess). Without one, a
+// one-off access of the same Bot that waits on its own is taken in.
+func (c *Core) proposeBot(ctx context.Context, r BotRequest, once *onceAsk) (map[string]any, error) {
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked: send the user rubi_link(\"unlock\") first, then ask again")
 	}
@@ -176,7 +212,7 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 	if len([]rune(reason)) > maxBotReason {
 		return nil, fmt.Errorf("the reason is too long (at most %d characters)", maxBotReason)
 	}
-	if r.Webhook == nil && len(r.Access) == 0 {
+	if r.Webhook == nil && len(r.Access) == 0 && once == nil {
 		return nil, errors.New("nothing to ask for: pass a webhook (url and key) and/or plugins")
 	}
 	if len(r.Access) > maxBotAccessItems {
@@ -264,6 +300,15 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 			}
 		}
 	}
+	if merged != nil && merged.once != nil { // the waiting request carried a one-off access: keep it
+		var err error
+		if once, err = combineOnce(merged.once, once); err != nil {
+			for _, it := range items {
+				wipe(it.sealed)
+			}
+			return nil, fmt.Errorf("%w (your earlier request %s was cancelled; ask again with everything)", err, merged.approvalID)
+		}
+	}
 	fail := func(err error) (map[string]any, error) {
 		for _, it := range items {
 			wipe(it.sealed)
@@ -273,20 +318,65 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 		}
 		return nil, err
 	}
-	if !known && !hasWebhook && len(items) > 0 {
+	if !known && !hasWebhook && (len(items) > 0 || once != nil) {
 		return fail(fmt.Errorf("%s isn't connected to Rubi yet: ask for your webhook first (rubi_agent_connect), "+
 			"plugins can go in the same request", name))
+	}
+	if len(items) == 0 && once != nil {
+		// The request this one-off access was to join was decided between the check and now: it is an access
+		// request on its own again.
+		return c.submitOnceAloneFor(ctx, name, once)
 	}
 	if len(items) == 0 {
 		return map[string]any{"status": "already_allowed", "already_allowed": already,
 			"message": name + " already has everything it asked for; nothing for the user to approve."}, nil
 	}
 
-	bundle := &botBundle{agent: name, items: items, reason: reason}
+	// A one-off access of this Bot that waits on its own joins this card (one passkey for both). It is cancelled
+	// only once the card exists, so a failed submit leaves the user's waiting card alone.
+	var absorbed *pendingOnce
+	if once == nil {
+		if absorbed = c.peekPendingOnce(name); absorbed != nil {
+			once = absorbed.once
+		}
+	}
+	var dropped []string // one-off accounts the card keeps for good already
+	if once != nil {
+		cp := &onceAsk{task: once.task, d: once.d, granted: once.granted} // a copy: the waiting ask is not changed
+		for _, it := range once.items {
+			dup := false
+			for _, p := range items {
+				dup = dup || p.key == "access:"+strings.TrimPrefix(it.key, "once:")
+			}
+			if dup {
+				dropped = append(dropped, it.res.title())
+			} else {
+				cp.items = append(cp.items, it)
+			}
+		}
+		// With no item left but accounts the Bot is assigned to already, the ask stays: approving the card still
+		// gives the task code for those accounts.
+		if once = cp; len(cp.items) == 0 && len(cp.granted) == 0 {
+			once = nil
+		}
+	}
+	bundle := &botBundle{agent: name, items: items, reason: reason, once: once}
 	req := c.botApproval(bundle, already)
 	out, err := c.Approvals.Submit(ctx, req)
 	if err != nil {
 		return fail(err)
+	}
+	if absorbed != nil {
+		if s, err := c.Approvals.Cancel(absorbed.approvalID); err != nil || s.State != approvals.Cancelled {
+			// The user decided that access request just now: this card would repeat it.
+			if id, _ := out["approval_id"].(string); id != "" {
+				_, _ = c.Approvals.Cancel(id)
+			}
+			return fail(errors.New("the user has just decided your waiting one-off access request, so this request was not sent; ask again for anything it did not cover"))
+		}
+		b.mu.Lock()
+		delete(b.onceBy, strings.ToLower(name))
+		b.mu.Unlock()
 	}
 	bundle.approvalID, _ = out["approval_id"].(string)
 	expires, _ := time.Parse(time.RFC3339, fmt.Sprint(out["expires_at"]))
@@ -303,8 +393,8 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 
 	var labels []string
 	replaces := false
-	for _, it := range items {
-		labels = append(labels, it.label)
+	for _, it := range bundle.allItems() {
+		labels = append(labels, bundle.labelOf(it))
 		replaces = replaces || it.replaces
 	}
 	res := map[string]any{"status": "awaiting_approval", "approval_id": id, "level": "strong",
@@ -313,6 +403,20 @@ func (c *Core) ProposeBot(ctx context.Context, r BotRequest) (map[string]any, er
 		res["approval_url"] = u
 	} else if e, ok := out["approval_url_error"]; ok {
 		res["approval_url_error"] = e
+	}
+	if absorbed != nil {
+		res["merged_access"] = absorbed.approvalID
+		res["merge_note"] = "Your waiting one-off access request (" + absorbed.approvalID + ") is folded into this one; its link no longer works. Send the user this link instead."
+	}
+	if len(dropped) > 0 {
+		res["access_note"] = "Your one-off access for " + strings.Join(dropped, ", ") + " was dropped from this card because the card already keeps those accounts for good."
+		if once == nil {
+			res["access_note"] = res["access_note"].(string) + " Nothing is left of the one-off request."
+		}
+	}
+	if once != nil && len(once.items) > 0 {
+		res["instructions_access"] = "This card also holds your one-off access for \"" + once.task + "\": the user picks how long it lasts " +
+			"(this task, a day, a week or always). What you asked for to keep is for good."
 	}
 	for _, k := range []string{"merged", "merge_note"} {
 		if v, ok := out[k]; ok {
@@ -536,12 +640,13 @@ func (c *Core) botApproval(bundle *botBundle, already []string) approvals.Reques
 	if len(already) > 0 {
 		preview["already_allowed"] = strings.Join(already, ", ")
 	}
+	all := bundle.allItems()
 	req := approvals.Request{Integration: "rubi", Kind: botRequestKind,
 		Options: []approvals.Option{{Key: "apply", Label: "Approve"}},
 		Execute: func(ctx context.Context, option string) (any, error) { return c.applyBotRequest(ctx, bundle, option) }}
 	if hook := bundle.items[0]; hook.key == webhookItem && hook.paste {
 		item := ""
-		if len(bundle.items) > 1 {
+		if len(all) > 1 {
 			item = webhookItem
 		}
 		req.Inputs = []approvals.Input{
@@ -558,7 +663,7 @@ func (c *Core) botApproval(bundle *botBundle, already []string) approvals.Reques
 			return err
 		}
 	}
-	if len(bundle.items) == 1 {
+	if len(all) == 1 {
 		it := bundle.items[0]
 		for k, v := range it.preview {
 			preview[k] = v
@@ -566,9 +671,9 @@ func (c *Core) botApproval(bundle *botBundle, already []string) approvals.Reques
 		req.Summary = it.label
 	} else {
 		var labels []string
-		for _, it := range bundle.items {
-			labels = append(labels, it.label)
-			req.Items = append(req.Items, approvals.Item{Key: it.key, Label: it.label, Preview: it.preview})
+		for _, it := range all {
+			labels = append(labels, bundle.labelOf(it))
+			req.Items = append(req.Items, approvals.Item{Key: it.key, Label: bundle.labelOf(it), Preview: it.preview})
 			if it.replaces { // the replacement is marked on the whole request too, not only on its item
 				preview["replaces"] = it.preview["replaces"]
 			}
@@ -577,8 +682,14 @@ func (c *Core) botApproval(bundle *botBundle, already []string) approvals.Reques
 			}
 		}
 		preview["proposed_by"] = "A Bot, through Rubi's tools (not you). Untick anything you didn't ask for."
-		req.Summary = fmt.Sprintf("%s asks for %d changes", name, len(bundle.items))
+		req.Summary = fmt.Sprintf("%s asks for %d changes", name, len(all))
 		req.Question = "Which of these may " + name + " have?"
+		if bundle.hasOnceItems() {
+			// The duration belongs to the items marked "for the time you choose" only; the others are for good.
+			preview["task"] = bundle.once.task
+			req.Options = accessOptions(bundle.once.d)
+			req.Question = "How long may " + name + " use the accounts marked \u201cfor the time you choose\u201d? Everything else here is for good."
+		}
 	}
 	req.Preview = preview
 	return req
@@ -618,15 +729,22 @@ func (c *Core) pastedWebhook(in map[string]string) (rawURL, key string, err erro
 
 // applyBotRequest runs on the user's approval (DecidePanel, after their proof was checked).
 func (c *Core) applyBotRequest(ctx context.Context, bundle *botBundle, option string) (any, error) {
-	_, keys := approvals.SplitOption(option)
+	duration, keys := approvals.SplitOption(option) // the duration is the user's choice for the one-off items only
 	chosen := map[string]bool{}
 	for _, k := range keys {
 		chosen[k] = true
 	}
-	var pick []*botItem
+	var pick, pickOnce []*botItem
 	for _, it := range bundle.items {
 		if keys == nil || chosen[it.key] {
 			pick = append(pick, it)
+		}
+	}
+	if bundle.once != nil {
+		for _, it := range bundle.once.items {
+			if keys == nil || chosen[it.key] {
+				pickOnce = append(pickOnce, it)
+			}
 		}
 	}
 	name := bundle.agent
@@ -705,6 +823,18 @@ func (c *Core) applyBotRequest(ctx context.Context, bundle *botBundle, option st
 	for _, it := range pick {
 		done = append(done, it.label)
 	}
+	onceReceipt, onceErr := c.applyOnce(bundle, pickOnce, duration)
+	if bundle.once != nil && onceErr == nil && onceReceipt != "" {
+		var names []string
+		for _, it := range pickOnce {
+			names = append(names, it.res.title())
+		}
+		c.Audit.Record("bot.request.once", audit.Fields{"approval_id": bundle.approvalID, "agent": name,
+			"once_accounts": strings.Join(names, ", "), "duration": duration, "task": bundle.once.task})
+	}
+	for _, it := range pickOnce {
+		done = append(done, it.label)
+	}
 	c.Audit.Record("bot.request.applied", audit.Fields{"approval_id": bundle.approvalID, "agent": name,
 		"webhook": hook != nil, "replaced": hook != nil && hook.replaces, "accounts": len(granted)})
 	for _, g := range granted {
@@ -722,8 +852,49 @@ func (c *Core) applyBotRequest(ctx context.Context, bundle *botBundle, option st
 			receipt += " Test: " + t.Problem
 		}
 	}
+	if onceReceipt != "" {
+		receipt += " " + onceReceipt
+	}
+	if onceErr != nil {
+		res["access_failed"] = onceErr.Error()
+		receipt += " The temporary access was not given: " + onceErr.Error()
+	}
 	res["receipt"] = receipt
 	return res, nil
+}
+
+// applyOnce gives the one-off part of a combined card with the duration the user chose: exactly what the access
+// approval does (grantOnce). The accounts the Bot is assigned to already get their task code when the card is
+// approved, even if the user unticked every one-off item (they need no approval, and the task is the Bot's whole
+// reason to ask); unticked accounts get nothing, and then the duration chosen does not apply (this task only).
+func (c *Core) applyOnce(bundle *botBundle, picked []*botItem, duration string) (receipt string, err error) {
+	if bundle.once == nil || (len(picked) == 0 && len(bundle.once.granted) == 0) {
+		return "", nil
+	}
+	if _, ok := map[string]bool{"allow": true, "day": true, "week": true, "always": true}[duration]; !ok || len(picked) == 0 {
+		duration = "allow" // anything else, or no account to keep, is the shortest: this task
+	}
+	var hook *vault.Agent
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if a := findAgent(d, bundle.agent); a != nil {
+			cp := *a
+			hook = &cp
+		}
+		return nil
+	})
+	if hook == nil {
+		return "", errors.New(bundle.agent + " isn't connected to Rubi (its webhook was left out)")
+	}
+	var allowed []resolved
+	for _, it := range picked {
+		allowed = append(allowed, it.res)
+	}
+	out, err := c.grantOnce(*hook, bundle.once.granted, allowed, bundle.once.task, bundle.once.d, duration)
+	if err != nil {
+		return "", err
+	}
+	r, _ := out["receipt"].(string)
+	return r, nil
 }
 
 // botRequestFinished drops a Bot request once its approval ends (denied, expired, cancelled, done).
@@ -789,4 +960,118 @@ func (c *Core) pendingBotRequest(agent string) string {
 		return x.approvalID
 	}
 	return ""
+}
+
+// allItems is what the card lists: the webhook, the permanent accounts, then the one-off accounts.
+func (b *botBundle) hasOnceItems() bool { return b.once != nil && len(b.once.items) > 0 }
+
+// labelOf is an item's label on the card. When the card holds one-off items, every other item says it is for
+// good, so that the two kinds can't be taken for each other.
+func (b *botBundle) labelOf(it *botItem) string {
+	if b.hasOnceItems() && !it.once {
+		return it.label + " for good"
+	}
+	return it.label
+}
+
+func (b *botBundle) allItems() []*botItem {
+	all := append([]*botItem{}, b.items...)
+	if b.once != nil {
+		all = append(all, b.once.items...)
+	}
+	return all
+}
+
+// onceItem is one account of a Bot's one-off access, as an item of the combined card. It says in plain words that
+// its duration is the user's choice, so that it can't be taken for the permanent ones next to it.
+func (c *Core) onceItem(agent, task string, r resolved) *botItem {
+	m, _ := c.Store.Get(r.plugin)
+	p := map[string]any{"bot": agent, "plugin": r.name, "account": r.label, "task": task,
+		"effect": agent + " may use this account for the time you choose above (this task, a day, a week, or always), for the task. Actions that need your approval still do."}
+	var can []string
+	for _, act := range m.Actions {
+		can = append(can, act.Title+" ("+string(act.DefaultLevel)+" approval)")
+	}
+	for _, t := range m.Tools {
+		can = append(can, t.Name)
+	}
+	if len(can) > 0 {
+		p["can"] = strings.Join(can, "; ")
+	}
+	if len(m.Egress) > 0 {
+		p["connects_to"] = strings.Join(m.Egress, ", ")
+	}
+	return &botItem{key: "once:" + r.key(), label: "Let " + agent + " use " + r.title() + " for the time you choose",
+		preview: p, plugin: r.plugin, account: r.account, once: true, res: r}
+}
+
+// canJoinBotRequest: the Bot has a request waiting that this one-off access can join (it holds no other one-off
+// access, or one for the same task).
+func (c *Core) canJoinBotRequest(agent string, once *onceAsk) bool {
+	b := &c.botReqs
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	x := b.byAgent[strings.ToLower(agent)]
+	return x != nil && len(x.items) > 0 && (x.once == nil || x.once.task == once.task)
+}
+
+// rememberPendingOnce keeps a one-off access approval that waits on its own, for a later request of the same Bot to
+// join. Other Bots' asks are never touched: the key is the Bot.
+func (c *Core) rememberPendingOnce(agent string, out map[string]any, once *onceAsk) {
+	id, _ := out["approval_id"].(string)
+	if id == "" {
+		return
+	}
+	b := &c.botReqs
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.cipher()
+	b.onceBy[strings.ToLower(agent)] = &pendingOnce{approvalID: id, once: once}
+}
+
+// peekPendingOnce returns the Bot's waiting one-off access approval, if it still waits.
+func (c *Core) peekPendingOnce(agent string) *pendingOnce {
+	b := &c.botReqs
+	b.mu.Lock()
+	p := b.onceBy[strings.ToLower(agent)]
+	b.mu.Unlock()
+	if p == nil {
+		return nil
+	}
+	if s, err := c.Approvals.Get(p.approvalID); err != nil || s.State != approvals.Pending {
+		b.mu.Lock()
+		delete(b.onceBy, strings.ToLower(agent))
+		b.mu.Unlock()
+		return nil
+	}
+	return p
+}
+
+// combineOnce joins two one-off access asks of one Bot. They must be for the same task: one code is made for a task.
+func combineOnce(a, b *onceAsk) (*onceAsk, error) {
+	if a == nil {
+		return b, nil
+	}
+	if b == nil {
+		return a, nil
+	}
+	if a.task != b.task {
+		return nil, fmt.Errorf("two one-off access requests of yours, for different tasks (%q and %q), can't share one approval: one code is made for one task", a.task, b.task)
+	}
+	out := &onceAsk{task: a.task, d: max(a.d, b.d), granted: append([]resolved{}, a.granted...), items: append([]*botItem{}, a.items...)}
+	for _, it := range b.items {
+		if !out.has(it.key) {
+			out.items = append(out.items, it)
+		}
+	}
+	for _, g := range b.granted {
+		dup := false
+		for _, x := range out.granted {
+			dup = dup || x.key() == g.key()
+		}
+		if !dup {
+			out.granted = append(out.granted, g)
+		}
+	}
+	return out, nil
 }

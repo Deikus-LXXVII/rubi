@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -469,6 +470,75 @@ type pluginUpdate struct {
 	cand           *plugins.Candidate
 	summary        string
 	preview        map[string]any
+	pinnedKey      string           // the publisher key recorded at install (sideloaded plugins)
+	old            plugins.Manifest // the installed release's manifest
+}
+
+// powerFields are the parts of a manifest that confer power or decide what the user is asked, so that a change to
+// any of them is a different decision from the one made at install (for a plugin from outside the store):
+//   - entry: the executable that runs;
+//   - fields, secrets: what the plugin asks the user to enter and keep (secrets: also internal and renewable ones);
+//   - actions: what it can do and at which approval level, including a lowered level and a lock removed;
+//   - events: what it can wake the agent about (and which fields are untrusted);
+//   - egress: the hosts it may reach;
+//   - tools: the tools it hands the agent;
+//   - panel: a page of its own in the panel, acting for the user;
+//   - config: the settings the user is shown, their defaults and per-account scope (a changed default changes
+//     what the plugin does with no one deciding);
+//   - hooks: private web addresses that reach it;
+//   - home: what it does through Rubi Home (for example claude-start).
+//
+// The rest (name, description, needs, version, source, min_rubi, the publisher's name and URL) confers none; the
+// publisher key is checked on its own.
+var powerFields = []struct {
+	name string
+	get  func(m plugins.Manifest) any
+}{
+	{"entry", func(m plugins.Manifest) any { return m.Entry }},
+	{"fields", func(m plugins.Manifest) any { return m.Fields }},
+	{"secrets", func(m plugins.Manifest) any { return m.Secrets }},
+	{"actions", func(m plugins.Manifest) any { return m.Actions }},
+	{"events", func(m plugins.Manifest) any { return m.Events }},
+	{"egress", func(m plugins.Manifest) any { return m.Egress }},
+	{"tools", func(m plugins.Manifest) any { return m.Tools }},
+	{"panel", func(m plugins.Manifest) any { return m.Panel }},
+	{"config", func(m plugins.Manifest) any { return m.Config }},
+	{"hooks", func(m plugins.Manifest) any { return m.Hooks }},
+	{"home", func(m plugins.Manifest) any { return m.Home }},
+}
+
+// changedPowerFields names the permission-bearing parts of the manifest that differ between two releases.
+func changedPowerFields(old, m plugins.Manifest) []string {
+	var changed []string
+	for _, f := range powerFields {
+		a, _ := json.Marshal(f.get(old))
+		b, _ := json.Marshal(f.get(m))
+		if string(a) != string(b) {
+			changed = append(changed, f.name)
+		}
+	}
+	return changed
+}
+
+// startsUnticked says whether this update must be ticked on purpose in "update everything", and why. A plugin
+// from the store is covered by the review. One from outside it is ticked by default only when the release is
+// signed by the key pinned at install and nothing in the manifest that confers power changed (powerFields):
+// anything else is a different trust decision than the one the user made when installing it.
+func (u *pluginUpdate) startsUnticked() (bool, string) {
+	if u.cand.Reviewed {
+		return false, ""
+	}
+	if u.pinnedKey == "" || strings.TrimSpace(u.cand.Manifest.Publisher.Key) != strings.TrimSpace(u.pinnedKey) {
+		return true, "publisher key changed"
+	}
+	changed := changedPowerFields(u.old, u.cand.Manifest)
+	if len(changed) == 0 {
+		return false, ""
+	}
+	if added := newPermissions(u.old, u.cand.Manifest); added != "" {
+		return true, "new permissions: " + added + " (changed: " + strings.Join(changed, ", ") + ")"
+	}
+	return true, "it changes what the plugin may do (changed: " + strings.Join(changed, ", ") + ")"
 }
 
 // preparePluginUpdate downloads and verifies the newest release of id. done is set (and u nil) when
@@ -522,7 +592,7 @@ func (c *Core) preparePluginUpdate(ctx context.Context, id string) (u *pluginUpd
 	if added := newPermissions(old, m); added != "" {
 		preview["new_permissions"] = added
 	}
-	return &pluginUpdate{core: c, id: id, name: m.Name, from: rec.Version, cand: cand, preview: preview,
+	return &pluginUpdate{core: c, id: id, name: m.Name, from: rec.Version, cand: cand, preview: preview, pinnedKey: rec.PublisherKey, old: old,
 		summary: "Update " + m.Name + " to " + m.Version}, nil, nil
 }
 
@@ -1346,6 +1416,27 @@ func newPermissions(old, m plugins.Manifest) string {
 	for _, e := range m.Events {
 		if !has(oldEvents, e.Type) {
 			added = append(added, "can notify about "+e.Type)
+		}
+	}
+	for _, h := range m.Home {
+		if !has(old.Home, h) {
+			if n, ok := homeCapabilities[h]; ok {
+				added = append(added, "uses Rubi Home for "+n)
+			} else {
+				added = append(added, "uses Rubi Home for "+h)
+			}
+		}
+	}
+	if m.Hooks && !old.Hooks {
+		added = append(added, "can give private web addresses that reach it")
+	}
+	oldTools := map[string]bool{}
+	for _, t := range old.Tools {
+		oldTools[t.Name] = true
+	}
+	for _, t := range m.Tools {
+		if !oldTools[t.Name] {
+			added = append(added, "new tool "+t.Name)
 		}
 	}
 	if old.Publisher.Key != "" && old.Publisher.Key != m.Publisher.Key {

@@ -123,27 +123,46 @@ that rarely happens. Not worth it now. Revisit if the panel gets a page that edi
 
 ## B5: Bot access (`rubi.access` and `rubi.bot.request`)
 
-Status: analysis only; left for the owner, because folding them changes security semantics.
+Status: done as the owner decided (branch `citri/batch-decisions`): one card and one passkey, not a merger in substance.
 
-The two paths look alike but give different things:
+The two paths give different things and stay different:
 
 | | `rubi.access` (`RequestAccess`, tool `rubi_access`) | `rubi.bot.request` (`ProposeBot`, tools `rubi_access_request`, `rubi_agent_connect`) |
 | --- | --- | --- |
-| What the Bot gets | A time-limited access code (the Bot asks for up to 120 minutes) for a task it describes; only used while two or more Bots share Rubi | A permanent assignment: the Bot is added to the account's `Agents` list ("for good") |
-| Who chooses how long | The user, on the approval: this task, a day, a week, always | Nobody: there is one option, and the result is always permanent |
-| Accounts already assigned | Granted at once with no approval (a code) | Reported as `already_allowed` |
-| Pending asks | Every call is its own approval | One pending request per Bot; a new ask cancels the old approval and merges its items |
-| What Rubi sends | An `access.granted` event with the code, to that Bot's webhook | Assigned-account codes after approval, plus the webhook test |
+| What the Bot gets | A code for a task, for the time the user picks; only used while two or more Bots share Rubi | A permanent assignment: the Bot is added to the account's `Agents` list |
+| Who chooses how long | The user, on the approval: this task, a day, a week, always | Nobody: always for good |
 
-Making every access ask go through `botBundle` would therefore mean one of two things. Either a one-off "read this
-mailbox for my task" becomes a permanent assignment (a Bot gets more, and for longer, than it asked for and than the
-user chose today), or the Bot-request approval gains the four duration options and the task text, which is a new
-approval design (the user would then pick a duration for the webhook item too, where none applies). Either way it
-changes what a Bot can get, for how long, and what the user is asked, and it touches the access-code issuing and its
-throttle. That is the owner's decision. What would be contained once decided: a `duration` on `botItem` for access
-items, the existing `Question`/`Options` plus `<option>|items:` mechanism (already used by `rubi.access` itself) to
-carry the choice, and `issueAccess` for the code. "One approval for several Bots' access" is a further step on top: it
-needs a request that spans Bots, while both paths key their pending state per Bot.
+What changed: when a Bot asks for both while one of them waits, they become one `rubi.bot.request` approval with an item
+per ask (the `botBundle` join pattern). A waiting request of the Bot takes in a later `rubi_access` (`proposeBot` with a
+`onceAsk`), and a later request takes in a waiting `rubi_access` of the same Bot (the access approval is cancelled and its
+ask moves over, as an earlier request is when a Bot asks again). Only the same Bot's asks join; a second one-off ask for
+another task stays its own approval (one code is made for one task). A one-off item for an account the request already
+asks for to keep is dropped (for good covers it).
+
+Duration inside a batch. The engine already carries an option next to the ticked items (`<option>|items:a,b`, which
+`rubi.access` itself used). The combined card shows the four duration choices as the card's one choice, with the question
+"How long may X use the accounts marked 'for the time you choose'? Everything else here is for good." The duration
+applies to the `once:` items only (`applyOnce` calls the same `grantOnce` as the access approval); the `access:` items
+are assigned for good whatever the option is, and the webhook has no duration. Each one-off item's label ends in "for
+the time you choose" and its preview says so, and the permanent items say "for good". Why this and not a choice per item:
+a per-item choice needs a new kind of item in the engine and the panel, a bigger change for no gain on a phone, where one
+radio group above the list reads best. The panel now also shows the question above a radio group (it did not before).
+When none of the one-off items is ticked (or the card keeps all of them for good), the accounts the Bot is assigned to
+already still get their task code when the card is approved: they need no approval, and the task is the Bot's reason to
+ask. The unticked accounts get nothing, the duration chosen then does not apply (this task only), and the receipt says
+"nothing new was allowed". If nothing is left of the one-off ask (every account kept for good, none assigned already), the
+response says so (`access_note`). Labels: on a card with one-off items, the other items end in " for good".
+
+Security notes: the one-off item can never become permanent unless the user picks "Always allow", exactly as in its own
+approval; the permanent items never get an expiry; unticking one item leaves the other's meaning unchanged; asks of
+different Bots do not merge. The webhook key handling of the Bot request is untouched.
+
+Tests: `internal/core/botaccess_test.go`: `TestOneOffAccessInTheCombinedCardGetsExactlyTheChosenDuration`,
+`TestOneOffAccessForThisTaskLastsTheTaskOnly`, `TestPermanentAssignmentInTheCombinedCardStaysPermanent`,
+`TestUntickingOneItemLeavesTheOthersMeaningAlone`, `TestOneOffAccessFirstThenTheBotRequestJoinsIt`,
+`TestAsksOfDifferentBotsDoNotMerge`, `TestOneOffAccessForAnotherTaskStaysSeparate`. Break-checked: a one-off item
+forced to "always" fails the first two groups; a permanent item given an expiry fails the permanent test. Demo:
+`#demo=botaccess`.
 
 ## Review fixes
 
@@ -186,7 +205,36 @@ Status: done. Each has a test that fails without it; M1, M1b, m1, m4 and the eng
   `TestTickingTheUnreviewedItemInstallsIt`, `TestSingleUnreviewedInstallKeepsItsWarning`. `#demo=installmany` shows it.
 - **Unreviewed warning in `rubi.update.all`.** A sideloaded plugin can be in it (its update is offered from its
   source, with the publisher key pinned); its item keeps the warning and review line. `TestUpdateEverythingKeepsTheUnreviewedWarning`.
-  Updates stay ticked: the plugin was installed on purpose and its publisher key is pinned.
+  (Superseded below: a sideloaded update is ticked only when nothing changed.)
+
+## Review fixes, round 3 (B5 and the sideload rule)
+
+- **Sideload rule covers all power fields.** `newPermissions` (also the plain update approval's list) now lists new
+  Rubi Home capabilities, hooks, new tool names and, as before, a lowered action level (checked by a test: the level
+  ranks run none, chat, tap, strong). `startsUnticked` unticks a sideloaded update on any change of the fields that
+  confer power (`powerFields`, with the reason for each in its comment: entry, fields, secrets, actions, events, egress,
+  tools, panel, config, hooks, home); a dropped host counts too. Tests: `TestStartsUntickedRule` (table: Home
+  claude-start, hooks, a new tool, a lowered level, a changed config field, a host, a panel page, another executable...),
+  `TestSideloadedUpdateThatAddsAHomeCapabilityStartsUnticked`, `TestNewPermissionsListsHomeHooksToolsAndALoweredLevel`.
+- **Join fixes.** A one-off ask dropped as a duplicate keeps its task code for the accounts already assigned, and the
+  response says what was dropped. If the request to join is decided between the check and the proposal, the ask is an
+  access approval again. The absorbed access approval is cancelled only after the card exists; if it was decided
+  meanwhile, the new card is cancelled and the Bot is told. The code is only for the accounts the Bot is assigned to at
+  apply time (`stillAssigned`). The one-off grant is audited (`bot.request.once`: accounts, duration, task). Tests in
+  `internal/core/botaccess_test.go`. Break-checked: the dropped duplicate, the join race, the late cancel, the stale list
+  and the power fields.
+
+## Sideloaded updates in "Update everything"
+
+A sideloaded (not from the store) plugin's update item is ticked by default only if the release's publisher key equals
+the key pinned at install and the update asks for no new permissions (`newPermissions`: secrets, actions, hosts, events,
+a new key). Otherwise the item starts unticked (`DefaultOff`), its label says "(not ticked: ...)", and its preview says
+why (`starts_unticked`). A release signed by another key is still refused outright when it is fetched ("signed by a
+different publisher key"), so it never reaches the card, and for the user the case that remains is new permissions;
+`startsUnticked` also checks the key, as a second line of defence. The plain "Update plugins" approval is unchanged.
+Tests: `internal/core/sideloadupdate_test.go`: `TestSideloadedUpdateWithTheSameKeyAndPermissionsIsTicked`,
+`TestSideloadedUpdateWithNewPermissionsStartsUnticked`, `TestSideloadedUpdateWithAnotherKeyIsStillRefused`,
+`TestStartsUntickedRule`. Break-checked: without the permissions guard and without the key guard they fail.
 
 ## Cross-cutting
 

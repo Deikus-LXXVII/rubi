@@ -103,7 +103,18 @@ func (c *Core) submitUpdateAll(ctx context.Context, info UpdateInfo, ready []*pl
 	byID := map[string]*pluginUpdate{}
 	key := target + "|left_out=" + fmt.Sprint(leftOut)
 	for _, u := range ready {
-		items = append(items, approvals.Item{Key: updateAllPluginPrefix + u.id, Label: u.name + " " + u.from + " → " + u.cand.Manifest.Version, Preview: u.preview})
+		item := approvals.Item{Key: updateAllPluginPrefix + u.id, Label: u.name + " " + u.from + " → " + u.cand.Manifest.Version, Preview: u.preview}
+		if off, why := u.startsUnticked(); off {
+			// Not ticked for the user: an update from outside the store that changes who signs it or what it may do.
+			p := map[string]any{}
+			for k, v := range u.preview {
+				p[k] = v
+			}
+			p["starts_unticked"] = "Not ticked: " + why + ". Tick it only if you trust this update."
+			item.Preview, item.DefaultOff = p, true
+			item.Label += " (not ticked: " + strings.SplitN(why, ":", 2)[0] + ")"
+		}
+		items = append(items, item)
 		byID[u.id] = u
 		key += "|" + u.id + "=" + u.cand.Manifest.Version
 	}

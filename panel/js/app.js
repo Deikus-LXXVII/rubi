@@ -553,7 +553,7 @@ function demoScreen(ctx, which) {
       ctx.hello = { ...DEMO_HELLO, state: "locked" };
       return unlockFlow(ctx, "Unlock Rubi", "Rubi restarted and locked itself. Unlock it to let your agent continue.",
         () => { ctx.hello = { ...DEMO_HELLO }; statusScreen(ctx, "Unlocked. You can go back to your agent."); });
-    case "send": case "install": case "updateall": case "withdrawmany": case "installmany": case "removemany": case "rollbackmany": case "reveal": case "door": case "botpaste": case "curator":
+    case "send": case "install": case "botaccess": case "updateall": case "withdrawmany": case "installmany": case "removemany": case "rollbackmany": case "reveal": case "door": case "botpaste": case "curator":
       return approveScreen(ctx, which, { onDone: back, doneLabel: "Back to the demo" });
     case "settings":
       return settingsScreen(ctx, "plugins");
@@ -1150,10 +1150,12 @@ async function approveScreen(ctx, id, opts = {}) {
     });
     choiceUI = h("label", { class: "switch-row" }, h("span", {}, label), sw);
   } else if (a.options.length > 1) {
-    choiceUI = h("div", { class: "choices", role: "radiogroup" }, a.options.map((o, i) => {
+    const group = h("div", { class: "choices", role: "radiogroup", "aria-label": a.question || "Choose" }, a.options.map((o, i) => {
       const r = h("input", { type: "radio", name: "opt", value: o.key, checked: i === 0, onchange: () => { chosen = optKey = o.key; syncItems?.(); } });
       return h("label", { class: "choice" }, r, h("span", {}, o.label, o.meaning ? h("small", {}, o.meaning) : null));
     }));
+    // The question says what the choice is about (in a combined Bot card: only the items marked for a while).
+    choiceUI = a.question ? h("div", {}, h("p", { class: "choice-q" }, a.question), group) : group;
   }
 
   // A batch: every item has its own checkbox; the passkey signs exactly the chosen set.

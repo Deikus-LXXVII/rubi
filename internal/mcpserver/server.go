@@ -496,7 +496,7 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_access_request", InputSchema: pluginsAcceptStrings[accessRequestIn](),
-		Description: "Ask the user to give you (your Bot) plugin accounts for good, e.g. plugins [{id: \"gmail\"}] for all its mailboxes or [{id: \"gmail\", accounts: [\"me@gmail.com\"]}]. List everything you need in ONE call. The user approves in the Rubi panel with their passkey and may untick some; with a pending rubi_agent_connect it becomes one approval. Afterwards Rubi sends access codes to your webhook. For a one-off task use rubi_access instead."},
+		Description: "Ask the user to give you (your Bot) plugin accounts for good, e.g. plugins [{id: \"gmail\"}] for all its mailboxes or [{id: \"gmail\", accounts: [\"me@gmail.com\"]}]. List everything you need in ONE call. The user approves in the Rubi panel with their passkey and may untick some; with a pending rubi_agent_connect, or a pending rubi_access of yours, it becomes one approval (what you ask for here stays for good; the user still picks how long the rubi_access part lasts). Afterwards Rubi sends access codes to your webhook. For a one-off task use rubi_access instead."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in accessRequestIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
@@ -699,7 +699,7 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_access",
-		Description: "When several Bots share Rubi: ask for access to plugin accounts (e.g. mailboxes) for a task, up to 120 minutes. ALWAYS ask for everything the task needs in ONE call, across plugins too: plugins [\"gmail\",\"icloud-mail\"] for all their accounts, or resources [{plugin, account}, ...] for chosen ones (plugin + accounts for one plugin). Never one call per account or per plugin: accounts you are assigned to are granted at once, and the user approves all the others on ONE screen, ticking the ones to allow. You get one code for all of them at your own webhook, which starts a run of yours that carries on with the task; there, pass rubi_agent and rubi_access to those plugins' tools."},
+		Description: "When several Bots share Rubi: ask for access to plugin accounts (e.g. mailboxes) for a task, up to 120 minutes. ALWAYS ask for everything the task needs in ONE call, across plugins too: plugins [\"gmail\",\"icloud-mail\"] for all their accounts, or resources [{plugin, account}, ...] for chosen ones (plugin + accounts for one plugin). If you also have a request for your webhook or for accounts for good waiting, this joins it: one card, one passkey, and each part keeps its own meaning. Never one call per account or per plugin: accounts you are assigned to are granted at once, and the user approves all the others on ONE screen, ticking the ones to allow. You get one code for all of them at your own webhook, which starts a run of yours that carries on with the task; there, pass rubi_agent and rubi_access to those plugins' tools."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in accessIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
