@@ -145,9 +145,31 @@ func (c *Core) RequestLibraryCurator(ctx context.Context, name string) (map[stri
 // version of a library skill (version 0: every version that isn't withdrawn). This is the user's own way to pull a
 // skill the curator should not have admitted, whatever the curator does. Nothing changes until the user approves.
 func (c *Core) RequestLibraryWithdraw(ctx context.Context, id string, version int) (map[string]any, error) {
-	if c.State() != Unlocked {
-		return nil, errors.New("Rubi is locked")
+	return c.RequestLibraryWithdraws(ctx, []LibraryRef{{ID: id, Version: version}})
+}
+
+// LibraryRef names a library skill: one version of it, or (Version 0) every version that isn't withdrawn.
+type LibraryRef struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+// libraryKey is the item key of a withdrawal: the skill id, or id@version for one version.
+func libraryKey(id string, version int) string {
+	if version == 0 {
+		return id
 	}
+	return id + "@" + strconv.Itoa(version)
+}
+
+// libraryWithdrawal is one skill's part of a withdrawal request.
+type libraryWithdrawal struct {
+	key, label, summary string
+	preview             map[string]any
+	run                 func() (map[string]any, error)
+}
+
+func (c *Core) prepareLibraryWithdrawal(id string, version int) (*libraryWithdrawal, error) {
 	if version < 0 {
 		return nil, errors.New("bad version")
 	}
@@ -164,25 +186,140 @@ func (c *Core) RequestLibraryWithdraw(ctx context.Context, id string, version in
 	if len(which) == 0 {
 		return nil, errors.New("there is nothing to withdraw there")
 	}
-	summary := "Withdraw skill " + id + " from the library"
+	summary, label := "Withdraw skill "+id+" from the library", "Skill "+id
 	if version != 0 {
 		summary = "Withdraw version " + strconv.Itoa(version) + " of skill " + id + " from the library"
+		label = "Skill " + id + " v" + strconv.Itoa(version)
 	}
-	return c.Approvals.Submit(ctx, approvals.Request{
-		Integration: "rubi", Kind: libraryWithdrawKind, Summary: summary,
-		Preview: map[string]any{"skill": id, "versions": strings.Join(which, ", "),
-			"effect": "Roles that use it drop it the next time Rubi Home builds them (at once on computers that are online, otherwise when they next connect to Rubi). New roles can't attach it. The curator can admit it again."},
-		Options: []approvals.Option{{Key: "apply", Label: "Withdraw"}},
-		Execute: func(context.Context, string) (any, error) {
+	preview := map[string]any{"skill": id, "versions": strings.Join(which, ", "),
+		"effect": "Roles that use it drop it the next time Rubi Home builds them (at once on computers that are online, otherwise when they next connect to Rubi). New roles can't attach it. The curator can admit it again."}
+	if version == 0 {
+		// The withdrawal runs when the user approves, on whatever versions exist then.
+		preview["covers"] = "every version, including any admitted before you approve"
+	}
+	return &libraryWithdrawal{key: libraryKey(id, version), label: label, summary: summary, preview: preview,
+		run: func() (map[string]any, error) {
 			changed, err := c.Library.SetState(id, version, library.Withdrawn, "the user (panel)")
 			if err != nil {
 				return nil, err
 			}
 			c.Audit.Record("library.withdrawn", audit.Fields{"id": id, "versions": changed, "by": "the user"})
-			c.pushLibraryRevocations()
-			return map[string]any{"applied": true, "withdrawn": changed}, nil
-		},
-	})
+			return map[string]any{"skill": id, "withdrawn": changed}, nil
+		}}, nil
+}
+
+// RequestLibraryWithdraws asks the same for several skills with ONE approval, an item each (project rule 5:
+// fewest user actions); the user can untick any. A skill that can't be withdrawn is reported under "failed" and
+// does not hold back the others. A list of one is the ordinary approval.
+func (c *Core) RequestLibraryWithdraws(ctx context.Context, refs []LibraryRef) (map[string]any, error) {
+	if c.State() != Unlocked {
+		return nil, errors.New("Rubi is locked")
+	}
+	if len(refs) == 0 {
+		return nil, errors.New("name at least one skill")
+	}
+	if len(refs) > maxBatch {
+		return nil, fmt.Errorf("at most %d skills at a time", maxBatch)
+	}
+	var ws []*libraryWithdrawal
+	failed := map[string]string{}
+	seen := map[string]bool{}
+	whole := map[string]bool{} // skills named as a whole: their single versions are already covered
+	for _, r := range refs {
+		if r.Version == 0 {
+			whole[r.ID] = true
+		}
+	}
+	var covered []string
+	for _, r := range refs {
+		if r.Version != 0 && whole[r.ID] {
+			covered = append(covered, libraryKey(r.ID, r.Version))
+			continue
+		}
+		w, err := c.prepareLibraryWithdrawal(r.ID, r.Version)
+		if err != nil {
+			if len(refs) == 1 {
+				return nil, err
+			}
+			failed[libraryKey(r.ID, r.Version)] = err.Error()
+			continue
+		}
+		if !seen[w.key] {
+			seen[w.key] = true
+			ws = append(ws, w)
+		}
+	}
+	if len(ws) == 0 {
+		return map[string]any{"status": "nothing_to_withdraw", "failed": failed}, nil
+	}
+	var res map[string]any
+	var err error
+	if len(ws) == 1 {
+		w := ws[0]
+		res, err = c.Approvals.Submit(ctx, approvals.Request{
+			Integration: "rubi", Kind: libraryWithdrawKind, Summary: w.summary, Preview: w.preview,
+			Options: []approvals.Option{{Key: "apply", Label: "Withdraw"}},
+			Execute: func(context.Context, string) (any, error) {
+				out, err := w.run()
+				if err != nil {
+					return nil, err
+				}
+				c.pushLibraryRevocations()
+				out["applied"] = true
+				return out, nil
+			},
+		})
+	} else {
+		items := make([]approvals.Item, len(ws))
+		byKey := map[string]*libraryWithdrawal{}
+		for i, w := range ws {
+			items[i] = approvals.Item{Key: w.key, Label: w.label, Preview: w.preview}
+			byKey[w.key] = w
+		}
+		res, err = c.Approvals.Submit(ctx, approvals.Request{
+			Integration: "rubi", Kind: libraryWithdrawKind, Summary: fmt.Sprintf("Withdraw %d skills from the library", len(ws)),
+			Preview: map[string]any{"skills": len(ws), "note": "Uncheck any skill you'd rather keep in the library."},
+			Options: []approvals.Option{{Key: "apply", Label: "Withdraw"}}, Items: items,
+			Execute: func(_ context.Context, option string) (any, error) {
+				_, chosen := approvals.SplitOption(option)
+				var done []map[string]any
+				errs := map[string]string{}
+				for _, k := range chosen {
+					w := byKey[k]
+					if w == nil {
+						continue
+					}
+					out, err := w.run()
+					if err != nil {
+						errs[k] = err.Error()
+						continue
+					}
+					done = append(done, out)
+				}
+				if len(done) > 0 {
+					c.pushLibraryRevocations() // once, for all
+				}
+				result := map[string]any{"applied": len(done) > 0, "withdrawn": done}
+				if len(errs) > 0 {
+					result["failed"] = errs
+				}
+				if len(done) == 0 {
+					return result, errors.New("no skill could be withdrawn")
+				}
+				return result, nil
+			},
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(failed) > 0 {
+		res["failed"] = failed
+	}
+	if len(covered) > 0 {
+		res["covered"] = covered // asked for as a version and as the whole skill: the whole skill item holds it
+	}
+	return res, nil
 }
 
 // libraryBot proves who is calling (the Bot's registered name).

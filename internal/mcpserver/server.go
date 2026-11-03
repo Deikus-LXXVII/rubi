@@ -404,17 +404,29 @@ func toWants(in []pluginWantIn) []core.PluginAccessWant {
 }
 
 type pluginRefIn struct {
-	Plugin string `json:"plugin" jsonschema:"store id (e.g. icloud-mail) or a source URL to sideload"`
+	Plugin  string   `json:"plugin,omitempty" jsonschema:"store id (e.g. icloud-mail) or a source URL to sideload"`
+	Plugins []string `json:"plugins,omitempty" jsonschema:"several store ids or source URLs, installed with one approval"`
 }
 
 type pluginIDIn struct {
-	ID string `json:"id" jsonschema:"installed plugin id"`
+	ID  string   `json:"id,omitempty" jsonschema:"installed plugin id"`
+	IDs []string `json:"ids,omitempty" jsonschema:"several installed plugin ids, with one approval"`
 }
+
+// ids is the plugin ids a call named: the list, plus the single id.
+func (in pluginIDIn) ids() []string { return append(append([]string{}, in.IDs...), in.ID) }
+
+// refs is the plugins a call named: the list, plus the single one.
+func (in pluginRefIn) refs() []string { return append(append([]string{}, in.Plugins...), in.Plugin) }
 
 type pluginUpdateIn struct {
 	ID  string   `json:"id,omitempty" jsonschema:"one installed plugin id"`
 	IDs []string `json:"ids,omitempty" jsonschema:"several plugin ids, updated with one approval"`
 	All bool     `json:"all,omitempty" jsonschema:"every installed plugin that has an update, with one approval"`
+}
+
+type updateIn struct {
+	Everything bool `json:"everything,omitempty" jsonschema:"update Rubi and every plugin that has an update with ONE approval (the user can leave any out)"`
 }
 
 type callIn struct {
@@ -497,12 +509,12 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_plugin_install",
-		Description: "Install a plugin: pass its store id (e.g. \"icloud-mail\"), or a source URL (https://github.com/owner/repo) to install one from outside the store. Rubi verifies the signed package, then the user approves in the panel; send them the approval link."},
+		Description: "Install a plugin: pass its store id (e.g. \"icloud-mail\"), or a source URL (https://github.com/owner/repo) to install one from outside the store. Several (plugins) go to the user as ONE approval where each shows its publisher, review and permissions and can be left out; prefer this over one request per plugin. Rubi verifies the signed package, then the user approves in the panel; send them the approval link."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginRefIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			res, err := s.core.RequestPluginInstall(ctx, in.Plugin)
+			res, err := s.core.RequestPluginInstalls(ctx, in.refs())
 			return nil, s.withHint(res), err
 		})
 
@@ -534,7 +546,7 @@ func (s *Server) registerCoreTools() {
 				return nil, locked, nil
 			}
 			return nil, out{"updates": s.core.Updates(ctx),
-				"how": "Update Rubi with rubi_update, a plugin with rubi_plugin_update(id); the user approves."}, nil
+				"how": "Update Rubi with rubi_update, a plugin with rubi_plugin_update(id); when both have updates, rubi_update(everything: true) is one approval for all. The user approves."}, nil
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_update_notifications",
@@ -550,22 +562,22 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_plugin_rollback",
-		Description: "Switch a plugin back to the version it replaced (e.g. if an update broke something). The user approves in the panel; doing it again switches forward."},
+		Description: "Switch a plugin (id), or several (ids, one approval), back to the version it replaced (e.g. if an update broke something). The user approves in the panel; doing it again switches forward."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginIDIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			res, err := s.core.RequestPluginRollback(ctx, in.ID)
+			res, err := s.core.RequestPluginRollbacks(ctx, in.ids())
 			return nil, s.withHint(res), err
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_plugin_remove",
-		Description: "Remove a plugin and erase what it stored (passwords, settings, state). The user approves in the panel."},
+		Description: "Remove a plugin (id), or several (ids, one approval where each can be left out), and erase what it stored (passwords, settings, state). The user approves in the panel."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in pluginIDIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			res, err := s.core.RequestPluginRemove(ctx, in.ID)
+			res, err := s.core.RequestPluginRemoves(ctx, in.ids())
 			return nil, s.withHint(res), err
 		})
 
@@ -721,12 +733,18 @@ func (s *Server) registerCoreTools() {
 		})
 
 	addCore(s, &mcp.Tool{Name: "rubi_update",
-		Description: "Update Rubi to the latest signed release. Checks the release signature, then asks the user to approve in the panel; after approval Rubi installs it and restarts, staying unlocked."},
-		func(ctx context.Context, _ *mcp.CallToolRequest, _ empty) (*mcp.CallToolResult, out, error) {
+		Description: "Update Rubi to the latest signed release. Checks the release signature, then asks the user to approve in the panel; after approval Rubi installs it and restarts, staying unlocked. When plugins have updates too, pass everything: true for ONE approval covering Rubi and the plugins (plugins are updated first, then Rubi restarts); prefer it over separate requests."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in updateIn) (*mcp.CallToolResult, out, error) {
 			if locked := s.lockedResponse(); locked != nil {
 				return nil, locked, nil
 			}
-			res, err := s.core.RequestUpdate(ctx)
+			var res map[string]any
+			var err error
+			if in.Everything {
+				res, err = s.core.RequestUpdateAll(ctx)
+			} else {
+				res, err = s.core.RequestUpdate(ctx)
+			}
 			return nil, s.withHint(res), err
 		})
 

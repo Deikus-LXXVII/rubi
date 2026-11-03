@@ -28,6 +28,77 @@ const APPROVALS = {
       rubi_home: "Uses your Rubi Home computer for: Philips Hue",
     },
   },
+  updateall: {
+    kind: "rubi.update.all", summary: "Update Rubi and 2 plugins",
+    options: [{ key: "update", label: "Update" }],
+    preview: { plugins: 2, note: "Everything is verified against its signed release. The plugins are updated first, then Rubi restarts and stays unlocked. Uncheck any you'd rather keep as it is." },
+    items: [
+      { key: "rubi", label: "Rubi v0.6.0 \u2192 v0.7.0",
+        preview: { current: "v0.6.0", new_version: "v0.7.0", release_notes: "https://github.com/Deikus-LXXVII/rubi/releases/tag/v0.7.0",
+          verification: "Signed by the Rubi release key (checked). Rubi restarts and stays unlocked." } },
+      { key: "plugin:steam", label: "Steam v1.0.0 \u2192 v1.1.0",
+        preview: { plugin: "Steam", current: "v1.0.0", new_version: "v1.1.0", publisher: "Rubi-Project \u00b7 key 2F6A-91C3", review: "Reviewed by Rubi-Project",
+          new_permissions: "connects to store.steampowered.com:443" } },
+      { key: "plugin:notes", label: "Notes v1.0.0 \u2192 v1.0.1",
+        preview: { plugin: "Notes", current: "v1.0.0", new_version: "v1.0.1", publisher: "Rubi-Project \u00b7 key 2F6A-91C3", review: "Reviewed by Rubi-Project" } },
+    ],
+  },
+  withdrawmany: {
+    kind: "rubi.library.withdraw", summary: "Withdraw 3 skills from the library",
+    options: [{ key: "apply", label: "Withdraw" }],
+    preview: { skills: 3, note: "Uncheck any skill you'd rather keep in the library." },
+    items: [
+      { key: "layout-notes", label: "Skill layout-notes", preview: { skill: "layout-notes", versions: "v1 (admitted), v2 (admitted)",
+        effect: "Roles that use it drop it the next time Rubi Home builds them (at once on computers that are online, otherwise when they next connect to Rubi). New roles can't attach it. The curator can admit it again." } },
+      { key: "fetcher@1", label: "Skill fetcher v1", preview: { skill: "fetcher", versions: "v1 (proposed)",
+        effect: "Roles that use it drop it the next time Rubi Home builds them (at once on computers that are online, otherwise when they next connect to Rubi). New roles can't attach it. The curator can admit it again." } },
+      { key: "design-tokens", label: "Skill design-tokens", preview: { skill: "design-tokens", versions: "v1 (deprecated)",
+        effect: "Roles that use it drop it the next time Rubi Home builds them (at once on computers that are online, otherwise when they next connect to Rubi). New roles can't attach it. The curator can admit it again." } },
+    ],
+  },
+  installmany: {
+    kind: "rubi.plugin.install", summary: "Install 3 plugins",
+    question: "Tell your agent when new versions come out?",
+    options: [{ key: "install_quiet", label: "Install", meaning: "updates wait on the Updates page" },
+      { key: "install", label: "Install and notify about updates", meaning: "your agent tells you about new versions" }],
+    preview: { plugins: 3, note: "Each plugin is verified against its signed release. Uncheck any you'd rather not install.",
+      warning: "Not from the Rubi store and not reviewed by Rubi-Project: 1 of these plugins (marked below, and not ticked). Tick one only if you trust its publisher." },
+    items: [
+      { key: "hue", label: "Philips Hue v1.0.0",
+        preview: { plugin: "Philips Hue", about: "Turn your Hue lights on and off, dim them and recall scenes.", new_version: "v1.0.0",
+          publisher: "Rubi-Project \u00b7 key 2F6A-91C3", review: "Reviewed by Rubi-Project",
+          can: "See your lights and scenes (No approval); Change lights (No approval)", rubi_home: "Uses your Rubi Home computer for: Philips Hue" } },
+      { key: "telegram", label: "Unofficial Telegram v1.0.0",
+        preview: { plugin: "Unofficial Telegram", about: "A bot or your personal account. Sending waits for you.", new_version: "v1.0.0",
+          publisher: "Rubi-Project \u00b7 key 2F6A-91C3", review: "Reviewed by Rubi-Project", will_ask_for: "Bot token",
+          can: "Read messages (No approval); Send a message (Passkey / password)", connects_to: "api.telegram.org:443" } },
+      { key: "weather", label: "Weather v0.3.0 (not reviewed)", default_off: true,
+        preview: { plugin: "Weather", about: "Forecasts for your places.", new_version: "v0.3.0",
+          publisher: "Sam Lee \u00b7 key 81D0-AA42", source: "https://github.com/sam-lee/rubi-weather", review: "Not reviewed by Rubi-Project",
+          warning: "This plugin is not from the Rubi store. Install it only if you trust its publisher: it will run on your agent's computer with access to what you enter for it.",
+          can: "Get a forecast (No approval)", connects_to: "api.open-meteo.com:443" } },
+    ],
+  },
+  removemany: {
+    kind: "rubi.plugin.remove", summary: "Remove 2 plugins",
+    options: [{ key: "remove", label: "Remove" }],
+    preview: { plugins: 2, note: "Each is stopped and deleted, with its stored passwords, settings and state. Uncheck any you'd rather keep." },
+    items: [
+      { key: "steam", label: "Steam", preview: { plugin: "Steam", effect: "Stops it and deletes it, with its stored passwords, settings and state." } },
+      { key: "presence", label: "Location", preview: { plugin: "Location", effect: "Stops it and deletes it, with its stored passwords, settings and state." } },
+    ],
+  },
+  rollbackmany: {
+    kind: "rubi.plugin.rollback", summary: "Roll back 2 plugins",
+    options: [{ key: "rollback", label: "Roll back" }],
+    preview: { plugins: 2, note: "Settings, passwords and state stay. Uncheck any you'd rather keep as it is." },
+    items: [
+      { key: "icloud-mail", label: "iCloud Mail v2.0.0 \u2192 v1.2.0", preview: { plugin: "iCloud Mail", current: "v2.0.0", back_to: "v1.2.0",
+        effect: "Settings, passwords and state stay. You can switch forward again the same way." } },
+      { key: "gmail", label: "Gmail v1.1.0 \u2192 v1.0.0", preview: { plugin: "Gmail", current: "v1.1.0", back_to: "v1.0.0",
+        effect: "Settings, passwords and state stay. You can switch forward again the same way." } },
+    ],
+  },
   reveal: {
     kind: "icloud-mail.private", summary: "Show 3 private emails to your agent",
     options: [{ key: "show", label: "Show" }],
@@ -201,7 +272,7 @@ export class DemoClient {
         return { online: true, version: "v0.6.0", hue_bridges: ["001788fffe123456"], hook: { state: "stale", version: "v0.5.0", plugin: false, installing: false, fixable: true } };
       case "updates.list":
         return { updates: [
-          { id: "rubi", name: "Rubi", current: "v0.6.0", available: false, notify: true },
+          { id: "rubi", name: "Rubi", current: "v0.6.0", latest: "v0.7.0", available: true, notify: true },
           { id: "steam", name: "Steam", current: "v1.0.0", latest: "v1.1.0", available: true, notify: true },
           { id: "icloud-mail", name: "iCloud Mail", current: "v2.0.0", latest: "v2.0.1", available: true, notify: false },
         ] };
@@ -243,6 +314,8 @@ export class DemoClient {
       case "updates.plugin":
       case "updates.rubi":
         return { approval_id: "settings", ticket: "demo" };
+      case "updates.all":
+        return { approval_id: "updateall", ticket: "demo" };
       case "device.hue.forget":
         return { approval_id: "hue", ticket: "demo" };
       case "device.hook.install":
@@ -418,7 +491,7 @@ function demoLibrary(op, a) {
     if (!v) throw new Error("no such version");
     return { id: a.id, ...v };
   }
-  if (op === "library.withdraw") return { approval_id: "withdraw", ticket: "demo" };
+  if (op === "library.withdraw") return { approval_id: (args.skills || []).length > 1 ? "withdrawmany" : "withdraw", ticket: "demo" };
   if (a.name && a.name.toLowerCase() === DEMO_LIB.curator.toLowerCase()) throw new Error("that is already the curator");
   return { approval_id: "curator", ticket: "demo" };
 }
@@ -435,6 +508,11 @@ export const DEMO_SCREENS = [
   ["unlock", "Unlock"],
   ["send", "Approve an email"],
   ["install", "Install a plugin"],
+  ["installmany", "Install several plugins"],
+  ["updateall", "Update Rubi and plugins"],
+  ["withdrawmany", "Withdraw several skills"],
+  ["removemany", "Remove several plugins"],
+  ["rollbackmany", "Roll back several plugins"],
   ["reveal", "Choose what to show"],
   ["door", "A sensitive shortcut"],
   ["botpaste", "A Bot asks to connect"],

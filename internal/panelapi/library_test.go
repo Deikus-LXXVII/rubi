@@ -151,3 +151,49 @@ func TestPanelLibrary(t *testing.T) {
 		t.Fatal("listed while locked")
 	}
 }
+
+// The panel can withdraw several skills at once: one approval with an item each; the single form still works.
+func TestPanelLibraryWithdrawsSeveralSkillsWithOneApproval(t *testing.T) {
+	c, _ := setup(t)
+	if _, err := client(t, c, "pair").PairWithPassword("correct horse"); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"design-tokens", "design-notes"} {
+		p, err := c.Library.Submit(library.Submission{Description: "d", Content: strings.ReplaceAll(skillOK, "design-tokens", n), Author: "Mail"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Library.Admit(p.ProposalID, "Main", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sc := client(t, c, "settings")
+	var res struct {
+		ApprovalID string `json:"approval_id"`
+		Ticket     string `json:"ticket"`
+	}
+	skills := []map[string]any{{"id": "design-tokens"}, {"id": "design-notes", "version": 1}}
+	if err := sc.Call("library.withdraw", map[string]any{"skills": skills}, &res); err != nil || res.ApprovalID == "" || res.Ticket == "" {
+		t.Fatalf("withdraw of two: %+v %v", res, err)
+	}
+	det, err := c.Approvals.Detail(res.ApprovalID)
+	if err != nil || len(det.Items) != 2 || det.Kind != "rubi.library.withdraw" || det.Level != approvals.Strong {
+		t.Fatalf("approval: %+v %v", det, err)
+	}
+	if _, err := c.Library.GetAdmitted("design-notes", 1); err != nil {
+		t.Fatal("withdrawn before approval")
+	}
+	if _, err := c.Approvals.DecidePanel(context.Background(), res.ApprovalID, "items:design-notes@1", true, approvals.Verified); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Library.GetAdmitted("design-notes", 1); err == nil {
+		t.Fatal("a ticked skill is still served")
+	}
+	if _, err := c.Library.GetAdmitted("design-tokens", 1); err != nil {
+		t.Fatalf("an unticked skill was withdrawn: %v", err)
+	}
+	// An older panel's single form.
+	if err := sc.Call("library.withdraw", map[string]any{"id": "design-tokens", "version": 1}, &res); err != nil || res.ApprovalID == "" {
+		t.Fatalf("single withdraw: %+v %v", res, err)
+	}
+}

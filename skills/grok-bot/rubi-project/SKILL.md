@@ -95,7 +95,10 @@ is reviewed). If they want it, call `rubi_plugin_update(id)` and send the approv
 new permissions. When several plugins have updates, update them together with
 `rubi_plugin_update(ids: [...])` or `rubi_plugin_update(all: true)`: the user approves them on one screen
 and can leave any out. Rubi keeps running; only those plugins restart. If an update breaks something, offer
-`rubi_plugin_rollback(id)` (the user approves; calling it again switches forward).
+`rubi_plugin_rollback(id)` (the user approves; calling it again switches forward). When Rubi and plugins
+both have updates, call `rubi_update(everything: true)` instead: one approval covers Rubi and every plugin
+(the plugins update first, then Rubi restarts), and the user can leave any out. To install, remove or roll back
+several plugins, pass them together (`plugins: [...]` / `ids: [...]`): one approval, not one per plugin.
 
 Rubi learns about new releases within seconds (signed announcements over its relays), so don't poll for
 updates. The user chooses, per plugin and for Rubi itself, whether you're told about new versions (on the

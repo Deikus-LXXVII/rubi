@@ -340,8 +340,10 @@ type ApprovalInfo struct {
 		Preview  json.RawMessage  `json:"preview"`
 		Options  []approvalOption `json:"options"`
 		Items    []struct {
-			Key   string `json:"key"`
-			Label string `json:"label"`
+			Key        string          `json:"key"`
+			Label      string          `json:"label"`
+			Preview    json.RawMessage `json:"preview"`
+			DefaultOff bool            `json:"default_off"`
 		} `json:"items"`
 		Inputs []struct {
 			Key    string `json:"key"`

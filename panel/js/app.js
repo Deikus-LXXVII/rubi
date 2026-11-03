@@ -261,13 +261,20 @@ async function updatesScreen(ctx) {
       confirmChange(ctx, await ctx.client.call("updates.plugin", { ids: pluginIds }), again, "Back to updates");
     }).catch((x) => showError(err, x));
   } }, icon("download", 16), `Update all ${pluginIds.length} plugins`) : null;
+  // Rubi and plugins both have updates: one approval for all (Rubi is one item, each plugin another).
+  const rubiNew = items.some((it) => it.id === "rubi" && it.available);
+  const updateEverything = rubiNew && pluginIds.length > 0 ? h("button", { class: "primary small", onclick: async (e) => {
+    await busy(e.currentTarget, async () => {
+      confirmChange(ctx, await ctx.client.call("updates.all"), again, "Back to updates");
+    }).catch((x) => showError(err, x));
+  } }, icon("download", 16), `Update everything (Rubi and ${pluginIds.length === 1 ? "1 plugin" : pluginIds.length > 20 ? "the first 20 plugins" : pluginIds.length + " plugins"})`) : null;
   screen(
     { cls: "wide", focus: false },
     header(ctx.hello),
     backBar("Settings", () => openSettings(ctx)),
     h("h1", {}, "Updates"),
     h("p", {}, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
-    updateAll ? h("div", { class: "top-actions" }, updateAll) : null,
+    updateEverything || updateAll ? h("div", { class: "top-actions" }, updateEverything || updateAll) : null,
     err,
     h("div", { class: "ulist" }, rows),
     h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off “Tell agent” for anything you'd rather update from here, without your agent bringing it up. Every update still needs your passkey or password."),
@@ -546,7 +553,7 @@ function demoScreen(ctx, which) {
       ctx.hello = { ...DEMO_HELLO, state: "locked" };
       return unlockFlow(ctx, "Unlock Rubi", "Rubi restarted and locked itself. Unlock it to let your agent continue.",
         () => { ctx.hello = { ...DEMO_HELLO }; statusScreen(ctx, "Unlocked. You can go back to your agent."); });
-    case "send": case "install": case "reveal": case "door": case "botpaste": case "curator":
+    case "send": case "install": case "updateall": case "withdrawmany": case "installmany": case "removemany": case "rollbackmany": case "reveal": case "door": case "botpaste": case "curator":
       return approveScreen(ctx, which, { onDone: back, doneLabel: "Back to the demo" });
     case "settings":
       return settingsScreen(ctx, "plugins");
@@ -1117,11 +1124,12 @@ async function approveScreen(ctx, id, opts = {}) {
   let choiceUI = null;
   if (a.options.length === 2 && a.question) {
     const sw = h("input", { type: "checkbox", role: "switch", class: "switch", onchange: () => {
-      chosen = sw.checked ? a.options[1].key : a.options[0].key;
+      chosen = optKey = sw.checked ? a.options[1].key : a.options[0].key;
+      syncItems?.(); // in a batch the choice travels with the ticked items
     } });
     if (a.kind === "rubi.plugin.install") { // update notifications are on unless the user turns them off
       sw.checked = true;
-      chosen = a.options[1].key;
+      chosen = optKey = a.options[1].key;
     }
     const all = [...splitAddresses(a.preview?.to), ...splitAddresses(a.preview?.cc)];
     const label = !a.kind.endsWith(".send") || !all.length ? a.question.replace(/\?$/, "")
@@ -1153,7 +1161,7 @@ async function approveScreen(ctx, id, opts = {}) {
     };
     const count = h("p", { class: "muted small" });
     itemsUI = h("div", { class: "batch" }, count, a.items.map((it) => {
-      const b = h("input", { type: "checkbox", checked: true, onchange: () => sync() });
+      const b = h("input", { type: "checkbox", checked: !it.default_off, onchange: () => sync() }); // default_off: ticked on purpose
       itemBoxes.push({ b, key: it.key });
       return h("label", { class: "batch-item" }, b, h("div", {}, h("strong", {}, it.label),
         it.preview && typeof it.preview === "object" ? fieldList(it.preview) : null));
@@ -1324,7 +1332,8 @@ async function approveScreen(ctx, id, opts = {}) {
 // resultScreen shows how an approval ended. extra (optional) carries the preview and chosen option.
 function resultScreen(ctx, a, onDone, extra = {}) {
   const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved"
-    : a.kind === "rubi.update" ? "Updating…" : a.kind === "rubi.plugin.install" ? "Installed"
+    : a.kind === "rubi.update" || (a.kind === "rubi.update.all" && a.result?.restarting) ? "Updating…"
+    : a.kind === "rubi.update.all" ? "Updated" : a.kind === "rubi.plugin.install" ? "Installed"
     : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed"
     : a.kind === "rubi.plugin.rollback" ? "Rolled back" : a.kind?.endsWith(".private") ? "Shown to your agent"
     : a.kind?.endsWith(".folder") || a.kind?.endsWith(".chat_access") || a.kind === "rubi.access" || a.kind === "rubi.bot.request" ? "Allowed" : a.kind?.endsWith(".draft") ? "Draft saved" : "Done";
@@ -1350,7 +1359,7 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   // A receipt of what happened, and what the agent knows.
   const rows = [h("div", { class: "receipt-row" }, icon(ok ? "check" : sad ? "close" : "warn", 18), h("span", {}, line))];
   if (tracking) rows.push(h("div", { class: "receipt-row" }, icon("bell", 18), h("span", {}, "Rubi will tell your agent when a reply arrives.")));
-  if (ok && a.kind === "rubi.update") rows.push(h("div", { class: "receipt-row" }, icon("download", 18), h("span", {}, "Rubi restarts into the new version in a few seconds and stays unlocked.")));
+  if (ok && (a.kind === "rubi.update" || (a.kind === "rubi.update.all" && a.result?.restarting))) rows.push(h("div", { class: "receipt-row" }, icon("download", 18), h("span", {}, "Rubi restarts into the new version in a few seconds and stays unlocked.")));
   if (ok && a.result?.next_step && !onDone) rows.push(h("div", { class: "receipt-row" }, icon("link", 18), h("span", {}, "Your agent will send you a link to set it up.")));
   if (!onDone) {
     rows.push(h("div", { class: "receipt-row muted" }, icon("bot", 18), h("span", {}, ok
@@ -2691,11 +2700,27 @@ async function libraryScreen(ctx, back, f = {}) {
     ...tags.map((t) => h("button", { type: "button", class: "pill-filter", "aria-pressed": String(t === tag), onclick: () => again({ tag: t }) }, "#" + t)),
   ]);
 
+  // Several skills can be withdrawn with one approval: tick them here, then confirm once.
+  const picked = new Set();
+  const pullSome = h("button", { class: "danger small", type: "button", hidden: true, onclick: async (e) => {
+    await busy(e.currentTarget, async () => confirmChange(ctx,
+      await ctx.client.call("library.withdraw", { skills: [...picked].map((id) => ({ id })) }), mine, "Back to the library"))
+      .catch((x) => showError(err, x));
+  } });
+  const pickChanged = () => {
+    pullSome.hidden = picked.size === 0;
+    pullSome.textContent = `Withdraw ${picked.size} selected ${picked.size === 1 ? "skill" : "skills"}`;
+  };
   const row = (s) => {
     const id = clip(s.id, 48);
     const vs = objs(s.versions, LIB_VERSIONS_MAX);
     const latest = libNum(s.latest_admitted);
+    const pick = h("input", { type: "checkbox", "aria-label": `Select ${id} to withdraw`, onchange: () => {
+      if (pick.checked) picked.add(id); else picked.delete(id);
+      pickChanged();
+    } });
     return h("li", {},
+      h("label", { class: "check", title: "Select to withdraw" }, pick),
       h("span", { class: "acct-name" }, id,
         h("small", { class: "muted" }, libText(s.description)),
         h("small", { class: "muted" }, latest ? `Latest admitted: v${latest}` : "Nothing admitted yet", " · ", `${vs.length} ${vs.length === 1 ? "version" : "versions"}`,
@@ -2727,6 +2752,7 @@ async function libraryScreen(ctx, back, f = {}) {
     h("div", { class: "section-head" }, h("h2", {}, "Skills")),
     searchForm,
     tags.length ? pills : null,
+    skills.length ? h("div", { class: "top-actions" }, pullSome) : null,
     skills.length ? h("ul", { class: "acct-list" }, skills.map(row)) : h("div", { class: "empty" }, face("idle", 64), h("p", {}, query || tag ? "No skill matches." : "The library is empty.")),
   );
 }

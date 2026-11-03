@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -35,6 +36,7 @@ type Registry struct {
 	releaseKey ed25519.PrivateKey
 
 	mu       sync.Mutex
+	slow     time.Duration     // delay before serving a plugin archive (SlowDownloads)
 	files    map[string][]byte // path -> content
 	latest   map[string]string // plugin -> version
 	reviewed map[string][]map[string]string
@@ -67,19 +69,32 @@ func KeyB64(pub ed25519.PublicKey) string {
 }
 
 // Source is the demo plugin's source URL on this registry.
-func (r *Registry) Source() string { return r.Server.URL + "/demo" }
+func (r *Registry) Source() string { return r.SourceOf("demo") }
+
+// SourceOf is the source URL of the plugin with this id (see PublishAs) on this registry.
+func (r *Registry) SourceOf(id string) string { return r.Server.URL + "/" + id }
 
 func (r *Registry) serve(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	p := req.URL.Path
-	if rest, ok := strings.CutPrefix(p, "/demo/latest/"); ok {
-		p = "/demo/" + r.latest["demo"] + "/" + rest
+	if id, rest, ok := strings.Cut(strings.TrimPrefix(p, "/"), "/latest/"); ok && r.latest[id] != "" {
+		p = "/" + id + "/" + r.latest[id] + "/" + rest
 	}
 	b, ok := r.files[p]
+	slow := r.slow
 	r.mu.Unlock()
 	if !ok {
 		http.NotFound(w, req)
 		return
+	}
+	if slow > 0 && strings.HasSuffix(p, ".tar.gz") && len(b) > 1 {
+		// Half now, half later: the file is being written for a while, as with a slow connection.
+		_, _ = w.Write(b[:len(b)/2])
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(slow)
+		b = b[len(b)/2:]
 	}
 	_, _ = w.Write(b)
 }
@@ -87,6 +102,12 @@ func (r *Registry) serve(w http.ResponseWriter, req *http.Request) {
 // Publish builds the demo plugin at version, signs the release with key (nil: the registry's publisher)
 // and makes it the latest. mutate may change the manifest before it is published.
 func (r *Registry) Publish(version string, key ed25519.PrivateKey, mutate func(m map[string]any)) (sumsSHA string) {
+	return r.PublishAs("demo", version, key, mutate)
+}
+
+// PublishAs is Publish for a plugin with another id: the same demo plugin under that id and the name
+// "Demo <id>", for tests that need several plugins. Source URLs are SourceOf(id).
+func (r *Registry) PublishAs(id, version string, key ed25519.PrivateKey, mutate func(m map[string]any)) (sumsSHA string) {
 	r.t.Helper()
 	if key == nil {
 		key = r.Publisher
@@ -99,25 +120,59 @@ func (r *Registry) Publish(version string, key ed25519.PrivateKey, mutate func(m
 	var m map[string]any
 	_ = json.Unmarshal(out, &m)
 	m["version"] = version
+	m["id"], m["name"] = id, pluginName(id)
+	for list, field := range map[string]string{"actions": "kind", "tools": "name"} { // they start with the plugin's id
+		items, _ := m[list].([]any)
+		for _, it := range items {
+			if im, ok := it.(map[string]any); ok {
+				if v, _ := im[field].(string); strings.HasPrefix(v, "demo.") || strings.HasPrefix(v, "demo_") {
+					im[field] = id + v[len("demo"):]
+				}
+			}
+		}
+	}
 	if mutate != nil {
 		mutate(m)
 	}
 	manifest, _ := json.MarshalIndent(m, "", "  ")
 	exe, _ := os.ReadFile(bin)
 	archive := tarGz(r.t, map[string][]byte{"demo": exe})
-	name := fmt.Sprintf("demo-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	name := fmt.Sprintf("%s-%s-%s.tar.gz", id, runtime.GOOS, runtime.GOARCH)
 	sums := fmt.Sprintf("%s  rubi-plugin.json\n%s  %s\n", hexSum(manifest), hexSum(archive), name)
 	sig := ed25519.Sign(key, []byte(sums))
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	base := "/demo/" + version + "/"
+	base := "/" + id + "/" + version + "/"
 	r.files[base+"rubi-plugin.json"] = manifest
 	r.files[base+name] = archive
 	r.files[base+"SHA256SUMS"] = []byte(sums)
 	r.files[base+"SHA256SUMS.sig"] = sig
-	r.latest["demo"] = version
+	r.latest[id] = version
 	return hexSum([]byte(sums))
+}
+
+// PublishRubi makes version the latest Rubi release on this registry: the release feed and the signed checksums
+// (the release archive itself is not served: tests replace the installing step). It points this process at them,
+// which only a build whose version is "dev" or ends in "-test" honors.
+func (r *Registry) PublishRubi(version string) {
+	r.t.Helper()
+	sums := []byte(fmt.Sprintf("%s  rubi-%s-%s-%s.tar.gz\n", hexSum([]byte(version)), version, runtime.GOOS, runtime.GOARCH))
+	feed, _ := json.Marshal(map[string]string{"version": version, "notes_url": r.Server.URL + "/rubi/notes/" + version})
+	r.mu.Lock()
+	r.files["/rubi/latest.json"] = feed
+	r.files["/rubi/"+version+"/SHA256SUMS"] = sums
+	r.files["/rubi/"+version+"/SHA256SUMS.sig"] = ed25519.Sign(r.releaseKey, sums)
+	r.mu.Unlock()
+	r.t.Setenv("RUBI_UPDATE_FEED", r.Server.URL+"/rubi/latest.json")
+	r.t.Setenv("RUBI_DOWNLOAD_BASE", r.Server.URL+"/rubi")
+}
+
+// SlowDownloads makes every plugin archive take d to arrive, so that downloads of two requests overlap.
+func (r *Registry) SlowDownloads(d time.Duration) {
+	r.mu.Lock()
+	r.slow = d
+	r.mu.Unlock()
 }
 
 // Tamper replaces the archive of a published version (its checksum no longer matches).
@@ -130,8 +185,13 @@ func (r *Registry) Tamper(version string) {
 
 // Review lists a published version in the catalog.
 func (r *Registry) Review(version, sumsSHA, minRubi string) {
+	r.ReviewAs("demo", version, sumsSHA, minRubi)
+}
+
+// ReviewAs lists a version published with PublishAs in the catalog.
+func (r *Registry) ReviewAs(id, version, sumsSHA, minRubi string) {
 	r.mu.Lock()
-	r.reviewed["demo"] = append(r.reviewed["demo"], map[string]string{"version": version, "sums_sha256": sumsSHA, "min_rubi": minRubi})
+	r.reviewed[id] = append(r.reviewed[id], map[string]string{"version": version, "sums_sha256": sumsSHA, "min_rubi": minRubi})
 	r.mu.Unlock()
 	r.writeCatalog()
 }
@@ -140,14 +200,29 @@ func (r *Registry) writeCatalog() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var list []any
-	if v := r.reviewed["demo"]; len(v) > 0 {
-		list = append(list, map[string]any{"id": "demo", "name": "Demo", "summary": "Test plugin.",
-			"publisher": map[string]string{"name": "Test Publisher", "key": r.PubKey},
-			"source":    r.Server.URL + "/demo", "versions": v})
+	var ids []string
+	for id := range r.reviewed {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if v := r.reviewed[id]; len(v) > 0 {
+			list = append(list, map[string]any{"id": id, "name": pluginName(id), "summary": "Test plugin.",
+				"publisher": map[string]string{"name": "Test Publisher", "key": r.PubKey},
+				"source":    r.Server.URL + "/" + id, "versions": v})
+		}
 	}
 	cat, _ := json.Marshal(map[string]any{"schema": 1, "updated_at": time.Now().UTC(), "plugins": list})
 	r.files["/marketplace/catalog.json"] = cat
 	r.files["/marketplace/catalog.json.sig"] = ed25519.Sign(r.releaseKey, cat)
+}
+
+// pluginName is the display name of a test plugin.
+func pluginName(id string) string {
+	if id == "demo" {
+		return "Demo"
+	}
+	return "Demo " + id
 }
 
 var (

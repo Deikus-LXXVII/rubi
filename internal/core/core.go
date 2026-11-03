@@ -67,6 +67,10 @@ type Core struct {
 	// on that approval screen). nil, as in the daemon: Grok Bot routine webhooks only. Tests point it at
 	// their local receiver.
 	BotWebhookOK func(rawURL string) bool
+	// InstallRelease swaps the verified release of Rubi in for the running binary and returns the binary to
+	// restart into. nil, as in the daemon: download it, check it against the signed checksums and replace the
+	// executable. Tests replace it, so that an update does not touch the test binary.
+	InstallRelease func(ctx context.Context, target string) (exe string, err error)
 
 	execMu sync.Mutex
 	execs  map[string][]*execGrant // approvals whose execute is running, by plugin (homegate.go)
@@ -180,7 +184,7 @@ func Open(layout paths.Layout) (*Core, error) {
 			if !s.Level.InPanel() || c.State() != Unlocked {
 				return
 			}
-			if s.Kind == "rubi.update" && s.State == approvals.Executed {
+			if restartsForUpdate(s) {
 				return // Rubi restarts; the new process reports update.completed instead
 			}
 			if restartingSettings(s) {

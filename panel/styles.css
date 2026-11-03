@@ -440,6 +440,7 @@ button.more { align-self: flex-start; width: auto; min-height: 0; padding: 0; co
 .batch-item:not(:has(input:checked)) { opacity: 0.7; }
 .batch-item input { margin-top: 2px; }
 .batch-item .fields { margin-top: 8px; }
+.batch-item > div { min-width: 0; flex: 1; overflow-wrap: anywhere; } /* a long item (a plugin's permissions) wraps inside a 375px card */
 
 .pw-box input { text-align: center; }
 .actionbar {

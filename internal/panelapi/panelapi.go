@@ -291,7 +291,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 			return nil, errViewOnly
 		}
 		return s.updates(ctx, env)
-	case "updates.list", "updates.rubi", "updates.plugin":
+	case "updates.list", "updates.rubi", "updates.plugin", "updates.all":
 		// The panel shows the Updates button on every screen, so any valid link may use it. Listing and
 		// notification switches are harmless; installing an update still needs a strong approval.
 		return s.updates(ctx, env)
@@ -712,6 +712,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	}
 	var args struct {
 		ID      string            `json:"id"`
+		IDs     []string          `json:"ids"`     // plugin.remove, plugin.rollback: several plugins, one approval
+		Plugins []string          `json:"plugins"` // plugin.install: several plugins, one approval
 		Plugin  string            `json:"plugin"`
 		Fields  map[string]string `json:"fields"`
 		Secrets map[string]string `json:"secrets"`
@@ -737,6 +739,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Query   string `json:"query"`
 		Tag     string `json:"tag"`
 		Version int    `json:"version"`
+		// Skills: library.withdraw for several skills, one approval.
+		Skills []core.LibraryRef `json:"skills"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -779,13 +783,13 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		var res map[string]any
 		switch env.Op {
 		case "plugin.install":
-			res, err = s.core.RequestPluginInstall(ctx, args.Plugin)
+			res, err = s.core.RequestPluginInstalls(ctx, append(append([]string{}, args.Plugins...), args.Plugin))
 		case "plugin.update":
 			res, err = s.core.RequestPluginUpdate(ctx, args.ID)
 		case "plugin.rollback":
-			res, err = s.core.RequestPluginRollback(ctx, args.ID)
+			res, err = s.core.RequestPluginRollbacks(ctx, append(append([]string{}, args.IDs...), args.ID))
 		default:
-			res, err = s.core.RequestPluginRemove(ctx, args.ID)
+			res, err = s.core.RequestPluginRemoves(ctx, append(append([]string{}, args.IDs...), args.ID))
 		}
 		if err != nil {
 			return nil, err
@@ -804,7 +808,11 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	case "library.queue":
 		return s.core.LibraryPanelQueue()
 	case "library.withdraw":
-		res, err := s.core.RequestLibraryWithdraw(ctx, args.ID, args.Version)
+		refs := append([]core.LibraryRef{}, args.Skills...)
+		if args.ID != "" || len(refs) == 0 { // the single form of older panels
+			refs = append(refs, core.LibraryRef{ID: args.ID, Version: args.Version})
+		}
+		res, err := s.core.RequestLibraryWithdraws(ctx, refs)
 		if err != nil {
 			return nil, err
 		}
@@ -971,6 +979,8 @@ func (s *Server) updates(ctx context.Context, env Envelope) (any, error) {
 		return map[string]any{"id": args.ID, "notify": args.Notify}, nil
 	case "updates.rubi":
 		res, err = s.core.RequestUpdate(ctx)
+	case "updates.all": // Rubi and the plugins, one approval
+		res, err = s.core.RequestUpdateAll(ctx)
 	default:
 		res, err = s.core.RequestPluginUpdate(ctx, args.ID)
 	}

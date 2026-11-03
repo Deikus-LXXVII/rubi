@@ -145,7 +145,8 @@ decoration (animation, mascot, colour) cost clarity or touch targets? Visual pol
 
 How it is applied: everything one agent asks for while a request of its own still waits joins that request
 (`botBundle`/`botApproval` in `internal/core/botrequest.go`: the earlier approval is cancelled and its items move into
-the new one), so the user approves once and can untick items. Plugin updates are one approval with an item per plugin.
+the new one), so the user approves once and can untick items. Plugin installs, removals, rollbacks and updates, "Update
+everything" (Rubi and plugins), and withdrawing skills from the library are each one approval with an item per thing.
 The `approvals` engine supports batches for any caller (`Request.Items`; `Execute` receives `items:<key>,...`).
 
 What the tests enforce:
@@ -155,6 +156,16 @@ What the tests enforce:
 | `internal/core/botbatch_test.go` | `TestSeveralAsksOfOneBotAreOneApproval` | a webhook and two mailboxes asked in three calls are one waiting approval, with three items, and one proof applies all three |
 | `internal/core/botrequest_test.go` | `TestBotRequestsMergeAndPartialApproval` | the later ask joins the waiting request, the earlier approval is cancelled, a subset can be approved |
 | `internal/core/botpaste_test.go` | `TestBotConnectWithoutKey` | the connect request and an access request fold into one approval, with the user's paste on the same screen |
+| `internal/mcpserver/batchstore_test.go` | `TestSeveralPluginsInstallWithOneApproval` | several plugins to install are one approval with an item each; each item keeps the publisher key, review line, warning for an unreviewed one, and capabilities |
+| `internal/mcpserver/batchstore_test.go` | `TestInstallOnlyInstallsTheTickedItems`, `TestRefusedBatchInstallsNothing` | an unticked or refused plugin is never installed |
+| `internal/mcpserver/batchstore_test.go` | `TestOneFailingPluginDoesNotHideTheOthers` | a plugin that can't be fetched, or fails on install, is reported by item and the others still go ahead |
+| `internal/mcpserver/batchstore_test.go` | `TestSeveralPluginsRemoveWithOneApproval`, `TestSeveralPluginsRollBackWithOneApproval`, `TestPanelAsksForSeveralPluginsAtOnce` | removing and rolling back several plugins are one approval each, only the ticked ones happen, and the panel asks the same way |
+| `internal/mcpserver/batchupdate_test.go` | `TestUpdateEverythingIsOneApproval` | Rubi and the plugins are one approval; the plugins are updated before Rubi, and exactly one restart is armed |
+| `internal/mcpserver/batchupdate_test.go` | `TestUpdateEverythingWithoutRubi`, `TestUpdateEverythingWithoutPlugins`, `TestUpdateEverythingKeepsPluginsWhenRubiFails`, `TestUpdateEverythingWithOnlyOneKindOfUpdate` | unticking Rubi arms no restart, unticking the plugins leaves them alone, a failed Rubi install keeps the plugin updates and arms nothing, one kind of update is the ordinary approval |
+| `internal/core/batchfixes_test.go` | `TestStaleOrRepeatedPluginUpdateIsRefused`, `TestSecondInstallOfTheSamePluginIsRefused`, `TestOnlyOneRubiUpdateInstalls`, `TestOverlappingDownloadsKeepTheirFiles` | what a batch applies is still what the user was asked: a stale update, a second install of one plugin and a second Rubi install are refused, and overlapping downloads keep their files |
+| `internal/mcpserver/batchstore_test.go` | `TestUnreviewedPluginInABatchStartsUnticked` | a plugin from outside the store starts unticked in a batch install, and the plain approval installs the reviewed ones only (engine: `TestDefaultOffItemsNeedToBeNamed`) |
+| `internal/core/librarybatch_test.go` | `TestSeveralSkillsAreWithdrawnWithOneApproval`, `TestOneSkillThatCantBeWithdrawnDoesNotHideTheOthers` | several skills are one withdrawal approval, only the ticked ones are withdrawn, a failure is reported by item |
+| `internal/panelapi/library_test.go` | `TestPanelLibraryWithdrawsSeveralSkillsWithOneApproval` | the panel asks for several withdrawals at once |
 
 ### Known gaps (rule 5)
 
@@ -163,11 +174,8 @@ test; none is held by a check yet.
 
 | Where | Flow | One by one today | Batch that would be possible |
 | ----- | ---- | ---------------- | ---------------------------- |
-| core `internal/core/market.go` (`rubi.plugin.install`, `.remove`, `.rollback`) | store | one approval per plugin | install or remove several plugins in one approval with an item each (updates already do this) |
-| core `internal/core/update.go` (`rubi.update`) and `market.go` (`rubi.plugin.update`) | updates | Rubi's own update and the plugins' update are separate approvals | one "Update everything" approval with Rubi as one item |
-| core `internal/core/library.go` (`rubi.library.withdraw`) | skill library | one approval per withdrawn skill | withdraw several skills at once |
-| core `internal/core/host.go` (`rubi.settings`: policy, watch, webhook changes) | settings | one approval per change (`policy.set` already takes all levels at once) | one save for several settings in a visit |
-| core `internal/core/access.go` (`rubi.access`) and `botrequest.go` (`rubi.bot.request`) | Bot access | two kinds of approval for similar asks; one per Bot | fold access into the Bot request path everywhere, and one approval for several Bots' access |
+| core `internal/core/host.go` (`rubi.settings`: policy, watch, webhook changes) | settings | one approval per change (`policy.set` already takes all levels at once) | none found: no screen edits several settings in one visit (see `docs/plans/batch-approvals.md`, B4); revisit if one appears |
+| core `internal/core/access.go` (`rubi.access`) and `botrequest.go` (`rubi.bot.request`) | Bot access | two kinds of approval for similar asks; one per Bot | fold access into the Bot request path everywhere, and one approval for several Bots' access. Not done: it changes what a Bot gets and for how long, so it is the owner's decision (analysis in `docs/plans/batch-approvals.md`, B5) |
 | plugin `rubi-t3agents` `agent_perm.go` (`Claude (<tool>): ...`) | Claude tool permissions | one approval per tool call; simultaneous asks of one session are separate (trust options reduce, not group, them) | group the pending asks of one session into one approval with an item each |
 | plugin `rubi-t3agents` `roles_change.go` (role put / widen / foreign; skill accept) | agent roles | one approval per role change, and one per flagged skill to accept | a change with its skill acceptances as items of one approval |
 | plugin `rubi-t3agents` `roles_ssh.go` (SSH target) | SSH targets | one approval per target | several targets in one approval |
