@@ -263,3 +263,56 @@ Findings that become requirements:
   policy (hooks, permissions) goes into managed settings in the VM, which also can't be changed from inside.
 - **F5 Credential reads.** Agent Bash in the VM can read the shared credential. Managed settings deny reading it;
   whether Claude Code's sandbox (bubblewrap) works inside Apple container is checked in S2.
+
+## 10. S1 design: the bridge package and contract tests
+
+Package `internal/home/t3` (Go). No new module dependencies: the MCP client is the go-sdk already in `go.mod`
+(`mcp.NewClient` + `mcp.StreamableClientTransport`, standalone SSE off). The pin and the contract snapshot are
+embedded from a small root package `t3` (`t3/embed.go`: `upstream.json`, `contract/*.json`).
+
+- **Modes** (`mode.go`). `Mode` is one of `approval-required`, `auto-accept-edits`, `auto`, `full-access`, in that
+  order. `Clamp(want, ceiling)` returns the lower one; an unknown mode is treated as `approval-required`.
+  `PairingScopes(access)` gives the scopes a pairing code needs for an MCP access level (read-only:
+  `orchestration:read`; full-access: adds `orchestration:operate`, `settings:write`, `source-control:write`;
+  the others: read and operate).
+- **Sign-in** (`oauth.go`). `Pair(ctx, hc, base, code, access, clientName) (Token, error)`: discover
+  `/.well-known/oauth-authorization-server` (issuer must equal base), register a client with a loopback redirect,
+  PKCE S256, `POST /oauth/mcp/decision` with `{authorization, decision: {_tag: "pairing-code", access, code}}`,
+  read `redirectTo` (state must come back; `iss` must equal the issuer), then the form token exchange with
+  `resource = base + "/mcp"`. `Token{Access, Scopes, Expires, ClientID}` never prints the access token (its
+  `String`/`GoString`/`MarshalText` redact it except for saving to disk, which uses an explicit method). Errors
+  carry T3's message, never the pairing code.
+- **Client** (`client.go`). `New(base string, tok Token, ceiling Mode) *Client`. Every request carries
+  `Authorization: Bearer` and `t3-mode-limit: <ceiling>`. The session connects lazily and reconnects once if the
+  server dropped it. A result with `isError` becomes `*ToolError{Tool, Message}`. Results are read from
+  `structuredContent` into typed structs.
+- **Ops** (`ops.go`), typed requests only (finding F2):
+  - `Projects(ctx) ([]Project, error)` (follows `nextCursor`);
+  - `CreateProject(ctx, root, title) (Project, error)`: sends `workspaceRoot`; if T3 answers with another root,
+    that is an error;
+  - `Launch(ctx, LaunchIn{ProjectID, Title, Instance, Model, Mode, Message, RequestID}) (Run, error)`: the mode is
+    required and clamped to the ceiling;
+  - `Send(ctx, threadID, message, requestID) (Run, error)`; `Wait(ctx, threadID, timeout) (WaitResult, error)`;
+  - `Read(ctx, threadID, after int) (Thread, []Item, error)`; `Interrupt(ctx, threadID) error`;
+  - `Fork(ctx, threadID, title) (string, error)` (`t3_thread_transfer` with `action: "fork"`).
+  - Terminal run states: completed, failed, cancelled, interrupted, rolled_back.
+- **Server** (`server.go`). `Server{Node, Bin, BaseDir, Port}` runs the pinned `t3 serve --base-dir <dir>
+  --port <p> --host 127.0.0.1 --no-browser` with a minimal environment (finding F1): `PATH` (the node's folder,
+  `/usr/bin`, `/bin`), `HOME`, `T3CODE_TELEMETRY_ENABLED=false`, `OTEL_SDK_DISABLED=true`, nothing else. Start waits
+  for `userdata/server-runtime.json` (matching pid) and an answer on the port, and reports `serverVersion`.
+  `PairingCode(ctx, scopes, ttl, label)` runs `t3 auth pairing create ... --json` and returns the credential
+  (never logged). Stop ends only the process it started.
+- **Tests that always run** use an `httptest` T3 stand-in (OAuth endpoints that verify PKCE, state and resource;
+  an MCP server from the go-sdk with fake tools that record the headers and arguments): sign-in, wrong code (the
+  error does not contain the code), mode clamping (a `full-access` launch under an `approval-required` ceiling
+  sends `approval-required`), the `CreateProject` root check, `ToolError`, reconnect, and the exact server
+  environment.
+- **Contract tests** (`contract_test.go`), skipped unless `RUBI_T3_CONTRACT=1`, with `RUBI_T3_BIN` (the pinned
+  `t3`) and `RUBI_T3_NODE`; the run part also needs `RUBI_T3_CLAUDE` (an unmodified claude) and uses the scripted
+  Messages API mock from `runner/test/support/mock.mjs`, so no account is used:
+  - the server version equals the pin;
+  - pairing with a minted code gives the expected scopes;
+  - `tools/list`: the names and input schemas of the tools we use equal `t3/contract/tools.json`
+    (`RUBI_T3_UPDATE=1` rewrites it);
+  - with a mock-backed Claude instance written into `settings.json`: create a project, launch, wait, read the
+    reply, send twice with one request id (one message), fork, run a turn in the fork and see the history.
