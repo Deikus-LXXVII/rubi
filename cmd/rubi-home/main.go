@@ -3,6 +3,7 @@
 //
 //	rubi-home run            serve Rubi's requests (the LaunchAgent runs this)
 //	rubi-home pair           print a one-time code to paste into the Rubi panel
+//	rubi-home open           what the Rubi Home app runs when the user opens it: a window to pair (or see the pairing)
 //	rubi-home status         show what is paired and allowed
 //	rubi-home folder NAME    the Shortcuts folder Rubi may use (default: Rubi)
 //	rubi-home unpair         forget every paired Rubi
@@ -33,8 +34,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -131,8 +130,7 @@ func main() {
 	case "status":
 		cfg := h.Config()
 		fmt.Printf("Rubi Home %s on %q\n", version.Version, cfg.Name)
-		sum := sha256.Sum256([]byte(h.ID.PublicBundle()))
-		fmt.Printf("Fingerprint: %s\n", base64.RawURLEncoding.EncodeToString(sum[:6]))
+		fmt.Printf("Fingerprint: %s\n", h.Fingerprint())
 		fmt.Printf("Paired with %d Rubi\n", len(cfg.Paired))
 		for _, p := range cfg.Paired {
 			fmt.Printf("  %s, since %s\n", p.Label, p.At.Local().Format("2006-01-02 15:04"))
@@ -140,6 +138,11 @@ func main() {
 		fmt.Printf("Shortcuts folder: %s\n", cfg.ShortcutsFolder)
 		fmt.Printf("Hue Bridges paired: %d\n", len(cfg.HuePins))
 		home.InspectHookBinary(hookPath(os.Args[2:]), home.HookBinaryTimeout).WritePlain(os.Stdout, version.Version)
+	case "open": // the app's window: dialogs on macOS, the code and the link on the terminal elsewhere
+		if err := home.RunOpen(context.Background(), h, home.OpenEnv{Out: os.Stdout}); err != nil {
+			fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
+			os.Exit(1)
+		}
 	case "folder":
 		if len(os.Args) != 3 || strings.TrimSpace(os.Args[2]) == "" {
 			usage()
@@ -155,7 +158,7 @@ func main() {
 		if err := h.Update(func(c *home.Config) { c.Paired, c.Pending = nil, nil }); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println("Forgot every paired Rubi. Pair again with: rubi-home pair")
+		fmt.Println("Forgot every paired Rubi. Open Rubi Home to pair again.")
 	case "hue-forget":
 		if len(os.Args) != 3 {
 			usage()
@@ -170,7 +173,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | agent-vm --role ID -- CLAUDE-ARGUMENTS... | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | open | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | agent-vm --role ID -- CLAUDE-ARGUMENTS... | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
 	os.Exit(2)
 }
 

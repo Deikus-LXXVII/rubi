@@ -55,20 +55,26 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
 ## H2: pairing without a command (T-01)
 
 - **Home window.** When the Home app opens (H3) and on every later open, Home shows a native dialog (`osascript`
-  `display dialog`, which needs no new dependency).
-  - **Not paired:** the dialog offers **Copy the pairing code** and **Open the Rubi panel**.
-    - Copy puts the code on the clipboard, so Universal Clipboard can carry it to a phone.
-  - **Paired:** the dialog shows which Rubi it is paired with and the fingerprint. It offers **Pair again**, which makes
-    a new code and goes back to the case above.
-  - The code is the one `rubi-home pair` makes today: one time, 15 minutes.
+  `display dialog`, which needs no new dependency). Every dialog names the computer and its fingerprint.
+  - **Not paired:** the dialog offers **Copy the code** and **Open the Rubi panel**.
+    - A pairing code is made only when one of them is pressed (a still-good pending code is reused); Close leaves
+      nothing live.
+    - Copy puts the full code on the clipboard (stdin of `pbcopy`), so Universal Clipboard can carry it to a phone.
+    - Open opens the panel with a code that holds no secret; the next dialog shows a PIN (`XXXX-XXXX`) to type there.
+  - **Paired:** the dialog shows which Rubi it is paired with and the fingerprint. It offers **Pair again**, which
+    goes back to the case above.
+  - The code is one time, 15 minutes. The PIN is the secret of the link route; five wrong secrets void the pending
+    code. Config updates take a file lock, so the CLI and the helper do not lose each other's changes.
 - **Panel link.**
-  - Open the Rubi panel opens `https://rubi-panel.com/#home-code=<code>`.
+  - Open the Rubi panel opens `https://rubi-panel.com/#home-code=<code without secret>`.
   - On load, the panel reads the code, removes it from the address bar at once, and keeps it in local storage for at
-    most 15 minutes.
-  - It opens the "Add a home computer" screen with the code filled in, once the user opens Rubi with their own link.
+    most 15 minutes (never a code with a secret; an expired one is deleted at every page start).
+  - It tells the user the truth: if nothing could be stored, it says to copy the code from Rubi Home's window.
+  - It opens the "Add a home computer" screen with the code filled in, once the user opens Rubi with their own link,
+    shows "name · fingerprint" worked out on the client for comparing, and asks for the PIN.
   - Pair still needs the passkey approval, as today.
   - The code is deleted after use or expiry.
-  - `device.pair` becomes a sensitive op (its args hold the code's secret).
+  - `device.pair` becomes a sensitive op (its args hold the PIN or secret).
 - **Texts.**
   - "rubi-home status shows the same" becomes "Rubi Home shows the same fingerprint when you open it".
   - "start it with: rubi-home run" and "run `rubi-home pair` again" become "open Rubi Home".
@@ -132,4 +138,11 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
   - Audit: `device.hook.started`, `device.hook.installed`, `device.hook.failed` with `reason`
     (`cancelled`, `timeout`, `failed`, `refused`); the result is recorded once when a check first shows it.
   - `device.pair` unsealed from an older panel gets "this panel is out of date; reload the page and try again".
-- H2, H3, H4: not started.
+- H2: done (`rubi-home open` in `internal/home/openwindow.go`; the panel's `#home-code=` handler in `panel/js/app.js`
+  and the pure helpers in `panel/js/homecode.js`; T-01 pairing and fingerprint texts and allow-list lines removed).
+  Review fixes: the link carries no secret (PIN design, `homeproto.Code.WithoutSecret`, `ParseCodeWithPin`, the optional
+  `pin` arg of `device.pair`); five wrong secrets void a pending code; the fingerprint is shown in every dialog and in
+  the panel; the code is made on demand and reused; `Helper.Update` takes a flock. Deviations:
+  - Linux prints the link, the PIN and the code, with no allow-list entry (the text holds no command).
+  - The panel's install steps still hold the `curl` line (T-01 install entries stay for H3).
+- H3, H4: not started.

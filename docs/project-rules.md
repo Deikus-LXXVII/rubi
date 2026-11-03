@@ -81,7 +81,7 @@ Exempt by path, with the reason in `userTextExempt` in the test:
 
 | Task | Where | What |
 | ---- | ----- | ---- |
-| T-01 | `panel/js/app.js` (3 texts), `panel/js/demo.js`, `internal/core/devices.go`, `internal/home/home.go` (2), `cmd/rubi-home/main.go` | installing Rubi Home asks for `curl ... \| sh` in a terminal; pairing is `rubi-home pair`; the fingerprint is read with `rubi-home status` |
+| T-01 | `panel/js/app.js` (2 texts) | installing Rubi Home asks for `curl ... \| sh` in a terminal (pairing no longer does: Rubi Home's window pairs, H2) |
 | T-03 | `internal/home/hue.go` | forgetting a Hue bridge: `rubi-home hue-forget` |
 | T-04 | `internal/core/hooks.go`, `internal/daemon/daemon.go` | choosing the transport: `rubi transport` |
 | T-05 | `internal/kvm/kvm.go` | the KVM device needs a sudo setting |

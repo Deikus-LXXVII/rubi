@@ -81,7 +81,7 @@ const APPROVALS = {
   settings: {
     kind: "rubi.settings", summary: "Add Rubi Home on Mac mini",
     options: [{ key: "apply", label: "Approve" }],
-    preview: { "computer (as it calls itself)": "Mac mini", fingerprint: "pX3k-9QaL (rubi-home status shows the same)",
+    preview: { "computer (as it calls itself)": "Mac mini", fingerprint: "pX3k-9QaL (Rubi Home shows the same fingerprint when you open it)",
       allows: "control Philips Hue on your home network and run the shortcuts in the folder \"Rubi\"" },
   },
   hook: {

@@ -30,6 +30,13 @@ const fakeSHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde
 // pairedFakeHome pairs the core with a real Rubi Home whose hook ops are replaced by f.
 func pairedFakeHome(t *testing.T, c *Core, f *fakeHook) string {
 	t.Helper()
+	return pairedFakeHomeVia(t, c, f, false)
+}
+
+// pairedFakeHomeVia is pairedFakeHome; with link the code is the secret-free one of a link and the PIN is typed
+// the way a person would (lower case, with the dash).
+func pairedFakeHomeVia(t *testing.T, c *Core, f *fakeHook, link bool) string {
+	t.Helper()
 	rl := relaytest.New()
 	t.Cleanup(rl.Close)
 	h, err := home.Open(t.TempDir())
@@ -68,11 +75,18 @@ func pairedFakeHome(t *testing.T, c *Core, f *fakeHook) string {
 	}}
 	go (&relay.Server{Key: key, Relays: h.Relays(), Handle: rpc.HandleRPC, Ready: func(n int) { ready <- n }}).Run(ctx)
 	<-ready
-	code, err := h.StartPairing()
+	code, pin, err := h.PairingCode(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := c.PairDevice(ctx, code.String())
+	shown, typed := code.String(), ""
+	if link {
+		shown, typed = code.WithoutSecret().String(), strings.ToLower(homeproto.FormatPIN(pin))
+		if _, err := c.PairDevice(ctx, shown, "AAAA-AAAA"); err == nil {
+			t.Fatal("a wrong PIN paired")
+		}
+	}
+	id, err := c.PairDevice(ctx, shown, typed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,5 +204,28 @@ func TestCheckDeviceAuditsAnInstallationResultOnce(t *testing.T) {
 	_, _ = c.CheckDevice(context.Background(), dev)
 	if n := count("device.hook.installed"); n != 1 {
 		t.Fatalf("installed recorded %d times", n)
+	}
+}
+
+func TestPairDeviceWithALinkCodeNeedsThePIN(t *testing.T) {
+	c, _, _ := botCore(t)
+	dev := pairedFakeHomeVia(t, c, &fakeHook{}, true)
+	if dev == "" {
+		t.Fatal("not paired")
+	}
+}
+
+func TestPairDeviceWithoutAPINRefusesASecretFreeCode(t *testing.T) {
+	c, _, _ := botCore(t)
+	h, err := home.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := h.PairingCode(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.PairDevice(context.Background(), code.WithoutSecret().String(), ""); err == nil || !strings.Contains(err.Error(), "PIN") {
+		t.Fatalf("err %v", err)
 	}
 }

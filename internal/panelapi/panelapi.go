@@ -727,6 +727,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Values  map[string]any    `json:"values"`
 		Account string            `json:"account"`
 		Code    string            `json:"code"`
+		Pin     string            `json:"pin"`
 		// ApprovalID is for approval.open.
 		ApprovalID string `json:"approval_id"`
 		Wait       bool   `json:"wait"`
@@ -859,7 +860,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	case "device.check":
 		return s.core.CheckDevice(ctx, args.ID)
 	case "device.pair":
-		approvalID, err = s.core.PairDevice(ctx, args.Code)
+		approvalID, err = s.core.PairDevice(ctx, args.Code, args.Pin)
 	case "device.hook.install":
 		approvalID, err = s.core.InstallHookOnDevice(ctx, args.ID)
 	case "device.remove":

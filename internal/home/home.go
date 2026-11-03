@@ -126,11 +126,16 @@ type Pairing struct {
 }
 
 type Pending struct {
-	Secret  string    `json:"secret"`
-	Expires time.Time `json:"expires"`
+	Secret   string    `json:"secret"`
+	Pin      string    `json:"pin,omitempty"` // the short secret of a link pairing, as typed (no dash)
+	Expires  time.Time `json:"expires"`
+	Attempts int       `json:"attempts,omitempty"` // wrong secrets so far
 }
 
 const pairingTTL = 15 * time.Minute
+
+// maxPairAttempts is how many wrong secrets void a pending code: a short PIN can't be guessed in five tries.
+const maxPairAttempts = 5
 
 // Helper is a running Rubi Home.
 type Helper struct {
@@ -190,7 +195,7 @@ func DefaultDir() (string, error) {
 // OpenExisting is Open for read-only commands: it creates nothing, and fails when Rubi Home was never set up.
 func OpenExisting(dir string) (*Helper, error) {
 	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
-		return nil, fmt.Errorf("Rubi Home isn't set up in %q yet (start it with: rubi-home run)", dir)
+		return nil, fmt.Errorf("Rubi Home isn't set up in %q yet (open Rubi Home on that computer)", dir)
 	}
 	return Open(dir)
 }
@@ -432,6 +437,13 @@ func (h *Helper) Config() Config {
 func (h *Helper) Update(fn func(*Config)) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	// The read-modify-write is also one step for other processes (the CLI and the running helper): without
+	// the file lock the later writer would drop the other's change.
+	unlock, err := lockFile(h.path() + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := h.loadLocked(); err != nil {
 		return err
 	}
@@ -452,16 +464,29 @@ func (h *Helper) Relays() []string {
 
 // StartPairing makes a new one-time pairing code (valid 15 minutes).
 func (h *Helper) StartPairing() (homeproto.Code, error) {
-	secret := homeproto.RandomToken()
-	if err := h.Update(func(c *Config) { c.Pending = &Pending{Secret: secret, Expires: time.Now().Add(pairingTTL)} }); err != nil {
-		return homeproto.Code{}, err
+	code, _, err := h.PairingCode(false)
+	return code, err
+}
+
+// PairingCode returns the full pairing code and its PIN. With reuse, a pending code that is still good (not
+// expired, not worn out by wrong tries, at least a minute left) is returned as it is instead of being replaced.
+func (h *Helper) PairingCode(reuse bool) (homeproto.Code, string, error) {
+	secret, pin := homeproto.RandomToken(), homeproto.NewPIN()
+	if err := h.Update(func(c *Config) {
+		if p := c.Pending; reuse && p != nil && p.Pin != "" && p.Attempts < maxPairAttempts && time.Until(p.Expires) > time.Minute {
+			secret, pin = p.Secret, p.Pin
+			return
+		}
+		c.Pending = &Pending{Secret: secret, Pin: pin, Expires: time.Now().Add(pairingTTL)}
+	}); err != nil {
+		return homeproto.Code{}, "", err
 	}
 	key, err := h.RelayKey()
 	if err != nil {
-		return homeproto.Code{}, err
+		return homeproto.Code{}, "", err
 	}
 	cfg := h.Config()
-	return homeproto.Code{Relay: key.Public(), Bundle: h.ID.PublicBundle(), Relays: cfg.Relays, Secret: secret, Name: cfg.Name}, nil
+	return homeproto.Code{Relay: key.Public(), Bundle: h.ID.PublicBundle(), Relays: cfg.Relays, Secret: secret, Name: cfg.Name}, pin, nil
 }
 
 func tokenHash(t string) string {
@@ -688,14 +713,27 @@ func (h *Helper) pair(args json.RawMessage) (any, error) {
 	if r := []rune(in.Label); len(r) > 64 {
 		in.Label = string(r[:64])
 	}
-	expired := errors.New("this pairing code has expired or was already used; run `rubi-home pair` again")
+	expired := errors.New("this pairing code has expired, was already used or was tried too often; open Rubi Home on that computer for a new one")
 	if p := h.Fresh().Pending; p == nil || time.Now().After(p.Expires) {
 		return nil, expired // nothing to change: no write to disk for a stranger's guess
 	}
 	var err error
 	uerr := h.Update(func(c *Config) {
 		p := c.Pending
-		if p == nil || time.Now().After(p.Expires) || subtle.ConstantTimeCompare([]byte(p.Secret), []byte(in.Secret)) != 1 {
+		if p == nil || time.Now().After(p.Expires) {
+			err = expired
+			return
+		}
+		full := subtle.ConstantTimeCompare([]byte(p.Secret), []byte(in.Secret))
+		short := 0
+		if p.Pin != "" {
+			short = subtle.ConstantTimeCompare([]byte(p.Pin), []byte(homeproto.NormalizePIN(in.Secret)))
+		}
+		if full|short != 1 {
+			// A wrong secret: after maxPairAttempts the code is void and Rubi Home has to be opened again.
+			if p.Attempts++; p.Attempts >= maxPairAttempts {
+				c.Pending = nil
+			}
 			err = expired
 			return
 		}

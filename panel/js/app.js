@@ -6,6 +6,7 @@ import {
   fingerprint, approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
+import { clearHomeCode, decodeHomeCode, homeFingerprint, keepHomeCode, waitingHomeCode } from "./homecode.js";
 import { icon } from "./icons.js";
 import { celebrate, lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
@@ -367,6 +368,23 @@ function savePin(instance, k, version) {
   }
 }
 
+// ---------- a pairing code from Rubi Home (it opens the panel with #home-code=...) ----------
+
+// Rubi Home's window opened the panel with its code (no secret: the PIN in its window is typed later). Take it
+// out of the address bar at once, keep it, and say what to do next; the panel can't be used without the user's own
+// link, which holds the Rubi's key.
+function homeCodeArrived(hash) {
+  const code = (new URLSearchParams(hash.replace(/^#/, "")).get("home-code") || "").trim();
+  history.replaceState(null, "", location.pathname + location.search);
+  const kept = keepHomeCode(code);
+  screen(face("happy", 76), h("h1", {}, kept ? "Rubi Home is ready to pair" : "Copy the code instead"),
+    h("p", {}, kept
+      ? "Rubi Home's pairing code is ready. Open Rubi from your usual link (the one your Bot sent you, or your bookmark) and go to Settings, Rubi Home. The code is filled in for you; you type the PIN shown in Rubi Home's window."
+      : "Copy the code from Rubi Home's window and paste it in Settings, Rubi Home."),
+    h("p", { class: "muted small" }, kept ? "The code is kept here for 15 minutes. " : "",
+      "Pair only if you just opened Rubi Home on your own computer; a code from anyone else's link would connect their computer instead."));
+}
+
 // ---------- landing: the live mascot and the approval story ----------
 
 let landingDone = false;
@@ -446,8 +464,10 @@ function startStory(story) {
 // ---------- entry ----------
 
 async function main() {
+  waitingHomeCode(); // an expired pairing code is deleted whatever page this is
   if (location.hash.startsWith("#demo")) return demoMain(location.hash.slice(5).replace(/^=/, ""));
   if (!window.isSecureContext) return fatal("This page must be opened over HTTPS.");
+  if (location.hash.startsWith("#home-code=")) return homeCodeArrived(location.hash);
   const link = parseLink(location.hash);
   // Keep the one-time codes out of the address bar and history.
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
@@ -1786,6 +1806,8 @@ async function settingsScreen(ctx, tab) {
           menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]),
           hookBox);
       })) : null,
+      waitingHomeCode() ? h("button", { class: "primary", onclick: () => homeDeviceScreen(ctx, back) }, icon("plus", 16), "Pair the waiting Rubi Home") : null,
+      waitingHomeCode() ? homeWhoLine(waitingHomeCode(), "A pairing code from Rubi Home is waiting. Pair only if you just opened Rubi Home on your own computer.") : null,
       h("button", { class: "secondary", onclick: () => homeDeviceScreen(ctx, back) }, icon("plus", 16), "Add a home computer"),
     ],
     approvals: () => [
@@ -1908,15 +1930,54 @@ async function hookProgressScreen(ctx, d, back) {
 
 const HOME_INSTALL = "curl -fsSL https://rubi-panel.com/install-home.sh | sh";
 
-// homeDeviceScreen pairs a Rubi Home helper: install it on the computer at home, paste its code.
+// homeWhoLine says which computer a code belongs to ("Mac mini · pX3k-9QaL"), worked out here from the code;
+// the user compares it with Rubi Home's window. The text starts with `lead` and is filled in when the hash is done.
+function homeWhoLine(code, lead) {
+  const line = h("p", { class: "muted small" }, lead);
+  const d = decodeHomeCode(code);
+  if (d) {
+    homeFingerprint(d.bundle).then((fp) => {
+      line.textContent = `${lead} ${d.name || "A computer"} · ${fp}. It must match Rubi Home's window.`;
+    }).catch(() => {});
+  }
+  return line;
+}
+
+// homeDeviceScreen pairs a Rubi Home helper: install it on the computer at home, paste its code or use the one Rubi Home sent (then type the PIN).
 function homeDeviceScreen(ctx, back) {
   const err = errorBox();
   const code = h("textarea", { rows: "4", placeholder: "rubi-home:…", autocapitalize: "none", spellcheck: "false" });
+  const pin = h("input", { type: "text", autocapitalize: "characters", autocomplete: "off", spellcheck: "false", maxlength: "9", placeholder: "XXXX-XXXX" });
+  const pinField = h("label", { class: "field", hidden: true }, h("span", {}, "PIN shown in Rubi Home's window"), pin);
+  const filled = h("div", {});
+  let stamp = 0;
+  const refresh = () => { // what the box holds decides whether the PIN is asked for and who the code belongs to
+    const mine = ++stamp;
+    const v = code.value.trim();
+    const d = decodeHomeCode(v);
+    pinField.hidden = !d || d.hasSecret;
+    if (!d) return filled.replaceChildren();
+    homeFingerprint(d.bundle).then((fp) => {
+      if (mine !== stamp) return;
+      filled.replaceChildren(h("p", { class: "muted small" },
+        (v === waitingHomeCode() ? "A pairing code from Rubi Home is filled in. " : "") +
+        `${d.name || "A computer"} · ${fp}. It must match Rubi Home's window. Pair only if you just opened Rubi Home on your own computer.`));
+    }).catch(() => {});
+  };
+  code.value = waitingHomeCode();
+  code.addEventListener("input", () => {
+    if (code.value.trim() === "") clearHomeCode(); // the user cleared the box: forget the waiting code
+    refresh();
+  });
+  refresh();
   const copy = copyButton(HOME_INSTALL);
   const pair = h("button", { class: "primary", onclick: async (e) => {
     await busy(e.target, async () => {
       e.target.textContent = "Reaching Rubi Home…";
-      const res = await ctx.client.call("device.pair", { code: code.value.trim() });
+      const d = decodeHomeCode(code.value);
+      if (d && !d.hasSecret && !pin.value.trim()) throw new UserError("Type the PIN shown in Rubi Home's window.");
+      const res = await ctx.client.call("device.pair", { code: code.value.trim(), pin: pin.value.trim() });
+      clearHomeCode(); // Rubi Home took the code; it works once
       confirmChange(ctx, res, back);
     }).catch((x) => showError(err, x));
   } }, "Pair");
@@ -1928,9 +1989,11 @@ function homeDeviceScreen(ctx, back) {
     h("ol", { class: "steps-list" },
       h("li", {}, "On a Mac at home that stays on (or a Linux box), open Terminal and run:",
         h("div", { class: "cmd" }, h("code", {}, HOME_INSTALL), copy)),
-      h("li", {}, "It prints a pairing code starting with rubi-home:. Paste it here. (Later: rubi-home pair makes a new one.)"),
+      h("li", {}, "Rubi Home opens this page with its code, or copy the code from its window and paste it here. To get a new code, open Rubi Home on that computer."),
       h("li", {}, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run.")),
     h("label", { class: "field" }, h("span", {}, "Pairing code"), code),
+    filled,
+    pinField,
     err,
     pair,
   );

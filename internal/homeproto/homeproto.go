@@ -57,7 +57,7 @@ type Code struct {
 	Relay  string   `json:"n"`           // routing key on the relays
 	Bundle string   `json:"k"`           // public identity
 	Relays []string `json:"r,omitempty"` // relays it listens on ("" = the defaults)
-	Secret string   `json:"c"`           // one-time pairing secret
+	Secret string   `json:"c,omitempty"` // one-time pairing secret (empty in a link: the PIN takes its place)
 	Name   string   `json:"m,omitempty"` // e.g. the computer's name
 }
 
@@ -68,15 +68,84 @@ func (c Code) String() string {
 	return codePrefix + b64.EncodeToString(b)
 }
 
+// WithoutSecret is the code without its secret: what a link carries. Whoever sees it learns where the helper is
+// and its public identity, not how to pair with it.
+func (c Code) WithoutSecret() Code {
+	c.Secret = ""
+	return c
+}
+
+// PinAlphabet has no 0, O, 1, I or L: a PIN read from a window and typed can't be misread.
+const PinAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+// PinLength is the number of characters in a PIN (31^8 is about 8.5e11 possibilities).
+const PinLength = 8
+
+// NewPIN returns a random PIN, without the dash.
+func NewPIN() string {
+	out := make([]byte, 0, PinLength)
+	buf := make([]byte, 32)
+	for len(out) < PinLength {
+		_, _ = rand.Read(buf)
+		for _, b := range buf {
+			if b < 248 && len(out) < PinLength { // 248 = 8 * 31: no modulo bias
+				out = append(out, PinAlphabet[int(b)%len(PinAlphabet)])
+			}
+		}
+	}
+	return string(out)
+}
+
+// FormatPIN is how a PIN is shown: XXXX-XXXX.
+func FormatPIN(p string) string {
+	if len(p) != PinLength {
+		return p
+	}
+	return p[:4] + "-" + p[4:]
+}
+
+// NormalizePIN reads what the user typed: case, spaces and dashes don't matter.
+func NormalizePIN(s string) string {
+	return strings.ToUpper(strings.Map(func(r rune) rune {
+		if r == '-' || r == ' ' || r == '\t' || r == '\n' {
+			return -1
+		}
+		return r
+	}, s))
+}
+
 // ParseCode reads a pairing code (surrounding spaces and line breaks are ignored).
 func ParseCode(s string) (Code, error) {
+	c, err := parseCode(s)
+	if err == nil && c.Secret == "" {
+		return c, errors.New("this pairing code is incomplete; copy the whole line")
+	}
+	return c, err
+}
+
+// ParseCodeWithPin reads a code that may come without its secret (a link): the PIN shown in Rubi Home's
+// window is then the secret. A code that has its own secret ignores the PIN.
+func ParseCodeWithPin(s, pin string) (Code, error) {
+	c, err := parseCode(s)
+	if err != nil || c.Secret != "" {
+		return c, err
+	}
+	pin = NormalizePIN(pin)
+	if pin == "" {
+		return c, errors.New("type the PIN shown in Rubi Home's window")
+	}
+	c.Secret = pin
+	return c, nil
+}
+
+func parseCode(s string) (Code, error) {
 	s = strings.Join(strings.Fields(s), "")
 	var c Code
 	if !strings.HasPrefix(s, codePrefix) {
 		return c, errors.New("not a Rubi Home pairing code (it starts with rubi-home:)")
 	}
 	b, err := b64.DecodeString(strings.TrimPrefix(s, codePrefix))
-	if err != nil || json.Unmarshal(b, &c) != nil || c.Relay == "" || c.Bundle == "" || c.Secret == "" {
+	if err != nil || json.Unmarshal(b, &c) != nil || c.Relay == "" || c.Bundle == "" {
 		return c, errors.New("this pairing code is incomplete; copy the whole line")
 	}
 	if _, err := e2e.ParseInstanceBundle(c.Bundle); err != nil {

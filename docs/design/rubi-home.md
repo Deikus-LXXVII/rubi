@@ -25,13 +25,33 @@ things on Rubi's request.
 1. On the home computer: `curl -fsSL https://rubi-panel.com/install-home.sh | sh`. The installer verifies
    the release signature, starts the helper at login (LaunchAgent / systemd user service) and prints a
    pairing code: the helper's routing key, public identity and relays, plus a one-time secret valid for
-   15 minutes. `rubi-home pair` prints a new one.
-2. The user pastes the code into the panel (Settings > Rubi Home > Add a home computer).
+   15 minutes. Opening Rubi Home makes a new one (`rubi-home pair` still prints one, a maintainer tool).
+2. Opening Rubi Home (`rubi-home open`) shows a window on macOS with the computer's name and fingerprint.
+   A code is made only when the user presses **Open the Rubi panel** or **Copy the code**; a pending code that
+   is still good (a minute left, not worn out) is reused, so Close leaves nothing live.
+   - **Open the Rubi panel** opens `https://rubi-panel.com/#home-code=<code>`. That code holds the relay key, the
+     public identity, the relays and the name, **no secret**: a URL reaches history, sync and other apps. The next
+     dialog shows an 8-character PIN (`XXXX-XXXX`, an alphabet with no 0/O/1/I/L), and the user types it in the
+     panel. The PIN is the pairing secret of this route.
+   - **Copy the code** puts the full code (with its random secret) on the clipboard through the stdin of
+     `pbcopy`, never argv; pasting it needs no PIN.
+   - If Home is paired already, the window shows the Rubi's label, the date and the fingerprint, and **Pair
+     again** goes to the above. Off macOS the command prints the link, the PIN and the full code.
+   - Every text is an argument of the `osascript` run handler, never spliced into the script.
+   - The pending secret, its PIN, its expiry and a count of wrong tries are written to the config under a file
+     lock (`config.json.lock`, flock); a running helper reloads it. `pair` accepts the full secret or the PIN;
+     five wrong secrets void the pending code, so a short PIN can't be guessed (31^8 values, five tries).
+   The panel reads `#home-code=`, removes it from the address bar at once and keeps the (secret-free) code in
+   local storage for 15 minutes; it never stores a code that has a secret. It decodes the code on the client and
+   shows "name · fingerprint" (the same hash of the bundle text that the approval shows and Rubi Home's window
+   shows) for the user to compare. Settings > Rubi Home then offers "Pair the waiting Rubi Home" with the code
+   filled in and a field for the PIN. The code is deleted when used, expired or the box is cleared. The user
+   can also paste the full code (Settings > Rubi Home > Add a home computer).
 3. Rubi calls `pair` with the secret and a new token, then asks the user to approve adding the computer
    (passkey or password). Removing it later also tells the helper to forget the token.
 
 A new pairing replaces every earlier one on that computer: codes are made there by its owner, so a pairing
-someone obtained from an older code ends at the next `rubi-home pair`. `rubi-home status` lists the
+someone obtained from an older code ends when the next pairing is made. `rubi-home status` lists the
 pairing with its time. The helper introduces itself by its model ("MacBook Pro"), not by a hostname that
 often carries its owner's name.
 

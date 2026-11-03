@@ -6,12 +6,6 @@
 # T-01: installing and pairing Rubi Home asks for a terminal
 panel/js/app.js || curl -fsSL https://rubi-panel.com/install-home.sh || T-01: replace with a panel-guided Home install (a download the user opens, no shell)
 panel/js/app.js || open Terminal and run: || T-01: replace with a panel-guided Home install (a download the user opens, no shell)
-panel/js/app.js || pairing code starting with rubi-home: || T-01: Home shows its pairing code in its own window or the panel pairs by link, not by a command
-panel/js/demo.js || rubi-home status shows the same || T-01: show the Home fingerprint on the Home device screen only
-internal/core/devices.go || rubi-home status shows the same || T-01: show the Home fingerprint on the Home device screen only
-internal/home/home.go || start it with: rubi-home run || T-01: Home starts itself (login item) and says so in the panel
-internal/home/home.go || run `rubi-home pair` again || T-01: the panel asks Home for a new code, or pairs by link
-cmd/rubi-home/main.go || Pair again with: rubi-home pair || T-01: pairing is a panel step
 
 # T-03: forgetting a Hue bridge asks for a command
 internal/home/hue.go || run `rubi-home hue-forget || T-03: a "Forget this bridge" button on the Hue page

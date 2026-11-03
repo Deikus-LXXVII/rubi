@@ -99,9 +99,9 @@ func (c *Core) device(ref string) (*vault.Device, error) {
 	return found, nil
 }
 
-// PairDevice pairs with a helper from the code it printed, then asks the user to approve adding it.
-func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
-	pc, err := homeproto.ParseCode(code)
+// PairDevice pairs with a helper from its code (a code from a link has no secret: the PIN in Rubi Home's window is it), then asks the user to approve adding it.
+func (c *Core) PairDevice(ctx context.Context, code, pin string) (string, error) {
+	pc, err := homeproto.ParseCodeWithPin(code, pin)
 	if err != nil {
 		return "", err
 	}
@@ -129,8 +129,8 @@ func (c *Core) PairDevice(ctx context.Context, code string) (string, error) {
 	sum := sha256.Sum256([]byte(pc.Bundle))
 	fingerprint := base64.RawURLEncoding.EncodeToString(sum[:6])
 	return c.RequestChange(ctx, "Add Rubi Home on "+name, map[string]any{"computer (as it calls itself)": name,
-		"fingerprint": fingerprint + " (rubi-home status shows the same)",
-		"check":       "Approve only if you just ran rubi-home on your own computer and pasted its code",
+		"fingerprint": fingerprint + " (Rubi Home shows the same fingerprint when you open it)",
+		"check":       "Approve only if you just opened Rubi Home on your own computer and used its code",
 		"allows": "control Philips Hue on your home network, run the shortcuts in the folder \"" + hello.Folder +
 			"\", answer Claude Code's permission requests there and pass messages to and from its Claude Code sessions (only plugins you approve for that can)"},
 		func(d *vault.Data) error {
