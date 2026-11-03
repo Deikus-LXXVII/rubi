@@ -339,3 +339,16 @@ func TestNoPanelLoopStopsBeforeItsPageIsShown(t *testing.T) {
 		}
 	}
 }
+
+// A settings section is a list of nodes in which a part that doesn't apply is null (`cond ? h(...) : null`).
+// Element.replaceChildren/append write null as the text "null", so the list is filtered first: the Rubi Home
+// section showed "nullnull" when no pairing code was waiting.
+func TestSettingsSectionsDropTheirNullParts(t *testing.T) {
+	js := readRepo(t, "panel/js/app.js")
+	if !strings.Contains(js, "...sections[id]()") {
+		t.Fatal("the settings screen no longer draws sections[id](); update this check")
+	}
+	if strings.Contains(js, "replaceChildren(...sections[id]())") || !strings.Contains(js, "...sections[id]().filter(") {
+		t.Error("settings sections are drawn without dropping their null parts; null would show as the text \"null\"")
+	}
+}

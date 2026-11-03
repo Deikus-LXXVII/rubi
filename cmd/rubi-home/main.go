@@ -1,6 +1,8 @@
 // Command rubi-home runs Rubi Home, the helper on a computer at home that lets Rubi control the Philips
 // Hue Bridge and run the user's Shortcuts (see internal/home).
 //
+//	(no arguments, inside Rubi Home.app)
+//	                         what Finder runs when the user opens the app: install or update, start at login, then `open`
 //	rubi-home run            serve Rubi's requests (the LaunchAgent runs this)
 //	rubi-home pair           print a one-time code to paste into the Rubi panel
 //	rubi-home open           what the Rubi Home app runs when the user opens it: a window to pair (or see the pairing)
@@ -63,6 +65,9 @@ func mustDir() string {
 }
 
 func main() {
+	if exe, err := home.RunningExecutable(); err == nil && home.IsAppLaunch(os.Args[1:], exe) {
+		os.Exit(runApp(exe)) // Finder opened Rubi Home.app
+	}
 	if len(os.Args) < 2 {
 		usage()
 	}
@@ -170,6 +175,44 @@ func main() {
 	default:
 		usage()
 	}
+}
+
+// runApp is what opening Rubi Home.app does: install or update, start at login, show the pairing window. Its
+// failures are shown in a dialog (there is no terminal) and written to ~/.rubi-home/logs/rubi-home-app.log.
+func runApp(exe string) int {
+	homeDir, herr := home.UserHome()
+	logf := log.Printf
+	hasLog := false
+	if herr == nil {
+		if f := home.OpenAppLog(homeDir); f != nil {
+			defer f.Close()
+			logf = log.New(f, "", log.LstdFlags).Printf
+			hasLog = true
+		}
+	} else {
+		logf("rubi-home app: %v", herr)
+		homeDir = ""
+	}
+	dir, err := home.DefaultDir()
+	if err != nil {
+		logf("rubi-home app: %v", err)
+		dir = ""
+	}
+	err = home.RunApp(context.Background(), home.AppEnv{
+		Home: homeDir, UID: os.Getuid(), Exe: exe, HelperDir: dir, HasLog: hasLog, Logf: logf,
+		Open: func(ctx context.Context) error {
+			// Opened only now: the running helper made the identity and the configuration first.
+			h, err := home.Open(dir)
+			if err != nil {
+				return err
+			}
+			return home.RunOpen(ctx, h, home.OpenEnv{Out: os.Stdout})
+		},
+	})
+	if err != nil {
+		return 1
+	}
+	return 0
 }
 
 func usage() {

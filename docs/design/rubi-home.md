@@ -22,10 +22,13 @@ things on Rubi's request.
 
 ## Pairing
 
-1. On the home computer: `curl -fsSL https://rubi-panel.com/install-home.sh | sh`. The installer verifies
-   the release signature, starts the helper at login (LaunchAgent / systemd user service) and prints a
-   pairing code: the helper's routing key, public identity and relays, plus a one-time secret valid for
-   15 minutes. Opening Rubi Home makes a new one (`rubi-home pair` still prints one, a maintainer tool).
+1. On the home computer, install Rubi Home. On a Mac the user downloads `Rubi Home.app` (a zip) from the panel's
+   "Add a home computer" screen, opens the zip and opens Rubi Home: no terminal (see "The Mac app" below). On
+   Linux, which has no desktop installer yet, the script `curl -fsSL https://rubi-panel.com/install-home.sh | sh`
+   does the same (T-01L). Either way the helper starts at login (LaunchAgent / systemd user service). The script
+   verifies the release signature and prints a pairing code: the helper's routing key, public identity and relays,
+   plus a one-time secret valid for 15 minutes. Opening Rubi Home makes a new one (`rubi-home pair` still prints
+   one, a maintainer tool).
 2. Opening Rubi Home (`rubi-home open`) shows a window on macOS with the computer's name and fingerprint.
    A code is made only when the user presses **Open the Rubi panel** or **Copy the code**; a pending code that
    is still good (a minute left, not worn out) is reused, so Close leaves nothing live.
@@ -54,6 +57,103 @@ A new pairing replaces every earlier one on that computer: codes are made there 
 someone obtained from an older code ends when the next pairing is made. `rubi-home status` lists the
 pairing with its time. The helper introduces itself by its model ("MacBook Pro"), not by a hostname that
 often carries its owner's name.
+
+## The Mac app
+
+`scripts/build-home-app.sh VERSION ARCH BINARY OUTDIR` (POSIX sh) makes `rubi-home-VERSION-macos-ARCH.zip` holding
+`Rubi Home.app/Contents/{Info.plist, MacOS/rubi-home}`. ARCH is `universal` for the release and `arm64` or `amd64`
+for a local build. The release builds the app in its own job on a macOS runner (`mac-app` in `release.yml`): it
+builds `rubi-home` for both CPUs with the same flags as the tar.gz files, joins them with `lipo -create` into one
+universal binary, and seals the bundle ad hoc (`RUBI_APP_SIGN=adhoc`). One universal app means one download for
+every Mac: the panel shows a single link. The binary inside is the same program as in the tar.gz files, for both
+CPUs in one file. `Info.plist`: bundle id `com.rubi-project.home`, name "Rubi Home", `LSUIElement` (no Dock icon),
+`LSMinimumSystemVersion` 13.0, the version without its `v`. The zip is reproducible (fixed times, sorted entries,
+`zip -X -D`, written under a temporary name and moved into place; a test builds it twice under another zone and
+umask) and is listed in the signed `SHA256SUMS`. The per-CPU tar.gz files stay for the script installer and Linux.
+
+**The download link and the feed.** The panel links to
+`https://github.com/<repo>/releases/download/<tag>/rubi-home-<tag>-macos-universal.zip`. It learns `<tag>` from
+`rubi-panel.com/releases/latest.json`, which `pages.yml` makes with `deploy/pages/latest.jq` from GitHub's list of
+releases. The feed has a `mac_app` field with the zip's name only when that release has the asset, so the panel
+never links to a file that is not there; when the field is missing (an older feed, a release without the app, the
+feed unreachable) the button goes to the releases page and says so.
+
+**Trust model.** The app path trusts two things: the HTTPS download from the GitHub release, and macOS Gatekeeper
+(an ad-hoc signature, no Developer ID). The signed `SHA256SUMS` lists the zip, but nothing on the Mac checks it.
+The script path (`install-home.sh`, Linux) does check it, against the release key. The panel does not show a hash
+either: the feed carries no asset hashes, and a hash from the same HTTPS origin as the link would prove nothing a
+download of the file does not. A person who wants the check can compare the zip with `SHA256SUMS` and
+`SHA256SUMS.sig`, which are on the release page. Verifying the signed sums inside the app is possible later (the app
+holds the release key); until then this is the weaker of the two paths, and it is stated here on purpose.
+
+Finder runs `Contents/MacOS/rubi-home` with no arguments (very old macOS adds `-psn_*`). With no arguments (or only
+`-psn_*`) from a `*.app/Contents/MacOS/` folder whose `Contents/Info.plist` has `CFBundleIdentifier`
+`com.rubi-project.home`, `rubi-home` runs the app flow (`internal/home/appinstall.go`); elsewhere it still prints
+its usage. The home folder comes from the account database (`user.Current`), else `$HOME`, and must be absolute.
+
+1. Check `~/.rubi-home` (0700), `bin/` and `logs/` (0755): each must be a real folder (Lstat, never a symlink) owned by
+   the user, and has no group or other write after the chmod; otherwise the app stops with "Rubi Home's folder isn't
+   safe to install into".
+2. Copy the running binary to `~/.rubi-home/bin/rubi-home` (a temporary file in that folder, fsync, mode 0755,
+   rename). Not copied when:
+   - the SHA-256 is equal (a symlink in the place is never "equal": it is replaced by a file, and never run);
+   - the installed version, read with `<installed> version` (3 s limit), is newer than this app's, by the semver
+     rules of `hookver.go`: a dialog says "A newer Rubi Home (vX) is already installed; this app is vY. Keep the
+     newer one." and the flow goes on with the installed helper. A development build is replaced only by another
+     development build, or when the installed version can't be read; an unreadable, older or equal version is
+     replaced (the update).
+3. Write `~/Library/LaunchAgents/com.rubi-project.home.plist`: the text of `install-home.sh`'s heredoc (a Go template
+   with the paths escaped for XML; a test extracts the heredoc and compares). A symlink in its place is replaced by
+   a regular file and logged.
+4. Load it with the `launchctl` runner (each call limited to 20 s): a new install (or a changed file, or an agent that
+   is not loaded) is booted out (an error is ignored) and bootstrapped into `gui/<uid>`; when bootstrap fails the
+   agent is `enable`d (the user may have switched it off in Login Items) and bootstrap is tried once more; an
+   unchanged, loaded agent whose binary changed gets `kickstart -k`; nothing else is touched.
+5. Wait up to 10 s for the helper to accept a connection on its local socket (`claude.sock` in its folder). A
+   file that is left over from a crash does not count: the connection is made. If the agent was loaded before and
+   nothing answers, it gets one `kickstart -k` and the wait runs again; a dead helper after that is an error. The
+   program on the other end of the socket is read from the kernel (macOS: `LOCAL_PEERPID`, then the
+   `kern.procargs2` sysctl; no cgo); if it is not the installed binary, or can't be told, a line goes to the log (a
+   warning, not a refusal). After a `kickstart -k`, a connection could still reach the old process for a moment before
+   it exits; the window then opens a little early, and the config it writes is read by the new process.
+6. `RunOpen` (the pairing window), at the user's pace but for at most 10 minutes (then the app ends quietly). The
+   helper's configuration is opened only now, so the running helper made the identity first and two processes never
+   create it at once.
+7. A failure is logged to `~/.rubi-home/logs/rubi-home-app.log` (private, with the detail) and shown in a dialog
+   with a fixed sentence: no command, no path of the system, no raw error. The dialog points to the log only when
+   the log could be opened. Dialogs give up after 2 minutes.
+
+Opening a newer app later replaces the binary and restarts the helper: this is the update. After an update the panel
+shows **Update the hook** (the root-owned hook copy is separate).
+
+### Opening an unsigned app (Gatekeeper and codesign)
+
+Checked on macOS (Darwin 27, arm64) with the release's build flags, `codesign` reading files in a temporary folder:
+
+- **The Go linker signs.** A `darwin/arm64` binary comes out ad hoc signed by the linker:
+  `CodeDirectory v=20400 ... flags=0x20002(adhoc,linker-signed)`, `Signature=adhoc`, `Info.plist=not bound`,
+  `TeamIdentifier=not set`; `codesign --verify --strict` says "valid on disk". arm64 refuses unsigned code, so this
+  is what lets the binary run at all. The same holds when the release cross-builds it on Linux.
+- **A plain copy needs nothing.** The signature is inside the Mach-O file, page hashes and no path, so the copy at
+  `~/.rubi-home/bin/rubi-home` verifies the same ("valid on disk"). The copy is written by Rubi Home's own process,
+  which sets no `com.apple.quarantine` (the zip's quarantine is on the downloaded files, not on what the app
+  writes); the only extended attribute seen on it was `com.apple.provenance`. The LaunchAgent runs it with no
+  Gatekeeper prompt.
+- **The bundle must be sealed.** Without it, `codesign --verify --strict "Rubi Home.app"` fails with
+  "code has no resources but signature indicates they must be present": the linker signature does not bind
+  `Info.plist`, and macOS may then call a downloaded app damaged, which only a terminal command gets past. So the
+  release builds the app on a macOS runner (job `mac-app` in `release.yml`) and seals it ad hoc:
+  `RUBI_APP_SIGN=adhoc scripts/build-home-app.sh ...` runs `codesign --sign - --force --timestamp=none` and then
+  `codesign --verify --strict`. The sealed zip is still reproducible (two builds give the same bytes), it verifies
+  after unzipping, and `codesign -dv` reads `Identifier=com.rubi-project.home`, `Info.plist entries=10`. A binary
+  copied out of the sealed bundle still runs (`rubi-home version` from a temporary folder).
+  `TestHomeAppSealedBuildVerifies` and `TestHomeAppUniversalBuildBundlesAndVerifies` check this on macOS.
+- **What the user sees.** A zip from a browser is quarantined, and an ad-hoc signature is not a Developer ID nor
+  notarized, so Gatekeeper refuses the first open: "macOS can't check it for malware", and Privacy & Security then
+  offers **Open Anyway** (the panel's step 3). This is not tested here: the app was not run. The H4 check on a
+  test account confirms it.
+- **Developer ID.** Signing and notarizing with a Developer ID would remove the Open Anyway step. It needs a paid
+  Apple developer account, the owner's choice; it is a marked TODO in the `mac-app` job of `release.yml`.
 
 ## Watching Rubi
 
@@ -263,7 +363,7 @@ The helper does only what it was built for, whatever Rubi asks:
   so it runs `<hook> version` (default `/usr/local/bin/rubi-home`, `--hook PATH` or `RUBI_HOOK_BINARY`; 3 s,
   the process group is killed) and prints version, sha256, whether the file is root-owned, not a symlink and
   not group/world-writable, and "stale". The helper does the same check once at start (it has no
-  self-updater: upgrades are an `install-home.sh` run, which restarts it) and logs a warning; the installer
+  self-updater: upgrades are opening a newer Rubi Home app, or an `install-home.sh` run, which restart it) and logs a warning; the installer
   warns too.
 
   The hook identity is advisory: the hook reports it itself, so a process that can reach the socket can claim

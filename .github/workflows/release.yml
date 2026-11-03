@@ -11,7 +11,45 @@ permissions:
   actions: write
 
 jobs:
+  # The Mac app is sealed with an ad-hoc signature, which needs codesign, so it is built on macOS. The
+  # binary inside is built with the same flags as below; the zips join the release's signed sums.
+  mac-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the Mac app
+        # One universal binary (Apple silicon and Intel) in one app, so the user has one download to choose.
+        run: |
+          set -euo pipefail
+          mkdir -p app work/home-darwin-universal
+          for arch in arm64 amd64; do
+            out="work/home-darwin-$arch"
+            mkdir -p "$out"
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -buildid= -X github.com/Deikus-LXXVII/rubi/internal/version.Version=${GITHUB_REF_NAME}" \
+              -o "$out/rubi-home" ./cmd/rubi-home
+          done
+          lipo -create -output work/home-darwin-universal/rubi-home work/home-darwin-arm64/rubi-home work/home-darwin-amd64/rubi-home
+          lipo -archs work/home-darwin-universal/rubi-home
+          RUBI_APP_SIGN=adhoc sh scripts/build-home-app.sh "$GITHUB_REF_NAME" universal work/home-darwin-universal/rubi-home app
+          # TODO(macOS signing): sign and notarize "Rubi Home.app" with a Developer ID, so macOS opens it without
+          # "Open Anyway". It needs these secrets, and must be skipped cleanly when they are not set:
+          # MACOS_SIGN_IDENTITY, MACOS_CERTIFICATE (base64 .p12), MACOS_CERTIFICATE_PASSWORD,
+          # MACOS_NOTARY_APPLE_ID, MACOS_NOTARY_PASSWORD, MACOS_NOTARY_TEAM_ID. Until then the app is signed ad
+          # hoc only. See docs/design/rubi-home.md ("Opening an unsigned app").
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: app/*.zip
+          if-no-files-found: error
+
   release:
+    needs: mac-app
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,6 +59,11 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-app
+          path: dist
 
       - name: Build
         run: |
@@ -46,9 +89,12 @@ jobs:
               -o "$out/rubi-home" ./cmd/rubi-home
             tar --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$out" -czf "dist/rubi-home-${GITHUB_REF_NAME}-$os-$arch.tar.gz" rubi-home
           done
+          # The Mac app zips came from the mac-app job (above, in dist/); the tar.gz files stay for the script
+          # installer and Linux.
+          ls dist/rubi-home-*-macos-universal.zip
           cd dist
-          # Archives for the installer, plus the bare binaries for Rubi's self-check.
-          sha256sum rubi-*.tar.gz bin/rubi-* > SHA256SUMS
+          # Archives and Mac app zips for the installers, plus the bare binaries for Rubi's self-check.
+          sha256sum rubi-*.tar.gz rubi-*.zip bin/rubi-* > SHA256SUMS
           cat SHA256SUMS
 
       - name: Sign checksums
@@ -67,7 +113,7 @@ jobs:
       - name: Provenance attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: "dist/rubi-*.tar.gz, dist/bin/rubi-*"
+          subject-path: "dist/rubi-*.tar.gz, dist/rubi-*.zip, dist/bin/rubi-*"
 
       - name: Publish release
         env:
@@ -75,7 +121,7 @@ jobs:
         run: |
           flags=""
           case "$GITHUB_REF_NAME" in v0.*|*-*) flags="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/rubi-*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sig \
+          gh release create "$GITHUB_REF_NAME" dist/rubi-*.tar.gz dist/rubi-*.zip dist/SHA256SUMS dist/SHA256SUMS.sig \
             --title "$GITHUB_REF_NAME" --generate-notes $flags
 
       - name: Refresh the release feed on rubi-panel.com

@@ -28,8 +28,9 @@ git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-The `release` workflow tests, builds static binaries for linux/amd64, linux/arm64 and darwin/arm64, writes
-`SHA256SUMS` (archives and bare binaries), signs it, verifies the signature against
+The `release` workflow tests, builds static binaries for linux/amd64, linux/arm64 and darwin/arm64, builds Rubi Home
+for those and darwin/amd64, builds the universal Mac app zip `rubi-home-<tag>-macos-universal.zip` on a macOS runner
+(`mac-app` job, `scripts/build-home-app.sh`; the panel links to it, and the release feed names it as `mac_app`), writes `SHA256SUMS` (archives, the app zip and bare binaries), signs it, verifies the signature against
 `release-key.pub.pem`, adds a GitHub build-provenance attestation, publishes the release, and re-runs the
 `pages` workflow, which regenerates `https://rubi-panel.com/releases/latest.json`. Installed Rubis read that
 file and offer the update to their users.

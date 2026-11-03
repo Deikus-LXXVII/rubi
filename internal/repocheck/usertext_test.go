@@ -193,7 +193,7 @@ func readAllow(t *testing.T) []*allowEntry {
 	defer fh.Close()
 	var out []*allowEntry
 	sc := bufio.NewScanner(fh)
-	task := regexp.MustCompile(`^T-\d+: \S`)
+	task := regexp.MustCompile(`^T-\d+L?: \S`)
 	for n := 1; sc.Scan(); n++ {
 		ln := strings.TrimSpace(sc.Text())
 		if ln == "" || strings.HasPrefix(ln, "#") {

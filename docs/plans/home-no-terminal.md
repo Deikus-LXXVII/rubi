@@ -85,7 +85,7 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
 
 ## H3: `Rubi Home.app` (T-01)
 
-- **The release** builds `rubi-home-<version>-macos-<arch>.zip` for arm64 and amd64.
+- **The release** builds one `rubi-home-<version>-macos-universal.zip` (arm64 and amd64 joined with `lipo`).
   - It holds `Rubi Home.app`, with `Contents/MacOS/rubi-home` (the same binary) and an `Info.plist`.
   - The `Info.plist` sets `LSUIElement` (no Dock icon) and has a bundle id and a version.
   - The zip is listed in the signed `SHA256SUMS`, like every asset.
@@ -97,7 +97,7 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
 
   Opening a newer app later replaces the binary and restarts the helper: this is the update. After an update the panel
   shows **Update the hook** (H1).
-- **The panel's "Add a home computer" screen.** On a Mac or a phone, it shows a **Download Rubi Home for Mac** link to
+- **The panel's "Add a home computer" screen.** On a Mac or a phone, it shows one **Download Rubi Home for Mac** link to
   the latest release's zip, with these steps:
   1. open the zip;
   2. open Rubi Home;
@@ -144,5 +144,41 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
   `pin` arg of `device.pair`); five wrong secrets void a pending code; the fingerprint is shown in every dialog and in
   the panel; the code is made on demand and reused; `Helper.Update` takes a flock. Deviations:
   - Linux prints the link, the PIN and the code, with no allow-list entry (the text holds no command).
-  - The panel's install steps still hold the `curl` line (T-01 install entries stay for H3).
-- H3, H4: not started.
+  - The panel's install steps still hold the `curl` line (T-01 install entries stay for H3; done in H3).
+- H3: done (`scripts/build-home-app.sh`; `release.yml` builds the universal zip in a `mac-app` job and lists it in the sums; `internal/home/appinstall.go`
+  and the `IsAppLaunch` branch in `cmd/rubi-home/main.go`; the panel's download screen). Details are in
+  `docs/design/rubi-home.md` ("The Mac app"). Findings and deviations:
+  - **Go linker signs ad hoc** on darwin/arm64 (`adhoc,linker-signed`, valid on disk). A plain copy of the binary
+    verifies the same and carries no quarantine. The bundle as built does **not** verify (`Info.plist` is not bound:
+    "code has no resources but signature indicates they must be present"); `codesign -s - --force` on it makes it
+    valid. So the release builds the app on a macOS runner (job `mac-app`) and seals it ad hoc
+    (`RUBI_APP_SIGN=adhoc`); the sealed zip is reproducible and verifies after unzipping
+    (`TestHomeAppSealedBuildVerifies`). Whether macOS shows Open Anyway for it is for the H4 check on a test account.
+  - The wait for the helper (10 s) dials its local socket (`claude.sock`); the window's helper is opened only after.
+  - Reload rule: bootout and bootstrap for a new install, a changed LaunchAgent file or an agent that isn't loaded;
+    `kickstart -k` when only the binary changed. A failed bootstrap enables the agent and tries once more.
+  - Review fixes (H3 second pass):
+    - No downgrade: a newer installed Rubi Home (read with `<installed> version`, 3 s) stays, with a one-button
+      dialog; development builds are replaced only by development builds or when the version can't be read.
+    - A loaded agent that does not answer gets one `kickstart -k` and a second wait.
+    - The trust model is written down (HTTPS from GitHub plus Gatekeeper; nothing on the Mac checks `SHA256SUMS`).
+    - The program that answers on the helper's socket is read from the kernel (`LOCAL_PEERPID` and the
+      `kern.procargs2` sysctl, no cgo); a different one is logged, not refused.
+    - Every launchctl call has a 20 s limit, dialogs 2 minutes, the pairing window 10 minutes.
+    - `~/.rubi-home`, `bin/`, `logs/` must be real folders owned by the user; a symlink at the binary or the
+      LaunchAgent file is replaced, never followed.
+    - One universal app (`lipo` in the `mac-app` job): one download link, no Intel link.
+    - `IsAppLaunch` also needs `Contents/Info.plist` with the bundle identifier; the home folder comes from
+      `user.Current` (absolute); the dialog points to the log only when there is one.
+    - The feed gains `mac_app` (`deploy/pages/latest.jq`), only when the release has the zip; without it the
+      button opens the releases page.
+    - The script writes the zip under a temporary name, shows codesign's output on failure, and cleans up on
+      interrupt.
+    - With `CGO_ENABLED=0` `os/user` reads `$HOME` on macOS; the absolute-path rule is the guard that remains.
+  - `LSMinimumSystemVersion` is 13.0 (nothing else in the repo names a macOS version; Go 1.26 itself runs on 12).
+  - `docs/user` and the README never told a Mac user to install Rubi Home with `curl` (their only `curl` is the
+    Rubi install message, T-06), so no page needed rewriting.
+  - The allow-list keeps two T-01L lines (the script line and "open a terminal and run:"), both inside "On Linux".
+    The task pattern in `usertext_test.go` accepts `T-01L`.
+  - Signing and notarizing: only a marked TODO in `release.yml`, no code.
+- H4: not started.

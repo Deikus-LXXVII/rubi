@@ -3,9 +3,9 @@
 # The test fails on a new violation and on a line here that matches nothing any more, so this list only shrinks.
 # The T-nn tasks are listed in docs/project-rules.md ("Known gaps", rule 2).
 
-# T-01: installing and pairing Rubi Home asks for a terminal
-panel/js/app.js || curl -fsSL https://rubi-panel.com/install-home.sh || T-01: replace with a panel-guided Home install (a download the user opens, no shell)
-panel/js/app.js || open Terminal and run: || T-01: replace with a panel-guided Home install (a download the user opens, no shell)
+# T-01L: Linux has no desktop installer, so its box still gets the script line (shown only under "On Linux" in the panel)
+panel/js/app.js || curl -fsSL https://rubi-panel.com/install-home.sh || T-01L: no desktop installer for Linux yet
+panel/js/app.js || open a terminal and run: || T-01L: no desktop installer for Linux yet
 
 # T-03: forgetting a Hue bridge asks for a command
 internal/home/hue.go || run `rubi-home hue-forget || T-03: a "Forget this bridge" button on the Hue page

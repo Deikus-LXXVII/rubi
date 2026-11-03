@@ -76,3 +76,27 @@ export function waitingHomeCode(now = Date.now()) {
   clearHomeCode();
   return "";
 }
+
+// ---- the Mac app's download link ----
+// release.yml uploads rubi-home-<tag>-macos-universal.zip (one app for Apple silicon and Intel; scripts/build-home-app.sh
+// makes the name) to the tag's GitHub release. The site's /releases/latest.json (deploy/pages/latest.jq, run by
+// pages.yml) names the newest tag, and carries `mac_app` only when that release really has the file.
+
+export const HOME_FEED = "https://rubi-panel.com/releases/latest.json";
+export const HOME_RELEASES = "https://github.com/Deikus-LXXVII/rubi/releases";
+const RELEASE_TAG = /^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$/; // the same rule as install-home.sh and the build script
+
+// homeFeedVersion is the release tag a feed names, or "" when it is not a plain tag.
+export function homeFeedVersion(feed) {
+  const v = feed && typeof feed.version === "string" ? feed.version : "";
+  return RELEASE_TAG.test(v) ? v : "";
+}
+
+// homeMacAppURL is the download address of the app in the newest release, or "" when the feed does not say that
+// release has it (the caller then links to the releases page instead of a file that may be missing).
+export function homeMacAppURL(feed) {
+  const v = homeFeedVersion(feed);
+  const file = `rubi-home-${v}-macos-universal.zip`;
+  if (!v || !feed || feed.mac_app !== file) return "";
+  return `${HOME_RELEASES}/download/${v}/${file}`;
+}

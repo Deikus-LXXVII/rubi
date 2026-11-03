@@ -31,9 +31,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p panel/releases
-          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=20" \
-            --jq '[.[] | select(.draft == false)] | sort_by(.published_at) | last
-                  | {version: .tag_name, published_at: .published_at, notes_url: .html_url}' \
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=20" | jq -f deploy/pages/latest.jq \
             > panel/releases/latest.json
           cat panel/releases/latest.json
       - name: Plugin catalog

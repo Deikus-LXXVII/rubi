@@ -722,6 +722,9 @@ button.back:hover .icon { translate: -3px 0; }
 .stile-text .small .icon { vertical-align: -2px; }
 .stile-action { grid-column: 2; display: flex; justify-content: flex-start; }
 .tag .icon { stroke-width: 2.4; }
+/* Add a home computer: the download of the Mac app */
+.home-dl { margin: 12px 0 8px; }
+.home-download { width: 100%; }
 .sideload summary { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
 .sideload[open] { display: flex; flex-direction: column; gap: 10px; }
 

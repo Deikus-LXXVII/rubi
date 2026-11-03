@@ -81,7 +81,7 @@ Exempt by path, with the reason in `userTextExempt` in the test:
 
 | Task | Where | What |
 | ---- | ----- | ---- |
-| T-01 | `panel/js/app.js` (2 texts) | installing Rubi Home asks for `curl ... \| sh` in a terminal (pairing no longer does: Rubi Home's window pairs, H2) |
+| T-01L | `panel/js/app.js` (2 texts) | Linux has no desktop installer yet: its box still gets `curl ... \| sh` in a terminal, shown only under "On Linux" (a Mac installs by downloading the app, H3) |
 | T-03 | `internal/home/hue.go` | forgetting a Hue bridge: `rubi-home hue-forget` |
 | T-04 | `internal/core/hooks.go`, `internal/daemon/daemon.go` | choosing the transport: `rubi transport` |
 | T-05 | `internal/kvm/kvm.go` | the KVM device needs a sudo setting |

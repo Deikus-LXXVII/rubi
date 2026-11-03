@@ -6,7 +6,7 @@ import {
   fingerprint, approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
-import { clearHomeCode, decodeHomeCode, homeFingerprint, keepHomeCode, waitingHomeCode } from "./homecode.js";
+import { clearHomeCode, decodeHomeCode, HOME_FEED, HOME_RELEASES, homeFeedVersion, homeFingerprint, homeMacAppURL, keepHomeCode, waitingHomeCode } from "./homecode.js";
 import { icon } from "./icons.js";
 import { celebrate, lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
@@ -1838,7 +1838,7 @@ async function settingsScreen(ctx, tab) {
     ctx.settingsTab = id;
     for (const b of nav.querySelectorAll("button")) b.setAttribute("aria-current", String(b.dataset.tab === id));
     requestAnimationFrame(() => nav.querySelector("[aria-current=true]")?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" }));
-    body.replaceChildren(...sections[id]());
+    body.replaceChildren(...sections[id]().filter((n) => n != null && n !== false)); // append(null) would write "null"
     body.querySelectorAll(":scope > *").forEach((el, i) => {
       el.classList.remove("rise");
       void el.offsetWidth;
@@ -1943,6 +1943,46 @@ function homeWhoLine(code, lead) {
   return line;
 }
 
+// homeInstallSteps is how to get Rubi Home onto a Mac with no terminal: download the app, open it, press a button in
+// its window. The link points at the newest release's file when the site's release feed says the release has it;
+// until then, or when it does not, it goes to the releases page. One app serves both kinds of Mac. Linux has no app yet.
+function homeInstallSteps(ctx) {
+  const note = h("p", { class: "muted small" });
+  const dl = h("a", { class: "btn primary home-download", href: HOME_RELEASES, target: "_blank", rel: "noopener noreferrer" }, icon("download", 18), "Download Rubi Home for Mac");
+  const notReady = () => { note.textContent = "The download link is not ready yet. This opens the page of Rubi's releases."; };
+  if (ctx.demo) {
+    notReady(); // the demo makes no request
+  } else {
+    const stop = new AbortController();
+    const timer = setTimeout(() => stop.abort(), 8000);
+    fetch(HOME_FEED, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: stop.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((feed) => {
+        const url = homeMacAppURL(feed);
+        if (!url) return notReady(); // the newest release has no Mac app (yet): never link to a file that may not be there
+        dl.href = url;
+        dl.removeAttribute("target"); // a file: the browser downloads it
+        note.textContent = `Version ${homeFeedVersion(feed)}, for Apple silicon and Intel Macs.`;
+      })
+      .catch(notReady)
+      .finally(() => clearTimeout(timer));
+  }
+  return [
+    h("div", { class: "home-dl" }, dl, note),
+    h("ol", { class: "steps-list" },
+      h("li", {}, "Open the file you downloaded. Your Mac unzips it into Rubi Home."),
+      h("li", {}, "Open Rubi Home. It installs itself and starts whenever you log in."),
+      h("li", {}, "If macOS says it can't check Rubi Home for malware or the developer, open System Settings, then Privacy & Security, and press Open Anyway next to Rubi Home. Then open it again."),
+      h("li", {}, "In Rubi Home's window press Open the Rubi panel. Open Rubi from your own link, and type the PIN the window shows here.")),
+    h("p", { class: "muted small" }, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run."),
+    h("details", { class: "sideload" },
+      h("summary", {}, "On Linux"),
+      h("p", { class: "muted" }, "There is no desktop installer for Linux yet. On that computer, open a terminal and run:"),
+      h("div", { class: "cmd" }, h("code", {}, HOME_INSTALL), copyButton(HOME_INSTALL)),
+      h("p", { class: "muted" }, "It prints a pairing code. Paste it in the box below.")),
+  ];
+}
+
 // homeDeviceScreen pairs a Rubi Home helper: install it on the computer at home, paste its code or use the one Rubi Home sent (then type the PIN).
 function homeDeviceScreen(ctx, back) {
   const err = errorBox();
@@ -1970,7 +2010,6 @@ function homeDeviceScreen(ctx, back) {
     refresh();
   });
   refresh();
-  const copy = copyButton(HOME_INSTALL);
   const pair = h("button", { class: "primary", onclick: async (e) => {
     await busy(e.target, async () => {
       e.target.textContent = "Reaching Rubi Home…";
@@ -1981,21 +2020,28 @@ function homeDeviceScreen(ctx, back) {
       confirmChange(ctx, res, back);
     }).catch((x) => showError(err, x));
   } }, "Pair");
-  screen(
-    header(ctx.hello),
-    backBar("Settings", back),
-    h("h1", {}, "Add a home computer"),
-    h("p", {}, "Rubi runs on your agent's machine and can't reach your home network. Rubi Home, a small helper on a computer at home, can: it talks to your Hue Bridge and runs the shortcuts you put in its folder."),
-    h("ol", { class: "steps-list" },
-      h("li", {}, "On a Mac at home that stays on (or a Linux box), open Terminal and run:",
-        h("div", { class: "cmd" }, h("code", {}, HOME_INSTALL), copy)),
-      h("li", {}, "Rubi Home opens this page with its code, or copy the code from its window and paste it here. To get a new code, open Rubi Home on that computer."),
-      h("li", {}, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run.")),
+  const waiting = waitingHomeCode() !== "";
+  const pairBlock = [
     h("label", { class: "field" }, h("span", {}, "Pairing code"), code),
     filled,
     pinField,
     err,
     pair,
+  ];
+  const install = homeInstallSteps(ctx);
+  screen(
+    header(ctx.hello),
+    backBar("Settings", back),
+    h("h1", {}, "Add a home computer"),
+    h("p", {}, "Rubi runs on your agent's machine and can't reach your home network. Rubi Home, a small helper on a computer at home, can: it talks to your Hue Bridge and runs the shortcuts you put in its folder."),
+    // A code is waiting: Rubi Home is installed, so pairing comes first and the install steps fold away.
+    ...(waiting
+      ? [
+        h("p", {}, "Rubi Home sent a pairing code. Check that the name and fingerprint below are the ones in its window, type the PIN it shows, then press Pair."),
+        ...pairBlock,
+        h("details", { class: "sideload" }, h("summary", {}, "Not installed yet?"), ...install),
+      ]
+      : [...install, ...pairBlock]),
   );
 }
 
