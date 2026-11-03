@@ -333,9 +333,15 @@ func TestStartAfterACrash(t *testing.T) {
 	if !s.Alive() {
 		t.Fatal("not alive after Start")
 	}
+	if s.Pid() <= 1 {
+		t.Errorf("pid %d of a running server", s.Pid())
+	}
 	killServer(t, s)
 	if s.Alive() {
 		t.Error("alive after the process died")
+	}
+	if s.Pid() != 0 {
+		t.Errorf("pid %d of a dead server", s.Pid())
 	}
 	s.Stop() // must not signal or hang
 	if _, err := s.Start(context.Background()); err != nil {

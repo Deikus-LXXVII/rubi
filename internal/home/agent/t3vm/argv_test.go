@@ -158,7 +158,8 @@ func TestClampArgvDropsTheSkipPermissionFlagsBelowFullAccess(t *testing.T) {
 
 func TestClampArgvRefusesWhatCouldTurnTheHookOff(t *testing.T) {
 	for _, bad := range [][]string{
-		{"--settings", `{"disableAllHooks":true}`}, {"--settings=/tmp/s.json"}, {"--setting-sources", "user"}, {"--setting-sources=project"},
+		{"--settings", `{"disableAllHooks":true}`}, {"--settings", `{"hooks":{}}`}, {"--settings", `{"showThinkingSummaries":"yes"}`},
+		{"--settings", `{"showThinkingSummaries":true,"env":{"X":"1"}}`}, {"--settings=/tmp/s.json"}, {"--settings", "/tmp/s.json"}, {"--settings", `[true]`}, {"--setting-sources", "user"}, {"--setting-sources=project"},
 		{"--mcp-config", "/tmp/mcp.json"}, {"--mcp-config=./mcp.json"}, {"--mcp-config", `[1]`}, {"--mcp-config", `{bad`},
 		{"--plugin-dir", "/tmp/p"}, {"--agents", "{}"}, {"--bare"},
 		{"--add-dir", "/"}, {"--add-dir", "/Users"}, {"--add-dir=/etc"}, {"--add-dir", tCwd + "/../.."},
@@ -281,4 +282,33 @@ func TestClampArgvOnlyT3sOwnMCPServerIsAccepted(t *testing.T) {
 	if _, err := clamp([]string{"--mcp-config", ok(`{}`)}, pol(t3.Auto)); err != nil {
 		t.Errorf("an empty server list: %v", err)
 	}
+}
+
+// What T3 really passes (checked against the pinned nightly): --effort, the skip-permissions allowance, a repeated
+// --thinking-display and the one setting it gives on the command line.
+func TestClampArgvAcceptsT3sRealCommandLine(t *testing.T) {
+	in := []string{"--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--thinking", "adaptive", "--thinking-display", "summarized",
+		"--effort", "high", "--model", "claude-sonnet-4-6", "--permission-prompt-tool", "stdio", "--allowedTools", "mcp__t3-code__*", "--tools", "default",
+		"--permission-mode", "bypassPermissions", "--allow-dangerously-skip-permissions", "--include-partial-messages", "--add-dir", tCwd, "--add-dir", tAtt,
+		"--session-id=2f527ae3-2ff7-4174-8f30-9e1dbe399c39", "--thinking-display", "summarized", "--settings", `{"showThinkingSummaries":true}`}
+	got, err := clamp(in, pol(t3.FullAccess))
+	if err != nil || !reflect.DeepEqual(got, in) {
+		t.Fatalf("%q %v", got, err)
+	}
+	got, err = clamp(in, pol(t3.ApprovalRequired))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(got, "--allow-dangerously-skip-permissions") || got[indexOf(got, "--permission-mode")+1] != "default" {
+		t.Errorf("not clamped: %q", got)
+	}
+}
+
+func indexOf(a []string, s string) int {
+	for i, x := range a {
+		if x == s {
+			return i
+		}
+	}
+	return -1
 }

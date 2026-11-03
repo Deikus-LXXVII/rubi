@@ -35,6 +35,7 @@ type pipeSup struct {
 	a      *AppleContainer
 	name   string
 	spec   *PipeSpec
+	env    map[string]string // the forwarder's environment (RUBI_T3_PORT for a T3 session)
 	giveUp func(error)
 
 	// the limits as they were when the pipe started
@@ -53,7 +54,12 @@ type pipeSup struct {
 // startPipe starts the forwarder in the running container and waits until it listens. A later death of the
 // forwarder restarts it; after pipeMaxRestarts in pipeRestartWindow the container is stopped.
 func (a *AppleContainer) startPipe(ctx context.Context, name string, spec *PipeSpec, giveUp func()) (*pipeSup, error) {
-	s := &pipeSup{a: a, name: name, spec: spec, stopCh: make(chan struct{}),
+	return a.startPipeEnv(ctx, name, spec, nil, giveUp)
+}
+
+// startPipeEnv is startPipe with an environment for the forwarder.
+func (a *AppleContainer) startPipeEnv(ctx context.Context, name string, spec *PipeSpec, env map[string]string, giveUp func()) (*pipeSup, error) {
+	s := &pipeSup{a: a, name: name, spec: spec, env: env, stopCh: make(chan struct{}),
 		helloWait: pipeHelloWait, maxRestarts: pipeMaxRestarts, window: pipeRestartWindow, delay: pipeRestartDelay}
 	s.giveUp = func(err error) {
 		log.Printf("agent: the network pipe of %s keeps failing (%v); stopping its VM", name, err)
@@ -69,7 +75,7 @@ func (a *AppleContainer) startPipe(ctx context.Context, name string, spec *PipeS
 
 // attempt starts the forwarder once and returns when it said HELLO.
 func (s *pipeSup) attempt(ctx context.Context) error {
-	conn, err := s.a.execNamed(ctx, s.name, nil, []string{pipeBin}, true)
+	conn, err := s.a.execNamed(ctx, s.name, s.env, []string{pipeBin}, true)
 	if err != nil {
 		return err
 	}

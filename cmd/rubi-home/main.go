@@ -20,6 +20,10 @@
 //	                         queue the message on stdin for a Claude Code session (the documented way for a
 //	                         local script to talk to one; reads no config); --wait-reply prints the answer;
 //	                         rubi-home claude-send --get-reply MESSAGE_ID fetches an answer later
+//	rubi-home agent-vm --role ID -- CLAUDE-ARGUMENTS...
+//	                         what T3 Code runs as a role's claude binary (a shim per role calls it): asks the running
+//	                         helper for a VM of the role, then becomes `container exec` in it with T3's stdio and keeps
+//	                         the connection to the helper open until it ends; never runs claude outside a VM (reads no config)
 //	rubi-home version        print the version (reads nothing)
 //	rubi-home claude-hook --wait [--wait-limit SECONDS]
 //	                         a second, asyncRewake Stop hook: stays while the session is idle and wakes it
@@ -43,6 +47,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
@@ -88,6 +93,13 @@ func main() {
 		return
 	case "claude-send": // a local process's message for a session: talks to the helper on its socket, reads no configuration
 		os.Exit(home.RunClaudeSend(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, home.ClaudeSocketPath(mustDir())))
+	case "agent-vm": // T3's claude binary for a role: asks the helper on its socket for a VM, then becomes `container exec` in it
+		role, argv, err := t3vm.ParseArgs(os.Args[2:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "rubi-home agent-vm: %v\n", err)
+			os.Exit(2)
+		}
+		os.Exit(t3vm.Run(home.AgentVMSocketPath(mustDir()), role, argv, os.Stdout, os.Stderr, t3vm.ClientOptions{}))
 	case "version": // reads and creates nothing: the installer and status run it on any copy
 		fmt.Println(version.Version)
 		return
@@ -159,7 +171,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--sudo] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | agent-vm --role ID -- CLAUDE-ARGUMENTS... | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
 	os.Exit(2)
 }
 
@@ -204,6 +216,11 @@ func run(h *home.Helper) {
 	go func() {
 		if err := h.Claude.Serve(ctx, home.ClaudeSocketPath(h.Dir)); err != nil {
 			log.Printf("Claude Code requests: %v", err)
+		}
+	}()
+	go func() { // T3 sessions of the roles' instances (only while a T3 server is configured)
+		if err := h.ServeAgentVM(ctx); err != nil {
+			log.Printf("T3 sessions: %v", err)
 		}
 	}()
 	h.Agent.SweepShields() // role snapshots of an earlier run: only the daemon removes them (status, pair... never)

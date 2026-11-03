@@ -432,3 +432,54 @@ T3's own MCP for a session (checked at the pin): T3 hands it to claude through t
 (`setMcpServers`), not on argv, at `http://<server bind host>:<port>/mcp`; with Rubi's server bound to 127.0.0.1
 that is `http://127.0.0.1:<T3 port>/mcp`, which the VM reaches through netpipe service 4. The argv check covers only
 what arrives as flags.
+
+S2 part 2 notes (as built):
+- **Pieces.** `internal/home/agent/t3vm`: `Server` (the session socket `<helper>/agent-vm.sock`, 0600, same-user peer
+  check), `Run` (what `rubi-home agent-vm --role ID -- ...` does: asks Home, then `exec`s `container exec` with the
+  connection to Home inherited, so the VM lives exactly as long as the process), `SyncInstances` (role instances and
+  shims in T3's `settings.json`). `internal/home/agentvm.go` starts the server and syncs the instances while
+  `t3_port` and `t3_base_dir` are set in the configuration (there is no other T3 wiring in Home yet).
+- **What the real T3 (0.1.7-nightly.20261102.4093) runs through `binaryPath`**, seen in the live test:
+  - `claude --version` from T3's data folder, with no session: Home answers it (`claude.version`, a throwaway
+    no-network VM with no mounts, cached per image) so the shim still prints the image's version;
+  - the session: `--effort high`, `--allow-dangerously-skip-permissions`, a repeated `--thinking-display`,
+    `--settings '{"showThinkingSummaries":true}'` (only that setting is accepted), `--add-dir` for the folder and
+    `<base>/userdata/attachments`, `--session-id=...` or `--resume=...`; no `--mcp-config` in the launches seen;
+  - a capability probe from T3's data folder with `--setting-sources=user,project,local --no-session-persistence
+    --settings '{"disableAllHooks":true}'`: refused (its folder is not the role's, and it asks for hooks off). T3 goes
+    on without it.
+- **The shim names Home's directory** (`RUBI_HOME_DIR`): Home starts T3 with almost no environment, so `agent-vm`
+  could not otherwise find the socket.
+- **Instances** are recognised as Home's by `config.binaryPath` (inside `<helper>/t3/bin`, named `claude-*`), a
+  known field, so nothing depends on T3 round-tripping unknown keys. The `environment` array is removed from them.
+- **Mode ceiling.** A role's `default_mode` is its default, not a cap (the store fills in "default" for every role),
+  so it does not lower the ceiling: the ceiling is full access, or auto while `agent_allow_bypass` is off. Every call
+  still goes to the hook gate.
+- **Caps.** T3 sessions count against the usage mode's per-role and per-computer limits, separately from the runner's
+  slots (the default is one session per role).
+- **Not done here.** Applying the role's skills, agents and MCP to the claude dir for a T3 session (the runner does
+  that for its own sessions); instances follow the roles only at Home's start and on `SyncT3Instances`.
+
+S2 part 2 review fixes (as built):
+- **Start and crash sweep.** `Serve` takes `<helper>/t3vm/sessions.lock` for its whole life (a second Home on the
+  directory is refused, so it can't remove live VMs or take over the socket), removes every `rubi-t3-*` container
+  (sessions and version probes) and clears `t3vm/env/`. A VM that outlives a crashed Home is fail-closed anyway: its
+  hook gate is unreachable (a deny) and its proxy is gone (no network). Nothing in the VM exits by itself: the
+  forwarder does when its stdin closes, but the container's process is `sleep infinity`, so the next start's sweep
+  (or the connection closing, for a shim that died) is what removes it.
+- **Mounts are checked after the run.** The image is made ready first, then the paths are resolved and the container
+  is run; `container inspect` must then show exactly the planned mounts (source, target, read-only), and every source
+  must still be its own real path. Anything else removes the VM and refuses the session. Residual: the tool follows
+  a link swapped in between the resolve and the run for the moment before the check removes the VM.
+- **Callers.** With `T3Pid` known (Home runs T3) the socket serves only descendants of that process; otherwise it
+  serves the same user, which is all that can be said of a T3 Home did not start. The process-tree walk is a small
+  copy of the claude hook's (`internal/home/peer*.go`), because `home` imports `t3vm`.
+- **Caps.** A start waits up to 10 s for a place and a session frees its place as soon as its connection is gone.
+  T3 sessions are counted separately from the runner's slots (`Manager.slots` has no shared counter); the two
+  kinds can together exceed the computer-wide limit.
+- **Instances.** An entry is Home's only if its key is `claude-*` and is the base name of its shim in
+  `<helper>/t3/bin`; the shim is removed by that base name. The settings file is written where a symlink points,
+  re-read and compared just before the rename (and recomputed on a change, five times at most), synced, with the
+  folder synced after.
+- **Version probes** run one at a time per image, are named `rubi-t3-ver-*`, and a failure is remembered for 30 s.
+- **Answers carry an absolute container path**, and the shim runs only a program named `container` with `exec`.

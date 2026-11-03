@@ -68,6 +68,11 @@ type Config struct {
 	AgentNetwork     string `json:"agent_network,omitempty"`
 	AgentProxyListen string `json:"agent_proxy_listen,omitempty"`
 	AgentProxyVMHost string `json:"agent_proxy_vm_host,omitempty"`
+	// T3Port and T3BaseDir describe the T3 server Rubi Home runs (docs/plans/t3-integration.md): its port on
+	// loopback and its data folder. While T3Port is 0 Home serves no T3 sessions (no agent-vm.sock) and writes no
+	// role instances.
+	T3Port    int    `json:"t3_port,omitempty"`
+	T3BaseDir string `json:"t3_base_dir,omitempty"`
 	// AgentAuthDir is the directory that holds the sign-in shared by all projects (<helper dir>/agent-auth by
 	// default, 0700, made by Home). The token in it is used only by Home's auth gateway; a project VM never
 	// mounts it or holds the token. No project may be, contain or sit inside it.
@@ -140,6 +145,9 @@ type Helper struct {
 	Hue       *Hue
 	// Watch, when set, watches the paired Rubi and wakes its administrator when it goes down or stays locked.
 	Watch *watch.Watcher
+	// T3Pid, when set, gives the process id of the T3 server Home runs (0 while it isn't running): T3 sessions are
+	// then only served to processes below it. Unset, the session socket is served to the same user.
+	T3Pid func() int
 	// Claude holds Claude Code's permission requests for Rubi (see claude.go).
 	Claude *Claude
 	// Agent runs the Agent SDK runner in a VM per project (see agent/ and claude-agent.* ops).

@@ -237,10 +237,28 @@ func (s SessionSpec) check() (*resolved, error) {
 // RunArgs starts the session's VM detached: no network, no capabilities, a read-only root with a tmpfs for /tmp, a
 // non-root user, and only the mounts above. The container just waits; claude is started by ExecArgs.
 func (s SessionSpec) RunArgs() ([]string, error) {
+	args, _, err := s.Plan()
+	return args, err
+}
+
+// ExpectedMount is a mount the VM must have.
+type ExpectedMount struct {
+	Source, Destination string
+	ReadOnly            bool
+}
+
+// Plan is RunArgs with the mounts it asks for (sources as the real places on the Mac, from the same resolution of
+// the paths), to compare with what the container tool reports once the VM runs.
+func (s SessionSpec) Plan() ([]string, []ExpectedMount, error) {
 	r, err := s.check()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var want []ExpectedMount
+	for _, b := range r.binds {
+		want = append(want, ExpectedMount{b.src, b.dst, b.readOnly})
+	}
+	want = append(want, ExpectedMount{r.settings, ManagedSettingsVMPath, true}, ExpectedMount{r.hook, HookVMPath, true})
 	args := []string{s.bin(), "run", "-d", "--name", s.Name, "--init",
 		"--network", "none", "--user", uid, "--cap-drop", "ALL", "--read-only", "--tmpfs", "/tmp"}
 	for _, b := range r.binds {
@@ -261,7 +279,7 @@ func (s SessionSpec) RunArgs() ([]string, error) {
 	if s.Memory != "" {
 		args = append(args, "--memory", s.Memory)
 	}
-	return append(args, "--entrypoint", "sleep", s.Image, "infinity"), nil
+	return append(args, "--entrypoint", "sleep", s.Image, "infinity"), want, nil
 }
 
 // ExecArgs runs claude (its path in the image) with the clamped argv in the session's VM, stdio passed through.

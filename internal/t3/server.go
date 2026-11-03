@@ -151,6 +151,16 @@ func (s *Server) exited() bool {
 	}
 }
 
+// Pid is the process id of the server this value started (0 when it is not running).
+func (s *Server) Pid() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd == nil || s.cmd.Process == nil || s.exited() {
+		return 0
+	}
+	return s.cmd.Process.Pid
+}
+
 // Alive reports whether the server process this value started is still running.
 func (s *Server) Alive() bool {
 	s.mu.Lock()

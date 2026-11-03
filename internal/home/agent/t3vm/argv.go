@@ -74,7 +74,7 @@ var (
 		"--output-format": true, "--input-format": true, "--thinking": true, "--thinking-display": true, "--model": true,
 		"--permission-prompt-tool": true, "--allowedTools": true, "--disallowedTools": true, "--tools": true,
 		"--permission-mode": true, "--add-dir": true, "--session-id": true, "--resume": true, "--effort": true,
-		"--mcp-config": true,
+		"--mcp-config": true, "--settings": true,
 	}
 	boolFlags = map[string]bool{
 		"--verbose": true, "--include-partial-messages": true, "--fork-session": true, "--strict-mcp-config": true,
@@ -82,7 +82,6 @@ var (
 	}
 	// refusedFlags would change where claude reads its policy from, or add settings that could turn the hook off.
 	refusedFlags = map[string]string{
-		"--settings":               "settings from the command line could turn the approval hook off",
 		"--setting-sources":        "the setting sources are fixed by Rubi",
 		"--plugin-dir":             "plugins can bring hooks",
 		"--agents":                 "agent definitions can bring hooks",
@@ -192,6 +191,10 @@ func checkValue(name, val string, p Policy) (string, error) {
 			return "", &RefusedError{name, "only the thread's folder and T3's attachments folder may be added"}
 		}
 		return d, nil
+	case "--settings":
+		if err := checkSettings(name, val); err != nil {
+			return "", err
+		}
 	case "--allowedTools":
 		// T3's own tools only: a pre-approval must not widen what a call may do (Rubi's gate decides every call).
 		if val != t3Tools {
@@ -203,6 +206,25 @@ func checkValue(name, val string, p Policy) (string, error) {
 		}
 	}
 	return val, nil
+}
+
+// settingsKeys are the only settings T3 may pass on the command line (it passes {"showThinkingSummaries":true}). The
+// managed settings win over them anyway, but a setting Rubi has not looked at has no place here, and a file path
+// would name something outside the mounts.
+var settingsKeys = map[string]bool{"showThinkingSummaries": true}
+
+func checkSettings(flag, val string) error {
+	var cfg map[string]json.RawMessage
+	if !strings.HasPrefix(strings.TrimSpace(val), "{") || json.Unmarshal([]byte(val), &cfg) != nil {
+		return &RefusedError{flag, "only inline JSON settings are accepted, not a file"}
+	}
+	for k, v := range cfg {
+		var b bool
+		if !settingsKeys[k] || json.Unmarshal(v, &b) != nil {
+			return &RefusedError{flag, "the setting " + k + " can't be given on the command line"}
+		}
+	}
+	return nil
 }
 
 // t3Tools is the pre-approval T3 passes for its own MCP server.
