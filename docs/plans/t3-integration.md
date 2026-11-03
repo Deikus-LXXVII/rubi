@@ -149,6 +149,22 @@ allow-list (api.anthropic.com, claude.ai, claude.com, platform.claude.com and th
   (core 20ba8b4). The provider sign-in relay always shows the code box as soon as the link appears (plugin 687f00f).
   The relay must survive TUI drawing changes such as cursor-move gaps (core ad69e81).
 
+- **R5 Coexist with the user's own T3.** T3's desktop app never attaches to a running server: it always spawns
+  its own bundled server, on the first free port from 3773 up (`apps/desktop/src/app/DesktopApp.ts:41,78-108`),
+  with state in `T3CODE_HOME` or `~/.t3/userdata` (`app/DesktopStatePaths.ts:13-32`). A server holds an exclusive
+  lock on its state dir (`server-owner.sqlite`, `apps/server/src/serverOwnership.ts:39-47,183-199`); a second
+  server on the same dir exits with code 78 (checked live), and the app then shows "This T3 home is unavailable"
+  and quits (`backend/DesktopBackendPool.ts:176-183`, `backend/DesktopBackendManager.ts:805,875-881`). So:
+  - Rubi Home's managed T3 uses its own home inside Rubi Home's folder, never `~/.t3`, and a free port other than
+    3773 (recorded in Home's config). The user's desktop app or `t3 service` keeps `~/.t3` and both run side by
+    side: two servers, two states, no port clash, no shared sessions.
+  - To watch Bot-started threads in the desktop app, the user pairs the app with Rubi's server: the Rubi panel
+    shows a pairing link minted by Home (`t3 auth pairing create --base-url ...`), approved by the user.
+  - Optional later ("use my own T3"): Home pairs with the user's own server instead, only if its version equals the
+    pin; the role instances then live in the user's settings. Not in v1.
+  - A test: Home refuses to start its T3 with a base dir of `~/.t3` or the port 3773, and starts fine while another
+    server owns `~/.t3` (simulated with a temp home).
+
 ## 4. Where things live; what happens to rubi-claude-code
 
 - **T3 server** runs on the Mac as its background service (`docs/user/background-service.md`) or under Rubi Home's
