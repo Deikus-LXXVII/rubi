@@ -34,6 +34,10 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=20" | jq -f deploy/pages/latest.jq \
             > panel/releases/latest.json
           cat panel/releases/latest.json
+      - name: Instructions for the Bot
+        # The install message the user sends their Bot names rubi-panel.com/install.md, so the user never sees a
+        # shell line (project rule 2): the Bot reads how to install and use Rubi there. It is the Bot skill itself.
+        run: cp skills/grok-bot/rubi-project/SKILL.md panel/install.md
       - name: Plugin catalog
         # rubi-panel.com/marketplace/catalog.json lists the reviewed plugins. Rubi trusts it only with a valid
         # signature from the release key, so it is signed here, from the reviewed file in the repository.

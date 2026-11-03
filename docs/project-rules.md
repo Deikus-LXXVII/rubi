@@ -85,7 +85,6 @@ Exempt by path, with the reason in `userTextExempt` in the test:
 | T-03 | `internal/home/hue.go` | forgetting a Hue bridge: `rubi-home hue-forget` |
 | T-04 | `internal/core/hooks.go`, `internal/daemon/daemon.go` | choosing the transport: `rubi transport` |
 | T-05 | `internal/kvm/kvm.go` | the KVM device needs a sudo setting |
-| T-06 | `docs/user/getting-started.md` | the install message holds a `curl ... \| sh` line (the Bot runs it, the user types nothing in a terminal, but the user sees and pastes a shell line) |
 | T-07 | `cmd/rubi/main.go` | the `--help` text names `rubi dev-panel` and the terminal; a development tool, to keep out of what a Bot shows |
 
 Not found in this branch: the roster pin instruction (`rubi-home roster pin`) from the pod work; when it lands, the

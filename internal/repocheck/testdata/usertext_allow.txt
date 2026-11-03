@@ -19,8 +19,6 @@ internal/kvm/kvm.go || turn on the setting that lets Rubi grant access with sudo
 internal/kvm/kvm.go || with sudo failed || T-05: grant the device access from the Home/VM setup step in the panel, with the administrator dialog
 internal/kvm/kvm.go || user ACL through sudo || T-05: grant the device access from the Home/VM setup step in the panel, with the administrator dialog
 
-# T-06: the install message the user pastes to the Bot (the Bot runs the command; the user types nothing in a terminal)
-docs/user/getting-started.md || run `curl -fsSL https://rubi-panel.com/install.sh || T-06: a one-line message with no shell in it (the Bot fetches the instructions from a link)
 
 # T-07: development tool, not part of the user path; move it out of the user-facing help
 cmd/rubi/main.go || self-hosted integrations for AI agents, gated by your approval || T-07: keep dev-panel out of the help the Bot shows

@@ -11,7 +11,7 @@ apps to a phone.
 
 Tell your agent:
 
-> Install Rubi-Project: run `curl -fsSL https://rubi-panel.com/install.sh | sh` and follow its instructions.
+> Install Rubi-Project by following the instructions at https://rubi-panel.com/install.md
 
 The agent installs Rubi, connects it as a tool, and sends you a link.
 
