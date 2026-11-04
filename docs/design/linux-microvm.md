@@ -129,6 +129,32 @@ What keeps an agent in its VM, and what keeps the VM's helpers in their place:
   value is doubled (QEMU's only escape), so a folder named `a,readonly=off` can't add an option. Guest places must be
   absolute, clean and not `/`, and no place is shared twice.
 
+## The guest agent
+
+`cmd/rubi-guest` is the VM's PID 1 (`init=/sbin/rubi-guest`), a static Go program; its logic is
+`internal/home/agent/guest`, which also holds Home's client.
+
+- **Start.** As PID 1 it mounts `/proc`, `/sys` (read-only), `/dev`, `/tmp` and `/run`, starts itself again as
+  `rubi-guest serve`, and from then on only reaps: every orphan of the VM becomes PID 1's child, and a wait for any
+  child must not take an exit status the server is waiting for, so the server runs in a process of its own. When the
+  server ends, PID 1 powers the VM off.
+- **The control channel.** The server finds the virtio-serial port by its name (`/sys/class/virtio-ports/*/name` is
+  `rubi.control`; there is no udev in the guest to make `/dev/virtio-ports/`), opens `/dev/vportNpM` and serves it with
+  package netpipe's frames. It says HELLO when it is ready. Home opens every stream and the guest opens none, so stream
+  numbers never collide.
+- **Control requests** (service 1): JSON lines, one answer per request: `mount` (the table of
+  `microvm.GuestMounts`; each share is mounted `nosuid,nodev`, and `ro` when read-only), `ping`, `poweroff`.
+- **Processes** (service 2): one stream per process. Home writes the request (argv, the whole environment, the folder,
+  the user and group: never root), the guest answers whether it started, then chunks follow (a kind byte, a 4-byte
+  length, at most 32 KiB): stdin and its end from Home; stdout, stderr and, last, the exit status from the guest. A
+  stream that Home closes kills the process's whole process group. The process runs as the request's user with no
+  extra groups, in a session of its own, with nothing of the guest agent's environment.
+- **Trust.** What runs in the VM may take over its root, so the guest is the less trusted side: Home's client bounds
+  every line (64 KiB) and chunk (32 KiB) it reads, treats any other kind of chunk as a protocol error, and gives the
+  guest only what the request carries.
+- **The netpipe** of the proxy, the hook gate and T3's port stays what it is: a process (`rubi-netpipe`) started in the
+  VM with this exec, whose stdio carries its own multiplexed streams.
+
 ## libkrun
 
 libkrun (Apache-2.0) is a VMM library with virtio-fs, vsock and KVM (and HVF on macOS) built in, used rootless by
@@ -141,8 +167,7 @@ not confined either. It is worth a second look once its API is stable.
 
 In order; each step has its tests:
 
-1. The guest agent (`/sbin/rubi-guest`): mounts from the table, exec with stdio, the netpipe frames, shutdown. Tested
-   over a pipe.
+1. The guest agent (`/sbin/rubi-guest`): done (above); tested over a pipe, its init only in a live VM.
 2. The launcher: Landlock for virtiofsd, the VM folder (0700), starting virtiofsd and QEMU, the pid file, the sweep.
 3. CI builds: kernel, root file system, QEMU, virtiofsd per CPU, into `SHA256SUMS`; the QEMU source archive.
 4. The backend (`VMBackend` on Linux: `Available` from `CheckKVM`, `New`, `Sweep`, `Provision` with the download steps),
