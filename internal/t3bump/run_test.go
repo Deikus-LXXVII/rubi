@@ -102,7 +102,7 @@ func TestRunBumpsThePinInstallsItAndComparesTheSchemas(t *testing.T) {
 	// the file on disk is the new pin, dated, with the old node pin and license
 	got, _ := Read(root)
 	if got.Version != "0.2.0-nightly.20270201.7" || got.Checked != "2027-02-03" || got.Commit != w.commits[newTag] || got.Integrity != sri(w.tarballs[got.Version]) ||
-		len(got.Runtime.SHA256) != 3 || got.License != before.License || string(got.Node) != string(before.Node) {
+		len(got.Runtime.SHA256) != len(Platforms) || got.License != before.License || string(got.Node) != string(before.Node) {
 		t.Errorf("upstream.json: %+v", got)
 	}
 	// the commands: install first, with the folder; the schemas and the contract tests against the installed pin

@@ -661,12 +661,17 @@ line. Stage names only; the order is the dependency order.
   with KVM (boot, exec, no network, a read-only mount refuses writes, a kill leaves nothing); the secrets guard for
   the mounts. This is security-sensitive: `reviewer` and a second opinion before it merges.
 
-### P10 T3 and Node pins
+### P10 T3 and Node pins (done)
 
-- **Work.** 2.8: pins for `darwin-x64` (and `win32-x64` when upstream has it), zip extraction, `t3bump` platforms.
-- **Done when.** T3 installs and pairs on Intel Macs, or says "not available on this computer" when upstream has no
-  build.
-- **Tests.** `t3install_test.go` tables for each platform; `t3bump` tests; the existing zip-slip tests for zips.
+- **What upstream publishes** (read from the release's `SHA256SUMS` and from `nodejs.org/dist/v26.13.0/SHASUMS256.txt` on 2026-11-04; the zips' layouts from their central directories by range requests, nothing large was downloaded). Every nightly of the last weeks has the same assets:
+  - T3 runtime archives: `darwin-arm64`, `linux-arm64`, `linux-x64` (`.tar.gz`), and `win32-arm64`, `win32-x64` (`.zip`, 113 MB, one top folder, `t3.exe` inside, only folders and regular files). **No `darwin-x64` runtime archive**: the Intel Mac has the desktop app (`.dmg`), which Rubi Home cannot use. So Intel Macs get no pin (stopped there, as asked) and T3 says "not available on this computer".
+  - Node: `darwin-x64.tar.gz` and `win-x64.zip` exist with sums (`node.exe` at the top of one folder).
+- **Pins** (`t3/upstream.json`): `win32-x64` added to the T3 sums (`2ffef4de...`) and the Node sums (`dcc60d59...`, Node's `win-x64.zip`). Nothing for `darwin-x64`; the `win32-arm64` zip exists upstream too and can be added the same way when there is a Windows on Arm test machine.
+- **`t3bump`**: `Platforms` gains `win32-x64`; `ArchiveName` (`.zip` for win32) and `NodeArchive` (`win-x64`) name the files; `NoBuild` lists `darwin-x64` with the reason and every bump looks for such an archive (`NowPublished`) and says so in its report, so the day upstream adds one the platform moves into `Platforms`; `CheckNode` stops a bump when Node has no sum for a platform (the bump moves T3 only). The `t3-bump` workflow first runs the pin-coverage tests.
+- **Home** (`t3install.go`): `t3Platform` knows `darwin-x64` and `win32-x64`; `t3Unavailable(pin, plat)` gives the reason a platform has no T3 (no build for the system, upstream publishes none, this build pins none); `Install` refuses a no-build platform before any download with "That isn't available on this computer (...)"; `unpackZip` (same rules as `unpackTarGz`: nothing leaves the folder, no backslash, drive or stream names, no links or special files, sizes counted as read); the Windows layout (`node/node.exe`, `t3.exe`); the status says `supported` and `unsupported_reason`.
+- **Gate.** `FeatureT3` is available only where there is a VM backend **and** a T3 build for the platform (`FeatureEnv.T3Platform`): an Intel Mac has the backend but gets "T3 publishes no build for Intel Macs"; agents themselves are not affected by this.
+- **T3 on Windows.** Pinned and installable (the zip path is tested), but not offered: T3's sessions run `claude` in a VM through the `agent-vm` shim, so T3 without agents does nothing, and the gate says "agents don't run on Windows yet" until P12 gives Windows a backend. Nothing else is needed then: the pin is already there.
+- **Not verified:** the Windows install against the real zips (nothing downloaded; the layout was read from their directories, the tests use small zips of that shape), and Apple's container tool on Intel Macs, which is a separate question from T3 (if the tool needs Apple silicon, `AppleBackend` should say so; today it does not).
 
 ### P11 Release and Bot installation (the first Windows release)
 

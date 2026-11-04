@@ -38,7 +38,7 @@ func serve(t *testing.T, tag string) (*httptest.Server, *[]string) {
 			json.NewEncoder(w).Encode([]any{map[string]any{"tag_name": tag, "assets": []any{map[string]any{"name": "SHA256SUMS", "browser_download_url": srv.URL + "/sums"}}}})
 		case r.URL.Path == "/sums":
 			for i, p := range t3bump.Platforms {
-				fmt.Fprintf(w, "%064x  t3-%s-%s.tar.gz\n", i+1, ver, p)
+				fmt.Fprintf(w, "%064x  %s\n", i+1, t3bump.ArchiveName(ver, p))
 			}
 		case strings.HasPrefix(r.URL.Path, "/repos/pingdotgg/t3code/commits/"):
 			json.NewEncoder(w).Encode(map[string]string{"sha": strings.Repeat("a", 40)})

@@ -77,6 +77,9 @@ func Run(ctx context.Context, o Options) (Result, error) {
 		return res, fmt.Errorf("t3/upstream.json: %w", err)
 	}
 	res.Old = old
+	if err := CheckNode(old); err != nil {
+		return res, err
+	}
 	rel, err := o.Client.Newest(ctx)
 	if err != nil {
 		return res, err
@@ -194,6 +197,11 @@ func Report(r Result) string {
 		fmt.Fprintf(&b, "- `%s` `%s`\n", p, r.New.Runtime.SHA256[p])
 	}
 	b.WriteString("\nThe npm integrity was checked by downloading the tarball the registry points to and hashing it.\n\n")
+	if len(r.Pin.Published) > 0 {
+		fmt.Fprintf(&b, "**Upstream now publishes T3 for %s**, which Rubi Home has no pin for (it says \"not available on this computer\" there). "+
+			"Add the platform to `t3bump.Platforms`, remove it from `t3bump.NoBuild`, pin Node's sum for it in `t3/upstream.json` and teach `t3Platform` in `internal/home/t3install.go` about it.\n\n",
+			strings.Join(r.Pin.Published, ", "))
+	}
 	fmt.Fprintf(&b, "## Checks\n\n- install of the pin into a temporary folder (hash-checked): **%s**\n- contract tests against it: **%s**\n\n", r.Install, r.Contract)
 	b.WriteString("## Tool schemas Rubi uses\n\n")
 	switch {

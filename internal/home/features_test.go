@@ -342,3 +342,41 @@ func TestFeaturesAreCachedAndRefreshed(t *testing.T) {
 		t.Fatalf("after the app was installed: %d calls", calls)
 	}
 }
+
+// T3 needs a T3 build for the platform on top of a VM backend: an Intel Mac has the backend but upstream has no T3 for it;
+// Apple silicon, Linux and Windows have builds (the pins list them), and where a backend exists T3 is then available.
+func TestT3NeedsABuildForThePlatform(t *testing.T) {
+	ctx := context.Background()
+	mac := agent.NewAppleBackend(agent.BackendConfig{})
+	for name, c := range map[string]struct {
+		plat    string
+		backend agent.VMBackend
+		t3      bool
+		reason  string
+	}{
+		"Apple silicon":             {"darwin-arm64", mac, true, ""},
+		"Intel Mac":                 {"darwin-x64", mac, false, "T3 publishes no build for Intel Macs"},
+		"Linux x64 with a backend":  {"linux-x64", mac, true, ""},
+		"Windows with a backend":    {"win32-x64", mac, true, ""},
+		"Windows without a backend": {"win32-x64", backendOf("windows"), false, "agents don't run on Windows yet"},
+		"a platform nobody pins":    {"plan9-mips", mac, false, "this build of Rubi Home pins no T3 download for plan9-mips"},
+		"unchecked":                 {"", mac, true, ""},
+	} {
+		got := ComputeFeatures(ctx, FeatureEnv{GOOS: "darwin", Backend: c.backend, T3Platform: c.plat})
+		if got[FeatureT3].Available != c.t3 || got[FeatureT3].Reason != c.reason {
+			t.Errorf("%s: %+v", name, got[FeatureT3])
+		}
+		// agents themselves do not depend on T3's builds
+		if got[FeatureAgent].Available != (c.backend.Name() != "none") {
+			t.Errorf("%s: agent %+v", name, got[FeatureAgent])
+		}
+	}
+	// every operation of T3 is refused on an Intel Mac through P7's gate, and agents are not
+	h := helperAs(t, FeatureEnv{GOOS: "darwin", Backend: mac, T3Platform: "darwin-x64"})
+	if err := h.gate("t3-setup.status"); !isNotAvailable(err) || !strings.Contains(err.Error(), "Intel Macs") {
+		t.Errorf("t3-setup.status: %v", err)
+	}
+	if err := h.gate("claude-agent.projects"); err != nil {
+		t.Errorf("claude-agent.projects: %v", err)
+	}
+}

@@ -33,6 +33,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Every platform t3bump keeps up (linux, macOS on Apple silicon, Windows) needs a T3 sum in t3/upstream.json and a Node sum
+      # there too (the bump moves T3 only), and Rubi Home has to know how to install it; the bump itself refuses to go on
+      # without the Node sums (t3bump.CheckNode). These tests fail first if a platform is added in one place only.
+      - name: Check that the pins cover every platform
+        run: go test ./internal/t3bump ./t3 && go test ./internal/home -run "T3PlatformsAndWhatTheyNeed|InstallOnWindows|UnpackZip"
       - name: Find the newest nightly, install it, run the contract tests
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

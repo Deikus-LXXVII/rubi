@@ -33,8 +33,31 @@ const (
 	Package    = "t3"
 )
 
-// Platforms are the ones Rubi Home installs on, in the order the pin lists them.
-var Platforms = []string{"darwin-arm64", "linux-arm64", "linux-x64"}
+// Platforms are the ones Rubi Home installs on, in the order the pin lists them. The release archive of a win32 platform is a
+// .zip, the others .tar.gz (ArchiveName); Node's own archives are named by NodeArchive.
+var Platforms = []string{"darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"}
+
+// NoBuild are the platforms Rubi Home would run on but for which upstream publishes no T3 runtime archive (checked against the
+// releases of 2026-11-04: the Intel Mac has a desktop app, but no `t3-<version>-darwin-x64.tar.gz`). The value is the reason
+// Rubi Home gives. Each bump looks for such an archive (NowPublished) and says so in its report, so the day upstream adds one
+// the platform moves into Platforms.
+var NoBuild = map[string]string{"darwin-x64": "T3 publishes no build for Intel Macs"}
+
+// ArchiveName is the file name of a platform's T3 runtime archive in a release.
+func ArchiveName(version, platform string) string {
+	if strings.HasPrefix(platform, "win32-") {
+		return "t3-" + version + "-" + platform + ".zip"
+	}
+	return "t3-" + version + "-" + platform + ".tar.gz"
+}
+
+// NodeArchive is the file name of a platform's Node archive on nodejs.org (Windows' is "win-x64", and a .zip).
+func NodeArchive(nodeVersion, platform string) string {
+	if rest, ok := strings.CutPrefix(platform, "win32-"); ok {
+		return "node-" + nodeVersion + "-win-" + rest + ".zip"
+	}
+	return "node-" + nodeVersion + "-" + platform + ".tar.gz"
+}
 
 var tagRE = regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)-nightly\.(\d{8})\.(\d+)$`)
 
@@ -223,6 +246,8 @@ type Pin struct {
 	Commit    string
 	Integrity string
 	Archives  map[string]string // platform -> SHA-256 (hex) of the release archive
+	// Published are platforms of NoBuild that the release now has an archive for.
+	Published []string
 }
 
 var hexRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -232,7 +257,7 @@ var hexRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func ParseSums(text, version string) (map[string]string, error) {
 	want := map[string]string{}
 	for _, p := range Platforms {
-		want["t3-"+version+"-"+p+".tar.gz"] = p
+		want[ArchiveName(version, p)] = p
 	}
 	out := map[string]string{}
 	for _, line := range strings.Split(text, "\n") {
@@ -258,6 +283,40 @@ func ParseSums(text, version string) (map[string]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// NowPublished lists the platforms of NoBuild for which a SHA256SUMS now has an archive: the bump's report says to add them.
+func NowPublished(text, version string) []string {
+	var out []string
+	for p := range NoBuild {
+		for _, name := range []string{"t3-" + version + "-" + p + ".tar.gz", "t3-" + version + "-" + p + ".zip"} {
+			for _, line := range strings.Split(text, "\n") {
+				if f := strings.Fields(line); len(f) == 2 && strings.TrimPrefix(f[1], "*") == name {
+					out = append(out, p)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// CheckNode checks that the Node pin of an upstream.json names a version and a SHA-256 for every platform: the bump moves T3's
+// pin only, so a platform added to Platforms needs its Node sum put in by hand, and the bump refuses to go on without it.
+func CheckNode(u Upstream) error {
+	var n struct {
+		Version string            `json:"version"`
+		SHA256  map[string]string `json:"sha256"`
+	}
+	if err := json.Unmarshal(u.Node, &n); err != nil || n.Version == "" {
+		return errors.New("upstream.json has no Node pin")
+	}
+	for _, p := range Platforms {
+		if !hexRE.MatchString(n.SHA256[p]) {
+			return fmt.Errorf("upstream.json pins no Node download for %s (%s): add its SHA-256 from nodejs.org/dist/%s/SHASUMS256.txt", p, NodeArchive(n.Version, p), n.Version)
+		}
+	}
+	return nil
 }
 
 type packument struct {
@@ -309,7 +368,7 @@ func (c *Client) Fetch(ctx context.Context, r Release) (Pin, error) {
 	if json.Unmarshal(cb, &cm) != nil || !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(cm.SHA) {
 		return Pin{}, errors.New("the tag's commit is not what was expected")
 	}
-	return Pin{Version: r.Version, Tag: r.Tag, Commit: cm.SHA, Integrity: pk.Dist.Integrity, Archives: arch}, nil
+	return Pin{Version: r.Version, Tag: r.Tag, Commit: cm.SHA, Integrity: pk.Dist.Integrity, Archives: arch, Published: NowPublished(string(sums), r.Version)}, nil
 }
 
 // Upstream mirrors t3/upstream.json, in its order.

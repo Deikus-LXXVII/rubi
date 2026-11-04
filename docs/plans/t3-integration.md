@@ -526,7 +526,7 @@ S3 part 1 notes (as built: Home and core; the plugin repository is separate):
   only if it matches; the unpacker refuses paths and links that leave the folder; all three are staged beside the final
   folder and swapped in together. The server runs with `T3CODE_HOME=<runtime>/t3home` (`t3.Server.RuntimeHome`), where Home
   put a checked executable and the completion marker, so the launcher downloads nothing and never touches `~/.t3`.
-  Supported: darwin-arm64, linux-arm64, linux-x64. Live check: `RUBI_T3_INSTALL_LIVE=1`.
+  Supported: darwin-arm64, linux-arm64, linux-x64, win32-x64 (installable; offered only where agents run; docs/plans/home-platforms.md P10). Live check: `RUBI_T3_INSTALL_LIVE=1`.
 - **Lifecycle** (`t3home.go`). `Run` (Home's start) brings T3 up when it was set up before; a port is chosen once
   (never 3773; replaced only if taken), the base folder is `<helper>/t3/home`, the bridge is paired at full access with a
   code minted on the computer and the token kept 0600 in `<helper>/t3/token.json` (a token T3 refuses, a garbled one or one

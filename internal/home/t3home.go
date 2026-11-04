@@ -604,7 +604,7 @@ func (t *T3Home) Status() map[string]any {
 	}
 	out := map[string]any{
 		"installed": installed, "version": pin.Version, "node_version": pin.Node.Version, "platform": t.platform(),
-		"supported": t.platform() != "", "running": running, "paired": paired, "port": port, "instances": t.instances(),
+		"supported": t3Unavailable(pin, t.platform()) == "", "unsupported_reason": t3Unavailable(pin, t.platform()), "running": running, "paired": paired, "port": port, "instances": t.instances(),
 		"steps": steps, "job": nil, "error": nil,
 	}
 	if installed {

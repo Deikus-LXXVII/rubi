@@ -66,9 +66,9 @@ func (w *fakeWorld) add(tag string, opts ...func(*release)) {
 		if r.dropPlatform == p {
 			continue
 		}
-		fmt.Fprintf(&sb, "%064x  t3-%s-%s.tar.gz\n", i+1+len(tag), ver, p)
+		fmt.Fprintf(&sb, "%064x  %s\n", i+1+len(tag), ArchiveName(ver, p))
 	}
-	fmt.Fprintf(&sb, "%064x  t3-%s-win32-x64.zip\n", 99, ver)
+	fmt.Fprintf(&sb, "%064x  t3-%s-win32-arm64.zip\n", 99, ver) // a platform Rubi Home has no pin for
 	w.sums[tag] = sb.String() + r.extraSums
 	w.tarballs[ver] = []byte("tarball of " + ver)
 	w.commits[tag] = fmt.Sprintf("%040x", len(tag)*7919)
@@ -202,7 +202,7 @@ func TestFetchGathersAndChecksThePin(t *testing.T) {
 	if pin.Version != ver || pin.Tag != tag || pin.Integrity != sri(w.tarballs[ver]) || pin.Commit != w.commits[tag] || len(pin.Commit) != 40 {
 		t.Errorf("pin: %+v", pin)
 	}
-	if len(pin.Archives) != 3 {
+	if len(pin.Archives) != len(Platforms) {
 		t.Fatalf("archives: %v", pin.Archives)
 	}
 	for _, p := range Platforms {
@@ -210,7 +210,7 @@ func TestFetchGathersAndChecksThePin(t *testing.T) {
 			t.Errorf("%s: %q", p, pin.Archives[p])
 		}
 	}
-	if _, ok := pin.Archives["win32-x64"]; ok {
+	if _, ok := pin.Archives["win32-arm64"]; ok {
 		t.Error("a platform Rubi Home doesn't install on was pinned")
 	}
 	// the token went to the GitHub API's own paths and nowhere else
@@ -405,5 +405,106 @@ func TestDiffToolsReportsEachSchemaChangeOfTheToolsInUse(t *testing.T) {
 	}
 	if !strings.Contains(got[4].String(), "`properties.message.maxLength` changed: 100 -> 200") {
 		t.Errorf("text: %s", got[4])
+	}
+}
+
+// The release archive of a Windows platform is a zip and every other is a tar.gz; Node's Windows archive is "win-x64".
+func TestArchiveNamesPerPlatform(t *testing.T) {
+	for p, want := range map[string]string{
+		"darwin-arm64": "t3-1.2.3-n.20260101.1-darwin-arm64.tar.gz",
+		"linux-x64":    "t3-1.2.3-n.20260101.1-linux-x64.tar.gz",
+		"win32-x64":    "t3-1.2.3-n.20260101.1-win32-x64.zip",
+	} {
+		if got := ArchiveName("1.2.3-n.20260101.1", p); got != want {
+			t.Errorf("%s: %s", p, got)
+		}
+	}
+	for p, want := range map[string]string{
+		"darwin-arm64": "node-v26.13.0-darwin-arm64.tar.gz",
+		"linux-arm64":  "node-v26.13.0-linux-arm64.tar.gz",
+		"win32-x64":    "node-v26.13.0-win-x64.zip",
+	} {
+		if got := NodeArchive("v26.13.0", p); got != want {
+			t.Errorf("%s: %s", p, got)
+		}
+	}
+	for p := range NoBuild {
+		for _, q := range Platforms {
+			if p == q {
+				t.Errorf("%s is both pinned and listed as having no build", p)
+			}
+		}
+	}
+}
+
+// A Windows platform's sum is that of the .zip; a tar.gz of that name is not it, and a missing zip fails the bump.
+func TestParseSumsTakesTheZipForWindows(t *testing.T) {
+	ver := "0.1.9-nightly.20261105.2"
+	all := func(skipWin bool) string {
+		var sb strings.Builder
+		for i, p := range Platforms {
+			if skipWin && p == "win32-x64" {
+				continue
+			}
+			fmt.Fprintf(&sb, "%064x  %s\n", i+1, ArchiveName(ver, p))
+		}
+		return sb.String()
+	}
+	got, err := ParseSums(all(false), ver)
+	if err != nil || got["win32-x64"] != fmt.Sprintf("%064x", 4) {
+		t.Fatalf("%v %v", got, err)
+	}
+	if _, err := ParseSums(all(true), ver); err == nil || !strings.Contains(err.Error(), "win32-x64") {
+		t.Errorf("no zip: %v", err)
+	}
+	if _, err := ParseSums(all(true)+fmt.Sprintf("%064x  t3-%s-win32-x64.tar.gz\n", 9, ver), ver); err == nil {
+		t.Error("a tar.gz was taken for the Windows archive")
+	}
+}
+
+// The day upstream publishes a runtime for a platform that has none, the bump says so.
+func TestNowPublishedFindsTheDayUpstreamAddsAPlatform(t *testing.T) {
+	ver := "0.1.9-nightly.20261105.2"
+	if got := NowPublished("aa  t3-"+ver+"-linux-x64.tar.gz\n", ver); len(got) != 0 {
+		t.Errorf("%v", got)
+	}
+	if got := NowPublished("aa  t3-"+ver+"-darwin-x64.tar.gz\nbb  t3-"+ver+"-linux-x64.tar.gz\n", ver); len(got) != 1 || got[0] != "darwin-x64" {
+		t.Errorf("%v", got)
+	}
+	if got := NowPublished("aa  *t3-"+ver+"-darwin-x64.tar.gz\n", ver); len(got) != 1 {
+		t.Errorf("binary-mode marker: %v", got)
+	}
+	r := Report(Result{Changed: true, Pin: Pin{Published: []string{"darwin-x64"}}, Old: Upstream{Version: "1"}, New: Upstream{Tag: "v2", Version: "2"}, Install: "skipped", Contract: "skipped"})
+	if !strings.Contains(r, "Upstream now publishes T3 for darwin-x64") {
+		t.Errorf("the report does not say so:\n%s", r)
+	}
+}
+
+// Node is not bumped, so a platform added to Platforms needs its Node sum by hand: the real upstream.json has them all, and a
+// missing or malformed one stops the bump.
+func TestCheckNodeNeedsEveryPlatform(t *testing.T) {
+	u, err := Read(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckNode(u); err != nil {
+		t.Fatalf("the real pin: %v", err)
+	}
+	for _, p := range Platforms {
+		if len(u.Runtime.SHA256[p]) != 64 {
+			t.Errorf("the real pin has no T3 archive sum for %s", p)
+		}
+	}
+	for name, raw := range map[string]string{
+		"no node":      ``,
+		"no win32-x64": `{"version":"v1","sha256":{"darwin-arm64":"` + strings.Repeat("a", 64) + `","linux-arm64":"` + strings.Repeat("a", 64) + `","linux-x64":"` + strings.Repeat("a", 64) + `"}}`,
+		"not a sum":    `{"version":"v1","sha256":{"darwin-arm64":"zz","linux-arm64":"` + strings.Repeat("a", 64) + `","linux-x64":"` + strings.Repeat("a", 64) + `","win32-x64":"` + strings.Repeat("a", 64) + `"}}`,
+		"no version":   `{"sha256":{}}`,
+	} {
+		bad := u
+		bad.Node = json.RawMessage(raw)
+		if err := CheckNode(bad); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }

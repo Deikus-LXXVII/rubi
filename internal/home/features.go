@@ -92,12 +92,16 @@ type FeatureEnv struct {
 	Desktop Desktop // for the check that a program is registered for the claude:// link
 	// Backend is the VM backend of this computer (agent.VMBackend); agents and T3 are available where it is. Nil is none.
 	Backend agent.VMBackend
+	// T3Platform is the platform key of T3's pins (t3Platform); T3 is available only where there is a build for it. "" means
+	// do not check (a test of something else).
+	T3Platform string
 }
 
 // systemFeatureEnv is the environment of the system Home runs on (a variable so that the tests of the operations, which run
 // on every system, can run them as on a Mac, where everything is available).
 var systemFeatureEnv = func() FeatureEnv {
-	return FeatureEnv{GOOS: runtime.GOOS, Desktop: NewDesktop(DesktopEnv{}), Backend: agent.PlatformBackend(agent.BackendConfig{})}
+	return FeatureEnv{GOOS: runtime.GOOS, Desktop: NewDesktop(DesktopEnv{}), Backend: agent.PlatformBackend(agent.BackendConfig{}),
+		T3Platform: t3Platform()}
 }
 
 // ComputeFeatures says which features are available in env.
@@ -130,6 +134,14 @@ func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
 		}
 	}
 	out[FeatureAgent], out[FeatureT3] = agents, agents
+	// T3 also needs a T3 build for this platform (upstream publishes none for Intel Macs)
+	if agents.Available && env.T3Platform != "" {
+		if pin, err := loadT3Pin(); err == nil {
+			if why := t3Unavailable(pin, env.T3Platform); why != "" {
+				out[FeatureT3] = Feature{Reason: why}
+			}
+		}
+	}
 	return out
 }
 

@@ -8,6 +8,7 @@ package home
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -101,14 +102,61 @@ func httpFetch(ctx context.Context, rawurl string, w io.Writer, max int64) error
 	return nil
 }
 
-// t3Platform is the platform key of the pins ("darwin-arm64", "linux-x64"...), or "" on a platform with no T3 build.
+// t3Platform is the platform key of the pins ("darwin-arm64", "linux-x64", "win32-x64"...), or "" on a system T3 is not
+// built for at all. A key can still have no pin (see t3NoBuild).
 func t3Platform() string {
 	arch := map[string]string{"arm64": "arm64", "amd64": "x64"}[runtime.GOARCH]
 	switch {
-	case runtime.GOOS == "darwin" && arch == "arm64", runtime.GOOS == "linux" && arch != "":
+	case runtime.GOOS == "darwin" && arch != "", runtime.GOOS == "linux" && arch != "":
 		return runtime.GOOS + "-" + arch
+	case runtime.GOOS == "windows" && arch == "x64":
+		return "win32-x64"
 	}
 	return ""
+}
+
+// t3NoBuild are the platforms Rubi Home runs on for which upstream publishes no T3 runtime (the same list as t3bump.NoBuild,
+// which looks for the day that changes; a test keeps them equal), with the reason Rubi Home gives.
+var t3NoBuild = map[string]string{"darwin-x64": "T3 publishes no build for Intel Macs"}
+
+// t3Unavailable says why T3 can not be installed for the platform with this pin, or "" when it can: there is no build for
+// the system, upstream publishes none, or this build of Rubi Home pins none. The reason is the inside of "That isn't
+// available on this computer (...)".
+func t3Unavailable(pin t3Pin, plat string) string {
+	switch {
+	case plat == "":
+		return "T3 has no build for this computer"
+	case t3NoBuild[plat] != "":
+		return t3NoBuild[plat]
+	case pin.Runtime.SHA256[plat] == "" || pin.Node.SHA256[plat] == "" || pin.Node.Version == "":
+		return "this build of Rubi Home pins no T3 download for " + plat
+	}
+	return ""
+}
+
+// isWindowsPlatform says whether the platform key is a Windows one: its archives are zips, Node is node.exe at the top of its
+// folder and T3's executable is t3.exe.
+func isWindowsPlatform(plat string) bool { return strings.HasPrefix(plat, "win32-") }
+
+// archiveExt is the extension of the archives of a platform.
+func archiveExt(plat string) string {
+	if isWindowsPlatform(plat) {
+		return ".zip"
+	}
+	return ".tar.gz"
+}
+
+// nodeArchiveName is the file of nodejs.org/dist/<version>/ for the platform ("win-x64" is Node's name of "win32-x64").
+func nodeArchiveName(version, plat string) string {
+	if rest, ok := strings.CutPrefix(plat, "win32-"); ok {
+		return "node-" + version + "-win-" + rest + ".zip"
+	}
+	return "node-" + version + "-" + plat + ".tar.gz"
+}
+
+// t3ArchiveName is the file of the T3 release for the platform.
+func t3ArchiveName(version, plat string) string {
+	return "t3-" + version + "-" + plat + archiveExt(plat)
 }
 
 // ---- what is installed ----
@@ -123,8 +171,13 @@ type t3Installed struct {
 	At        string `json:"at"`
 }
 
-func (t *T3Home) runtimeDir() string  { return filepath.Join(t.root(), "runtime") }
-func (t *T3Home) nodeBin() string     { return filepath.Join(t.runtimeDir(), "node", "bin", "node") }
+func (t *T3Home) runtimeDir() string { return filepath.Join(t.root(), "runtime") }
+func (t *T3Home) nodeBin() string {
+	if isWindowsPlatform(t.platform()) {
+		return filepath.Join(t.runtimeDir(), "node", "node.exe")
+	}
+	return filepath.Join(t.runtimeDir(), "node", "bin", "node")
+}
 func (t *T3Home) pkgBin() string      { return filepath.Join(t.runtimeDir(), "pkg", "bin", "t3.mjs") }
 func (t *T3Home) runtimeHome() string { return filepath.Join(t.runtimeDir(), "t3home") }
 func (t *T3Home) installedFile() string {
@@ -132,7 +185,11 @@ func (t *T3Home) installedFile() string {
 }
 
 func (t *T3Home) exePath(version string) string {
-	return filepath.Join(t.runtimeHome(), "runtime", "versions", version, "t3")
+	name := "t3"
+	if isWindowsPlatform(t.platform()) {
+		name = "t3.exe"
+	}
+	return filepath.Join(t.runtimeHome(), "runtime", "versions", version, name)
 }
 
 // installedNow says whether the folder holds exactly the pinned T3 and Node for this platform, complete.
@@ -332,6 +389,89 @@ func unpackTarGz(file, dest string, strip int) error {
 	}
 }
 
+// unpackZip unpacks a .zip into dest, dropping strip leading path components, with the same rules as unpackTarGz: nothing
+// leaves dest, a path with a backslash, a drive or a stream name is refused (a zip's names use "/"), a link or any entry that
+// is not a folder or a file is refused, and the sizes are counted from what is read, not from what the headers say.
+func unpackZip(file, dest string, strip int) error {
+	zr, err := zip.OpenReader(file)
+	if err != nil {
+		return fmt.Errorf("not a zip archive: %w", err)
+	}
+	defer zr.Close()
+	if err := os.MkdirAll(dest, 0o700); err != nil {
+		return err
+	}
+	realDest, err := filepath.EvalSymlinks(dest)
+	if err != nil {
+		return err
+	}
+	within := func(p string) bool { return p == realDest || strings.HasPrefix(p, realDest+string(filepath.Separator)) }
+	if len(zr.File) > maxUnpackEntries {
+		return errors.New("the archive has too many entries")
+	}
+	var total int64
+	for _, zf := range zr.File {
+		if strings.ContainsAny(zf.Name, "\\:") {
+			return fmt.Errorf("the archive has a path that is not a plain one: %q", clipStr(zf.Name, 60))
+		}
+		name, ok := stripped(zf.Name, strip)
+		if !ok {
+			return fmt.Errorf("the archive has a path outside its folder: %q", clipStr(zf.Name, 60))
+		}
+		if name == "" {
+			continue
+		}
+		target := filepath.Join(realDest, filepath.FromSlash(name))
+		if !within(target) {
+			return fmt.Errorf("the archive has a path outside its folder: %q", clipStr(zf.Name, 60))
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if real, err := filepath.EvalSymlinks(filepath.Dir(target)); err != nil || !within(real) {
+			return fmt.Errorf("the archive writes through a link: %q", clipStr(zf.Name, 60))
+		}
+		mode := zf.Mode()
+		switch {
+		case mode.IsDir():
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case mode.IsRegular():
+			if zf.UncompressedSize64 > maxUnpackFile {
+				return errors.New("the archive has a file that is too large")
+			}
+			rc, err := zf.Open()
+			if err != nil {
+				return err
+			}
+			// the header's size is a claim: no more than the cap is ever read, and the total is counted as it is read
+			left := min(int64(maxUnpackFile), maxUnpackBytes-total)
+			cw := &countedFile{limit: left}
+			err = writeUnpacked(target, io.TeeReader(io.LimitReader(rc, left+1), cw), mode.Perm())
+			rc.Close()
+			if err != nil {
+				return err
+			}
+			if cw.n > left {
+				return errors.New("the archive unpacks to too much")
+			}
+			total += cw.n
+		default:
+			return fmt.Errorf("the archive has an entry of a kind that is not unpacked: %q", clipStr(zf.Name, 60))
+		}
+	}
+	return nil
+}
+
+// countedFile counts the bytes that pass through a TeeReader.
+type countedFile struct {
+	limit int64
+	n     int64
+}
+
+func (c *countedFile) Write(p []byte) (int, error) { c.n += int64(len(p)); return len(p), nil }
+
 // stripped drops n leading components of a slash path; ok is false for a path that is absolute or has "..".
 func stripped(name string, n int) (string, bool) {
 	if path.IsAbs(name) || strings.Contains(name, "\x00") {
@@ -385,11 +525,18 @@ func (t *T3Home) Install(ctx context.Context) error {
 	}
 	plat := t.platform()
 	if plat == "" {
-		return fmt.Errorf("T3 has no build for this computer (%s/%s); supported: macOS on Apple silicon, Linux on arm64 or x64", runtime.GOOS, runtime.GOARCH)
+		return fmt.Errorf("T3 has no build for this computer (%s/%s); supported: macOS on Apple silicon, Linux on arm64 or x64, Windows on x64", runtime.GOOS, runtime.GOARCH)
+	}
+	if why := t3NoBuild[plat]; why != "" {
+		return fmt.Errorf("That isn't available on this computer (%s).", why)
 	}
 	nodeSum, rtSum := pin.Node.SHA256[plat], pin.Runtime.SHA256[plat]
 	if nodeSum == "" || rtSum == "" || pin.Node.Version == "" {
 		return fmt.Errorf("this build pins no Node or T3 download for %s", plat)
+	}
+	ext, unpack := archiveExt(plat), unpackTarGz
+	if isWindowsPlatform(plat) {
+		unpack = unpackZip
 	}
 	if t.srvAlive() {
 		return errors.New("T3 is running; stop it before installing")
@@ -415,12 +562,12 @@ func (t *T3Home) Install(ctx context.Context) error {
 
 	nv := pin.Node.Version
 	t.setPhase("downloading Node " + nv)
-	nodeTgz, err := t.fetchChecked(ctx, dl, "node.tar.gz", fmt.Sprintf("https://nodejs.org/dist/%s/node-%s-%s.tar.gz", nv, nv, plat), "sha256", nodeSum, 400<<20)
+	nodeTgz, err := t.fetchChecked(ctx, dl, "node"+ext, "https://nodejs.org/dist/"+nv+"/"+nodeArchiveName(nv, plat), "sha256", nodeSum, 400<<20)
 	if err != nil {
 		return err
 	}
 	t.setPhase("unpacking Node")
-	if err := unpackTarGz(nodeTgz, filepath.Join(stage, "node"), 1); err != nil {
+	if err := unpack(nodeTgz, filepath.Join(stage, "node"), 1); err != nil {
 		return fmt.Errorf("Node: %w", err)
 	}
 	os.Remove(nodeTgz)
@@ -443,18 +590,22 @@ func (t *T3Home) Install(ctx context.Context) error {
 	}
 
 	t.setPhase("downloading T3 " + pin.Version)
-	rtTgz, err := t.fetchChecked(ctx, dl, "t3rt.tar.gz", fmt.Sprintf("https://github.com/pingdotgg/t3code/releases/download/v%s/t3-%s-%s.tar.gz", pin.Version, pin.Version, plat), "sha256", rtSum, 800<<20)
+	rtTgz, err := t.fetchChecked(ctx, dl, "t3rt"+ext, "https://github.com/pingdotgg/t3code/releases/download/v"+pin.Version+"/"+t3ArchiveName(pin.Version, plat), "sha256", rtSum, 800<<20)
 	if err != nil {
 		return err
 	}
 	t.setPhase("unpacking T3")
 	vdir := filepath.Join(stage, "t3home", "runtime", "versions", pin.Version)
-	if err := unpackTarGz(rtTgz, vdir, 1); err != nil {
+	if err := unpack(rtTgz, vdir, 1); err != nil {
 		return fmt.Errorf("T3 executable: %w", err)
 	}
 	os.Remove(rtTgz)
-	if st, err := os.Stat(filepath.Join(vdir, "t3")); err != nil || !st.Mode().IsRegular() {
-		return errors.New("the T3 archive holds no t3 executable")
+	exe := "t3"
+	if isWindowsPlatform(plat) {
+		exe = "t3.exe"
+	}
+	if st, err := os.Stat(filepath.Join(vdir, exe)); err != nil || !st.Mode().IsRegular() {
+		return errors.New("the T3 archive holds no " + exe + " executable")
 	}
 	// The launcher runs the executable only when this marker says the install is complete.
 	if err := os.WriteFile(filepath.Join(vdir, ".install-complete"), []byte(pin.Version+"\n"), 0o600); err != nil {

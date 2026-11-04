@@ -5,22 +5,24 @@
   "commit": "84537c4dd976a89b6ec094f43ae3ef7bee12cb1a",
   "integrity": "sha512-HLYtCLtIQZNMp9uKYYHoiqGe8VIwYgHtSC0qte9xiLSQ3ktotZwtWEo41thNl6AUbZWZN3TICySROOEkTw5xlg==",
   "license": "MIT, Copyright (c) 2026 T3 Tools Inc.",
-  "checked": "2026-11-03",
+  "checked": "2026-11-04",
   "runtime": {
-    "note": "SHA-256 of the release archives the npm launcher would download (SHA256SUMS of the tag); Rubi Home installs the archive itself, checked against these",
+    "note": "SHA-256 of the release archives the npm launcher would download (SHA256SUMS of the tag; .tar.gz, and .zip for win32); Rubi Home installs the archive itself, checked against these. darwin-x64 is not here: upstream publishes no runtime archive for Intel Macs",
     "sha256": {
       "darwin-arm64": "8518d51a892ffed4d9799dfdd28c95bc4374cd6445383ae2581fb36843847d74",
       "linux-arm64": "bf211f381e642de5f416935e36c1c9b40d0548cc683c9b251bfa4fa6cf241dbd",
-      "linux-x64": "f3b1c3b6ec656c1ef0b9a838fdfbffd36bb452b8785c4f97197a7024a71d7d8b"
+      "linux-x64": "f3b1c3b6ec656c1ef0b9a838fdfbffd36bb452b8785c4f97197a7024a71d7d8b",
+      "win32-x64": "2ffef4de4a3087fba1d2d4a033b6a0a25ebc167075559064aa06f47fe1db59e0"
     }
   },
   "node": {
     "version": "v26.13.0",
-    "note": "SHA-256 from nodejs.org/dist/<version>/SHASUMS256.txt",
+    "note": "SHA-256 from nodejs.org/dist/<version>/SHASUMS256.txt (win32-x64 is node-<version>-win-x64.zip)",
     "sha256": {
       "darwin-arm64": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6",
       "linux-arm64": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791",
-      "linux-x64": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+      "linux-x64": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455",
+      "win32-x64": "dcc60d59a0746999f99064a01c020445d54d84228c691cdbf25b49ac3b59150a"
     }
   }
 }
