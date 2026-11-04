@@ -654,11 +654,22 @@ func TestSSHPendingAsksAndOpenRateAreLimited(t *testing.T) {
 	se := newSSHEnv(t, sshtarget.Limits{Asks: 2, OpenPerMin: 6})
 	se.register("web-1", nil, true)
 	_, fr := se.role("deployer", "web-1")
-	done := make(chan error, 3)
+	done := make(chan error, 2)
+	var asks []Item
 	for i := 0; i < 2; i++ {
 		go func() { _, err := se.open(fr, "web-1", fmt.Sprintf("uptime %d", i)); done <- err }()
-		se.pl.wait(t, "ssh.ask")
+		asks = append(asks, se.pl.wait(t, "ssh.ask"))
 	}
+	// The two pending asks are decided and their requests have returned before the test ends: otherwise
+	// they are still writing their audit entries into the temp dir when it is removed.
+	defer func() {
+		for _, it := range asks {
+			_, _ = se.op("decide", map[string]any{"ask_id": it.AskID, "behavior": "deny"})
+		}
+		for range asks {
+			<-done
+		}
+	}()
 	if _, err := se.open(fr, "web-1", "uptime 3"); err == nil || !strings.Contains(err.Error(), "waiting") {
 		t.Fatalf("%v", err)
 	}
