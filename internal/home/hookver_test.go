@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -804,7 +803,7 @@ func TestWrongTypedStampIsRefused(t *testing.T) {
 func TestInspectRefusesFifoAndDevices(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "fifo")
-	if err := syscall.Mkfifo(fifo, 0o755); err != nil {
+	if err := mkfifo(fifo, 0o755); err != nil {
 		t.Skip(err)
 	}
 	start := time.Now()

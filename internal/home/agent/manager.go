@@ -14,13 +14,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/sshtarget"
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 // lockedAfter: Rubi counts as present while a claude-agent.next is open and this long after one ends.
@@ -321,12 +321,12 @@ func (m *Manager) SweepShields() {
 	}
 	// The lock is held for the life of the process, so a second daemon on the same directory never removes the
 	// snapshots of the first one's running VMs.
-	f, err := os.OpenFile(filepath.Join(m.opt.Dir, RoleShieldDir+".lock"), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	f, err := fsx.OpenNoFollow(filepath.Join(m.opt.Dir, RoleShieldDir+".lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		log.Printf("agent: role snapshots not swept: %v", err)
 		return
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := fsx.TryLock(f); err != nil {
 		f.Close()
 		log.Printf("agent: role snapshots not swept: another Rubi Home holds them")
 		return
@@ -2515,7 +2515,7 @@ func prepareWorkDir(dir string) error {
 	case !st.IsDir():
 		return fmt.Errorf("%s isn't a plain directory; refusing to start", rubi)
 	}
-	f, err := os.OpenFile(filepath.Join(rubi, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
+	f, err := fsx.OpenNoFollow(filepath.Join(rubi, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if errors.Is(err, os.ErrExist) {
 		return nil
 	}

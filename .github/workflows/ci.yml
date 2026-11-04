@@ -26,3 +26,35 @@ jobs:
         run: for f in panel/js/*.js; do node --check "$f"; done
       - name: Installer syntax
         run: sh -n panel/install.sh
+
+  # Rubi Home runs on macOS, Linux and Windows (docs/plans/home-platforms.md, stage P1). The core (the rest of the
+  # repository) is not ported to Windows, so only Home and what it imports are built and vetted for each system.
+  home-cross:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet Home (sources and tests)
+        run: GOOS=${{ matrix.goos }} GOARCH=amd64 go vet ./cmd/rubi-home ./internal/home/... ./internal/homeproto
+      - name: Build Home
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=$arch go build -trimpath -o /dev/null ./cmd/rubi-home
+          done
+
+  # The Windows-only helpers run on a real Windows host.
+  home-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test the OS helpers
+        run: go test ./internal/home/fsx/...

@@ -14,12 +14,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	claudeplugin "github.com/Deikus-LXXVII/rubi/claude-plugin"
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -389,8 +389,7 @@ func verifyPlugin(p PluginPlan, asRoot bool) error {
 		if err != nil {
 			return err
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+		if uid, _, ok := fsx.OwnerOf(fi); !ok || uid != 0 || fi.Mode().Perm()&0o022 != 0 {
 			return codedf(CodeVerify, "verification failed: %s must be owned by root and not writable by group or others", fp)
 		}
 		return nil

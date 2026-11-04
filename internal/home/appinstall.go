@@ -13,10 +13,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"text/template"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -323,7 +323,7 @@ func prepareDirs(dir string, uid int) error {
 		if !fi.IsDir() {
 			return fmt.Errorf("%s is not a real folder", c.path)
 		}
-		if st, ok := fi.Sys().(*syscall.Stat_t); !ok || int(st.Uid) != uid {
+		if owner, _, ok := fsx.OwnerOf(fi); !ok || int(owner) != uid {
 			return fmt.Errorf("%s is not owned by this user", c.path)
 		}
 		if err := os.Chmod(c.path, c.mode); err != nil {

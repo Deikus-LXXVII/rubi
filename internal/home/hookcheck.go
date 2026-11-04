@@ -16,8 +16,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 // DefaultHookBinary is where Claude Code's managed settings run the hook from: root-owned on purpose, so
@@ -70,8 +71,7 @@ func runVersion(path string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "version")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	fsx.KillTree(cmd)
 	cmd.WaitDelay = 500 * time.Millisecond
 	cmd.Env = []string{privilegedPath}
 	out := &limitWriter{n: 256}
@@ -134,7 +134,7 @@ func insecureAncestors(path string) string {
 			return fmt.Sprintf("can't look at %s: %v", d, err)
 		}
 		if li.Mode()&os.ModeSymlink != 0 {
-			if st, ok := li.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
+			if uid, _, ok := fsx.OwnerOf(li); !ok || uid != 0 {
 				return d + " is a symlink that root doesn't own"
 			}
 		}
@@ -142,8 +142,7 @@ func insecureAncestors(path string) string {
 		if err != nil || !fi.IsDir() {
 			return fmt.Sprintf("%s isn't a directory", d)
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid != 0 {
+		if uid, _, ok := fsx.OwnerOf(fi); !ok || uid != 0 {
 			return d + " is not owned by root"
 		}
 		if fi.Mode().Perm()&0o022 != 0 {
@@ -186,8 +185,8 @@ func inspectHook(path string, timeout time.Duration, o inspectOpts) HookBinary {
 		b.VersionE = "not a regular file"
 		return b
 	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		b.Owner = int(st.Uid)
+	if uid, _, ok := fsx.OwnerOf(fi); ok {
+		b.Owner = int(uid)
 	}
 	b.Secure = b.Owner == 0 && !b.Symlink && fi.Mode().Perm()&0o022 == 0
 	if b.Secure {

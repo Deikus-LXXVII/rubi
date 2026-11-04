@@ -11,10 +11,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	claudeplugin "github.com/Deikus-LXXVII/rubi/claude-plugin"
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -158,8 +158,8 @@ type hookKey struct{ link, file hookFileKey }
 
 func fileKeyOf(fi os.FileInfo) hookFileKey {
 	k := hookFileKey{mtime: fi.ModTime().UnixNano(), size: fi.Size(), mode: fi.Mode()}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		k.ino, k.uid = st.Ino, st.Uid
+	if uid, ino, ok := fsx.OwnerOf(fi); ok {
+		k.ino, k.uid = ino, uid
 	}
 	return k
 }

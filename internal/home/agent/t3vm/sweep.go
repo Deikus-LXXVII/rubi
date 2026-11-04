@@ -6,8 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 // ContainerPrefix starts the name of every container this package makes (sessions and version probes).
@@ -26,11 +27,11 @@ func (s *Server) lockAndSweep(ctx context.Context) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "sessions.lock"), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	f, err := fsx.OpenNoFollow(filepath.Join(dir, "sessions.lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := fsx.TryLock(f); err != nil {
 		f.Close()
 		return fmt.Errorf("another Rubi Home already serves T3 sessions on %s", s.opt.Dir)
 	}

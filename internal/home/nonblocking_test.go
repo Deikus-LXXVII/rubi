@@ -228,7 +228,7 @@ func fifos(t *testing.T, dir string, n int) []string {
 	var out []string
 	for i := 0; i < n; i++ {
 		p := filepath.Join(dir, fmt.Sprintf("f%d.jsonl", i))
-		if err := syscall.Mkfifo(p, 0o600); err != nil {
+		if err := mkfifo(p, 0o600); err != nil {
 			t.Skip("no named pipes here:", err)
 		}
 		out = append(out, p)

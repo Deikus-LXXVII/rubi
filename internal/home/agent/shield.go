@@ -14,8 +14,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 // RoleShieldDir (under the helper directory) holds the read-only snapshots a role VM sees over the project's
@@ -195,7 +196,7 @@ func copyTree(root *os.Root, dst, rel string, bytes *int64, files *int) error {
 			if err != nil || !lst.Mode().IsRegular() {
 				continue // gone or swapped for something else: left out
 			}
-			in, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+			in, err := root.OpenFile(name, os.O_RDONLY|fsx.NonBlock, 0)
 			if err != nil {
 				return err
 			}
@@ -204,7 +205,7 @@ func copyTree(root *os.Root, dst, rel string, bytes *int64, files *int) error {
 				in.Close()
 				continue
 			}
-			if sys, ok := st.Sys().(*syscall.Stat_t); ok && sys.Nlink > 1 {
+			if n, ok := fsx.LinkCount(in); !ok || n > 1 {
 				// A hard link may be the same file as something outside the project (a key, say); a snapshot
 				// of a tracked config file has no need of one. Left out.
 				hardlinkLog.Do(func() {
@@ -275,7 +276,7 @@ func init() { guardInterval.Store(int64(time.Minute)) }
 
 // fingerprint is the size and the SHA-256 of the whole file, read as a stream.
 func fingerprint(path string) string {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := fsx.OpenNoFollow(path, os.O_RDONLY|fsx.NonBlock, 0)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "absent"

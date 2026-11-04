@@ -7,6 +7,11 @@ in which to do it. `internal/repocheck/homeplatform_test.go` already keeps new c
 Project rule 2 (the user never uses a terminal) holds on all three systems: the Bot installs Home, and the user only
 confirms what the system itself asks for.
 
+The owner's decisions on the open questions are in section 5 and are built into the design and the stages. In short:
+the first Windows release is Home without agents; agent isolation is a real VM on every OS; the project folder is
+chosen in a panel folder browser; Windows verifies releases with Git's `openssl`; there is no Authenticode
+signing and no Linux package for now.
+
 ## 1. Audit
 
 Where it stands today, from a build of `cmd/rubi-home` on each system:
@@ -184,15 +189,15 @@ tests free of a real system (as `AppEnv.Run` and `OpenEnv.Run` do now).
 ### 2.2 Opener, clipboard and dialogs
 
 - **Interfaces.** `Opener.Open(url)`, `Clipboard.Copy(text)` (text on stdin or by API, never in argv), `Dialogs.Message(text,
-  buttons...) (button)`, `Dialogs.ChooseFolder(prompt)`. `OpenEnv` and `Setup` take them; the default is the one for
+  buttons...) (button)`. There is no native folder chooser (see below). `OpenEnv` and `Setup` take them; the default is the one for
   `runtime.GOOS`.
-- **macOS (unchanged).** `open`, `pbcopy`, `osascript` `display dialog` and `choose folder`.
+- **macOS (unchanged).** `open`, `pbcopy`, `osascript` `display dialog`. The `choose folder` dialog goes (below).
 - **Linux.**
   - Open: `xdg-open <url>`. It needs a desktop session (`DISPLAY` or `WAYLAND_DISPLAY`); without one, return
     "no display" and fall back to text.
   - Clipboard: `wl-copy` on Wayland, `xclip -selection clipboard` or `xsel -ib` on X11, code on stdin. None found: no
     copy button; the code is shown instead.
-  - Dialog: `zenity` or `kdialog` when present (text, up to three buttons, folder chooser). Otherwise the text mode of
+  - Dialog: `zenity` or `kdialog` when present (text, up to three buttons). Otherwise the text mode of
     today (`rubi-home open` prints the link, the PIN and the code, and the Bot relays them).
   - A desktop-portal call (`org.freedesktop.portal.FileChooser`) would also serve Flatpak, but needs a D-Bus library;
     leave for later.
@@ -204,9 +209,18 @@ tests free of a real system (as `AppEnv.Run` and `OpenEnv.Run` do now).
     buttons (Close, Copy the code, Open the Rubi panel), so use `TaskDialogIndirect` (needs a common-controls v6
     manifest in the exe). A PowerShell WinForms form is the fallback that needs no manifest but starts a second
     program.
-- **Folder chooser, for all three.** A native chooser per OS is the weak part (Linux needs zenity, Windows needs a COM
-  dialog). A different way works the same on every OS and on a phone: Home answers `fs.list {path}` for folders under
-  the user's home (refusing the deny lists), and the panel shows a folder browser. Open question 5.
+- **Folder chooser: a folder browser in the panel (decision 5).** No native chooser on any OS (it replaces macOS's
+  `choose folder`, `setup/project.go:117`). It works the same on a phone and on a box with no display.
+  - **Home op `fs.list {path}`** returns the sub-folders of a folder (names, whether each can be chosen, and a parent
+    link), never files and never their contents. It starts at the user's home folder and on Windows lists the drives.
+    It refuses the deny lists of 2.1 (it does not show that they exist) and does not follow links out of the tree it
+    was asked about.
+  - **Core op `device.fs.list {device, path}`**, called by the panel only: a user action in a signed-in panel session.
+    Bots do not get it, so a Bot can not learn the user's folder names through it.
+  - **Choosing** a folder sends the existing `projects.add {path}` path, which still runs `refuseFolder` and writes the
+    result to the config. The folder browser shows what it refused and why.
+  - **Panel.** A page section with a breadcrumb, a list of folders, and a Choose button, large enough for a thumb
+    (project rule 1). It has a panel flow test and a mobile layout check.
 - **Text mode is the floor.** If no dialog can be shown (no display, SSH-only box, service session), Home prints the
   link, PIN and code, which is today's non-mac behavior. The Bot relays them.
 
@@ -247,13 +261,20 @@ content (this part of `installhook.go` stays as it is).
   - The dialog text is polkit's generic text ("Authentication is required to run /bin/sh as root") unless a policy
     file with `org.freedesktop.policykit.exec.*` annotations exists, which would itself need root to install.
     Accept the generic text, and make the Rubi panel say what the dialog is for.
-  - No polkit agent (a headless box): `pkexec` cannot ask. Open question 2.
+  - No polkit agent (a headless box, decision 2): `pkexec` cannot ask. The Bot installs the hook with `sudo`, after the
+    user approved in the panel. The approval card shows the sha256 of the install plan (the full script, with the
+    binary's hash inside). Home does not run `sudo` itself: its `hook.install` answers `needs_bot_sudo` with the exact
+    command and the hash. The Bot runs that command only; the root process rebuilds the plan from the binary it is given
+    and refuses unless its hash equals the approved one (the existing `install-hook` re-derives the plan; it gains
+    `--expect-sha256`). The skill tells the Bot to run nothing else with `sudo` for this. The consent is the panel
+    approval, not a password; say so in the card.
   - The script's tool table already has the `stat -c`, `sha256sum`, `root` row; add a test that runs it under `sh`
     against a temporary root.
 - **Windows: UAC.**
   - Home starts `rubi-home.exe install-hook --elevated --plan <file>` with `ShellExecuteEx` and the `runas` verb.
     Windows shows its UAC prompt on the secure desktop. The prompt names the publisher of the signed binary; an
-    unsigned one shows "Unknown publisher" in a yellow bar, so signing matters (open question 4).
+    unsigned one shows "Unknown publisher" in a yellow bar, as there is no Authenticode signing (decision 4). The card in the panel tells the user to expect that
+    yellow bar and to choose Yes only for the request it just approved.
   - The root `sh` script becomes Go code in the elevated process (there is no `/bin/sh`, `chown` or `mktemp`): it
     writes the hook to a temp file in `C:\Program Files\Rubi Home`, checks the hash, sets the ACL (inherit from Program
     Files: Administrators and SYSTEM write, Users read and execute), and renames. The plan file is read from a folder
@@ -280,22 +301,21 @@ content (this part of `installhook.go` stays as it is).
   - AF_UNIX on Windows is the alternative: Go supports it, the pid comes from the `SIO_AF_UNIX_GETPEERPID` ioctl on
     recent builds (check the oldest Windows 10 build Rubi supports), and there is no permission mode, only the
     folder's ACL. Decide in a spike (P6); named pipes are the default choice because the DACL is part of the object.
-  - No new module is needed: `golang.org/x/sys` is already used; `go-winio` would be convenient but needs the owner's
-    approval (project rule: no new dependency without approval).
-- **Locks.** `lockFile` and the two `Flock` uses become `lockFile` with `_unix.go` (flock) and `_windows.go`
-  (`LockFileEx`). `O_NOFOLLOW` opens go behind `openNoFollow(path, flags)`: Unix uses the flag; Windows opens with
-  `FILE_FLAG_OPEN_REPARSE_POINT` and checks the attributes. The hard-link count (`shield.go:207`) is
+  - Only `golang.org/x/sys/windows` (decision 8). `go-winio` is added only if the named-pipe security descriptor can not be
+    done without it, and only after the owner agrees.
+- **Locks.** (Done in P1, `internal/home/fsx`.) `lockFile` and the two `Flock` uses call `fsx.Lock` and `fsx.TryLock`:
+  flock on Unix, `LockFileEx` on Windows. `O_NOFOLLOW` opens go through `fsx.OpenNoFollow`: Unix uses the flag; Windows looks at the path first and compares the
+  opened file with what it saw (P1); P6 makes it a handle opened with `FILE_FLAG_OPEN_REPARSE_POINT`. The hard-link count (`shield.go:207`) is
   `GetFileInformationByHandle.NumberOfLinks` on Windows.
-- **Process control.** `Setpgid` and `Kill(-pid)` in `hookcheck.go` become `runWithKill(ctx, cmd)`: Windows uses a Job
-  Object (kill on close).
-- **Shim.** `agent-vm` replaces itself with `container exec` by `syscall.Exec`. Windows has no exec: the shim starts the
-  child with the same stdio and exits with its code (`client_other.go` already marks the gap).
+- **Process control.** (Done in P1 as `fsx.KillTree`: a process group on Unix; on Windows it only kills the process.)
+  P6 makes the Windows form a Job Object (kill on close).
+- **Shim.** `agent-vm` replaces itself with `container exec` by `syscall.Exec`. With the VM backends of 2.7 it relays
+  stdio over a stream to Home instead, which needs no exec on any OS (`client_other.go` marks the gap today).
 
 ### 2.6 Features that stay on macOS
 
-- **Shortcuts and Apple Home** need the Shortcuts app and Apple Home: macOS only. No port is planned. A scripts
-  folder of programs the user lists (Rubi runs only those) could be the Linux and Windows counterpart; it is a new
-  feature, not part of this plan (open question 6).
+- **Shortcuts and Apple Home** need the Shortcuts app and Apple Home: macOS only for now (decision 6). A scripts folder
+  of programs the user lists (Rubi runs only those) is the later counterpart for Linux and Windows: stage P13.
 - **Signal.** Home computes its features at start: `Features() map[string]Feature{Available bool, Reason string}`
   with `shortcuts`, `apple_home`, `claude-start` (desktop link), `agent` (VM backend present), `t3`. The `hello` reply
   carries `features` next to `can`. `can` lists only what is available.
@@ -310,54 +330,89 @@ content (this part of `installhook.go` stays as it is).
 - **Claude desktop link** (`claude-start`): macOS and Windows have the Claude desktop app, Linux has none: available
   when the `claude://` handler is registered (Windows: `HKCR\claude`; Linux: `xdg-mime query default
   x-scheme-handler/claude`).
+- **Agents** (`agent`, `t3` sessions in VMs): available where a VM backend is: macOS (Apple `container`), Linux with KVM
+  (2.7). On Windows they are "not available on this computer" in the first release (decision 1).
 - **Hue** works everywhere.
 
-### 2.7 Agent VMs
+### 2.7 Agent VMs: a real VM on every OS (decision 3)
 
 The `VM` interface (`agent/vm.go:135`) is the seam: `Start`, `Exec`, `Stop`, `State`. What is Apple-specific is the
-implementation (`AppleContainer`), its installer and the `container` argv in the setup and shim code. The plan:
+implementation (`AppleContainer`), its installer and the `container` argv in the setup and shim code. The owner wants a
+real VM boundary everywhere, so rootless Podman and other shared-kernel containers are out, and so are Kata and gVisor
+(Kata is a VM, but it comes through containerd and a root configuration; the plan does not use it).
 
-- **Interface.** `VMBackend{Name() string; Probe(ctx) Step; Install(ctx) job; Build(ctx, project) ...; New(project) VM;
-  ExecArgv(...) []string}`. `home.go:newAgent`, `setup`, `t3login` and the `agent-vm` shim ask the backend for argv instead
-  of writing `container`. `agent/apple.go` becomes `apple_darwin.go`; a `cli.go` holds the part that is shared by
-  every OCI CLI.
-- **Does Apple `container` have a Linux counterpart the code could reuse?** No. It is a macOS 26 and Apple silicon
-  tool that runs each container in its own lightweight VM through the Virtualization framework. Its CLI is close to
-  Docker's, which is the useful thing: the arguments `AppleContainer` builds (`run -d --name --init --network none
-  --user --cap-drop ALL --read-only --tmpfs /tmp --mount type=bind,source=,target=[,readonly]`, `exec -i`, `image
-  inspect`, `stop`, `rm`) are valid for `podman` and `docker` as they are, apart from `build --progress plain`
-  (Docker has `--progress=plain`; Podman has no such flag, drop it) and `system start`, which has no equivalent.
-  So the code shared with a Docker-style backend is most of `RunArgs`, `exec`, `netpipe` and the image build.
-- **What the owner wants from a backend is a VM boundary** (the design says "VM", `docs/design/agent-runner.md`): the
-  agent runs code the Bot wrote, with the user's project mounted. Survey:
+- **macOS: stays on Apple `container`.** It runs each container in its own VM through the Virtualization framework, so it
+  is a real VM. It moves behind the interface unchanged (`apple_darwin.go`).
+- **Linux: a new `microvm` backend on QEMU/KVM** (Firecracker is the alternative; compared below).
+- **Windows: a later option** (after the first Windows release): QEMU with the Windows Hypervisor Platform (WHPX)
+  accelerator, which keeps the Linux backend's code.
 
-| Backend | System | Boundary | Fits the interface? | Notes |
+**The interface.** `VMBackend{Name() string; Available(ctx) Step; Install(ctx) job; Image(ctx) Step; New(project) VM}`,
+and every other place that writes `container ...` asks the backend. `home.go:newAgent`, `setup`, `t3login` and the
+`agent-vm` shim stop naming the tool. The `VM` interface keeps its four methods; the two things it must also carry are
+read-only mounts per project (the role shield already has them) and a stdio stream for a second process (`Exec`).
+
+**The microvm backend, as designed.** The guest is a small Linux VM per project (or per role) with no network card at all.
+- **Image.** CI builds, per CPU, a kernel and a root file system from `runner/container/Dockerfile` and signs them into
+  the release's `SHA256SUMS`; Home downloads the pair that matches the runner's hash (as `DefaultImage` is tagged by
+  that hash today) and checks it. There is no image build on the user's machine, so no `container build` equivalent
+  is needed.
+- **Control channel.** A guest agent (PID 1 helper, a small static Go program in the image) serves `exec` with stdio over
+  a virtio-vsock or virtio-serial stream. The same frame format as `netpipe` carries it (OPEN, DATA, CLOSE...), so the
+  proxy, the hook gate and T3's port keep working as they do: the guest connects out to 127.0.0.1:3128 and so on and
+  Home receives the streams, with no network device.
+- **Mounts.** The project at `/work` read-write and the role directories read-only: virtio-fs (needs `virtiofsd`, which
+  can run without root in a user namespace) or 9p. Read-only overlays on `/work/.rubi` and `/work/.claude` are
+  separate read-only mounts, as in `RunArgs` now.
+- **Isolation of QEMU itself.** `-nic none`, no display, `-sandbox on` (seccomp), `-run-with` user and chroot where
+  possible; the QEMU process runs as the user, never as root.
+- **Lifetime.** One QEMU process per VM, supervised by Home; `Stop` sends a guest shutdown, then kills; the sweep at
+  start kills leftovers found by a pid file in the VM's folder.
+- **T3 sessions.** The `agent-vm` shim relays its stdio to Home over the socket, and Home attaches the stream to a guest
+  `exec`; no `syscall.Exec` and no `container exec` argv from Home (so `t3vm/client.go:128` and `spec.go` change).
+- **Arch.** The guest has the host's CPU architecture (`t3vm/server.go:53` picks `linux-arm64` or `linux-x64` from the
+  image).
+
+| Backend | System | Boundary | Mounts | Fit |
 |---|---|---|---|---|
-| Rootless Podman | Linux | container (shared kernel, user namespaces) | Yes, same argv | In every distro's repos, no root, no daemon. Weaker than a VM. Add `--security-opt no-new-privileges`, `--userns keep-id` or a fixed uid, seccomp default. Mounts: `:Z` label on SELinux hosts. |
-| Podman with the Kata or gVisor (`runsc`) runtime | Linux | microVM (Kata) or user-space kernel (gVisor) | Yes, `--runtime` flag | Closest to Apple's per-container VM. Kata needs KVM; gVisor does not. Extra install step. |
-| Docker Engine, rootful | Linux | container | Yes | Needs root and the docker group: the group is root-equivalent; avoid as default. Accept if present. |
-| Firecracker | Linux with KVM | microVM | No: needs a rootfs image, a kernel, a vsock agent and our own exec; no OCI CLI | A new backend written from scratch. Strong, big. |
-| QEMU/KVM with a prebuilt image | Linux, Windows (WHPX), macOS | VM | No: same as Firecracker, plus 9p/virtiofs mounts | Portable but the heaviest to build and ship. |
-| Podman machine or Docker Desktop | Windows | one shared Linux VM (WSL2 or Hyper-V) running containers | Yes, same argv | One VM for all containers: container boundary inside a VM boundary against Windows. |
-| WSL2 distro driven by `wsl.exe` | Windows | shared WSL2 VM | Partly: Home runs `podman` inside the distro; project mounts are `/mnt/c/...` (9p, slow, permissions) | Needs WSL2 installed (admin, reboot possible). |
-| Hyper-V VM | Windows Pro and up | VM | No (as Firecracker), not on Home editions | Skip. |
+| Apple `container` | macOS (Apple silicon) | one VM per container | bind mounts | Keep. Real VM. |
+| QEMU/KVM, `microvm` or `q35` machine | Linux | VM (KVM) | virtio-fs or 9p | Chosen. Mature, runs as the user, one file system sharing story, seccomp sandbox. |
+| Firecracker | Linux with KVM | VM, minimal device model | none: block devices and vsock only | Fast to boot and small, but no shared folders: the project would have to be copied in and out, or served by a file service of our own over vsock. Poor fit for a project folder the user's editor also changes. Jailer needs root. |
+| Cloud Hypervisor | Linux with KVM | VM | virtio-fs | Close to Firecracker, with virtio-fs. A possible later alternative to QEMU; fewer distros package it. |
+| QEMU with WHPX | Windows 10/11 (also Home edition, once the "Windows Hypervisor Platform" feature is on) | VM | no virtfs or virtio-fs on Windows hosts: needs a file service of our own | Later. Same guest and agent as Linux. |
+| Hyper-V (HCS) | Windows Pro and up | VM | SMB or Plan9 share | Not on Home editions; skip. |
+| WSL2 | Windows | one shared VM for all distros | `/mnt/c` | Not a boundary per project; the VM is shared with the user's own WSL work. Skip as the isolation. |
 
-- **Recommendation.** Linux: rootless Podman by default (same argv as today's backend), Kata or gVisor as an
-  upgrade when present. Windows: Podman through WSL2 (`podman machine`), the installer checking WSL2 first. Firecracker and
-  QEMU only if the owner wants a true VM on Linux and Windows (open question 3).
-- **Network.** `--network none` plus `rubi-netpipe` is portable Go; it needs only `exec -i`.
-- **Arch.** The image's claude binary follows the host (`t3vm/server.go:53`): make it `linux-arm64` or `linux-x64` from the
-  image, not a constant.
-- **Installing the backend.** macOS: Apple's signed package (exists). Linux: the package manager's `podman`, which
-  needs root: the same `Elevator` (pkexec) runs `apt`, `dnf` or `pacman`, chosen from `/etc/os-release`, with a pinned
-  list of package names; no download of unsigned code. Windows: `winget install RedHat.Podman` or the MSI, checked
-  by Authenticode and SHA-256, through UAC; `podman machine init` after.
+**Open technical questions** (answer in a spike, P9, before committing to the design):
+1. **Is `/dev/kvm` usable by the user?** On a desktop the seat's `uaccess` rule grants it; on a headless box the user
+   needs the `kvm` group, which is a root step (the sudo path of decision 2). Without KVM, QEMU's software emulation is far
+   too slow, and the feature must say "not available on this computer".
+2. **Nested virtualisation and small boards.** A VPS or a VM without nested KVM, and a Raspberry Pi (arm64 KVM support
+   depends on the board and kernel) will often have no KVM. Which machines does Rubi say "agents need hardware
+   virtualisation" for?
+3. **virtio-fs or 9p?** virtio-fs is fast and POSIX-correct but needs `virtiofsd` (a separate package or binary to ship and
+   verify, root-less mode needs user namespaces enabled). 9p is built into QEMU but slow and has permission quirks.
+   Does the project mount need file-change events (a watcher in the guest sees the user's edits)?
+4. **Shipping `virtiofsd` and QEMU.** The distro package (root, many versions) or a pinned static build downloaded and
+   verified by Home (we choose the version, we own the update)? The signing chain for it.
+5. **vsock or serial.** vsock needs `vhost-vsock` on the host (a kernel module, root to load) or, in Firecracker's way, a
+   Unix socket proxy; virtio-serial works everywhere QEMU does. Is the throughput of serial enough for T3 and the proxy?
+6. **Image size and boot time.** The Dockerfile image has Node and the Agent SDK. A kernel plus root file system built
+   from it may be several hundred MB per CPU; the first download, the update when the runner changes, and a boot of a few
+   seconds per project are acceptable?
+7. **Memory.** A VM per role per project multiplies memory. A shared VM for a project's roles would weaken the role
+   boundary. What are the limits the setup wizard offers (today `CPUs` and `Memory` in `SessionSpec`)?
+8. **Windows file sharing.** Without virtfs, is a file service over the control channel (a FUSE client in the guest and
+   a server in Home that refuses the deny lists) acceptable, or is the Windows option dropped?
+9. **Same behaviour as Apple's.** Hard links, symlinks, case, permissions and mode bits inside `/work`: the shield and
+   snapshot code (`agent/shield.go`) depends on them.
 
 ### 2.8 T3 and Node
 
-- `t3Platform()` knows `darwin-arm64`, `linux-arm64`, `linux-x64`. Add `darwin-x64` (Intel Macs) and `win32-x64` to the
-  pins (`t3/upstream.json`, `t3bump.Platforms`) once upstream publishes them; Windows archives are `.zip`, not
-  `tar.gz` (`t3install.go:418`, `:446`).
+- `t3Platform()` knows `darwin-arm64`, `linux-arm64`, `linux-x64`. Add `darwin-x64` (Intel Macs, decision 9) in P10, and
+  `win32-x64` as soon as upstream publishes it (`t3/upstream.json`, `t3bump.Platforms`); Windows archives are `.zip`,
+  not `tar.gz` (`t3install.go:418`, `:446`). If upstream has no `darwin-x64` build, P10 says so and the panel shows "not
+  available on this computer" for T3 on Intel Macs.
 - Until then a platform with no pin gets the "not available on this computer" signal from 2.6, not the English error
   at `t3install.go:388`.
 
@@ -371,15 +426,17 @@ gets one subsection per OS. What the Bot runs is for the Bot; what the user does
 |---|---|---|---|
 | Bot detects | `uname -s` is Darwin | `uname -s` is Linux | `$env:OS` is `Windows_NT` |
 | Bot runs | the shell installer (`install-home.sh`) | the shell installer | a PowerShell installer (`install-home.ps1`), run with `-ExecutionPolicy Bypass -File` from a downloaded copy |
-| Installer checks | signed `SHA256SUMS`, then the archive hash | the same | the same; the Ed25519 check needs a verifier on Windows (open question 4) |
+| Installer checks | signed `SHA256SUMS`, then the archive hash | the same | the same; the Ed25519 check uses the `openssl.exe` of Git for Windows (decision 4), found in Git's install folder (not from `PATH`) and only if that folder is admin-owned; `Get-FileHash` for the archive |
 | Autostart | LaunchAgent | `systemd --user` | Scheduled Task |
-| Hook | the panel button, administrator dialog | the panel button, polkit dialog | the panel button, UAC prompt |
-| User confirms | nothing at install; the administrator password in the dialog when the hook is installed | the polkit password when the hook is installed | the UAC prompt when the hook is installed (and for WSL2 or Podman, if agents are set up) |
+| Hook | the panel button, administrator dialog | the panel button, polkit dialog; on a box with no polkit agent, the Bot's `sudo` after the approval (decision 2) | the panel button, UAC prompt ("Unknown publisher") |
+| User confirms | nothing at install; the administrator password in the dialog when the hook is installed | the polkit password when the hook is installed | the UAC prompt when the hook is installed |
 | Pairing | `rubi-home open` shows the window: PIN and link; Open the Rubi panel | `rubi-home open` shows a zenity window with the PIN when there is a desktop; otherwise prints the link and PIN and the Bot sends them in chat | `rubi-home open` shows a TaskDialog with the PIN and link and the same three buttons |
-| Without a Bot | the app zip (exists) | none (allow-list T-01L) until a package exists | a signed `Rubi Home Setup.exe` that does what the app does |
+| Without a Bot | the app zip (exists) | none (allow-list T-01L): tar.gz and the Bot only (decision 7) | none: an unsigned setup program would meet SmartScreen, so Windows is the Bot's way only (see risks) |
 
 `install.md` says what the user will see ("Windows will ask whether to allow this app to make changes: choose Yes"),
-and that the Bot does not run `sudo` or open an elevated shell for the hook (the consent is the user's own prompt).
+and that the Bot does not run `sudo` or open an elevated shell for the hook, except on a Linux box with no polkit agent,
+and then only the command Home returned after the user's approval (the consent is the user's own prompt, or that
+approval).
 The skill text is owned by the work on `skills/`; this plan lists what it must say.
 
 The PIN rule: the PIN the user types in the panel must come from Home's window where there is one. In text mode
@@ -390,16 +447,12 @@ itself would stop there.
 
 - **macOS.** Unchanged: `rubi-home-<v>-darwin-{arm64,amd64}.tar.gz`, `rubi-home-<v>-macos-universal.zip` (the app),
   in the signed `SHA256SUMS`.
-- **Linux.** `rubi-home-<v>-linux-{amd64,arm64}.tar.gz` (exists). Later and optional: a `.deb` and an `.rpm` (the
-  package installs the user unit file in `/usr/lib/systemd/user/` and a polkit-less hook folder), an AppImage only if
-  the no-Bot path is wanted.
-- **Windows.** `rubi-home-<v>-windows-{amd64,arm64}.zip` with `rubi-home.exe` (built `CGO_ENABLED=0 GOOS=windows`),
-  plus `rubi-home-<v>-windows-setup.exe` for the no-Bot path (an installer program that puts `rubi-home.exe` in
-  `%LOCALAPPDATA%`, makes the Scheduled Task and opens the pairing window; Authenticode-signed). All in the signed
-  `SHA256SUMS`.
-- **Workflow.** A Windows job (`windows-latest`) builds and signs the exe and the setup program (as the `mac-app` job does
-  for the app); `release.yml:83` gains `windows/amd64 windows/arm64`; the cross-build job for the test (P1) runs on
-  every push.
+- **Linux.** `rubi-home-<v>-linux-{amd64,arm64}.tar.gz` (exists), and the Bot installs it. No `.deb`, `.rpm` or AppImage
+  (decision 7). From P9 the release also carries the microvm kernel and root file system per CPU.
+- **Windows.** `rubi-home-<v>-windows-{amd64,arm64}.zip` with `rubi-home.exe` (built `CGO_ENABLED=0 GOOS=windows`), in the
+  signed `SHA256SUMS`. Not Authenticode-signed (decision 4).
+- **Workflow.** `release.yml:83` gains `windows/amd64 windows/arm64` and packs a zip; a Windows runner job tests the
+  exe (`rubi-home version`) before the release. The cross-build job `home-cross` (P1, in `ci.yml`) runs on every push.
 - **Feed.** `releases/latest.json` (read by `homeMacAppURL`, `app.js`) gains a Windows file name.
 
 ## 3. Stages
@@ -407,16 +460,27 @@ itself would stop there.
 Each stage ends with `go test ./...` green, the allow-list shorter by the lines the stage removes, and a changelog
 line. Stage names only; the order is the dependency order.
 
-### P1 Cross-build baseline
+### P1 Cross-build baseline (done)
 
-- **Work.** Split the Unix-only code so that `GOOS=windows go build ./cmd/rubi-home` and `GOOS=linux`, `GOOS=darwin` pass:
-  `lockFile`, `openNoFollow`, the `Stat_t` reads, `Setpgid`, `Flock` and the `Nlink` count get `_unix.go` and
-  `_windows.go` files (the Windows ones may return "not supported" for now). A CI job runs `go vet` for the three
-  systems.
-- **Done when.** The cross-build passes on all three and a Windows build of `rubi-home version` runs on a Windows host.
-  No allow-list line is removed; the stage adds none.
-- **Tests.** The CI job; unit tests for the new `_unix.go` helpers on this host; a `repocheck` test that the cross-build
-  files exist.
+- **Work.**
+  - New package `internal/home/fsx` with one signature and a file per system for: an exclusive file lock (`Lock`,
+    `TryLock`, `Unlock`), `OpenNoFollow`, `NonBlock`, `OwnerOf`, `LinkCount` and `KillTree`. Windows has no owner
+    answer, so every "is this root's" check there fails closed until P2.
+  - `lock_unix.go` and `lock_other.go` became one `lock.go`. `agent/manager.go`, `agent/shield.go`, `agent/t3vm/sweep.go`,
+    `hookcheck.go`, `hookstate.go`, `installhook.go` and `appinstall.go` call `fsx`. Two Unix-only tests got a `mkfifo`
+    helper per system.
+  - CI: job `home-cross` (vet and build of Home for linux, darwin and windows, amd64 and arm64) and job `home-windows`
+    (the `fsx` tests on a Windows runner).
+  - Repocheck: `homecross_test.go` refuses a Unix-only syscall name in a file that builds for Windows, and checks that the
+    CI job is there.
+- **Scope of the cross-build.** Home and what it imports build for Windows. The rest of the repository (the core) does not:
+  `internal/paths`, `internal/kvm`, `internal/mcpproxy` and `internal/plugins` use `Stat_t`, `Setsid`, `Setpgid` and `Kill`, and
+  more is hidden behind them. Porting the core to Windows is not part of this plan, so `GOOS=windows go build ./...`
+  is out of scope and CI builds `./cmd/rubi-home` only.
+- **Done when.** `go vet` (tests included) and `go build` of `cmd/rubi-home` and the Home packages pass for the three systems.
+  The stage adds no allow-list line and removes none.
+- **Tests.** `internal/home/fsx` tests (lock, no-follow open, link count, owner, process-group kill) on this host and on the
+  Windows runner; the repocheck tests above, break-checked.
 
 ### P2 Platform paths
 
@@ -426,13 +490,16 @@ line. Stage names only; the order is the dependency order.
 - **Tests.** Table tests per OS with a fake environment; the hook owner check against files made in a temp folder;
   a test that `DefaultDir` on Linux still returns the old path. Removes the P2 lines of the allow-list.
 
-### P3 Opener, clipboard and dialogs
+### P3 Opener, clipboard, dialogs and the panel folder browser
 
-- **Work.** 2.2: `Opener`, `Clipboard`, `Dialogs`; the Linux and Windows implementations; text mode as the fallback.
+- **Work.** 2.2: `Opener`, `Clipboard`, `Dialogs`; the Linux and Windows implementations; text mode as the fallback; the
+  folder browser (`fs.list`, `device.fs.list`, the panel section) replaces `choose folder`.
 - **Done when.** `rubi-home open` shows the PIN and the link in a window on a Linux desktop and on Windows, and prints
-  them where there is none; `login.go` opens the browser through `Opener`.
-- **Tests.** Fake runners for the argv of each tool; the existing `openwindow_test.go` cases run for each OS table; a
-  manual check on a Linux desktop and on Windows 11. Removes the P3 lines.
+  them where there is none; `login.go` opens the browser through `Opener`; an agent project is chosen in the panel on a
+  phone, on every OS, with no native dialog.
+- **Tests.** Fake runners for the argv of each tool; the existing `openwindow_test.go` cases run for each OS table; `fs.list`
+  tests (deny lists, links, the drive list, a path outside home); a panel flow test; a core test that a Bot can not call
+  `device.fs.list`; a manual check on a Linux desktop and on Windows 11. Removes the P3 lines.
 
 ### P4 Autostart and the app flow
 
@@ -463,47 +530,75 @@ line. Stage names only; the order is the dependency order.
 ### P7 Feature availability
 
 - **Work.** 2.6: `Features()`, `not_available_here`, `can` computed, the panel lines, the skill text, `shortcuts.go`
-  behind `_darwin.go` and a stub elsewhere; the Claude desktop link behind `Opener` and the handler check.
-- **Done when.** On Linux the panel and a Bot see "Shortcuts: not available on this computer" and never an English
-  CLI error.
+  behind `_darwin.go` and a stub elsewhere; the Claude desktop link behind `Opener` and the handler check; `agent` and
+  `t3` sessions unavailable where there is no VM backend (all of Windows in the first release).
+- **Done when.** On Linux and Windows the panel and a Bot see "Shortcuts: not available on this computer" and never an
+  English CLI error; on Windows the same for agents.
 - **Tests.** Core and Home tests for the typed error; panel flow test (`panelflows_test.go`); a Bot-facing text test.
   Removes the P7 lines.
 
-### P8 VM backend interface and Podman
+### P8 VM backend interface
 
-- **Work.** 2.7: `VMBackend`; move `AppleContainer` to `apple_darwin.go`; `PodmanBackend` for Linux; setup steps
-  from the backend; arch from the image.
-- **Done when.** On Linux a project's agent runs in rootless Podman with `--network none` and the netpipe, and the
-  setup wizard installs Podman through the `Elevator`.
-- **Tests.** Argv tests that compare the Apple and Podman argv; the existing VM fake tests run against both; a live test
-  on a Linux box with Podman (build the image, run the runner, prove no network). Removes the P8 lines.
+- **Work.** 2.7: `VMBackend`; `AppleContainer` moves to `apple_darwin.go` with the macOS-only setup (package check,
+  administrator install, service start); every `container ...` argv in `setup`, `t3login` and the `agent-vm` shim goes
+  through the backend; the shim relays stdio to Home instead of `syscall.Exec`; `home.go:newAgent` asks for the
+  backend of the OS; on an OS with no backend `Available` says so.
+- **Done when.** macOS behaves exactly as before; Linux and Windows build and answer "not available on this computer"
+  for agents through the backend, not through `s.mac()`.
+- **Tests.** The existing VM and setup tests run against the Apple backend unchanged; a fake backend drives the same
+  tests; argv tests for the Apple backend; a test that the shim's stream relay carries stdio and the exit code. Removes
+  the P8 lines.
 
-### P9 VM backend on Windows
+### P9 MicroVM backend for Linux
 
-- **Work.** Podman on WSL2 (`podman machine`) or Docker Desktop; path translation for mounts; the WSL2 check in setup.
-- **Done when.** An agent runs on a Windows 11 test machine and the project folder is mounted at `/work`.
-- **Tests.** Argv and path-translation unit tests; a live test on Windows; the guard for secrets in mounts.
+- **Work.** A spike first, to answer the open questions of 2.7 (KVM access, virtio-fs or 9p, shipping QEMU and
+  `virtiofsd`, vsock or serial); then the guest agent, the CI build of the kernel and root file system, the backend,
+  the setup wizard steps (KVM present, QEMU present or installed, image downloaded and checked), and the sweep.
+- **Done when.** On a Linux box with KVM an agent runs a project in a QEMU VM with no network device, the proxy and the
+  hook gate work through the control channel, the role shield mounts are read-only inside, and a T3 session runs.
+  Without KVM the feature says "agents need hardware virtualisation" and nothing else breaks.
+- **Tests.** Unit tests for the QEMU argv (no `-nic` other than none, `-sandbox on`, the mounts and their modes, a quoted
+  path); guest agent tests over a pipe; the netpipe tests reused for the control channel; a live test on a Linux box
+  with KVM (boot, exec, no network, a read-only mount refuses writes, a kill leaves nothing); the secrets guard for
+  the mounts. This is security-sensitive: `reviewer` and a second opinion before it merges.
 
 ### P10 T3 and Node pins
 
-- **Work.** 2.8: pins for `darwin-x64` and `win32-x64`, zip extraction, `t3bump` platforms.
-- **Done when.** T3 installs and pairs on the new platforms, or says "not available on this computer".
+- **Work.** 2.8: pins for `darwin-x64` (and `win32-x64` when upstream has it), zip extraction, `t3bump` platforms.
+- **Done when.** T3 installs and pairs on Intel Macs, or says "not available on this computer" when upstream has no
+  build.
 - **Tests.** `t3install_test.go` tables for each platform; `t3bump` tests; the existing zip-slip tests for zips.
 
-### P11 Release and Bot installation
+### P11 Release and Bot installation (the first Windows release)
 
-- **Work.** 2.9 and 2.10: Windows jobs, artifacts, feed, `install-home.sh` fixes (texts), `install-home.ps1`, the
-  `install.md` subsections, panel texts for Linux and Windows, `usertext_allow.txt` T-01L closed for the systems that now
-  have a no-terminal path.
+- **Work.** 2.9 and 2.10: the Windows artifact and runner test, `install-home.ps1` (Git's `openssl` for the Ed25519
+  check), `install-home.sh` fixes (texts), the `install.md` subsections, panel texts for Linux and Windows,
+  `usertext_allow.txt` T-01L unchanged for Linux (the Bot's way is the no-terminal way).
 - **Done when.** A Bot on a fresh Linux box and a fresh Windows machine installs Home, the user sees only the system's
-  prompts, and pairing completes.
-- **Tests.** `repocheck` tests for the workflow and the feed (like `homeapp_test.go`), `install.md` text test (no
-  command for the user), a clean-machine run on each OS.
+  prompts, and pairing completes. Windows Home has the hook, Hue, sister tools and pairing; agents show "not available".
+- **Tests.** `repocheck` tests for the workflow and the feed (like `homeapp_test.go`), an `install.md` text test (no
+  command for the user), a test that `install-home.ps1` refuses a bad signature, a clean-machine run on each OS.
 
-### P12 Close-out
+### P12 MicroVM on Windows (after the first Windows release)
 
-- **Work.** Empty the allow-list, delete the stage headings' "removes" notes, update `docs/design/rubi-home.md`,
-  `docs/project-rules.md`, `README.md`, the changelog.
+- **Work.** QEMU with WHPX, a file service over the control channel for the project folder (no virtfs on Windows
+  hosts), the setup steps for the Windows Hypervisor Platform feature (an administrator step, UAC), path translation.
+- **Done when.** An agent runs on a Windows 11 test machine and the project folder appears at `/work`.
+- **Tests.** The Linux backend's argv and agent tests with the Windows differences; the file service against the deny
+  lists; a live test on Windows.
+
+### P13 Scripts folder for Linux and Windows (later)
+
+- **Work.** The counterpart of Shortcuts: a folder of programs the user lists; Rubi runs only those, by name, with the
+  consent rules of Shortcuts. Its own design note before the work starts.
+- **Done when.** A Bot can list and run a user's script on Linux and Windows, and the macOS Shortcuts feature is
+  unchanged.
+- **Tests.** As `shortcuts_test` for the listing and the refusal of anything not in the folder.
+
+### P14 Close-out
+
+- **Work.** Empty the allow-list, update `docs/design/rubi-home.md`, `docs/design/security-model.md` (what the boundary
+  is on each OS), `docs/project-rules.md`, `README.md`, the changelog.
 - **Done when.** `homeplatform_allow.txt` has no lines; the cross-build runs on every push.
 - **Tests.** The guard test with an empty list.
 
@@ -512,36 +607,48 @@ line. Stage names only; the order is the dependency order.
 - **Windows is the largest piece.** Home does not build there now, the root `sh` script has no counterpart, and the
   socket security model changes. P6 is the one where a mistake is a security hole (a process of another user passing for the
   hook).
-- **Weaker boundary on Linux and Windows.** Rootless Podman shares the kernel; a Windows backend adds a VM
-  under the containers, but one shared VM. The design says "VM". The panel and `docs/design/security-model.md` must say
-  what the boundary is on each OS.
+- **A new VM backend is a large, security-sensitive piece (P9).** It needs QEMU and `virtiofsd` shipped or required, KVM
+  access, and a guest agent of our own. Firecracker was rejected for its lack of shared folders; if virtio-fs proves
+  unworkable the project-folder story needs rethinking.
+- **No KVM, no agents.** Hosts without hardware virtualisation (many VPSes, some boards) can not run agents on Linux.
+- **Windows has no agents at first**, and later needs a file service of our own.
 - **polkit text and headless boxes.** The password dialog can only name `/bin/sh`.
-- **UAC and signing.** An unsigned `rubi-home.exe` shows "Unknown publisher" and SmartScreen warns on download.
-- **Verifying the release on Windows.** `install-home.sh` uses `openssl` for Ed25519; Windows has none.
+- **No Authenticode (decision 4).** The UAC prompt says "Unknown publisher", and SmartScreen may warn on a downloaded
+  `rubi-home.exe`. The Bot's download does not carry the web mark, but a user who downloads it by hand will see the
+  warning. For this reason there is no no-Bot Windows installer.
+- **Git's `openssl` on Windows.** Claude Code on Windows needs Git, but the user may not have it where the Bot
+  looks, and the bundled `openssl` must be new enough for `pkeyutl -rawin` with Ed25519 (check in P11). If Git is
+  missing the installer stops with a clear message the Bot can relay, and does not install unverified.
+- **The Bot's `sudo` on headless Linux (decision 2).** Consent is the panel approval, not a password. The skill and the
+  card must say exactly what is run, and the root side must refuse any plan whose hash differs.
 - **Windows file semantics.** Case-insensitive paths, reparse points, 8.3 names, sharing violations on rename of a
   running exe (an update must rename the old exe away, as the OS does not allow overwriting it).
 - **Claude Code's own paths on Windows** (managed settings, the hook shell) are not read here from a Windows box; they
   are taken from its docs and need a check.
-- **Maintenance.** Three install paths, two VM backends: the guard test and the three-OS CI cross-build are what keep
+- **Maintenance.** Three install paths, three VM backends (Apple, QEMU on Linux, QEMU on Windows): the guard test and the three-OS CI cross-build are what keep
   them from drifting.
 - **The guard is a net, not a proof.** It finds literals; code that builds `container` from a variable passes. The
   cross-build and review catch the rest.
 
-## 5. Questions for the owner
+## 5. Decisions
 
-1. **Windows scope.** Home on Windows without agents (hook, Hue, sister tools, pairing) first, with agent VMs later (P9)?
-   Or are agents a must for the first Windows release?
-2. **Headless Linux hook.** On a box with no polkit agent there is no password prompt to show. Allow the Bot to run
-   `sudo` for the hook install there (the user's consent is then the panel approval that shows the hash), or require a
-   desktop session for the hook?
-3. **VM strength.** Is a container boundary on Linux (rootless Podman) acceptable, with Kata or gVisor as an option, or
-   must every OS have a real VM (Firecracker or QEMU, which is a new backend)?
-4. **Windows signing and verification.** Buy an Authenticode certificate (EV or standard), and how should the installer
-   verify the Ed25519 release signature without `openssl`: a small signed verifier built into the setup exe, or the
-   `openssl` that Git for Windows ships (Claude Code on Windows needs Git)?
-5. **Folder chooser.** Build a folder browser in the panel (works on every OS and on a phone), or use native choosers per OS (zenity,
-   a Windows dialog)?
-6. **Shortcuts on other systems.** Stay macOS-only, or later offer a "scripts folder" for Linux and Windows?
-7. **Linux package.** Is a `.deb` and `.rpm` wanted, or tar.gz plus the Bot enough?
-8. **`go-winio`.** May the Windows named-pipe code use it, or only `golang.org/x/sys`?
-9. **Intel Macs and T3.** T3 is pinned for Apple silicon only; add `darwin-x64` in P10?
+The owner's answers to the questions of the first version of this plan:
+
+1. **Windows.** The first Windows release is Home without agents: hook, Hue, sister tools, pairing. Agent VMs come later
+   (P12).
+2. **Headless Linux.** With no polkit agent, the Bot installs the hook with `sudo` after the user's approval in the panel;
+   the approval shows the command's hash (2.4).
+3. **Agent isolation.** A real VM on all OSes: a new QEMU/KVM (or Firecracker) backend, not rootless Podman. Apple
+   `container` stays on macOS (it is a real VM). The open technical questions are in 2.7; stages P8, P9, P12.
+4. **No Authenticode.** Windows verifies the Ed25519 release signature with the `openssl` that Git for Windows ships.
+5. **Folder chooser.** The project folder is chosen with a folder browser in the panel, which also works from a phone
+   (2.2, P3).
+6. **Shortcuts.** Stays macOS-only for now; a scripts folder for other OSes comes later (P13).
+7. **Linux packaging.** tar.gz plus the Bot's install; no `.deb` or `.rpm`.
+8. **Windows dependencies.** Only `golang.org/x/sys`; `go-winio` only if nothing else works, and with the owner's consent.
+9. **T3 for Intel Macs.** Add `darwin-x64` in P10.
+
+### Still open
+
+- Anything in the list of technical questions in 2.7 (the spike of P9 answers them).
+- Whether the Windows scheduled task can be created without elevation (2.3), and Claude Code's Windows paths (2.1).
