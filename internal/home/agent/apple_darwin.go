@@ -3,6 +3,8 @@ package agent
 import (
 	"os"
 	"os/exec"
+
+	"golang.org/x/sys/unix"
 )
 
 // The macOS facts of Apple's container tool (docs/plans/home-platforms.md, stage P8): where its installer puts it, what it is
@@ -28,4 +30,19 @@ func ContainerBin() string {
 // a command Home sent if it is this tool's exec.
 func ExecToolName() string { return "container" }
 
-func platformBackend(cfg BackendConfig) VMBackend { return NewAppleBackend(cfg) }
+// appleSilicon says whether this Mac's CPU is Apple silicon. It asks the kernel about the hardware, not about this program,
+// so an Intel build that Rosetta runs on Apple silicon still counts.
+var appleSilicon = func() bool {
+	v, err := unix.SysctlUint32("hw.optional.arm64")
+	return err == nil && v == 1
+}
+
+// noAppleSilicon is why an Intel Mac has no agents: Apple's container tool runs only on Apple silicon.
+const noAppleSilicon = "agents need a Mac with Apple silicon"
+
+func platformBackend(cfg BackendConfig) VMBackend {
+	if !appleSilicon() {
+		return NoBackend(noAppleSilicon)
+	}
+	return NewAppleBackend(cfg)
+}

@@ -105,11 +105,18 @@ func TestFeaturesPerSystem(t *testing.T) {
 			map[string]string{"shortcuts": "it needs macOS", "agent": "agents don't run on Windows yet", "t3": "agents don't run on Windows yet"}},
 		"Windows without it": {"windows", func(f *fakeDesktop) Desktop { return winDesktop(f.env("windows", windowsTools...)) }, false, "",
 			map[string]string{"claude-start": "the Claude desktop app isn't installed here"}},
+		"an Intel Mac": {"darwin-intel", func(*fakeDesktop) Desktop { return Desktop{} }, false, "shortcuts,apple_home,claude-start",
+			map[string]string{"agent": "agents need a Mac with Apple silicon", "t3": "agents need a Mac with Apple silicon"}},
 		"another system": {"freebsd", func(f *fakeDesktop) Desktop { return Desktop{} }, false, "",
 			map[string]string{"agent": "agents don't run on this system yet"}},
 	} {
 		f := &fakeDesktop{registered: c.registered}
-		got := ComputeFeatures(ctx, FeatureEnv{GOOS: c.goos, Desktop: c.desktop(f), Backend: backendOf(c.goos)})
+		goos, backend := c.goos, backendOf(c.goos)
+		if goos == "darwin-intel" {
+			// an Intel Mac: macOS, with the backend the platform code gives there (agent's TestAnIntelMacHasNoAgents)
+			goos, backend = "darwin", agent.NoBackend("agents need a Mac with Apple silicon")
+		}
+		got := ComputeFeatures(ctx, FeatureEnv{GOOS: goos, Desktop: c.desktop(f), Backend: backend})
 		if avail(got) != c.want {
 			t.Errorf("%s: available %q, want %q", name, avail(got), c.want)
 		}
@@ -168,9 +175,20 @@ func TestSchemeHandlerChecksUseFixedArguments(t *testing.T) {
 func TestFeaturesOfThisSystem(t *testing.T) {
 	got := ComputeFeatures(context.Background(), FeatureEnv{GOOS: runtime.GOOS, Backend: agent.PlatformBackend(agent.BackendConfig{})})
 	mac := runtime.GOOS == "darwin"
-	for _, n := range []string{FeatureShortcuts, FeatureAppleHome, FeatureAgent, FeatureT3} {
+	// agents run only on an Apple silicon Mac (Apple's container tool needs it); the kernel says which this one is
+	silicon := false
+	if mac {
+		out, err := exec.Command("/usr/sbin/sysctl", "-n", "hw.optional.arm64").Output()
+		silicon = err == nil && strings.TrimSpace(string(out)) == "1"
+	}
+	for _, n := range []string{FeatureShortcuts, FeatureAppleHome} {
 		if got[n].Available != mac {
 			t.Errorf("%s on %s: %+v", n, runtime.GOOS, got[n])
+		}
+	}
+	for _, n := range []string{FeatureAgent, FeatureT3} {
+		if got[n].Available != silicon {
+			t.Errorf("%s on %s (Apple silicon %v): %+v", n, runtime.GOOS, silicon, got[n])
 		}
 	}
 	if got[FeatureClaudeStart].Available != mac {
