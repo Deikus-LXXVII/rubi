@@ -239,3 +239,32 @@ func TestUTF16LE(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 }
+
+// Removing a task that is not there succeeds (the installer's uninstall may run after an upgrade already removed it);
+// a task that is there but could not be deleted, or a denied delete, is still an error.
+func TestTaskRemoveOfAMissingTaskIsDone(t *testing.T) {
+	p, as, _ := taskRig(t)
+	p.err[schtasks] = errors.New("exit status 1")
+	if err := as.Remove(context.Background()); err != nil {
+		t.Errorf("a missing task: %v", err)
+	}
+
+	p, as, _ = taskRig(t)
+	p.run2 = func() {
+		if p.calls[len(p.calls)-1].args[0] == "/Delete" {
+			p.err[schtasks] = errors.New("exit status 1")
+		} else {
+			delete(p.err, schtasks)
+		}
+	}
+	if err := as.Remove(context.Background()); err == nil {
+		t.Error("a task that is still there was reported removed")
+	}
+
+	p, as, _ = taskRig(t)
+	p.out[schtasks] = "ERROR: Access is denied."
+	p.err[schtasks] = errors.New("exit status 1")
+	if err := as.Remove(context.Background()); !errors.Is(err, ErrNeedsElevation) {
+		t.Errorf("a denied delete: %v", err)
+	}
+}

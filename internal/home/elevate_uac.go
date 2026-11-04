@@ -101,7 +101,7 @@ try {
   $bytes = [System.IO.File]::ReadAllBytes($b.src)
   if ((Get-Sha $bytes) -ne $b.sha256) { exit 12 }
   $dir = Split-Path -Parent $b.dst
-  [void](New-Item -ItemType Directory -Force -LiteralPath $dir)
+  [void][System.IO.Directory]::CreateDirectory($dir)
   Lock-Path $dir $true
   $tmp = Join-Path $dir ('.rubi-home.' + [System.Guid]::NewGuid().ToString('N'))
   [System.IO.File]::WriteAllBytes($tmp, $bytes)
@@ -115,14 +115,14 @@ try {
   if ($plan.plugin) {
     $p = $plan.plugin
     $pdir = Split-Path -Parent $p.dst
-    [void](New-Item -ItemType Directory -Force -LiteralPath $pdir)
+    [void][System.IO.Directory]::CreateDirectory($pdir)
     $new = Join-Path $pdir ('.claude-plugin.' + [System.Guid]::NewGuid().ToString('N'))
-    [void](New-Item -ItemType Directory -Force -LiteralPath $new)
+    [void][System.IO.Directory]::CreateDirectory($new)
     foreach ($f in $p.files) {
       $data = [System.Convert]::FromBase64String($f.data)
       if ((Get-Sha $data) -ne $f.sha256) { Remove-Item -Recurse -Force -LiteralPath $new; exit 13 }
       $target = Join-Path $new ($f.path -replace '/', '\')
-      [void](New-Item -ItemType Directory -Force -LiteralPath (Split-Path -Parent $target))
+      [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $target))
       [System.IO.File]::WriteAllBytes($target, $data)
     }
     Lock-Path $new $true

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -421,5 +422,54 @@ func TestWindowsPlanDocument(t *testing.T) {
 		if got := unsafeWinPath(in) != ""; got != bad {
 			t.Errorf("%q: refused=%v", in, got)
 		}
+	}
+}
+
+// Every cmdlet in the elevated scripts is called only with parameters it has (New-Item, for one, has no -LiteralPath, and
+// the script stopped at it with exit 1). On Windows each script is parsed by Windows PowerShell and each parameter looked
+// up on its cmdlet; the pattern below is checked everywhere.
+func TestUACScriptParametersExist(t *testing.T) {
+	if regexp.MustCompile(`New-Item[^\n]*-LiteralPath`).MatchString(psInstall) {
+		t.Error("the elevated script calls New-Item with -LiteralPath, which it does not have")
+	}
+	// Windows PowerShell is what runs the scripts; pwsh off Windows lacks some of their parameters (Start-Process -Verb).
+	ps, err := exec.LookPath("powershell")
+	if runtime.GOOS != "windows" || err != nil {
+		t.Skip("Windows PowerShell is not here")
+	}
+	dir := t.TempDir()
+	var files []string
+	for name, text := range map[string]string{"boot.ps1": psBoot, "install.ps1": psInstall, "launch.ps1": psLaunch} {
+		f := filepath.Join(dir, name)
+		if err := os.WriteFile(f, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	check := `$bad = 0
+foreach ($f in ($env:RUBI_PS_FILES -split [IO.Path]::PathSeparator)) {
+  $tokens = $null; $errs = $null
+  $ast = [System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$tokens, [ref]$errs)
+  foreach ($e in $errs) { Write-Output ("parse: " + $e.Message); $bad++ }
+  foreach ($c in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+    $name = $c.GetCommandName()
+    if (-not $name) { continue }
+    $cmd = Get-Command -Name $name -CommandType Cmdlet -ErrorAction SilentlyContinue
+    if (-not $cmd) { continue }
+    $names = @($cmd.Parameters.Keys) + @($cmd.Parameters.Values | ForEach-Object { $_.Aliases })
+    foreach ($p in $c.CommandElements) {
+      if ($p -isnot [System.Management.Automation.Language.CommandParameterAst]) { continue }
+      $hits = @($names | Where-Object { $_ -like ($p.ParameterName + '*') })
+      if ($hits.Count -eq 0) { Write-Output ("$name has no -" + $p.ParameterName); $bad++ }
+    }
+  }
+}
+exit $bad`
+	cmd := exec.Command(ps, "-NoProfile", "-NonInteractive", "-Command", "-")
+	cmd.Stdin = strings.NewReader(check)
+	cmd.Env = append(os.Environ(), "RUBI_PS_FILES="+strings.Join(files, string(os.PathListSeparator)))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
 }

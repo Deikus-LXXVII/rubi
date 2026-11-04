@@ -226,6 +226,13 @@ func schtasksAutostart(env AutostartEnv) Autostart {
 		remove: func(ctx context.Context) error {
 			_, _ = call(ctx, "/End", "/TN", name)
 			_, err := call(ctx, "/Delete", "/TN", name, "/F")
+			if err == nil || errors.Is(err, ErrNeedsElevation) {
+				return err
+			}
+			// Removing a task that is not there (removed already, or never made) is done, as on the other systems.
+			if _, qerr := call(ctx, "/Query", "/TN", name); qerr != nil && !errors.Is(qerr, ErrNeedsElevation) {
+				return nil
+			}
 			return err
 		},
 		loaded: func(ctx context.Context) bool { _, err := call(ctx, "/Query", "/TN", name); return err == nil },
