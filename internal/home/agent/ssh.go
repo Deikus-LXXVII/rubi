@@ -175,6 +175,11 @@ const errSSHNotAvailable = "this SSH target isn't available to this role"
 // VM's, the grant is read from the role record, the target and its rules from the registry.
 func (h *handler) SSHOpen(ctx context.Context, p SSHOpenParams, notify func(string, any)) (*SSHOpened, error) {
 	m := h.m
+	leave, ok := m.enter()
+	if !ok {
+		return nil, errShutdown
+	}
+	defer leave()
 	if m.ssh == nil {
 		return nil, errors.New("SSH targets aren't available here")
 	}

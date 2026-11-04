@@ -44,6 +44,7 @@ const (
 	DenyStopped  = "Rubi: Rubi stopped answering (it may have been locked or gone offline), so the call was denied."
 	DenyNoAnswer = "Rubi: no answer in time, so the call was denied."
 	DenyBusy     = "Rubi: too many calls are already waiting for approval; denied."
+	DenyShutdown = "Rubi: Rubi Home is shutting down, so the call was denied."
 	DenyGone     = "Rubi: the request was cancelled."
 )
 
@@ -247,6 +248,25 @@ type Manager struct {
 	stop     chan struct{}
 	loopOnce sync.Once
 	wg       sync.WaitGroup
+	// calls counts the requests being served (enter), so that Close returns only when none is left writing.
+	calls sync.WaitGroup
+}
+
+// errShutdown is the answer to a request that comes after Close.
+var errShutdown = errors.New("Rubi Home is shutting down")
+
+// closeWait is how long Close waits for the requests being served to end; one stuck in a dial or a disk is left behind.
+const closeWait = 10 * time.Second
+
+// enter counts a request being served, until its leave; after Close it says no, and the request is refused.
+func (m *Manager) enter() (leave func(), ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, false
+	}
+	m.calls.Add(1)
+	return m.calls.Done, true
 }
 
 type usageDay struct {
@@ -357,6 +377,15 @@ func (m *Manager) Close() {
 		m.shutdown(p)
 	}
 	m.wg.Wait()
+	// The questions still waiting were ended by m.stop (waitDecision); the requests that asked them finish now (the
+	// SSH hub is closed after them, by the defer above).
+	ended := make(chan struct{})
+	go func() { m.calls.Wait(); close(ended) }()
+	select {
+	case <-ended:
+	case <-time.After(closeWait):
+		log.Printf("agent: requests still running %v after the shutdown began; not waiting for them", closeWait)
+	}
 }
 
 func (m *Manager) shutdown(p *projState) {
@@ -1083,6 +1112,8 @@ func (m *Manager) waitDecision(ctx context.Context, project string, it Item) Ask
 			return deny(DenyGone)
 		case <-deadline.C:
 			return deny(DenyNoAnswer)
+		case <-m.stop:
+			return deny(DenyShutdown)
 		case <-alive.C:
 			if !m.connected() {
 				return deny(DenyStopped)
@@ -1182,6 +1213,8 @@ func (m *Manager) Next(ctx context.Context, wait time.Duration) ([]Item, error) 
 		case <-sig:
 		case <-t.C:
 			return []Item{}, nil
+		case <-m.stop:
+			return []Item{}, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -1227,6 +1260,11 @@ func (h *handler) Ask(ctx context.Context, a AskParams) AskResult {
 // take this one path. project is the project's id and role the key of the role (the project id for the legacy
 // role); anything but an allow from the plugin is a deny.
 func (m *Manager) AskTool(ctx context.Context, project, role string, a AskParams) AskResult {
+	leave, ok := m.enter()
+	if !ok {
+		return deny(DenyShutdown)
+	}
+	defer leave()
 	if len(a.Input) > maxInput {
 		return deny("Rubi: the tool input is too large to review, so the call was denied.")
 	}
@@ -1238,6 +1276,11 @@ func (m *Manager) AskTool(ctx context.Context, project, role string, a AskParams
 func (h *handler) Event(ev Event) { h.m.onEvent(h.p, ev) }
 
 func (h *handler) Credential(ctx context.Context, c CredParams) (CredResult, error) {
+	leave, ok := h.m.enter()
+	if !ok {
+		return CredResult{}, errShutdown
+	}
+	defer leave()
 	return h.m.credential(ctx, h.p, c)
 }
 
@@ -1856,6 +1899,11 @@ func okID(s string) bool { return idRE.MatchString(s) }
 
 // Handle serves one claude-agent.* operation.
 func (m *Manager) Handle(ctx context.Context, op string, args json.RawMessage) (any, error) {
+	leave, ok := m.enter()
+	if !ok {
+		return nil, errShutdown
+	}
+	defer leave()
 	if strings.HasPrefix(strings.TrimPrefix(op, "claude-agent."), "role.") {
 		if m.roles == nil {
 			if m.rolesErr != nil {
