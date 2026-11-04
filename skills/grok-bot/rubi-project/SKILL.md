@@ -105,11 +105,9 @@ system packages without being asked.
    `rubi-home.exe` under `%LOCALAPPDATA%\Rubi Home`, starts it at login with a Scheduled Task of the user's own (no
    administrator rights), and opens Rubi Home's pairing window. If it reports an error, stop and tell the user; never work
    around a failed signature or checksum check.
-2. **Git for Windows.** The signature check uses the OpenSSL that Git for Windows installs, taken only from Git's own
-   folder (an OpenSSL found anywhere else, or on `PATH`, is deliberately not used). If the installer says Git for Windows
-   is missing, tell the user it is needed to check the download and ask whether you may install it. If they agree, run
-   `winget install --id Git.Git -e`; Windows then asks them to confirm in its own prompt. Then run the installer again.
-   Never install it without asking.
+2. **Nothing to install first.** The installer checks the release signature itself, with code inside the script; it needs
+   no Git, no OpenSSL and no other program. If the signature or the checksum does not verify, it stops and installs
+   nothing.
 3. **What the user sees.** Nothing to confirm for Rubi Home itself. When the installer ends, Rubi Home's own window opens
    on the screen with the PIN, a link and the buttons. Tell them: "Rubi Home's window is open on your computer. Press
    Open the Rubi panel in it, then type the PIN the window shows." You never see the PIN when the window is shown; wait for

@@ -433,7 +433,7 @@ func TestHomeBotMessageIsWhatInstallMdServes(t *testing.T) {
 		sec = sec[:j+3]
 	}
 	for _, want := range []string{m[1], "https://rubi-panel.com/install-home.sh", "~/.rubi-home/bin/rubi-home open", "macOS", "Linux", "Windows",
-		"https://rubi-panel.com/install-home.ps1", "-ExecutionPolicy Bypass -File", "Git for Windows", "Windows 10 or later", "not available on this computer yet"} {
+		"https://rubi-panel.com/install-home.ps1", "-ExecutionPolicy Bypass -File", "Windows 10 or later", "not available on this computer yet"} {
 		if !strings.Contains(sec, want) {
 			t.Errorf("the Home section of install.md lacks %q", want)
 		}

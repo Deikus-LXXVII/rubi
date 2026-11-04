@@ -183,6 +183,9 @@ jobs:
           rm -f "$RUNNER_TEMP/key.pem"
           # The signature must verify with the public key that install.sh and the binary embed.
           openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in dist/SHA256SUMS -sigfile dist/SHA256SUMS.sig
+          # The Windows installer checks the signature with its own code: run that code on this release's real files, so a
+          # release it would refuse is never published.
+          pwsh -NoProfile -File scripts/test-install-home-ed25519.ps1 -Sums dist/SHA256SUMS -Sig dist/SHA256SUMS.sig
 
       - name: Provenance attestation
         uses: actions/attest-build-provenance@v2

@@ -1,10 +1,11 @@
 package repocheck
 
 // panel/install-home.ps1, the installer the Bot runs on a Windows computer (docs/plans/home-platforms.md, stage P11). It cannot
-// be run on a Mac or Linux box, so these tests read it: the order of its steps, where it takes OpenSSL from, that the key is
-// the release key, that nothing a person writes can enter it. They also run the one command of it that matters most, the
-// OpenSSL signature check, with the very arguments the script uses, against a throwaway key (skipped without an OpenSSL that has
-// Ed25519). A real run, with a bad signature, a bad checksum and a fake OpenSSL on PATH, is the CI job home-windows-install.
+// be run on a Mac or Linux box, so these tests read it: the order of its steps, that the signature is checked by code inside
+// the script on the bytes that are then used, that the key is the release key, that nothing a person writes can enter it. The
+// Ed25519 check itself is tested on test vectors: here against Go's crypto/ed25519 (the vectors file), and by the script
+// scripts/test-install-home-ed25519.ps1 where PowerShell exists (CI runs it under Windows PowerShell 5.1 and PowerShell 7). A
+// real run, with a bad signature, a malleated one and a bad checksum, is the CI job home-windows-install.
 
 import (
 	"os"
@@ -49,9 +50,8 @@ func TestInstallHomePs1ChecksBeforeItInstallsAndPairsLast(t *testing.T) {
 	s := psCode(ps1(t))
 	main := s[strings.Index(s, "function Main {"):]
 	order(t, main,
-		"$openssl = Find-GitOpenSsl", // looked for before anything is downloaded
 		"Get-Bytes ($release + '/SHA256SUMS')",
-		"if (-not (Test-Signature $openssl",
+		"if (-not (Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $sumsBytes $sigBytes))",
 		"ComputeHash($zipBytes)",
 		"New-Object System.IO.Compression.ZipArchive",
 		"$from.CopyTo($to)",
@@ -75,29 +75,36 @@ func TestInstallHomePs1ChecksBeforeItInstallsAndPairsLast(t *testing.T) {
 	}
 }
 
-// The bytes that are checked are the bytes that are used: the archive is downloaded into memory, hashed and unpacked from the
-// same bytes; the signed list is written once, opened again read-only with writers denied and compared with what was written,
-// kept open while OpenSSL reads it, and the checksum line is parsed from the same bytes. No zip file lands on disk to swap.
+// The bytes that are checked are the bytes that are used: everything is downloaded into memory, the signature is checked on the
+// signed list's bytes, the checksum line is parsed from those same bytes, and the archive is hashed and unpacked from the same
+// bytes. Nothing is written to disk before the check, so there is no file to swap.
 func TestInstallHomePs1UsesTheBytesItChecked(t *testing.T) {
 	s := psCode(ps1(t))
+	main := s[strings.Index(s, "function Main {"):]
 	for _, want := range []string{
-		"[System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)", // held: read-only, writers and deleters denied
-		"a downloaded file changed while it was being written",
-		"$held += $sumsHeld", "$held += $sigHeld", "$held += $keyHeld",
-		"foreach ($h in $held) { $h.Dispose() }",             // released only at the end
-		"[System.Text.Encoding]::UTF8.GetString($sumsBytes)", // parsed from the same bytes
+		"Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $sumsBytes $sigBytes", // the signature, on the list's bytes
+		"[System.Text.Encoding]::UTF8.GetString($sumsBytes)",                     // parsed from the same bytes
 		"ComputeHash($zipBytes)",
 		"New-Object System.IO.MemoryStream(, $zipBytes)", // unpacked from the same bytes
 	} {
-		if !strings.Contains(s, want) {
+		if !strings.Contains(main, want) {
 			t.Errorf("install-home.ps1 lacks %q", want)
 		}
 	}
-	if strings.Contains(s, "$zip = ") || strings.Contains(s, "WriteAllBytes($zip") || strings.Contains(s, "-OutFile") {
-		t.Error("the archive is written to a file before it is checked")
+	check := strings.Index(main, "Test-Ed25519 (")
+	if check < 0 {
+		t.Fatal("no signature check in Main")
 	}
-	if i, j := strings.Index(s, "Open-Held ([System.IO.Path]::Combine($tmp, 'SHA256SUMS'))"), strings.Index(s, "if (-not (Test-Signature"); i < 0 || j < i {
-		t.Error("the signed list is not held open before OpenSSL reads it")
+	for _, bad := range []string{"WriteAllBytes", "-OutFile", "GetTempPath", "GetTempFileName", "$tmp", "$zip = ", "File]::Create", "Set-Content", "Out-File"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("install-home.ps1 contains %q: something may be written before the check", bad)
+		}
+	}
+	if i := strings.Index(main, "$bin"); i >= 0 && i < check {
+		t.Error("the install folder is used before the signature is checked")
+	}
+	if i := strings.Index(main, "ZipArchive"); i < check {
+		t.Error("the archive is opened before the signature is checked")
 	}
 }
 
@@ -139,45 +146,41 @@ func TestInstallHomePs1CarriesTheReleaseKey(t *testing.T) {
 	}
 }
 
-// OpenSSL comes from Git for Windows' own folder and nowhere else: no PATH, no search by name, only admin-owned files, its
-// own libraries too, and the folders above; it runs with a clean environment in its own folder and must say it verified.
-func TestInstallHomePs1TakesOpenSslOnlyFromGitsAdminFolder(t *testing.T) {
-	s := psCode(ps1(t))
-	for _, bad := range []string{"Get-Command", "where.exe", "$env:PATH", "$env:Path", "Resolve-Path", "Start-Process", "& openssl", "'openssl'", "\"openssl\"", "Invoke-Expression", "iex ", "| iex"} {
+// No program is run to check the signature: the check is code in the script (one region), not OpenSSL, not Git, not any
+// process. Its strict rules are in the code, and System.Numerics is loaded by its full assembly name (no Add-Type).
+func TestInstallHomePs1RunsNoProgramToCheckTheSignature(t *testing.T) {
+	raw := ps1(t)
+	s := psCode(raw)
+	for _, l := range strings.Split(s, "\n") {
+		if strings.Contains(strings.ToLower(l), "openssl") {
+			t.Errorf("a code line names openssl: %q", l)
+		}
+	}
+	for _, bad := range []string{"ProcessStartInfo", "GitForWindows", "RUBI_GIT_ROOT", "Find-Git", "Get-Command", "where.exe", "$env:PATH", "$env:Path", "Start-Process"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("install-home.ps1 contains %q", bad)
 		}
 	}
-	// the only places OpenSSL is run from are $Exe / $openssl, the result of Find-GitOpenSsl
-	for _, l := range strings.Split(s, "\n") {
-		if strings.Contains(strings.ToLower(l), "openssl") && !strings.Contains(l, "$openssl") && !strings.Contains(l, "Find-GitOpenSsl") &&
-			!strings.Contains(l, "openssl.exe") && !strings.Contains(l, "OpenSSL") && !strings.Contains(l, "OPENSSL") && !strings.Contains(l, "ask") {
-			t.Errorf("a line names openssl in an unexpected way: %q", l)
-		}
+	if strings.Count(raw, "#region ed25519") != 1 || strings.Count(raw, "#endregion ed25519") != 1 {
+		t.Fatal("the script needs exactly one #region ed25519 ... #endregion ed25519")
 	}
-	if !strings.Contains(s, "$openssl = Find-GitOpenSsl") || !strings.Contains(s, "if (-not $openssl)") {
-		t.Error("a missing OpenSSL is not refused")
+	region := raw[strings.Index(raw, "#region ed25519"):strings.Index(raw, "#endregion ed25519")]
+	if strings.Count(raw, "function Test-Ed25519(") != 1 || !strings.Contains(region, "function Test-Ed25519(") {
+		t.Error("Test-Ed25519 is not defined once, inside the region")
 	}
 	for _, want := range []string{
-		"'SOFTWARE\\GitForWindows'", "Registry64", "Registry32", "GetFolderPath('ProgramFiles')", "$env:ProgramW6432", // Git's folder
-		"Test-AdminOnly $path $false", "Test-AdminOnly $dll $false", "Test-AdminOnly $above $true", // the file, its libraries, the folders above
-		"GetFiles([System.IO.Path]::GetDirectoryName($exe), '*.dll')",
-		"S-1-5-32-544", "S-1-5-18", // Administrators, SYSTEM
-		"ReparsePoint", "GetOwner(", "GetAccessRules(",
-		"Git for Windows is needed", "is not used", // the message for the Bot
-		// the run: a clean environment, its own folder, the success line
-		"$name -like 'OPENSSL*'", "$psi.EnvironmentVariables.Remove($name)", "$psi.WorkingDirectory = $dir", "Signature Verified Successfully",
-		"$p.ExitCode -eq 0",
+		"if ($s -ge $EdL) { return $false }",                                                 // S below L
+		"if ($y -ge $p) { return $null }",                                                    // a canonical y
+		"if ($x.IsZero -and $sign -eq 1) { return $null }",                                   // no negative zero
+		"if ($enc[$i] -ne $r[$i]) { $same = $false }",                                        // the result is compared with R, byte by byte
+		"System.Numerics, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089", // loaded by full name
 	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("install-home.ps1 lacks %q", want)
+		if !strings.Contains(region, want) {
+			t.Errorf("the ed25519 region lacks %q", want)
 		}
 	}
-	if strings.Contains(s, "WorkingDirectory = $tmp") || strings.Contains(s, "Set-Location") || strings.Contains(s, "Push-Location") {
-		t.Error("OpenSSL runs in the download folder or the script changes folder")
-	}
-	if !strings.Contains(s, "continue") || !strings.Contains(s, "return ''") {
-		t.Error("Find-GitOpenSsl has no way to find nothing")
+	if !strings.Contains(region, "[System.Reflection.Assembly]::Load(") || strings.Contains(s, "Add-Type") {
+		t.Error("System.Numerics is not loaded by assembly name, or Add-Type is used")
 	}
 }
 
@@ -212,9 +215,9 @@ func TestInstallHomePs1IsConstant(t *testing.T) {
 			t.Errorf("install-home.ps1 contains %q", bad)
 		}
 	}
-	// the environment: only fixed, harmless names are read directly; the four overrides only through Get-TestSetting
+	// the environment: only fixed, harmless names are read directly; the three overrides only through Get-TestSetting
 	env := regexp.MustCompile(`\$env:([A-Z_0-9a-z]+)`).FindAllStringSubmatch(s, -1)
-	allowed := map[string]bool{"OS": true, "PROCESSOR_ARCHITEW6432": true, "PROCESSOR_ARCHITECTURE": true, "RUBI_INSTALL_TEST": true, "ProgramW6432": true}
+	allowed := map[string]bool{"OS": true, "PROCESSOR_ARCHITEW6432": true, "PROCESSOR_ARCHITECTURE": true, "RUBI_INSTALL_TEST": true}
 	for _, m := range env {
 		if !allowed[m[1]] {
 			t.Errorf("install-home.ps1 reads $env:%s directly", m[1])
@@ -231,7 +234,7 @@ func TestInstallHomePs1IsConstant(t *testing.T) {
 	if n := strings.Count(s, "GetEnvironmentVariable"); n != 1 {
 		t.Errorf("the environment is read in %d places besides Get-TestSetting", n-1)
 	}
-	for _, name := range []string{"RUBI_RELEASE_FEED", "RUBI_DOWNLOAD_BASE", "RUBI_HOME_INSTALL", "RUBI_GIT_ROOT"} {
+	for _, name := range []string{"RUBI_RELEASE_FEED", "RUBI_DOWNLOAD_BASE", "RUBI_HOME_INSTALL"} {
 		if !strings.Contains(s, "Get-TestSetting '"+name+"'") {
 			t.Errorf("%s is not read through Get-TestSetting", name)
 		}
@@ -323,72 +326,15 @@ func TestInstallHomePs1ParsesWithPowerShell(t *testing.T) {
 		t.Skip("pwsh is not installed")
 	}
 	cmd := exec.Command(pwsh, "-NoProfile", "-NonInteractive", "-Command",
-		"$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($args[0], [ref]$null, [ref]$e); if ($e) { $e | Out-String; exit 1 }",
-		filepath.Join(root(t), "panel", "install-home.ps1"))
+		"$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:RUBI_PS1_TO_PARSE, [ref]$null, [ref]$e); if ($e) { $e | Out-String; exit 1 }")
+	cmd.Env = append(os.Environ(), "RUBI_PS1_TO_PARSE="+filepath.Join(root(t), "panel", "install-home.ps1")) // -Command does not bind $args
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }
 
-// The signature check with the script's own arguments: a good signature verifies and a bad one is refused (exit status), and
-// the checksum list's line pattern finds the archive in the real SHA256SUMS format.
-func TestInstallHomePs1SignatureCheckRefusesABadSignature(t *testing.T) {
-	var openssl string
-	for _, c := range []string{"openssl", "/opt/homebrew/bin/openssl", "/usr/local/opt/openssl/bin/openssl"} {
-		p, err := exec.LookPath(c)
-		if err != nil {
-			continue
-		}
-		if exec.Command(p, "genpkey", "-algorithm", "ed25519", "-out", filepath.Join(t.TempDir(), "k.pem")).Run() == nil {
-			openssl = p
-			break
-		}
-	}
-	if openssl == "" {
-		t.Skip("no OpenSSL with Ed25519")
-	}
-	call := regexp.MustCompile(`\$psi\.Arguments = \('(pkeyutl -verify[^']*)' -f`).FindStringSubmatch(ps1(t))
-	if call == nil {
-		t.Fatal("no OpenSSL verify call in the script")
-	}
-	dir := t.TempDir()
-	run := func(name string, args ...string) {
-		t.Helper()
-		if out, err := exec.Command(openssl, args...).CombinedOutput(); err != nil {
-			t.Fatalf("%s: %v\n%s", name, err, out)
-		}
-	}
-	run("key", "genpkey", "-algorithm", "ed25519", "-out", filepath.Join(dir, "key.pem"))
-	run("pub", "pkey", "-in", filepath.Join(dir, "key.pem"), "-pubout", "-out", filepath.Join(dir, "release-key.pem"))
-	sums := filepath.Join(dir, "SHA256SUMS")
-	os.WriteFile(sums, []byte(strings.Repeat("a", 64)+"  rubi-home-v1.0.0-windows-amd64.zip\n"), 0o644)
-	run("sign", "pkeyutl", "-sign", "-inkey", filepath.Join(dir, "key.pem"), "-rawin", "-in", sums, "-out", filepath.Join(dir, "SHA256SUMS.sig"))
-	verify := func() error {
-		line := strings.NewReplacer(`"{0}"`, `"`+filepath.Join(dir, "release-key.pem")+`"`, `"{1}"`, `"`+sums+`"`, `"{2}"`, `"`+filepath.Join(dir, "SHA256SUMS.sig")+`"`).Replace(call[1])
-		args := strings.Fields(strings.ReplaceAll(line, `"`, ""))
-		out, err := exec.Command(openssl, args...).CombinedOutput()
-		if err == nil && !strings.Contains(string(out), "Signature Verified Successfully") {
-			t.Errorf("a good check did not print the line the script requires: %q", out)
-		}
-		return err
-	}
-	if err := verify(); err != nil {
-		t.Fatalf("a good signature was refused with the script's arguments: %v", err)
-	}
-	// a changed list
-	os.WriteFile(sums, []byte(strings.Repeat("b", 64)+"  rubi-home-v1.0.0-windows-amd64.zip\n"), 0o644)
-	if err := verify(); err == nil {
-		t.Error("a signature of another list was accepted")
-	}
-	// a changed signature
-	os.WriteFile(sums, []byte(strings.Repeat("a", 64)+"  rubi-home-v1.0.0-windows-amd64.zip\n"), 0o644)
-	sigb, _ := os.ReadFile(filepath.Join(dir, "SHA256SUMS.sig"))
-	sigb[0] ^= 1
-	os.WriteFile(filepath.Join(dir, "SHA256SUMS.sig"), sigb, 0o644)
-	if err := verify(); err == nil {
-		t.Error("a damaged signature was accepted")
-	}
-	// the line pattern of the script, in this syntax, finds exactly the archive
+// The checksum list's line pattern finds the archive in the real SHA256SUMS format, and nothing else.
+func TestInstallHomePs1ChecksumLinePattern(t *testing.T) {
 	pat := regexp.MustCompile("\\[regex\\]::Match\\(\\$line\\.TrimEnd\\(\"`r\"\\), '([^']+)'\\)").FindStringSubmatch(ps1(t))
 	if pat == nil {
 		t.Fatal("no checksum line pattern")
@@ -456,24 +402,57 @@ func TestReleaseCarriesTheWindowsZips(t *testing.T) {
 	}
 }
 
-// The Windows CI job runs the script for real and tries the three refusals.
+// The Windows CI job runs the script for real and tries the refusals; the vectors run under Windows PowerShell 5.1 and on
+// PowerShell 7.
 func TestCIRunsTheWindowsInstallerAgainstAFakeRelease(t *testing.T) {
 	s := readRepo(t, ".github/workflows/ci.yml")
 	i := strings.Index(s, "\n  home-windows-install:\n")
 	if i < 0 {
 		t.Fatal("no home-windows-install job")
 	}
-	job := s[i:]
-	if j := strings.Index(job[3:], "\n  home-windows:\n"); j >= 0 {
-		job = job[:j+3]
+	job := s[i+3:]
+	if j := strings.Index(job, "\n  # "); j >= 0 {
+		job = job[:j]
 	}
 	for _, want := range []string{"runs-on: windows-latest", "install-home.ps1", "RUBI_DOWNLOAD_BASE", "-NoPairing", "a bad signature was not refused",
-		"a bad checksum was not refused", "an openssl on PATH was used", "schtasks /Query", "install-autostart --remove", "genpkey -algorithm ed25519",
-		"an OpenSSL in a user-writable folder was used", "RUBI_GIT_ROOT", "the environment changed where the installer downloads from or installs to",
-		"a test address that is not this computer was accepted", "$env:OPENSSL_CONF = $conf", "openssl_conf = nothing_here", "RUBI_INSTALL_TEST"} {
+		"a malleated signature (S + L) was not refused", "$big + $order", "a bad checksum was not refused", "schtasks /Query", "install-autostart --remove",
+		"genpkey -algorithm ed25519", "the environment changed where the installer downloads from or installs to",
+		"a test address that is not this computer was accepted", "RUBI_INSTALL_TEST"} {
 		if !strings.Contains(job, want) {
 			t.Errorf("the job lacks %q", want)
 		}
+	}
+	for _, gone := range []string{"RUBI_GIT_ROOT", "OPENSSL_CONF", "an openssl on PATH"} {
+		if strings.Contains(job, gone) {
+			t.Errorf("the job still has %q, which only made sense for an installer that ran OpenSSL", gone)
+		}
+	}
+	// the vector script: Windows PowerShell 5.1 on Windows, PowerShell 7 on Linux
+	win := s[strings.Index(s, "\n  home-ed25519-windows:\n"):]
+	win = win[:strings.Index(win[3:], "\n  home-ed25519-pwsh:\n")+3]
+	if !strings.Contains(win, "runs-on: windows-latest") || !strings.Contains(win, "shell: powershell") || !strings.Contains(win, "scripts/test-install-home-ed25519.ps1") {
+		t.Error("the vectors do not run under Windows PowerShell 5.1 on windows-latest")
+	}
+	lin := s[strings.Index(s, "\n  home-ed25519-pwsh:\n"):]
+	lin = lin[:strings.Index(lin[3:], "\n  # ")+3]
+	if !strings.Contains(lin, "runs-on: ubuntu-latest") || !strings.Contains(lin, "shell: pwsh") || !strings.Contains(lin, "scripts/test-install-home-ed25519.ps1") {
+		t.Error("the vectors do not run under pwsh on ubuntu-latest")
+	}
+}
+
+// The release checks its real signature with the installer's own Ed25519 code before it is published.
+func TestReleaseChecksTheSignatureWithTheInstallersCode(t *testing.T) {
+	s := readRepo(t, ".github/workflows/release.yml")
+	rel := s[strings.Index(s, "\n  release:\n"):]
+	step := "pwsh -NoProfile -File scripts/test-install-home-ed25519.ps1 -Sums dist/SHA256SUMS -Sig dist/SHA256SUMS.sig"
+	sign := strings.Index(rel, "openssl pkeyutl -verify -pubin -inkey release-key.pub.pem")
+	run := strings.Index(rel, step)
+	pub := strings.Index(rel, "gh release create")
+	if sign < 0 || run < sign || pub < run {
+		t.Errorf("the release must verify with openssl (%d), then with the installer's code (%d), then publish (%d)", sign, run, pub)
+	}
+	if !strings.Contains(rel, "runs-on: ubuntu-latest") {
+		t.Error("the release job is not on a runner that has pwsh")
 	}
 }
 
@@ -489,13 +468,18 @@ func TestInstallMdHasAWindowsSection(t *testing.T) {
 		sec = sec[:j+3]
 	}
 	for _, want := range []string{"https://rubi-panel.com/install-home.ps1", "-ExecutionPolicy Bypass -File", "-UseBasicParsing", "Tls12", "NewGuid()", "Remove-Item -LiteralPath $u",
-		"trusted because it came over TLS from rubi-panel.com", "**Git for Windows.**", "winget install --id Git.Git -e",
-		"Nothing to confirm for Rubi Home itself", "Open the Rubi panel", "allow this app to make changes", "unknown", "Scheduled Task", "not signed"} {
+		"trusted because it came over TLS from rubi-panel.com", "Nothing to confirm for Rubi Home itself", "Open the Rubi panel", "allow this app to make changes", "unknown", "Scheduled Task", "not signed"} {
 		if !strings.Contains(sec, want) {
 			t.Errorf("the Windows subsection lacks %q", want)
 		}
 	}
-	for _, bad := range []string{"sudo", "RunAs", "Start-Process -Verb"} {
+	flat := strings.Join(strings.Fields(sec), " ")
+	for _, want := range []string{"checks the release signature itself", "needs no Git, no OpenSSL and no other program"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("the Windows subsection lacks %q", want)
+		}
+	}
+	for _, bad := range []string{"sudo", "RunAs", "Start-Process -Verb", "winget", "Git for Windows"} {
 		if strings.Contains(strings.ReplaceAll(sec, "Don't open an elevated shell", ""), bad) {
 			t.Errorf("the Windows subsection tells the Bot to use %q", bad)
 		}

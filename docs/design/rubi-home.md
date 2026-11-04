@@ -30,7 +30,7 @@ things on Rubi's request.
    downloads `Rubi Home.app` (a zip) from the same screen, opens the zip and opens Rubi Home (see "The Mac app"
    below); Linux without a Bot has no path, because the user would have to type the script line (rule 2). Either
    way the helper starts at login (LaunchAgent / systemd user service). The script verifies the release signature
-   and prints a pairing code: the helper's routing key, public identity and relays, plus a one-time secret valid
+   (on Windows with an Ed25519 check inside `install-home.ps1`, no OpenSSL and no Git) and prints a pairing code: the helper's routing key, public identity and relays, plus a one-time secret valid
    for 15 minutes. Opening Rubi Home makes a new one (`rubi-home pair` still prints one, a maintainer tool).
 2. Opening Rubi Home (`rubi-home open`) shows a window on macOS with the computer's name and fingerprint.
    A code is made only when the user presses **Open the Rubi panel** or **Copy the code**; a pending code that

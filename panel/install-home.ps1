@@ -5,16 +5,16 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File install-home.ps1
 #
 # Installs %LOCALAPPDATA%\Rubi Home\bin\rubi-home.exe after verifying the release's signed checksums against the key
-# below (Ed25519, checked with the OpenSSL of Git for Windows, taken from Git's own admin-owned folder and never from
-# PATH), makes Rubi Home start at login (a Scheduled Task of your own, no administrator rights), and opens Rubi
+# below (Ed25519, checked by this script itself: it runs no other program to do it, so it needs nothing installed and
+# nothing on PATH can stand in), makes Rubi Home start at login (a Scheduled Task of your own, no administrator rights), and opens Rubi
 # Home's pairing window. Running it again upgrades in place.
 #
 # The script is constant: nothing a person writes is put into it. The only input is the optional release tag, checked
 # against a pattern before it is used. The tests set RUBI_INSTALL_TEST=1, and only then are the names RUBI_RELEASE_FEED,
-# RUBI_DOWNLOAD_BASE (both must be this computer), RUBI_HOME_INSTALL and RUBI_GIT_ROOT read; -NoPairing leaves out the
+# RUBI_DOWNLOAD_BASE (both must be this computer), and RUBI_HOME_INSTALL read; -NoPairing leaves out the
 # last step. Without that flag the environment cannot change where anything is downloaded from or installed to.
 #
-# It uses .NET directly for files, hashes, the registry, ACLs and downloads, not cmdlets that PowerShell would load from
+# It uses .NET directly for files, hashes, big numbers and downloads, not cmdlets that PowerShell would load from
 # a module folder the user can write.
 param(
   [string]$Version = '',
@@ -34,14 +34,148 @@ MCowBQYDK2VwAyEAjH/Smxzuzy59qWgOAVCSSbeNFzaZFqnFTgVPKQlgMIU=
 -----END PUBLIC KEY-----
 '@
 
-# The SIDs that may own and change the files we trust: Administrators, SYSTEM and TrustedInstaller.
-$TrustedSids = @('S-1-5-32-544', 'S-1-5-18', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-# What counts as the right to change a file or folder, and to replace what is inside a folder above it.
-$WriteRights = [System.Security.AccessControl.FileSystemRights]'WriteData, AppendData, WriteExtendedAttributes, DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership, WriteAttributes'
-$AboveRights = [System.Security.AccessControl.FileSystemRights]'DeleteSubdirectoriesAndFiles, Delete, ChangePermissions, TakeOwnership'
-
 function Say([string]$Text) { Write-Output ('rubi-home: ' + $Text) }
 function Fail([string]$Text) { throw $Text }
+
+#region ed25519
+# Ed25519 signature check (RFC 8032, section 5.1.7), in PowerShell over .NET's BigInteger and SHA-512, so that checking the
+# release needs no other program. It is strict where RFC 8032 is: the public key and R must be canonical encodings of curve
+# points (y below p; no "negative zero" x), and S must be below L. The check is the cofactorless one, [S]B = R + [k]A,
+# done by encoding [S]B - [k]A and comparing the bytes with R. Only public data passes through it, so it need not run in
+# constant time. The tests (internal/repocheck/testdata/ed25519) run it on the RFC 8032 and Wycheproof vectors.
+[void][System.Reflection.Assembly]::Load('System.Numerics, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
+$EdP = [System.Numerics.BigInteger]::Pow(2, 255) - 19
+$EdL = [System.Numerics.BigInteger]::Pow(2, 252) + [System.Numerics.BigInteger]::Parse('27742317777372353535851937790883648493')
+$EdD = [System.Numerics.BigInteger]::Remainder(($EdP - 121665) * [System.Numerics.BigInteger]::ModPow(121666, $EdP - 2, $EdP), $EdP)
+$EdD2 = [System.Numerics.BigInteger]::Remainder($EdD * 2, $EdP)
+$EdSqrtM1 = [System.Numerics.BigInteger]::ModPow(2, ($EdP - 1) / 4, $EdP)
+
+# 32 little-endian bytes as a number (always positive).
+function ConvertFrom-EdBytes([byte[]]$Bytes) {
+  $b = New-Object byte[] ($Bytes.Length + 1)
+  [System.Array]::Copy($Bytes, $b, $Bytes.Length)
+  return New-Object System.Numerics.BigInteger(, $b)
+}
+
+# A number below 2^256 as 32 little-endian bytes.
+function ConvertTo-EdBytes([System.Numerics.BigInteger]$N) {
+  $raw = $N.ToByteArray()
+  $out = New-Object byte[] 32
+  [System.Array]::Copy($raw, $out, [Math]::Min(32, $raw.Length))
+  return , $out
+}
+
+# A point in extended coordinates (X, Y, Z, T), with x = X/Z, y = Y/Z, xy = T/Z; every coordinate is kept in [0, p).
+function Add-EdPoint($A, $B) {
+  $p = $EdP
+  $a1 = [System.Numerics.BigInteger]::Remainder(($A[1] - $A[0] + $p) * ($B[1] - $B[0] + $p), $p)
+  $b1 = [System.Numerics.BigInteger]::Remainder(($A[1] + $A[0]) * ($B[1] + $B[0]), $p)
+  $c1 = [System.Numerics.BigInteger]::Remainder([System.Numerics.BigInteger]::Remainder($A[3] * $EdD2, $p) * $B[3], $p)
+  $d1 = [System.Numerics.BigInteger]::Remainder($A[2] * 2 * $B[2], $p)
+  $e = $b1 - $a1 + $p
+  $f = $d1 - $c1 + $p
+  $g = $d1 + $c1
+  $h = $b1 + $a1
+  return , @(
+    [System.Numerics.BigInteger]::Remainder($e * $f, $p),
+    [System.Numerics.BigInteger]::Remainder($g * $h, $p),
+    [System.Numerics.BigInteger]::Remainder($f * $g, $p),
+    [System.Numerics.BigInteger]::Remainder($e * $h, $p))
+}
+
+# RFC 8032, 5.1.3: the point that 32 bytes encode, or $null if they encode none (also for y >= p, and for x = 0 with the
+# sign bit set).
+function ConvertFrom-EdPoint([byte[]]$Bytes) {
+  if ($null -eq $Bytes -or $Bytes.Length -ne 32) { return $null }
+  $p = $EdP
+  $yb = [byte[]]$Bytes.Clone()
+  $sign = ($yb[31] -shr 7) -band 1
+  $yb[31] = $yb[31] -band 0x7f
+  $y = ConvertFrom-EdBytes $yb
+  if ($y -ge $p) { return $null }
+  $yy = [System.Numerics.BigInteger]::Remainder($y * $y, $p)
+  $u = [System.Numerics.BigInteger]::Remainder($yy - 1 + $p, $p)
+  $v = [System.Numerics.BigInteger]::Remainder($EdD * $yy + 1, $p)
+  $v3 = [System.Numerics.BigInteger]::Remainder($v * $v * $v, $p)
+  $v7 = [System.Numerics.BigInteger]::Remainder($v3 * $v3 * $v, $p)
+  $x = [System.Numerics.BigInteger]::Remainder($u * $v3 * [System.Numerics.BigInteger]::ModPow([System.Numerics.BigInteger]::Remainder($u * $v7, $p), ($p - 5) / 8, $p), $p)
+  $vxx = [System.Numerics.BigInteger]::Remainder($v * $x * $x, $p)
+  if ($vxx -ne $u) {
+    if ($vxx -ne [System.Numerics.BigInteger]::Remainder($p - $u, $p)) { return $null }
+    $x = [System.Numerics.BigInteger]::Remainder($x * $EdSqrtM1, $p)
+  }
+  if ($x.IsZero -and $sign -eq 1) { return $null }
+  if ([int]($x % 2) -ne $sign) { $x = $p - $x }
+  return , @($x, $y, [System.Numerics.BigInteger]::One, [System.Numerics.BigInteger]::Remainder($x * $y, $p))
+}
+
+# RFC 8032, 5.1.2: the 32 bytes of a point.
+function ConvertTo-EdPointBytes($Pt) {
+  $p = $EdP
+  $zi = [System.Numerics.BigInteger]::ModPow($Pt[2], $p - 2, $p)
+  $x = [System.Numerics.BigInteger]::Remainder($Pt[0] * $zi, $p)
+  $y = [System.Numerics.BigInteger]::Remainder($Pt[1] * $zi, $p)
+  $out = ConvertTo-EdBytes $y
+  $out[31] = $out[31] -bor ([byte]([int]($x % 2)) -shl 7)
+  return , $out
+}
+
+# The base point B (its encoding is y = 4/5 with x positive).
+$EdBase = ConvertFrom-EdPoint ([byte[]](@(0x58) + @(0x66) * 31))
+
+# Says whether Signature (64 bytes) is PublicKey's (32 bytes) Ed25519 signature of Message.
+function Test-Ed25519([byte[]]$PublicKey, [byte[]]$Message, [byte[]]$Signature) {
+  if ($null -eq $PublicKey -or $null -eq $Message -or $null -eq $Signature) { return $false }
+  if ($PublicKey.Length -ne 32 -or $Signature.Length -ne 64) { return $false }
+  $a = ConvertFrom-EdPoint $PublicKey
+  if ($null -eq $a) { return $false }
+  $r = New-Object byte[] 32
+  [System.Array]::Copy($Signature, 0, $r, 0, 32)
+  $sb = New-Object byte[] 32
+  [System.Array]::Copy($Signature, 32, $sb, 0, 32)
+  $s = ConvertFrom-EdBytes $sb
+  if ($s -ge $EdL) { return $false }
+  # k = SHA-512(R || A || M) mod L
+  $sha = [System.Security.Cryptography.SHA512]::Create()
+  try {
+    [void]$sha.TransformBlock($r, 0, 32, $null, 0)
+    [void]$sha.TransformBlock($PublicKey, 0, 32, $null, 0)
+    [void]$sha.TransformFinalBlock($Message, 0, $Message.Length)
+    $k = [System.Numerics.BigInteger]::Remainder((ConvertFrom-EdBytes $sha.Hash), $EdL)
+  } finally { $sha.Dispose() }
+  # [S]B + [k](-A), both at once (Straus): one doubling per bit, and an addition of B, -A or B - A
+  $negA = @([System.Numerics.BigInteger]::Remainder($EdP - $a[0], $EdP), $a[1], $a[2], [System.Numerics.BigInteger]::Remainder($EdP - $a[3], $EdP))
+  $both = Add-EdPoint $EdBase $negA
+  $sBytes = ConvertTo-EdBytes $s
+  $kBytes = ConvertTo-EdBytes $k
+  $q = @([System.Numerics.BigInteger]::Zero, [System.Numerics.BigInteger]::One, [System.Numerics.BigInteger]::One, [System.Numerics.BigInteger]::Zero)
+  for ($i = 255; $i -ge 0; $i--) {
+    $q = Add-EdPoint $q $q
+    $sBit = ($sBytes[$i -shr 3] -shr ($i -band 7)) -band 1
+    $kBit = ($kBytes[$i -shr 3] -shr ($i -band 7)) -band 1
+    if ($sBit -and $kBit) { $q = Add-EdPoint $q $both }
+    elseif ($sBit) { $q = Add-EdPoint $q $EdBase }
+    elseif ($kBit) { $q = Add-EdPoint $q $negA }
+  }
+  $enc = ConvertTo-EdPointBytes $q
+  $same = $true
+  for ($i = 0; $i -lt 32; $i++) { if ($enc[$i] -ne $r[$i]) { $same = $false } }
+  return $same
+}
+#endregion ed25519
+
+# The 32 bytes of an Ed25519 public key in PEM (SubjectPublicKeyInfo): exactly the 12 bytes that name Ed25519, then the key.
+function ConvertFrom-Ed25519Pem([string]$Pem) {
+  $m = [regex]::Match($Pem.Trim(), '\A-----BEGIN PUBLIC KEY-----\s+([A-Za-z0-9+/=\s]+?)\s+-----END PUBLIC KEY-----\z')
+  if (-not $m.Success) { Fail 'the release key is not a PEM public key' }
+  $der = [Convert]::FromBase64String(($m.Groups[1].Value -replace '\s', ''))
+  $prefix = [byte[]](0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00)
+  if ($der.Length -ne 44) { Fail 'the release key is not an Ed25519 key' }
+  for ($i = 0; $i -lt 12; $i++) { if ($der[$i] -ne $prefix[$i]) { Fail 'the release key is not an Ed25519 key' } }
+  $key = New-Object byte[] 32
+  [System.Array]::Copy($der, 12, $key, 0, 32)
+  return , $key
+}
 
 # The tests' environment names, read only in test mode.
 function Get-TestSetting([string]$Name) {
@@ -53,90 +187,6 @@ function Get-TestSetting([string]$Name) {
 
 function Test-Loopback([Uri]$Uri) {
   return ($Uri.Host -eq '127.0.0.1' -or $Uri.Host -eq 'localhost' -or $Uri.Host -eq '[::1]')
-}
-
-# A folder or file only an administrator can change: owned by a trusted SID, no allow rule for anyone else that lets them
-# write, and no link in the way. Above is for the folders over the file: there only the rights that let someone replace
-# what is below count (a folder others may add files to is still fine).
-function Test-AdminOnly([string]$Path, [bool]$Above) {
-  $isDir = [System.IO.Directory]::Exists($Path)
-  if (-not $isDir -and -not [System.IO.File]::Exists($Path)) { return $false }
-  if (([System.IO.File]::GetAttributes($Path) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-  if ($isDir) { $acl = ([System.IO.DirectoryInfo]::new($Path)).GetAccessControl() } else { $acl = ([System.IO.FileInfo]::new($Path)).GetAccessControl() }
-  $owner = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
-  if ($TrustedSids -notcontains $owner) { return $false }
-  $rights = $WriteRights
-  if ($Above) { $rights = $AboveRights }
-  foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
-    if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { continue }
-    if (($rule.FileSystemRights -band $rights) -eq 0) { continue }
-    if (($rule.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
-    if ($TrustedSids -notcontains $rule.IdentityReference.Value) { return $false }
-  }
-  return $true
-}
-
-# The folders Git for Windows may be in: the machine's registry entry (both views), the Program Files folders the system
-# names (also for a 32-bit PowerShell), and in test mode only RUBI_GIT_ROOT.
-function Get-GitRoots {
-  $override = Get-TestSetting 'RUBI_GIT_ROOT'
-  if ($override) { return @($override) }
-  $roots = @()
-  foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
-    $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $view)
-    try {
-      $key = $hive.OpenSubKey('SOFTWARE\GitForWindows')
-      if ($key) {
-        $path = $key.GetValue('InstallPath')
-        if ($path) { $roots += [string]$path }
-        $key.Dispose()
-      }
-    } finally { $hive.Dispose() }
-  }
-  $roots += [System.IO.Path]::Combine([Environment]::GetFolderPath('ProgramFiles'), 'Git')
-  if ($env:ProgramW6432) { $roots += [System.IO.Path]::Combine($env:ProgramW6432, 'Git') }
-  return $roots
-}
-
-# The OpenSSL of Git for Windows: found in Git's install folder, never through PATH, and used only if the file, every DLL
-# beside it, every folder from it up to Git's root (all of these must be admin-only) and every folder above Git's root up
-# to the drive (nobody may be able to replace what is below) are. Returns the path, or an empty string.
-function Find-GitOpenSsl {
-  foreach ($root in (Get-GitRoots)) {
-    if (-not $root -or -not [System.IO.Directory]::Exists($root)) { continue }
-    $root = [System.IO.Path]::GetFullPath($root).TrimEnd('\')
-    foreach ($rel in @('mingw64\bin\openssl.exe', 'clangarm64\bin\openssl.exe', 'usr\bin\openssl.exe')) {
-      $exe = [System.IO.Path]::Combine($root, $rel)
-      if (-not [System.IO.File]::Exists($exe)) { continue }
-      # the file, then every folder up to Git's root
-      $chain = @($exe)
-      $up = [System.IO.Path]::GetDirectoryName($exe)
-      while ($up -and $up.Length -ge $root.Length) {
-        $chain += $up
-        if ($up -eq $root) { break }
-        $up = [System.IO.Path]::GetDirectoryName($up)
-      }
-      if ($chain[$chain.Count - 1] -ne $root) { continue }
-      $ok = $true
-      foreach ($path in $chain) {
-        if (-not (Test-AdminOnly $path $false)) { $ok = $false; break }
-      }
-      if (-not $ok) { continue }
-      # the libraries it loads from its own folder
-      foreach ($dll in [System.IO.Directory]::GetFiles([System.IO.Path]::GetDirectoryName($exe), '*.dll')) {
-        if (-not (Test-AdminOnly $dll $false)) { $ok = $false; break }
-      }
-      if (-not $ok) { continue }
-      # and every folder from Git's root up to the drive's root
-      $above = [System.IO.Path]::GetDirectoryName($root)
-      while ($above) {
-        if (-not (Test-AdminOnly $above $true)) { $ok = $false; break }
-        $above = [System.IO.Path]::GetDirectoryName($above)
-      }
-      if ($ok) { return $exe }
-    }
-  }
-  return ''
 }
 
 # May this address be fetched? https; in test mode also http to this computer.
@@ -188,53 +238,6 @@ function Get-Bytes([string]$Url, [long]$Max) {
   Fail 'too many redirects'
 }
 
-# Writes bytes to a new file, closes it, opens it again read-only with writers (and deleters) denied, and checks that what is
-# there is what was written. The returned stream is kept open for as long as another program reads the file, so it cannot be
-# changed in between.
-function Open-Held([string]$Path, [byte[]]$Bytes) {
-  [System.IO.File]::WriteAllBytes($Path, $Bytes)
-  $held = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
-  $back = New-Object byte[] $Bytes.Length
-  $got = 0
-  while ($got -lt $back.Length) {
-    $n = $held.Read($back, $got, $back.Length - $got)
-    if ($n -le 0) { break }
-    $got += $n
-  }
-  $extra = $held.ReadByte()
-  $same = ($got -eq $Bytes.Length -and $extra -eq -1)
-  for ($i = 0; $same -and $i -lt $Bytes.Length; $i++) { if ($back[$i] -ne $Bytes[$i]) { $same = $false } }
-  if (-not $same) { $held.Dispose(); Fail 'a downloaded file changed while it was being written' }
-  return , $held
-}
-
-# Runs OpenSSL's signature check and says whether it succeeded: exit status 0 and its "Signature Verified Successfully". It
-# runs with no OPENSSL_* variable in its environment (a configuration, module or engine named there would be loaded), with
-# its own folder as the working folder and first on PATH, never the folder the downloads are in.
-function Test-Signature([string]$Exe, [string]$KeyFile, [string]$DataFile, [string]$SigFile) {
-  $dir = [System.IO.Path]::GetDirectoryName($Exe)
-  $psi = New-Object System.Diagnostics.ProcessStartInfo
-  $psi.FileName = $Exe
-  $psi.Arguments = ('pkeyutl -verify -pubin -inkey "{0}" -rawin -in "{1}" -sigfile "{2}"' -f $KeyFile, $DataFile, $SigFile)
-  $psi.WorkingDirectory = $dir
-  $psi.UseShellExecute = $false
-  $psi.RedirectStandardOutput = $true
-  $psi.RedirectStandardError = $true
-  $psi.CreateNoWindow = $true
-  foreach ($name in @($psi.EnvironmentVariables.Keys)) {
-    if ($name -like 'OPENSSL*') { $psi.EnvironmentVariables.Remove($name) }
-  }
-  $psi.EnvironmentVariables['PATH'] = $dir + ';' + [Environment]::SystemDirectory
-  $p = [System.Diagnostics.Process]::Start($psi)
-  try {
-    $out = $p.StandardOutput.ReadToEndAsync()
-    $err = $p.StandardError.ReadToEndAsync()
-    if (-not $p.WaitForExit(60000)) { $p.Kill(); Fail 'OpenSSL did not answer' }
-    $text = $out.Result + $err.Result
-    return ($p.ExitCode -eq 0 -and $text.Contains('Signature Verified Successfully'))
-  } finally { $p.Dispose() }
-}
-
 # Ends a running copy of the installed program (by its path), so that the new one can be started in its place.
 function Stop-RunningCopy([string]$Exe) {
   foreach ($proc in [System.Diagnostics.Process]::GetProcessesByName('rubi-home')) {
@@ -282,113 +285,90 @@ function Main {
   if ($Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?\z') { Fail 'bad version' }
   $archive = 'rubi-home-' + $Version + '-windows-' + $arch + '.zip'
 
-  # 2. the tool that checks the signature: Git for Windows' OpenSSL, from Git's own folder
-  $openssl = Find-GitOpenSsl
-  if (-not $openssl) {
-    Fail ("Git for Windows is needed to check the release's signature (it provides OpenSSL), and no admin-installed copy was found. " +
-      'Ask the user to allow installing Git for Windows (winget install --id Git.Git -e, or https://git-scm.com/download/win; ' +
-      'Windows asks them to confirm), then run this installer again. A copy of OpenSSL from anywhere else is not used.')
-  }
-
-  # 3. download into memory; the signed list and the key go to files that stay open (writers denied) while OpenSSL reads them
+  # 2. download into memory, and check the signed list with the release key, by this script itself (no other program)
   Say ('downloading Rubi Home ' + $Version + ' for windows-' + $arch)
   $release = $base + '/' + $Version
   $sumsBytes = Get-Bytes ($release + '/SHA256SUMS') 1048576
   $sigBytes = Get-Bytes ($release + '/SHA256SUMS.sig') 4096
   $zipBytes = Get-Bytes ($release + '/' + $archive) 268435456
-  $tmp = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), 'rubi-home-' + [Guid]::NewGuid().ToString('N'))
-  [void][System.IO.Directory]::CreateDirectory($tmp)
-  $held = @()
-  try {
-    $keyBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($ReleaseKey.Trim() + "`n")
-    $keyHeld = Open-Held ([System.IO.Path]::Combine($tmp, 'release-key.pem')) $keyBytes
-    $held += $keyHeld
-    $sumsHeld = Open-Held ([System.IO.Path]::Combine($tmp, 'SHA256SUMS')) $sumsBytes
-    $held += $sumsHeld
-    $sigHeld = Open-Held ([System.IO.Path]::Combine($tmp, 'SHA256SUMS.sig')) $sigBytes
-    $held += $sigHeld
-    if (-not (Test-Signature $openssl $keyHeld.Name $sumsHeld.Name $sigHeld.Name)) { Fail "the release signature doesn't verify; not installing" }
+  if (-not (Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $sumsBytes $sigBytes)) { Fail "the release signature doesn't verify; not installing" }
 
-    # the archive's checksum, from the same bytes that are unpacked below
-    $expected = ''
-    foreach ($line in ([System.Text.Encoding]::UTF8.GetString($sumsBytes) -split "`n")) {
-      $m = [regex]::Match($line.TrimEnd("`r"), '^([0-9a-fA-F]{64})\s+\*?(\S+)$')
-      if ($m.Success -and $m.Groups[2].Value -ceq $archive) { $expected = $m.Groups[1].Value.ToLowerInvariant() }
-    }
-    if (-not $expected) { Fail ('no checksum for ' + $archive) }
-    $hasher = [System.Security.Cryptography.SHA256]::Create()
-    $actual = [BitConverter]::ToString($hasher.ComputeHash($zipBytes)).Replace('-', '').ToLowerInvariant()
-    if ($actual -ne $expected) { Fail ('checksum mismatch for ' + $archive + '; not installing') }
-    Say 'signature and checksum verified'
-
-    # 4. unpack the one file we expect (by its name, never by a path from the archive) from those bytes
-    $dir = [System.IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'Rubi Home')
-    $testDir = Get-TestSetting 'RUBI_HOME_INSTALL'
-    if ($testDir) { $dir = $testDir }
-    $bindir = [System.IO.Path]::Combine($dir, 'bin')
-    [void][System.IO.Directory]::CreateDirectory($bindir)
-    $new = [System.IO.Path]::Combine($bindir, 'rubi-home.exe.new')
-    $bin = [System.IO.Path]::Combine($bindir, 'rubi-home.exe')
-    [void][System.Reflection.Assembly]::Load('System.IO.Compression, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
-    if ([System.IO.File]::Exists($new)) { [System.IO.File]::Delete($new) }
-    $za = New-Object System.IO.Compression.ZipArchive((New-Object System.IO.MemoryStream(, $zipBytes)), [System.IO.Compression.ZipArchiveMode]::Read)
-    try {
-      $entry = $null
-      foreach ($e in $za.Entries) { if ($e.FullName -ceq 'rubi-home.exe') { $entry = $e } }
-      if (-not $entry) { Fail 'the archive holds no rubi-home.exe' }
-      if ($entry.Length -gt 268435456) { Fail 'rubi-home.exe in the archive is larger than expected' }
-      $from = $entry.Open()
-      try {
-        $to = New-Object System.IO.FileStream($new, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        try { $from.CopyTo($to) } finally { $to.Dispose() }
-      } finally { $from.Dispose() }
-    } finally { $za.Dispose() }
-
-    # An upgrade: a running copy is ended (by its path), then the old file is moved aside (a running program can be renamed
-    # but not overwritten) and the new one moved in; if that fails the old one is put back.
-    Stop-RunningCopy $bin
-    $old = ''
-    if ([System.IO.File]::Exists($bin)) {
-      $old = $bin + '.old-' + [Guid]::NewGuid().ToString('N')
-      [System.IO.File]::Move($bin, $old)
-    }
-    try {
-      [System.IO.File]::Move($new, $bin)
-    } catch {
-      $why = $_.Exception.Message
-      if ($old -and -not [System.IO.File]::Exists($bin)) { [System.IO.File]::Move($old, $bin) }
-      [System.IO.File]::Delete($new)
-      Fail ("couldn't put the new rubi-home.exe in place (" + $why + '); the old one was left as it was')
-    }
-    foreach ($left in [System.IO.Directory]::GetFiles($bindir, 'rubi-home.exe.old-*')) {
-      try { [System.IO.File]::Delete($left) } catch { Say ('an old copy is still in use and was left: ' + $left + ' (the next run of this installer removes it)') }
-    }
-
-    # 5. start at login: Rubi Home's own call makes the Scheduled Task with the user's rights, ends the task's running copy
-    # and starts the new one
-    & $bin install-autostart --bin $bin
-    if ($LASTEXITCODE -ne 0) { Fail "couldn't set Rubi Home up to start at login" }
-    Say 'running at login (a Scheduled Task named Rubi Home)'
-    Say ('installed Rubi Home ' + $Version)
-
-    # 6. the Claude Code hook is a separate, administrator-owned copy that this installer does not touch
-    $hook = [System.IO.Path]::Combine([Environment]::GetFolderPath('ProgramFiles'), 'Rubi Home\rubi-home.exe')
-    if ([System.IO.File]::Exists($hook)) {
-      Say 'the Claude Code hook is installed; if it is not at this version, update it in the Rubi panel (Settings, Home); Windows asks the user to confirm there.'
-    } else {
-      Say 'Claude Code hook (optional): not set up. To let Bots ask for approvals and message your Claude Code sessions, install the hook from the Rubi panel (Settings, Home).'
-    }
-
-    # 7. pairing: Rubi Home's window shows the PIN and the link
-    if (-not $NoPairing) {
-      & $bin open
-      if ($LASTEXITCODE -ne 0) { Fail "Rubi Home couldn't open its pairing window" }
-    }
-    Say 'agents, T3 and Shortcuts are not available on Windows yet; Hue, the Claude Code hook and the sister tools are.'
-  } finally {
-    foreach ($h in $held) { $h.Dispose() }
-    try { [System.IO.Directory]::Delete($tmp, $true) } catch { }
+  # the archive's checksum, from the same bytes that are unpacked below
+  $expected = ''
+  foreach ($line in ([System.Text.Encoding]::UTF8.GetString($sumsBytes) -split "`n")) {
+    $m = [regex]::Match($line.TrimEnd("`r"), '^([0-9a-fA-F]{64})\s+\*?(\S+)$')
+    if ($m.Success -and $m.Groups[2].Value -ceq $archive) { $expected = $m.Groups[1].Value.ToLowerInvariant() }
   }
+  if (-not $expected) { Fail ('no checksum for ' + $archive) }
+  $hasher = [System.Security.Cryptography.SHA256]::Create()
+  try { $actual = [BitConverter]::ToString($hasher.ComputeHash($zipBytes)).Replace('-', '').ToLowerInvariant() } finally { $hasher.Dispose() }
+  if ($actual -ne $expected) { Fail ('checksum mismatch for ' + $archive + '; not installing') }
+  Say 'signature and checksum verified'
+
+  # 3. unpack the one file we expect (by its name, never by a path from the archive) from those bytes
+  $dir = [System.IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'Rubi Home')
+  $testDir = Get-TestSetting 'RUBI_HOME_INSTALL'
+  if ($testDir) { $dir = $testDir }
+  $bindir = [System.IO.Path]::Combine($dir, 'bin')
+  [void][System.IO.Directory]::CreateDirectory($bindir)
+  $new = [System.IO.Path]::Combine($bindir, 'rubi-home.exe.new')
+  $bin = [System.IO.Path]::Combine($bindir, 'rubi-home.exe')
+  [void][System.Reflection.Assembly]::Load('System.IO.Compression, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
+  if ([System.IO.File]::Exists($new)) { [System.IO.File]::Delete($new) }
+  $za = New-Object System.IO.Compression.ZipArchive((New-Object System.IO.MemoryStream(, $zipBytes)), [System.IO.Compression.ZipArchiveMode]::Read)
+  try {
+    $entry = $null
+    foreach ($e in $za.Entries) { if ($e.FullName -ceq 'rubi-home.exe') { $entry = $e } }
+    if (-not $entry) { Fail 'the archive holds no rubi-home.exe' }
+    if ($entry.Length -gt 268435456) { Fail 'rubi-home.exe in the archive is larger than expected' }
+    $from = $entry.Open()
+    try {
+      $to = New-Object System.IO.FileStream($new, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      try { $from.CopyTo($to) } finally { $to.Dispose() }
+    } finally { $from.Dispose() }
+  } finally { $za.Dispose() }
+
+  # An upgrade: a running copy is ended (by its path), then the old file is moved aside (a running program can be renamed
+  # but not overwritten) and the new one moved in; if that fails the old one is put back.
+  Stop-RunningCopy $bin
+  $old = ''
+  if ([System.IO.File]::Exists($bin)) {
+    $old = $bin + '.old-' + [Guid]::NewGuid().ToString('N')
+    [System.IO.File]::Move($bin, $old)
+  }
+  try {
+    [System.IO.File]::Move($new, $bin)
+  } catch {
+    $why = $_.Exception.Message
+    if ($old -and -not [System.IO.File]::Exists($bin)) { [System.IO.File]::Move($old, $bin) }
+    [System.IO.File]::Delete($new)
+    Fail ("couldn't put the new rubi-home.exe in place (" + $why + '); the old one was left as it was')
+  }
+  foreach ($left in [System.IO.Directory]::GetFiles($bindir, 'rubi-home.exe.old-*')) {
+    try { [System.IO.File]::Delete($left) } catch { Say ('an old copy is still in use and was left: ' + $left + ' (the next run of this installer removes it)') }
+  }
+
+  # 4. start at login: Rubi Home's own call makes the Scheduled Task with the user's rights, ends the task's running copy
+  # and starts the new one
+  & $bin install-autostart --bin $bin
+  if ($LASTEXITCODE -ne 0) { Fail "couldn't set Rubi Home up to start at login" }
+  Say 'running at login (a Scheduled Task named Rubi Home)'
+  Say ('installed Rubi Home ' + $Version)
+
+  # 5. the Claude Code hook is a separate, administrator-owned copy that this installer does not touch
+  $hook = [System.IO.Path]::Combine([Environment]::GetFolderPath('ProgramFiles'), 'Rubi Home\rubi-home.exe')
+  if ([System.IO.File]::Exists($hook)) {
+    Say 'the Claude Code hook is installed; if it is not at this version, update it in the Rubi panel (Settings, Home); Windows asks the user to confirm there.'
+  } else {
+    Say 'Claude Code hook (optional): not set up. To let Bots ask for approvals and message your Claude Code sessions, install the hook from the Rubi panel (Settings, Home).'
+  }
+
+  # 6. pairing: Rubi Home's window shows the PIN and the link
+  if (-not $NoPairing) {
+    & $bin open
+    if ($LASTEXITCODE -ne 0) { Fail "Rubi Home couldn't open its pairing window" }
+  }
+  Say 'agents, T3 and Shortcuts are not available on Windows yet; Hue, the Claude Code hook and the sister tools are.'
 }
 
 try {

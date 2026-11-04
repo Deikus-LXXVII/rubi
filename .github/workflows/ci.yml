@@ -63,7 +63,8 @@ jobs:
   # The Windows installer (panel/install-home.ps1) runs on a clean Windows runner against a release made here: a zip with the
   # program built from this commit, SHA256SUMS signed with a throwaway key (the copy of the script under test gets that key's
   # public half in place of the release key), served from this computer. It must install and set up the Scheduled Task, and it
-  # must refuse a bad signature, a bad checksum, and an OpenSSL that is only on PATH.
+  # must refuse a bad signature, a malleated one (S + L), and a bad checksum. The fake release is signed here with the
+  # openssl that Git brings to the runner; the installer itself runs no such program.
   home-windows-install:
     runs-on: windows-latest
     steps:
@@ -118,7 +119,25 @@ jobs:
           Write-Output $out
           if ($LASTEXITCODE -eq 0 -or $out -notmatch "signature doesn't verify" -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a bad signature was not refused' }
           Move-Item -Force "$sig.good" $sig
-          # 2. a signed list, but an archive that is not the one it names
+          # 2. a malleated signature: S + L is the same signature to a lax verifier, and must be refused
+          [void][System.Reflection.Assembly]::Load('System.Numerics, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
+          $sigBytes = [IO.File]::ReadAllBytes($sig)
+          $sPart = New-Object byte[] 33
+          [Array]::Copy($sigBytes, 32, $sPart, 0, 32)
+          $big = New-Object System.Numerics.BigInteger(, $sPart)
+          $order = [System.Numerics.BigInteger]::Pow(2, 252) + [System.Numerics.BigInteger]::Parse('27742317777372353535851937790883648493')
+          $moved = ($big + $order).ToByteArray()
+          if ($moved.Length -gt 32) { throw 'S + L does not fit in 32 bytes' }
+          $mall = New-Object byte[] 64
+          [Array]::Copy($sigBytes, 0, $mall, 0, 32)
+          [Array]::Copy($moved, 0, $mall, 32, $moved.Length)
+          [IO.File]::WriteAllBytes("$sig.good", $sigBytes)
+          [IO.File]::WriteAllBytes($sig, $mall)
+          $out = Run-Installer
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch "signature doesn't verify" -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a malleated signature (S + L) was not refused' }
+          Move-Item -Force "$sig.good" $sig
+          # 3. a signed list, but an archive that is not the one it names
           $zip = Get-ChildItem $good -Filter '*.zip' | Select-Object -First 1
           Copy-Item $zip.FullName "$($zip.FullName).good"
           Add-Content -Path $zip.FullName -Value 'x' -Encoding ascii
@@ -126,37 +145,14 @@ jobs:
           Write-Output $out
           if ($LASTEXITCODE -eq 0 -or $out -notmatch 'checksum mismatch' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a bad checksum was not refused' }
           Move-Item -Force "$($zip.FullName).good" $zip.FullName
-          # 3. an openssl that is only on PATH is never used: one that says yes to everything, with a bad signature
-          $fake = Join-Path $PWD 'pathbin'
-          New-Item -ItemType Directory -Force -Path $fake | Out-Null
-          Set-Content -Path (Join-Path $fake 'yes.go') -Value 'package main; func main() {}'
-          go build -o (Join-Path $fake 'openssl.exe') (Join-Path $fake 'yes.go')
-          $bytes = [IO.File]::ReadAllBytes($sig); $bytes[0] = $bytes[0] -bxor 1; [IO.File]::WriteAllBytes("$sig.bad", $bytes)
-          Copy-Item $sig "$sig.good"; Copy-Item "$sig.bad" $sig
-          $env:PATH = "$fake;$env:PATH"
-          $out = Run-Installer
-          Write-Output $out
-          if ($LASTEXITCODE -eq 0 -or $out -notmatch "signature doesn't verify") { throw 'an openssl on PATH was used' }
-          Move-Item -Force "$sig.good" $sig
-          # 4. a copy of Git's OpenSSL in a folder the user can write is not used (the script is told to look there, in test mode)
-          $git = Join-Path $env:ProgramFiles 'Git'
-          $copy = Join-Path $PWD 'gitcopy'
-          New-Item -ItemType Directory -Force -Path (Join-Path $copy 'mingw64') | Out-Null
-          Copy-Item -Recurse -Force (Join-Path $git 'mingw64\bin') (Join-Path $copy 'mingw64\bin')
-          $env:RUBI_GIT_ROOT = $copy
-          $env:RUBI_HOME_INSTALL = Join-Path $PWD 'refused-copy'
-          $out = Run-Installer
-          Write-Output $out
-          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'Git for Windows is needed' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'an OpenSSL in a user-writable folder was used' }
-          Remove-Item Env:RUBI_GIT_ROOT
-          # 5. without the test flag the environment changes nothing: the stand-in address and folder are ignored, so the script
+          # 4. without the test flag the environment changes nothing: the stand-in address and folder are ignored, so the script
           # goes to the real release (which has no such tag) and installs nothing
           Remove-Item Env:RUBI_INSTALL_TEST
           $env:RUBI_HOME_INSTALL = Join-Path $PWD 'refused-noflag'
           $out = Run-Installer
           Write-Output $out
           if ($LASTEXITCODE -eq 0 -or $out -match 'signature and checksum verified' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'the environment changed where the installer downloads from or installs to' }
-          # 6. in test mode the address must still be this computer
+          # 5. in test mode the address must still be this computer
           $env:RUBI_INSTALL_TEST = '1'
           $env:RUBI_DOWNLOAD_BASE = 'https://example.com/releases'
           $out = Run-Installer
@@ -177,18 +173,34 @@ jobs:
           if ($v -notmatch [regex]::Escape($env:RUBI_TAG)) { throw "version said: $v" }
           schtasks /Query /TN "Rubi Home" | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'the Scheduled Task is not there' }
-          # running it again upgrades in place, and a user's OPENSSL_CONF (here one that would make OpenSSL fail if it read it)
-          # is not seen by the OpenSSL that checks the signature
-          $conf = Join-Path $PWD 'user-openssl.cnf'
-          Set-Content -Path $conf -Value "openssl_conf = nothing_here`n"
-          $env:OPENSSL_CONF = $conf
-          $env:OPENSSL_MODULES = Join-Path $PWD 'no-modules'
+          # running it again upgrades in place
           & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -Version $env:RUBI_TAG -NoPairing
-          if ($LASTEXITCODE -ne 0) { throw "the second run (with OPENSSL_CONF set) failed ($LASTEXITCODE)" }
-          Remove-Item Env:OPENSSL_CONF, Env:OPENSSL_MODULES
+          if ($LASTEXITCODE -ne 0) { throw "the second run failed ($LASTEXITCODE)" }
           if (Get-ChildItem (Join-Path $env:RUBI_HOME_INSTALL 'bin') -Filter 'rubi-home.exe.new') { throw 'a half-installed file was left' }
           & $exe install-autostart --remove
           if ($LASTEXITCODE -ne 0) { throw 'the task was not removed' }
+
+  # The Ed25519 check of the Windows installer (panel/install-home.ps1) on the RFC 8032, Wycheproof and ed25519-speccheck
+  # vectors: under Windows PowerShell 5.1, which is what the installer runs in, and under PowerShell 7 on Linux.
+  home-ed25519-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vectors under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          ./scripts/test-install-home-ed25519.ps1
+
+  home-ed25519-pwsh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vectors under PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-install-home-ed25519.ps1
 
   # The Windows-only helpers run on a real Windows host.
   home-windows:
