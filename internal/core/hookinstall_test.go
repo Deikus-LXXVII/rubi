@@ -28,11 +28,12 @@ type fakeHook struct {
 	home            *home.Helper      // the real Rubi Home behind the fake ops
 	resolveTo       map[string]string // project.resolve: the real path of a folder (itself when absent)
 	resolveErr      error
-	planHash        string       // hook.plan: plan_sha256
-	admin           string       // hook.plan: the sentence for the person at that computer
-	sudoArgv        []string     // when set, hook.install answers needs_bot_sudo with this command
-	installArgs     atomic.Value // the last hook.install arguments (json.RawMessage)
-	adds            []string     // the folders a project.add reached Home with
+	planHash        string           // hook.plan: plan_sha256
+	admin           string           // hook.plan: the sentence for the person at that computer
+	sudoArgv        []string         // when set, hook.install answers needs_bot_sudo with this command
+	installArgs     atomic.Value     // the last hook.install arguments (json.RawMessage)
+	adds            []string         // the folders a project.add reached Home with
+	fail            map[string]error // ops that answer this error instead of anything else
 	mu              sync.Mutex
 }
 
@@ -61,6 +62,9 @@ func pairedFakeHomeVia(t *testing.T, c *Core, f *fakeHook, link bool) string {
 	t.Cleanup(cancel)
 	ready := make(chan int, 4)
 	rpc := &homeproto.Server{Key: h.ID.Box, Handle: func(ctx context.Context, env homeproto.Envelope) (any, error) {
+		if err := f.fail[env.Op]; err != nil {
+			return nil, err
+		}
 		switch env.Op {
 		case "hook.plan":
 			f.plans.Add(1)

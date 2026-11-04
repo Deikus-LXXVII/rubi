@@ -115,8 +115,11 @@ func (c *Core) PairDevice(ctx context.Context, code, pin string) (string, error)
 	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var hello struct {
-		Name   string `json:"name"`
-		Folder string `json:"shortcuts_folder"`
+		Name     string `json:"name"`
+		Folder   string `json:"shortcuts_folder"`
+		Features map[string]struct {
+			Available bool `json:"available"`
+		} `json:"features"`
 	}
 	if err := cl.Call(cctx, "pair", map[string]string{"secret": pc.Secret, "token": token, "label": "Rubi " + c.ID.Fingerprint()}, &hello); err != nil {
 		return "", err
@@ -129,11 +132,12 @@ func (c *Core) PairDevice(ctx context.Context, code, pin string) (string, error)
 		Paired: time.Now().UTC()}
 	sum := sha256.Sum256([]byte(pc.Bundle))
 	fingerprint := base64.RawURLEncoding.EncodeToString(sum[:6])
+	f, known := hello.Features["shortcuts"]
+	shortcuts := !known || f.Available // a Rubi Home that sends no list is an older one: it is a Mac
 	return c.RequestChange(ctx, "Add Rubi Home on "+name, map[string]any{"computer (as it calls itself)": name,
 		"fingerprint": fingerprint + " (Rubi Home shows the same fingerprint when you open it)",
 		"check":       "Approve only if you just opened Rubi Home on your own computer and used its code",
-		"allows": "control Philips Hue on your home network, run the shortcuts in the folder \"" + hello.Folder +
-			"\", answer Claude Code's permission requests there and pass messages to and from its Claude Code sessions (only plugins you approve for that can)"},
+		"allows":      allowsText(hello.Folder, shortcuts)},
 		func(d *vault.Data) error {
 			if len(d.Devices) >= 10 {
 				return errors.New("at most 10 Rubi Home computers")
@@ -150,6 +154,16 @@ func (c *Core) PairDevice(ctx context.Context, code, pin string) (string, error)
 				_ = c.syncLibraryHome(ctx, dev, true)
 			}()
 		})
+}
+
+// allowsText is what the approval says a paired Rubi Home allows. Shortcuts are named only when that computer has them.
+func allowsText(folder string, shortcuts bool) string {
+	run := ""
+	if shortcuts {
+		run = "run the shortcuts in the folder \"" + folder + "\", "
+	}
+	return "control Philips Hue on your home network, " + run +
+		"answer Claude Code's permission requests there and pass messages to and from its Claude Code sessions (only plugins you approve for that can)"
 }
 
 // RemoveDevice asks the user to approve forgetting a helper; the helper is told to forget us too.
@@ -445,11 +459,14 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 	var out json.RawMessage
 	if err := cl.Call(ctx, op, args, &out); err != nil {
 		code := rubiplugin.CodeHomeFailed
+		var coded *homeproto.CodedError
 		switch {
 		case errors.Is(err, homeproto.ErrOffline):
 			code = rubiplugin.CodeHomeOffline
 		case err.Error() == homeproto.NotPairedMessage:
 			code = rubiplugin.CodeHomeNotPaired
+		case errors.As(err, &coded) && coded.Code == homeproto.CodeNotAvailableHere:
+			code = rubiplugin.CodeHomeNotAvailable
 		}
 		return nil, &rubiplugin.Error{Code: code, Message: dev.Name + ": " + err.Error()}
 	}

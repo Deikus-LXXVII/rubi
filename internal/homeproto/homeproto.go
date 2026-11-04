@@ -50,7 +50,21 @@ type reply struct {
 	OK     bool            `json:"ok"`
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
+	Code   string          `json:"code,omitempty"` // a stable name for the kind of failure (CodedError), when it has one
 }
+
+// CodeNotAvailableHere is the code of an answer that says the computer can't do what was asked: the feature does not exist
+// on this system (Shortcuts on Linux, agents on Windows). It is a stable name, so a plugin or the panel need not match text.
+const CodeNotAvailableHere = "not_available_here"
+
+// CodedError is an error with a stable code next to its text. A helper's handler may return one; the code travels in the
+// reply and the client returns a CodedError again, so errors.As finds it on both sides. Older helpers send no code.
+type CodedError struct {
+	Code    string
+	Message string
+}
+
+func (e *CodedError) Error() string { return e.Message }
 
 // Code is what the helper shows for pairing.
 type Code struct {
@@ -259,6 +273,9 @@ func (c *Client) Call(ctx context.Context, op string, args, out any) error {
 		return err
 	}
 	if !r.OK {
+		if r.Code != "" {
+			return &CodedError{Code: r.Code, Message: r.Error}
+		}
 		return errors.New(r.Error)
 	}
 	if out != nil {
@@ -418,10 +435,17 @@ func (s *Server) HandleRPC(ctx context.Context, body []byte) (int, []byte) {
 		return http.StatusBadRequest, []byte("bad request")
 	}
 	var out reply
+	fail := func(err error) {
+		out.Error = err.Error()
+		var ce *CodedError
+		if errors.As(err, &ce) {
+			out.Code = ce.Code
+		}
+	}
 	if err := s.fresh(env); err != nil {
-		out.Error = err.Error()
+		fail(err)
 	} else if res, err := s.handle(ctx, env); err != nil {
-		out.Error = err.Error()
+		fail(err)
 	} else {
 		out.OK = true
 		out.Result, _ = json.Marshal(res)

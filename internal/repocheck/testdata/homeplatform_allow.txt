@@ -14,5 +14,4 @@ internal/home/setup/jobs.go || container || P8: the VM backend becomes an interf
 internal/home/setup/probe.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/probe.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/setup.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
-internal/home/shortcuts.go || shortcuts || P7: Shortcuts become a macOS-only file and a not-available answer elsewhere
 internal/home/t3login.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file

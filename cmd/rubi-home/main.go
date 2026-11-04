@@ -146,7 +146,15 @@ func main() {
 		for _, p := range cfg.Paired {
 			fmt.Printf("  %s, since %s\n", p.Label, p.At.Local().Format("2006-01-02 15:04"))
 		}
-		fmt.Printf("Shortcuts folder: %s\n", cfg.ShortcutsFolder)
+		feats := h.Features()
+		if feats[home.FeatureShortcuts].Available {
+			fmt.Printf("Shortcuts folder: %s\n", cfg.ShortcutsFolder)
+		}
+		for _, f := range []string{home.FeatureShortcuts, home.FeatureAppleHome, home.FeatureClaudeStart, home.FeatureAgent, home.FeatureT3} {
+			if !feats[f].Available {
+				fmt.Printf("%s: not available on this computer (%s)\n", home.FeatureLabel(f), feats[f].Reason)
+			}
+		}
 		fmt.Printf("Hue Bridges paired: %d\n", len(cfg.HuePins))
 		home.InspectHookBinary(hookPath(os.Args[2:]), home.HookBinaryTimeout).WritePlain(os.Stdout, version.Version)
 	case "open": // the app's window: dialogs on macOS, the code and the link on the terminal elsewhere
@@ -157,6 +165,10 @@ func main() {
 	case "folder":
 		if len(os.Args) != 3 || strings.TrimSpace(os.Args[2]) == "" {
 			usage()
+		}
+		if f := h.Features()[home.FeatureShortcuts]; !f.Available {
+			fmt.Fprintln(os.Stderr, home.NotAvailableMessage(f))
+			os.Exit(1)
 		}
 		if strings.EqualFold(strings.TrimSpace(os.Args[2]), "none") { // the Shortcuts CLI reads it as "no folder": every loose shortcut
 			log.Fatal(`choose a real folder name, not "none"`)

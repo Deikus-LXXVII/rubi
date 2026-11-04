@@ -30,6 +30,10 @@ const (
 	CodeHomeOffline   = -32010 // Rubi Home didn't answer (the computer is off, asleep or offline)
 	CodeHomeNotPaired = -32011 // no Rubi Home is paired, or it no longer knows this Rubi
 	CodeHomeFailed    = -32012 // Rubi Home refused or the operation failed; the message says why
+	// CodeHomeNotAvailable: Rubi Home is there but this computer can't do that (Shortcuts on a Linux or Windows computer, agents
+	// where there is no virtual machine yet). The message is a plain sentence for the user ("That isn't available on this
+	// computer (...)."). Do not try again and do not look for a workaround; tell the user it isn't available on that computer.
+	CodeHomeNotAvailable = -32013
 )
 
 // ErrorCode returns the JSON-RPC error code of err, or 0 if it has none.

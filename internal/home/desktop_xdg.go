@@ -5,8 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 )
+
+// schemeName is a link scheme as asked about: lower-case letters, digits and dashes, so it can't carry anything else into
+// an argument or a registry path.
+var schemeName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // xdgDesktop is the Linux form of Desktop: xdg-open for links, wl-copy, xclip or xsel for the clipboard, zenity or
 // kdialog for windows. All of it needs a graphical session (DISPLAY or WAYLAND_DISPLAY); a box without one, or
@@ -26,6 +31,16 @@ func xdgDesktop(env DesktopEnv) Desktop {
 			}
 			_, err := env.Run(ctx, "", "xdg-open", link)
 			return err
+		})
+	}
+	if has("xdg-mime") {
+		// the program registered for x-scheme-handler/<scheme> is named on the first line; nothing registered prints nothing
+		d.Scheme = schemeFunc(func(ctx context.Context, scheme string) bool {
+			if !schemeName.MatchString(scheme) {
+				return false
+			}
+			out, err := env.Run(ctx, "", "xdg-mime", "query", "default", "x-scheme-handler/"+scheme)
+			return err == nil && strings.TrimSpace(out) != ""
 		})
 	}
 	var copyArgv []string

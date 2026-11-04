@@ -28,8 +28,19 @@ func winDesktop(env DesktopEnv) Desktop {
 	rundll32 := env.SystemDir + `\rundll32.exe`
 	clip := env.SystemDir + `\clip.exe`
 	powershell := env.SystemDir + `\WindowsPowerShell\v1.0\powershell.exe`
+	reg := env.SystemDir + `\reg.exe`
 	has := func(path string) bool { _, err := env.LookPath(path); return err == nil }
 	var d Desktop
+	if has(reg) {
+		// a scheme is registered when HKEY_CLASSES_ROOT\<scheme> has a "URL Protocol" value; reg.exe exits 0 when it does
+		d.Scheme = schemeFunc(func(ctx context.Context, scheme string) bool {
+			if !schemeName.MatchString(scheme) {
+				return false
+			}
+			_, err := env.Run(ctx, "", reg, "query", `HKCR\`+scheme, "/v", "URL Protocol")
+			return err == nil
+		})
+	}
 	if has(rundll32) {
 		d.Opener = openerFunc(func(ctx context.Context, link string) error {
 			if err := checkLink(link); err != nil {

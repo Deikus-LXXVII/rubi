@@ -25,7 +25,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 	"unicode"
@@ -70,21 +69,15 @@ func desktopURL(cwd, prompt string) string {
 }
 
 // desktopLauncher opens desktopURL through the system's Opener (the Claude desktop app owns the claude:// scheme).
-// The app exists for macOS and Windows; Linux has none, and says so. opener and goos are seams for tests.
+// Whether the app is there is decided before this runs: the claude-start operations belong to a feature that is available
+// only where a program is registered for the claude:// link (features.go), and answer not_available_here otherwise.
+// opener is a seam for tests.
 type desktopLauncher struct {
 	opener   Opener
-	goos     string
 	noSystem bool // test seam: do not fall back to the system's Opener
 }
 
 func (d desktopLauncher) Launch(ctx context.Context, cwd, prompt string) error {
-	goos := d.goos
-	if goos == "" {
-		goos = runtime.GOOS
-	}
-	if goos != "darwin" && goos != "windows" {
-		return errors.New("starting a session works through the Claude desktop app, which exists for a Mac or a Windows computer only")
-	}
 	op := d.opener
 	if op == nil && !d.noSystem {
 		op = NewDesktop(DesktopEnv{}).Opener

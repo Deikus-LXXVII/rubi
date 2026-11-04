@@ -352,3 +352,26 @@ func TestSettingsSectionsDropTheirNullParts(t *testing.T) {
 		t.Error("settings sections are drawn without dropping their null parts; null would show as the text \"null\"")
 	}
 }
+
+// A feature the computer does not have is drawn as a calm muted line after a check of that computer, never in the error style,
+// never with a button, and the data comes from what core passes on from Rubi Home's hello.
+func TestPanelShowsUnavailableFeaturesCalmly(t *testing.T) {
+	js := readRepo(t, "panel/js/app.js")
+	i := strings.Index(js, "function featureLines(")
+	if i < 0 {
+		t.Fatal("the panel has no featureLines")
+	}
+	body := js[i:]
+	if j := strings.Index(body, "\n}\n"); j > 0 {
+		body = body[:j]
+	}
+	if !strings.Contains(body, `"muted small"`) || strings.Contains(body, "error") || strings.Contains(body, "button") || strings.Contains(body, "danger") {
+		t.Errorf("featureLines is not a calm muted line:\n%s", body)
+	}
+	if !strings.Contains(body, "not available on this computer") {
+		t.Error("featureLines does not say 'not available on this computer'")
+	}
+	if !strings.Contains(js, "...featureLines(r.features)") {
+		t.Error("the device check does not draw featureLines")
+	}
+}

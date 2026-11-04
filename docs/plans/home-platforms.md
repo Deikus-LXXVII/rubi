@@ -620,15 +620,18 @@ line. Stage names only; the order is the dependency order.
 - **Not verified on a real Windows:** the ioctl (older builds lack it and then every connection is refused: that is the fail-closed answer), and whether the folder's access list alone stops another user's `connect`. The per-connection check does not depend on it. The Windows CI job runs the socket, junction, process and job tests on an administrator runner.
 - **Not changed:** the core's own sockets (`internal/daemon`, `internal/mcpproxy`) and the Unix-only `agent` package tests.
 
-### P7 Feature availability
+### P7 Feature availability (done)
 
-- **Work.** 2.6: `Features()`, `not_available_here`, `can` computed, the panel lines, the skill text, `shortcuts.go`
-  behind `_darwin.go` and a stub elsewhere; the Claude desktop link behind `Opener` and the handler check; `agent` and
-  `t3` sessions unavailable where there is no VM backend (all of Windows in the first release).
-- **Done when.** On Linux and Windows the panel and a Bot see "Shortcuts: not available on this computer" and never an
-  English CLI error; on Windows the same for agents.
-- **Tests.** Core and Home tests for the typed error; panel flow test (`panelflows_test.go`); a Bot-facing text test.
-  Removes the P7 lines.
+- **Features.** `Features()` (`internal/home/features.go`) gives `shortcuts`, `apple_home`, `claude-start`, `agent` and `t3`, each `{available, reason}`. `hello` carries `features` and `can` lists only what is available (on a Mac the list is what it always was). It is worked out from the system and a `Desktop`, and kept for a minute (only the Claude app check can change while Home runs).
+  - macOS: everything.
+  - Shortcuts and Apple Home: macOS only ("it needs macOS").
+  - `claude-start`: macOS; elsewhere only where a program is registered for `claude://` (`Desktop.Scheme`: `xdg-mime query default x-scheme-handler/claude` on Linux, `reg.exe query HKCR\claude /v "URL Protocol"` from System32 on Windows; fixed arguments, the scheme is checked against a pattern). The launcher itself now only opens the link through the `Opener`; whether the app is there is decided by the feature.
+  - `agent`, `t3`: where there is a VM backend. Today only macOS (`hasVMBackend`); Linux until P9, Windows in the first release. P8 turns this into the backend's own answer.
+- **The error.** Every operation of a family tied to a feature (`opFeatures`: `shortcuts.*`, `claude-start.*`, `claude-agent.*`, `agent-setup.*`, `t3-agent.*`, `t3-setup.*`) is checked in `Handle` before anything runs, and answers `homeproto.CodedError{Code: "not_available_here"}` with "That isn't available on this computer (reason)." The code travels in the reply (`code`); core maps it to `rubiplugin.CodeHomeNotAvailable` (-32013), and a plugin gets the sentence as the message. `shortcuts.go` keeps the portable part; the command is in `shortcuts_darwin.go`, and `shortcuts_notmac.go` answers the same error.
+- **Core and panel.** The approval for pairing names the shortcuts only for a computer that has them. A check of a computer returns `features`; the panel draws one muted line per reason ("Shortcuts and Apple Home: not available on this computer (it needs macOS)."), no red, no button. `rubi-home status` prints the same lines and `rubi-home folder` says it isn't available.
+- **Bot.** `SKILL.md` tells the Bot to say once that it isn't available on this computer, and not to retry or look for a workaround.
+- **Tests.** `features_test.go` (a table per system with fake desktops, the argv of the handler checks, every op of every unavailable feature read from `Handle`'s source, `hello`, the cache), `core/homenotavailable_test.go` (code mapping, approval text, `features` in the check), `repocheck` (panel line is calm, the Bot-facing text). Tests of the operations run as on a Mac (`features_testenv_test.go`). The P7 line is gone from the allow-list.
+- **What a plugin needs** (T3 Agents, Shortcuts users): treat `CodeHomeNotAvailable` like "the capability is not there": cache it as a no, stop polling, do not say "no answer, it may have been started", and show the sentence calmly. The T3 Agents plugin's places are listed in the report of this stage.
 
 ### P8 VM backend interface
 

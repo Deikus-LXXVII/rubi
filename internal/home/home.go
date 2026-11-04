@@ -179,6 +179,12 @@ type Helper struct {
 	mu  sync.Mutex
 	cfg Config
 
+	// what this computer can do (features.go); featureEnv is a seam for tests
+	featMu     sync.Mutex
+	feat       map[string]Feature
+	featAt     time.Time
+	featureEnv func() FeatureEnv
+
 	sessMu sync.Mutex
 	sess   *t3vm.Server // the T3 session server while it serves (see ServeAgentVM)
 }
@@ -529,6 +535,9 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 	if !h.paired(env.Token) {
 		return nil, errors.New(homeproto.NotPairedMessage)
 	}
+	if err := h.gate(env.Op); err != nil {
+		return nil, err
+	}
 	switch env.Op {
 	case "hello":
 		return h.hello(), nil
@@ -712,7 +721,7 @@ func (h *Helper) setLibraryRevoked(args json.RawMessage) (any, error) {
 func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
-		"can":  []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup", "t3-agent", "t3-setup"},
+		"can": h.can(), "features": h.Features(),
 		"hook": h.hookStatus(), "hue_bridges": h.Hue.Bridges(), "fs_list_calls": h.fsLimit.lastHour()}
 }
 

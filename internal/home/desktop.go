@@ -40,11 +40,19 @@ type Dialogs interface {
 	Message(ctx context.Context, text string, buttons ...string) (string, error)
 }
 
-// Desktop is what this computer can do; a nil part is not available here.
+// SchemeHandler says whether some program is registered to open links of a scheme (claude://). It is asked before a feature
+// that depends on such a program is offered, so that a computer without it says "not available" instead of failing later.
+type SchemeHandler interface {
+	Registered(ctx context.Context, scheme string) bool
+}
+
+// Desktop is what this computer can do; a nil part is not available here. Scheme is nil on macOS, where the system
+// opens a link and reports a missing app only then.
 type Desktop struct {
 	Opener    Opener
 	Clipboard Clipboard
 	Dialogs   Dialogs
+	Scheme    SchemeHandler
 }
 
 // DesktopEnv is what a Desktop is made from; tests replace every part.
@@ -79,6 +87,10 @@ type (
 	clipboardFunc func(ctx context.Context, text string) error
 	dialogsFunc   func(ctx context.Context, text string, buttons ...string) (string, error)
 )
+
+type schemeFunc func(ctx context.Context, scheme string) bool
+
+func (f schemeFunc) Registered(ctx context.Context, scheme string) bool { return f(ctx, scheme) }
 
 func (f openerFunc) Open(ctx context.Context, link string) error { return f(ctx, link) }
 func (f clipboardFunc) Copy(ctx context.Context, text string) error {

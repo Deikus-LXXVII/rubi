@@ -1820,7 +1820,7 @@ async function settingsScreen(ctx, tab) {
               state.className = "status-dot " + (r.online ? "on" : "off");
               state.title = r.online ? `Online · ${r.version || ""}` : "Not answering";
               state.textContent = r.online ? "Online" : "Not answering";
-              hookBox.replaceChildren(...(r.online ? [...hookLines(r.hook, installHook(d)), ...hueLines(r.hue_bridges, (b) => change("device.hue.forget", () => ({ id: d.id, bridge: b }))), ...folderLines(r.fs_list_calls)] : []));
+              hookBox.replaceChildren(...(r.online ? [...hookLines(r.hook, installHook(d)), ...hueLines(r.hue_bridges, (b) => change("device.hue.forget", () => ({ id: d.id, bridge: b }))), ...folderLines(r.fs_list_calls), ...featureLines(r.features)] : []));
             }).catch((x) => showError(err, x));
           } }, "Check"),
           menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]),
@@ -1928,6 +1928,21 @@ function hookLines(hook, install) {
   return lines;
 }
 
+// featureLines say, after a check, what that computer can not do (Shortcuts on a Linux or Windows computer, agents where there
+// is no virtual machine yet). It is a fact about the computer, not a failure: one calm, muted line per reason, no red, no
+// button. Rubi Home sends the reason as plain text; it is shown as text and cut short.
+const FEATURE_NAMES = { shortcuts: "Shortcuts", apple_home: "Apple Home", "claude-start": "Starting Claude Code from the Claude app", agent: "Agents", t3: "T3 Agents" };
+function featureLines(features) {
+  if (!features || typeof features !== "object") return [];
+  const byReason = new Map();
+  for (const [key, name] of Object.entries(FEATURE_NAMES)) {
+    const f = features[key];
+    if (!f || f.available !== false) continue;
+    const why = typeof f.reason === "string" ? f.reason.slice(0, 120) : "";
+    byReason.set(why, [...(byReason.get(why) || []), name]);
+  }
+  return [...byReason].map(([why, names]) => h("p", { class: "muted small" }, `${names.join(" and ")}: not available on this computer${why ? ` (${why})` : ""}.`));
+}
 // hueLines list the Hue Bridges whose certificate Rubi Home recorded, each with the button that forgets it
 // (after a bridge was replaced or reset). `forget(bridge)` makes the click handler.
 // folderLines says how often the folder browser was asked on that computer in the last hour (Rubi Home counts every call).
