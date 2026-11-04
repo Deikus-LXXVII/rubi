@@ -36,11 +36,9 @@ jobs:
           lipo -create -output work/home-darwin-universal/rubi-home work/home-darwin-arm64/rubi-home work/home-darwin-amd64/rubi-home
           lipo -archs work/home-darwin-universal/rubi-home
           RUBI_APP_SIGN=adhoc sh scripts/build-home-app.sh "$GITHUB_REF_NAME" universal work/home-darwin-universal/rubi-home app
-          # TODO(macOS signing): sign and notarize "Rubi Home.app" with a Developer ID, so macOS opens it without
-          # "Open Anyway". It needs these secrets, and must be skipped cleanly when they are not set:
-          # MACOS_SIGN_IDENTITY, MACOS_CERTIFICATE (base64 .p12), MACOS_CERTIFICATE_PASSWORD,
-          # MACOS_NOTARY_APPLE_ID, MACOS_NOTARY_PASSWORD, MACOS_NOTARY_TEAM_ID. Until then the app is signed ad
-          # hoc only. See docs/design/rubi-home.md ("Opening an unsigned app").
+          # The app is signed ad hoc only: the project does not plan a Developer ID signature, so macOS asks for
+          # "Open Anyway" on the first open. The Mac app is the fallback for users without a Bot; the Bot installs
+          # Rubi Home without it. See docs/design/rubi-home.md ("The Mac app")
 
       - uses: actions/upload-artifact@v4
         with:

@@ -9,7 +9,7 @@ The pull request checklist is `.github/pull_request_template.md`.
 | # | Rule | Enforced by |
 | - | ---- | ----------- |
 | 1 | Rubi is fully usable from a phone: approvals, sign-ins (for example into T3 Code) and everything else. The design also supports desktop proportions. | `internal/repocheck/panelcss_test.go`, `internal/repocheck/panelflows_test.go`, manual `scripts/panel-viewport-check.md` |
-| 2 | The user is never made to use a terminal on their devices, neither to use nor to set up Rubi. | `internal/repocheck/usertext_test.go` with `testdata/usertext_allow.txt` |
+| 2 | The user never types a command on their devices, neither to use nor to set up Rubi. A command the Grok Bot runs itself on the user's computer is allowed: the user only confirms. | `internal/repocheck/usertext_test.go` with `testdata/usertext_allow.txt` |
 | 3 | Uncompromising security and privacy of user data. | the guard tests listed below, `internal/repocheck/secretlog_test.go`, `internal/core/secretlog_test.go`, `internal/audit/audit_test.go` |
 | 4 | An intuitive, convenient UI beats visuals. | review only (checklist line for the reviewer) |
 | 5 | The minimum possible number of user actions: a batch of requests is approved once, not five times. | `internal/core/botbatch_test.go`, `TestBotRequestsMergeAndPartialApproval`; "Known gaps" below |
@@ -46,7 +46,29 @@ where a wide-screen `@media` block says the screen is wider.
 Not automated (there is no headless browser in the dependencies): how it looks. `scripts/panel-viewport-check.md` is
 the manual check at 375x812 and 1280x800; run it before a release and after changes to `panel/`.
 
-## Rule 2: no terminal
+## Rule 2: the user types no command
+
+The rule: the user is never made to type a command or use a terminal on their devices. Commands that the Grok Bot
+runs itself on the user's computer are allowed, as long as the user types nothing and only confirms. A sudo
+password or Touch ID, entered by the user in the operating system's own dialog, is such a confirmation; Rubi
+never asks for it in the panel or in chat.
+
+- **Allowed:** the Bot runs the installer, `rubi-home open`, `sudo ...` and so on; the user confirms what the system
+  asks.
+- **A violation:** any text that tells the user to open a terminal, type or paste a command, or run a line
+  themselves, on any device, in the panel, the docs, the README or a message Rubi returns for the user.
+
+Where Bot-run instructions live (they are written for the Bot, so they may hold commands):
+
+- the Bot skill `skills/grok-bot/rubi-project/SKILL.md`, which `pages.yml` publishes as
+  `https://rubi-panel.com/install.md`;
+- MCP tool descriptions and results (`internal/mcpserver/`);
+- `rubi --help` (`cmd/rubi/usage.go`).
+
+In text the user reads, a command is allowed only in a sentence that hands it to the Bot: "Tell your Bot: ...",
+"Ask your Bot to ...", "Your Bot runs ...". The message the user copies to send to the Bot (for example "Install
+Rubi Home on this computer by following https://rubi-panel.com/install.md") holds a sentence and a link, not a
+command: the commands stay in install.md.
 
 How it is applied: setup and use go through the panel and the agent's chat. The agent runs commands; the user never
 types one. Home helpers that need administrator rights use the operating system's dialog.
@@ -63,14 +85,21 @@ package-manager installs, `launchctl`/`systemctl`/`chmod`, and `rubi <subcommand
 subcommand names are read from `cmd/rubi/main.go` and `cmd/rubi-home/main.go`). `TestUserTextPatterns` holds the
 patterns to examples.
 
-Existing violations are in `internal/repocheck/testdata/usertext_allow.txt` (file, fragment, task). A new violation
-fails, and so does an allow-list line that matches nothing any more, so the list only shrinks.
+The text is cut into sentences (at a line break, or at ". ", "! ", "? "). A sentence that matches is excused only
+when it opens with a hand-off to the Bot (anchored at the start of the sentence, so a Bot phrase elsewhere in the
+paragraph covers nothing), names no terminal, command prompt or shell prompt, and asks nothing of "you" (no "you",
+"type", "paste", "copy" after the hand-off). A panel string with a command keeps the whole sentence in one literal.
+`TestACommandHandedToTheBotIsAllowedAndOneAddressedToTheUserIsNot` holds both directions.
 
-Exempt by path, with the reason in `userTextExempt` in the test:
+Existing violations are in `internal/repocheck/testdata/usertext_allow.txt` (file, fragment, task). A new violation
+fails, and so does an allow-list line that matches nothing any more, so the list only shrinks. It is empty now.
+
+Exempt by path, with the reason in `userTextExempt` in the test (`TestExemptPathsExist` fails on a path that is gone):
 
 - `docs/ops/`: maintainer docs (hosting the gateway, releasing, signing plugins with openssl). Their readers are
   the people who run Rubi's infrastructure, not its users.
 - `cmd/t3-bump/`, `internal/t3bump/`, `cmd/rubi-gateway/`, `cmd/rubi-announce/`: tools for maintainers and CI.
+- `skills/`, `internal/mcpserver/` and `cmd/rubi/usage.go`: texts addressed to the Bot (above).
 - `internal/home/localsend.go` and `internal/home/agent/t3vm/client.go`: command lines run by a Claude session and by
   T3, never typed by a person.
 - `sdk/skillscan/`: the scanner names `sudo` in order to flag it.
@@ -79,9 +108,7 @@ Exempt by path, with the reason in `userTextExempt` in the test:
 
 ### Current violations (rule 2)
 
-| Task | Where | What |
-| ---- | ----- | ---- |
-| T-01L | `panel/js/app.js` (2 texts) | Linux has no desktop installer yet: its box still gets `curl ... \| sh` in a terminal, shown only under "On Linux" (a Mac installs by downloading the app, H3) |
+None. T-01L (the Linux script line in the panel) is gone: on Linux the Bot installs Rubi Home, like everywhere else.
 
 Not found in this branch: the roster pin instruction (`rubi-home roster pin`) from the pod work; when it lands, the
 test fails until it is replaced by a panel step or listed here.

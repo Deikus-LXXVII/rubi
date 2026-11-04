@@ -259,8 +259,12 @@ func TestReleaseBuildsTheUniversalMacAppBeforeTheSums(t *testing.T) {
 	if !strings.Contains(s, `subject-path: "dist/rubi-*.tar.gz, dist/rubi-*.zip`) {
 		t.Fatal("the zip is not attested")
 	}
-	if !strings.Contains(s, "TODO(macOS signing)") {
-		t.Fatal("the signing TODO is gone")
+	// The owner decided against a Developer ID: the workflow says so instead of keeping a TODO.
+	if strings.Contains(s, "TODO(macOS signing)") || strings.Contains(s, "MACOS_SIGN_IDENTITY") {
+		t.Fatal("the release workflow still presents Developer ID signing as open")
+	}
+	if !strings.Contains(s, "does not plan a Developer ID signature") {
+		t.Fatal("the release workflow does not state the signing decision")
 	}
 	// The name the script makes is what the globs, the feed filter and the panel's link expect.
 	sh, err := os.ReadFile(filepath.Join(root(t), "scripts", "build-home-app.sh"))
@@ -349,24 +353,18 @@ console.log(JSON.stringify({
 	}
 }
 
-// TestHomeScreenOffersTheDownloadNotATerminal reads the panel source: the Mac steps, the Linux fold, and the
-// order when a code is waiting (pair first, install steps folded under "Not installed yet?").
-func TestHomeScreenOffersTheDownloadNotATerminal(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join(root(t), "panel", "js", "app.js"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := string(b)
-	for _, want := range []string{"Download Rubi Home for Mac", "Open Anyway", "Privacy & Security", "Open the Rubi panel", `"On Linux"`, `"Not installed yet?"`} {
+// TestHomeScreenOffersTheBotFirstThenTheDownload reads the panel source: the Bot message first, the Mac app folded
+// under it for people with no Bot, and the order when a code is waiting (pair first, install steps folded under
+// "Not installed yet?").
+func TestHomeScreenOffersTheBotFirstThenTheDownload(t *testing.T) {
+	s := readRepo(t, "panel/js/app.js")
+	for _, want := range []string{"Download Rubi Home for Mac", "Open Anyway", "Privacy & Security", "Open the Rubi panel", "HOME_BOT_MESSAGE", `"Not installed yet?"`, "No Bot on that Mac?"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("app.js lacks %q", want)
 		}
 	}
 	if strings.Contains(s, "Intel Mac\"") || strings.Contains(s, "macos-arm64.zip") {
 		t.Error("the panel offers a per-CPU download: one universal app is the only link")
-	}
-	if strings.Contains(s, "open Terminal and run") {
-		t.Error("a Mac user is still sent to Terminal")
 	}
 	i := strings.Index(s, "function homeDeviceScreen")
 	if i < 0 {
@@ -381,9 +379,67 @@ func TestHomeScreenOffersTheDownloadNotATerminal(t *testing.T) {
 	if plain < 0 {
 		t.Error("without a waiting code, the install steps must come first")
 	}
-	// The Linux line is inside the "On Linux" fold, never loose.
-	if strings.Index(s, `"On Linux"`) > strings.Index(s, "h(\"code\", {}, HOME_INSTALL)") {
-		t.Error("the script line is outside the Linux fold")
+	// the Bot message comes before the Mac download, and the download is folded
+	steps := jsFunc(t, s, "homeInstallSteps")
+	msg, dl := strings.Index(steps, "HOME_BOT_MESSAGE"), strings.Index(steps, `h("details"`)
+	if msg < 0 || dl < 0 || msg > dl || !strings.Contains(steps[dl:], "home-dl") {
+		t.Error("the Bot message must come first and the Mac download must sit in a fold under it")
+	}
+}
+
+// TestHomeScreenNeverShowsACommandToType: the user is never shown a command on the "Add a home computer" screen
+// (project rule 2). The installer line is the Bot's, in install.md; the panel holds none of it.
+func TestHomeScreenNeverShowsACommandToType(t *testing.T) {
+	s := readRepo(t, "panel/js/app.js")
+	for _, f := range []string{"homeInstallSteps", "homeDeviceScreen"} {
+		body := jsFunc(t, s, f)
+		for _, bad := range []string{"curl", "install-home.sh", "| sh", "terminal", "Terminal", "HOME_INSTALL", `class: "cmd"`, "sudo"} {
+			if strings.Contains(body, bad) {
+				t.Errorf("%s shows %q: the user would be told to type a command", f, bad)
+			}
+		}
+	}
+	if strings.Contains(s, "HOME_INSTALL") || strings.Contains(s, "install-home.sh") {
+		t.Error("the panel still names the installer script")
+	}
+}
+
+// TestHomeBotMessageIsWhatInstallMdServes: the message the panel gives the user is the one the Bot's page answers.
+// install.md is the Bot skill (pages.yml publishes it), and its Home section is what the Bot follows.
+func TestHomeBotMessageIsWhatInstallMdServes(t *testing.T) {
+	s := readRepo(t, "panel/js/app.js")
+	m := regexp.MustCompile(`const HOME_BOT_MESSAGE = "([^"]+)";`).FindStringSubmatch(s)
+	if m == nil {
+		t.Fatal("no HOME_BOT_MESSAGE in app.js")
+	}
+	if m[1] != "Install Rubi Home on this computer by following https://rubi-panel.com/install.md" {
+		t.Errorf("the Bot message is %q", m[1])
+	}
+	for _, bad := range []string{"curl", "|", "sudo", "`"} {
+		if strings.Contains(m[1], bad) {
+			t.Errorf("the Bot message holds %q: it is a sentence and a link", bad)
+		}
+	}
+	if !strings.Contains(readRepo(t, ".github/workflows/pages.yml"), "cp skills/grok-bot/rubi-project/SKILL.md panel/install.md") {
+		t.Fatal("pages.yml does not publish the Bot skill as install.md")
+	}
+	skill := readRepo(t, "skills/grok-bot/rubi-project/SKILL.md")
+	i := strings.Index(skill, "## Install Rubi Home on the user's computer")
+	if i < 0 {
+		t.Fatal("install.md has no section for installing Rubi Home")
+	}
+	sec := skill[i:]
+	if j := strings.Index(sec[3:], "\n## "); j >= 0 {
+		sec = sec[:j+3]
+	}
+	for _, want := range []string{m[1], "https://rubi-panel.com/install-home.sh", "~/.rubi-home/bin/rubi-home open", "macOS", "Linux", "Windows is not supported yet"} {
+		if !strings.Contains(sec, want) {
+			t.Errorf("the Home section of install.md lacks %q", want)
+		}
+	}
+	// the script the Bot is told to run is the one the Pages deploy serves
+	if _, err := os.Stat(filepath.Join(root(t), "panel", "install-home.sh")); err != nil {
+		t.Errorf("install.md names install-home.sh, but panel/install-home.sh is missing: %v", err)
 	}
 }
 

@@ -101,10 +101,10 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
   the latest release's zip, with these steps:
   1. open the zip;
   2. open Rubi Home;
-  3. if macOS says it can't check the developer, open System Settings, Privacy & Security, and press Open Anyway;
+  3. when macOS says it can't check Rubi Home, open System Settings, Privacy & Security, and press Open Anyway;
   4. press Pair here.
-- **Linux** keeps the script line for now: there is no desktop installer. It stays on the allow-list as T-01L, and is
-  shown only under "On Linux".
+- **Linux** has no desktop installer: its Bot installs Home (install.md), and the panel shows no script line (the
+  former T-01L entries are gone).
 - **Checks.**
   - A test for the bundle layout, run on the script the release uses.
   - The first-run logic, tested with a temporary home directory and a fake `launchctl`.
@@ -112,9 +112,8 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
 
 ## Open points for the owner
 
-- **Developer ID.** Signing and notarizing with an Apple Developer ID would remove the "Open Anyway" step. It needs a
-  paid Apple developer account, so it is the owner's choice. The release step will take the signing identity from
-  secrets when they exist.
+- **Developer ID: decided, none.** The app is signed ad hoc; the project does not plan a Developer ID signature. The
+  Mac app is the fallback for users without a Bot; the Bot installs Home without it.
 - **Updating the hook asks for the administrator password on the Home computer itself.** A phone can't answer it;
   macOS allows nothing else for a root-owned file.
 - **H3 can't run on a Mac whose live Rubi Home must stay as it is.** The manual check uses a separate macOS user
@@ -178,7 +177,9 @@ leaves `internal/repocheck/testdata/usertext_allow.txt`.
   - `LSMinimumSystemVersion` is 13.0 (nothing else in the repo names a macOS version; Go 1.26 itself runs on 12).
   - `docs/user` and the README never told a Mac user to install Rubi Home with `curl` (their only `curl` is the
     Rubi install message, T-06), so no page needed rewriting.
-  - The allow-list keeps two T-01L lines (the script line and "open a terminal and run:"), both inside "On Linux".
-    The task pattern in `usertext_test.go` accepts `T-01L`.
-  - Signing and notarizing: only a marked TODO in `release.yml`, no code.
+  - The allow-list kept two T-01L lines (the script line and "open a terminal and run:"), inside "On Linux". They
+    are gone: the owner amended rule 2 (commands the Bot runs are allowed), the panel now leads with a message to
+    the Bot, and the Bot installs Home on macOS and Linux (install.md). The Mac app is folded under it for users
+    without a Bot; Linux without a Bot has no path.
+  - Signing and notarizing: not planned (see the open points); `release.yml` says so where the app is sealed.
 - H4: not started.

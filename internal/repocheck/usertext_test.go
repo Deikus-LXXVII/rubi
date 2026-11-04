@@ -10,7 +10,14 @@ package repocheck
 //   - panel/js/*.js: every string and template literal.
 //   - docs/user/*.md: the whole file.
 //
-// What is exempt by path (userTextExempt): code and docs that are maintainer-facing.
+// What is exempt by path (userTextExempt): code and docs that are maintainer-facing, and texts addressed to the Bot
+// (skills, MCP tool descriptions and results, rubi --help). Project rule 2 allows commands the Bot runs on the
+// user's computer while the user types nothing, so a text the Bot reads may hold a command.
+//
+// In text the user reads, a command line is allowed only when its own sentence is handed to the Bot (see
+// botAddressed): "Tell your Bot: ...", "Ask your Bot to ...", "Your Bot runs ...". The sentence is the unit, so a
+// Bot phrase elsewhere in the paragraph does not cover a command addressed to the user, and a sentence that names
+// a terminal, a prompt, or "you" doing something is never covered.
 //
 // Existing violations are listed in testdata/usertext_allow.txt with a task reference each. A new violation fails,
 // and so does an entry that no longer matches anything: the list only ever shrinks.
@@ -37,6 +44,8 @@ var userTextExempt = map[string]string{
 	"cmd/rubi-gateway/":                  "the hosted gateway's own command line, run by the host operator",
 	"cmd/rubi-announce/":                 "release tool run by the maintainer",
 	"cmd/rubi/usage.go":                  "rubi's --help, read by the Bot that runs Rubi on its machine, not by the user",
+	"skills/":                            "Bot skills (also served as rubi-panel.com/install.md): written for the Bot, which runs the commands while the user only confirms",
+	"internal/mcpserver/":                "the MCP server speaks only to the Bot: its tool descriptions and results are instructions for the Bot to run",
 	"internal/plugins/plugintest/":       "test helper plugins, never shipped",
 	"internal/e2e/":                      "test support",
 	"sdk/skillscan/":                     "the skill scanner's own rules: it names sudo and friends to flag them",
@@ -105,20 +114,75 @@ type violation struct {
 	ids  []string
 }
 
+// scan returns the violation in a text, or nil. A matching sentence that is handed to the Bot is not one.
 func scan(pats []textPattern, file, text string) *violation {
 	if strings.HasPrefix(text, "usage:") || statement.MatchString(text) { // diagnostics of a program go to whoever called it
 		return nil
 	}
+	whole := matched(pats, text)
+	if len(whole) == 0 {
+		return nil
+	}
+	var ids []string
+	for _, sen := range sentences(text) {
+		if m := matched(pats, sen); len(m) > 0 && !botAddressed(sen, m) {
+			ids = append(ids, m...)
+		}
+	}
+	if len(ids) == 0 {
+		// no sentence is a violation by itself: either all are for the Bot, or the pattern needed more than one sentence
+		for _, sen := range sentences(text) {
+			if m := matched(pats, sen); len(m) > 0 {
+				return nil
+			}
+		}
+		ids = whole
+	}
+	return &violation{file: file, text: text, ids: ids}
+}
+
+func matched(pats []textPattern, text string) []string {
 	var ids []string
 	for _, p := range pats {
 		if p.re.MatchString(text) {
 			ids = append(ids, p.id)
 		}
 	}
-	if len(ids) == 0 {
-		return nil
+	return ids
+}
+
+// sentences splits a text at a line break or at a full stop, "!" or "?" followed by white space (a URL or a file name
+// has no space after its dots, so a command stays whole).
+func sentences(text string) []string {
+	var out []string
+	for _, ln := range strings.Split(text, "\n") {
+		for _, p := range regexp.MustCompile(`[.!?]\s+`).Split(ln, -1) {
+			if strings.TrimSpace(p) != "" {
+				out = append(out, p)
+			}
+		}
 	}
-	return &violation{file: file, text: text, ids: ids}
+	return out
+}
+
+// The sentence opens by handing the rest to the Bot. It is anchored at the start of the sentence (only quotes,
+// bullets and emphasis may come before), so "Tell your Bot" in the middle of a paragraph covers nothing.
+var botHandoff = regexp.MustCompile(`(?i)^\W*(?:(?:tell|ask) your (?:grok )?bot(?::|\s+to\b)|send this to your (?:grok )?bot:|your (?:grok )?bot (?:runs|will run)\b)`)
+
+// Words that show the sentence still asks something of the person: "you", typing, pasting, "yourself".
+var userDoes = regexp.MustCompile(`(?i)\b(you|yourself|type|paste|copy)\b`)
+
+// botAddressed says whether a sentence that holds a command is handed to the Bot (project rule 2: the Bot runs the
+// command on the user's computer, the user only confirms). It is not when the sentence names a terminal or a prompt
+// (those are the user's), or when anything after the hand-off asks the user to do something.
+func botAddressed(sentence string, ids []string) bool {
+	for _, id := range ids {
+		if id == "terminal" || id == "shell-prompt" {
+			return false
+		}
+	}
+	loc := botHandoff.FindStringIndex(sentence)
+	return loc != nil && !userDoes.MatchString(sentence[loc[1]:])
 }
 
 func exempt(rel string) bool {
@@ -302,6 +366,54 @@ func TestUserTextPatterns(t *testing.T) {
 	} {
 		if hit(s) {
 			t.Errorf("caught by mistake: %q", s)
+		}
+	}
+}
+
+// A command line in user-facing text is allowed only in a sentence handed to the Bot (project rule 2).
+func TestACommandHandedToTheBotIsAllowedAndOneAddressedToTheUserIsNot(t *testing.T) {
+	pats := patterns(t)
+	hit := func(s string) bool { return scan(pats, "x", s) != nil }
+	for _, s := range []string{
+		"Tell your Bot: run `rubi status` on this computer.",
+		"Tell your Grok Bot: install it with curl -fsSL https://rubi-panel.com/install-home.sh | sh",
+		"Ask your Bot to run `sudo rubi-home install-hook`. macOS asks for the password in its own window.",
+		"Your Bot runs ~/.rubi-home/bin/rubi-home open and sends the link.",
+		"**Tell your Bot:** run `rubi-home pair`",
+		"Open the panel.\nTell your Bot: run `rubi update`.",
+	} {
+		if hit(s) {
+			t.Errorf("a command handed to the Bot was refused: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"Open Terminal and type `rubi status`.",
+		"In a terminal, run `rubi status`.",
+		"Run `rubi status` on that computer.",
+		"curl -fsSL https://rubi-panel.com/install-home.sh | sh",
+		// a Bot phrase elsewhere in the paragraph does not cover a command addressed to the user
+		"Tell your Bot you are ready. Then run `rubi status` yourself.",
+		"Run `sudo ls`. Tell your Bot: thanks.",
+		"Your Bot knows what to do.\nRun `rubi status` on that computer.",
+		// a Bot phrase in the same sentence does not cover a terminal, a prompt, or something the user does
+		"Tell your Bot: all is fine, but open Terminal and run `ls`.",
+		"Tell your Bot to wait, then you run `rubi status`.",
+		"Tell your Bot: paste curl -fsSL https://x | sh and press Return.",
+		"Tell your Bot:\n$ rubi status",
+		"Please tell your Bot: run `rubi status`",
+		"Ask the user to run `rubi status`, tell your Bot: done",
+	} {
+		if !hit(s) {
+			t.Errorf("a command addressed to the user was allowed: %q", s)
+		}
+	}
+}
+
+// Every path the scan skips must exist, or a rename would leave a stale exemption that skips whatever takes its place.
+func TestExemptPathsExist(t *testing.T) {
+	for p := range userTextExempt {
+		if _, err := os.Stat(filepath.Join(root(t), filepath.FromSlash(p))); err != nil {
+			t.Errorf("userTextExempt names %s, which does not exist: %v", p, err)
 		}
 	}
 }

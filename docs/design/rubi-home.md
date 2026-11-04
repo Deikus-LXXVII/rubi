@@ -22,13 +22,16 @@ things on Rubi's request.
 
 ## Pairing
 
-1. On the home computer, install Rubi Home. On a Mac the user downloads `Rubi Home.app` (a zip) from the panel's
-   "Add a home computer" screen, opens the zip and opens Rubi Home: no terminal (see "The Mac app" below). On
-   Linux, which has no desktop installer yet, the script `curl -fsSL https://rubi-panel.com/install-home.sh | sh`
-   does the same (T-01L). Either way the helper starts at login (LaunchAgent / systemd user service). The script
-   verifies the release signature and prints a pairing code: the helper's routing key, public identity and relays,
-   plus a one-time secret valid for 15 minutes. Opening Rubi Home makes a new one (`rubi-home pair` still prints
-   one, a maintainer tool).
+1. On the home computer, the user's Grok Bot installs Rubi Home: the user sends it the message the panel's "Add a
+   home computer" screen gives ("Install Rubi Home on this computer by following https://rubi-panel.com/install.md"),
+   and the Bot runs `install-home.sh` itself, then `~/.rubi-home/bin/rubi-home open` (the section "Install Rubi Home on
+   the user's computer" of the Bot skill, which is install.md). The user types nothing and only confirms what the
+   system asks. This is the main path, on macOS and Linux; Windows is not supported yet. A Mac user with no Bot
+   downloads `Rubi Home.app` (a zip) from the same screen, opens the zip and opens Rubi Home (see "The Mac app"
+   below); Linux without a Bot has no path, because the user would have to type the script line (rule 2). Either
+   way the helper starts at login (LaunchAgent / systemd user service). The script verifies the release signature
+   and prints a pairing code: the helper's routing key, public identity and relays, plus a one-time secret valid
+   for 15 minutes. Opening Rubi Home makes a new one (`rubi-home pair` still prints one, a maintainer tool).
 2. Opening Rubi Home (`rubi-home open`) shows a window on macOS with the computer's name and fingerprint.
    A code is made only when the user presses **Open the Rubi panel** or **Copy the code**; a pending code that
    is still good (a minute left, not worn out) is reused, so Close leaves nothing live.
@@ -80,7 +83,9 @@ feed unreachable) the button goes to the releases page and says so.
 
 **Trust model.** The app path trusts two things: the HTTPS download from the GitHub release, and macOS Gatekeeper
 (an ad-hoc signature, no Developer ID). The signed `SHA256SUMS` lists the zip, but nothing on the Mac checks it.
-The script path (`install-home.sh`, Linux) does check it, against the release key. The panel does not show a hash
+The script path (`install-home.sh`, run by the Bot) does check it, against the release key; this is why the Bot is the
+main path and the app the fallback. On Linux the PIN is printed in the output of the command the Bot runs, so the
+Bot sees it (on macOS it is only in the window); the Bot cannot approve the pairing, which needs the user's passkey. The panel does not show a hash
 either: the feed carries no asset hashes, and a hash from the same HTTPS origin as the link would prove nothing a
 download of the file does not. A person who wants the check can compare the zip with `SHA256SUMS` and
 `SHA256SUMS.sig`, which are on the release page. Verifying the signed sums inside the app is possible later (the app
@@ -161,8 +166,9 @@ Checked on macOS (Darwin 27, arm64) with the release's build flags, `codesign` r
   notarized, so Gatekeeper refuses the first open: "macOS can't check it for malware", and Privacy & Security then
   offers **Open Anyway** (the panel's step 3). This is not tested here: the app was not run. The H4 check on a
   test account confirms it.
-- **Developer ID.** Signing and notarizing with a Developer ID would remove the Open Anyway step. It needs a paid
-  Apple developer account, the owner's choice; it is a marked TODO in the `mac-app` job of `release.yml`.
+- **No Developer ID.** The app is signed ad hoc; the project does not plan a Developer ID signature. The Mac app is
+  the fallback for users without a Bot; the Bot installs Home without it. The panel tells the user the Open Anyway
+  step is expected.
 
 ## Watching Rubi
 

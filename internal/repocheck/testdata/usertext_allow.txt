@@ -3,7 +3,4 @@
 # The test fails on a new violation and on a line here that matches nothing any more, so this list only shrinks.
 # The T-nn tasks are listed in docs/project-rules.md ("Known gaps", rule 2).
 
-# T-01L: Linux has no desktop installer, so its box still gets the script line (shown only under "On Linux" in the panel)
-panel/js/app.js || curl -fsSL https://rubi-panel.com/install-home.sh || T-01L: no desktop installer for Linux yet
-panel/js/app.js || open a terminal and run: || T-01L: no desktop installer for Linux yet
-
+# (empty: no text tells the user to type a command. The Linux script line left with the panel's Bot-first install, T-01L.)

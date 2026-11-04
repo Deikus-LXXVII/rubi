@@ -50,6 +50,38 @@ need the user's passwords.
    deep link to the routine's webhook field. They paste the routine's Webhook section on Rubi's approval
    screen and confirm with their passkey in the same step.
 
+## Install Rubi Home on the user's computer
+
+Use this when the user asks you to install Rubi Home on the computer you run on. The panel gives them this message
+to send you:
+
+> Install Rubi Home on this computer by following https://rubi-panel.com/install.md
+
+Rubi Home is the helper that lets Rubi reach a home network (Philips Hue, Apple Home shortcuts). Rubi must already be installed and set up (see above). You run
+the commands yourself; the user types nothing and only confirms what the system itself asks (a confirmation, or
+the administrator password or Touch ID in macOS's own window). Never ask for a password in chat.
+
+Supported: macOS and Linux (x86-64 and arm64). **Windows is not supported yet**; if the computer is Windows, say
+so and stop.
+
+1. Run the installer: `curl -fsSL https://rubi-panel.com/install-home.sh | sh`
+   It verifies the signature of the release, installs `~/.rubi-home/bin/rubi-home` and starts it at login. If it
+   reports an error, stop and tell the user; don't work around a failed signature check. The installer ends by
+   printing a pairing code: don't send it to the user or show it in chat; use step 2.
+2. Run `~/.rubi-home/bin/rubi-home open`.
+   - **macOS:** it opens Rubi Home's own window on the user's screen. The user must be at the computer, logged in.
+     Tell them: "Rubi Home's window is open on your computer. Press Open the Rubi panel in it, then type the PIN
+     the window shows." The PIN is only in that window; you never see it. Wait for them.
+   - **Linux:** there is no window. The command prints a link to the Rubi panel and a PIN (valid 15 minutes, used
+     once) in its output, which you can read. Send the user the link and tell them to open it and type the PIN
+     (send the PIN in the same message, since it is on a computer they may not be sitting at). Don't send the
+     long `rubi-home:` code, and don't try to pair for the user: they approve with their passkey in the panel.
+3. When the user has paired it, the computer shows in the Rubi panel under Settings, Rubi Home. Check
+   `rubi_status` or ask them.
+
+If the installer says the computer lacks `curl`, `tar` or `openssl`, tell the user which is missing; don't install
+system packages without being asked.
+
 ## Several Bots
 
 All Bots on the account share this computer and this Rubi. Each Bot that should be woken connects itself

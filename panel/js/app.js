@@ -1975,7 +1975,10 @@ async function hookProgressScreen(ctx, d, back) {
   if (status.isConnected) status.textContent = "Rubi didn't hear back from that computer. Check it there, or try again.";
 }
 
-const HOME_INSTALL = "curl -fsSL https://rubi-panel.com/install-home.sh | sh";
+// The message the user sends their Bot to put Rubi Home on a computer. The Bot reads the same page the install
+// message of Rubi itself names (rubi-panel.com/install.md, the Bot skill), section "Install Rubi Home on the user's
+// computer". A Bot, not the user, runs the installer (project rule 2).
+const HOME_BOT_MESSAGE = "Install Rubi Home on this computer by following https://rubi-panel.com/install.md";
 
 // homeWhoLine says which computer a code belongs to ("Mac mini · pX3k-9QaL"), worked out here from the code;
 // the user compares it with Rubi Home's window. The text starts with `lead` and is filled in when the hash is done.
@@ -1990,9 +1993,11 @@ function homeWhoLine(code, lead) {
   return line;
 }
 
-// homeInstallSteps is how to get Rubi Home onto a Mac with no terminal: download the app, open it, press a button in
-// its window. The link points at the newest release's file when the site's release feed says the release has it;
-// until then, or when it does not, it goes to the releases page. One app serves both kinds of Mac. Linux has no app yet.
+// homeInstallSteps is how to get Rubi Home onto a computer. The main way is the user's Bot: it installs Rubi Home on
+// the computer it runs on and opens the pairing window, and the user only confirms what the system asks. For a Mac
+// with no Bot there is the app: download it, open it, press a button in its window. The link points at the newest
+// release's file when the site's release feed says the release has it; until then, or when it does not, it goes to
+// the releases page. One app serves both kinds of Mac. Linux has the Bot way only; the user is never shown a command.
 function homeInstallSteps(ctx) {
   const note = h("p", { class: "muted small" });
   const dl = h("a", { class: "btn primary home-download", href: HOME_RELEASES, target: "_blank", rel: "noopener noreferrer" }, icon("download", 18), "Download Rubi Home for Mac");
@@ -2015,18 +2020,19 @@ function homeInstallSteps(ctx) {
       .finally(() => clearTimeout(timer));
   }
   return [
-    h("div", { class: "home-dl" }, dl, note),
-    h("ol", { class: "steps-list" },
-      h("li", {}, "Open the file you downloaded. Your Mac unzips it into Rubi Home."),
-      h("li", {}, "Open Rubi Home. It installs itself and starts whenever you log in."),
-      h("li", {}, "If macOS says it can't check Rubi Home for malware or the developer, open System Settings, then Privacy & Security, and press Open Anyway next to Rubi Home. Then open it again."),
-      h("li", {}, "In Rubi Home's window press Open the Rubi panel. Open Rubi from your own link, and type the PIN the window shows here.")),
+    h("p", { class: "install-label" }, "On the computer you are adding, tell your Grok Bot:"),
+    h("div", { class: "prompt" }, HOME_BOT_MESSAGE),
+    copyButton(HOME_BOT_MESSAGE, "Copy the message"),
+    h("p", { class: "muted" }, "Your Bot installs Rubi Home and checks its signature. Your computer may ask you to confirm, or for your password or Touch ID in its own window; that is all you do. On a Mac a Rubi Home window then opens: press Open the Rubi panel there. On Linux your Bot sends you a link to open and a PIN to type."),
     h("p", { class: "muted small" }, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run."),
     h("details", { class: "sideload" },
-      h("summary", {}, "On Linux"),
-      h("p", { class: "muted" }, "There is no desktop installer for Linux yet. On that computer, open a terminal and run:"),
-      h("div", { class: "cmd" }, h("code", {}, HOME_INSTALL), copyButton(HOME_INSTALL)),
-      h("p", { class: "muted" }, "It prints a pairing code. Paste it in the box below.")),
+      h("summary", {}, "No Bot on that Mac? Download the app"),
+      h("div", { class: "home-dl" }, dl, note),
+      h("ol", { class: "steps-list" },
+        h("li", {}, "Open the file you downloaded. Your Mac unzips it into Rubi Home."),
+        h("li", {}, "Open Rubi Home. It installs itself and starts whenever you log in."),
+        h("li", {}, "macOS will say it can't check Rubi Home. That is expected: open System Settings, then Privacy & Security, scroll down and press Open Anyway, then open Rubi Home again."),
+        h("li", {}, "In Rubi Home's window press Open the Rubi panel. Open Rubi from your own link, and type the PIN the window shows here."))),
   ];
 }
 
