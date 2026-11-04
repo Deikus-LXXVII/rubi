@@ -130,12 +130,21 @@ func TestHangingDiskDoesNotBlockTheList(t *testing.T) {
 	tr := filepath.Join(dir, "projects")
 	writeFile(t, filepath.Join(tr, "a", "s-good.jsonl"), `{"cwd":"`+good+`"}`+"\n")
 	writeFile(t, filepath.Join(tr, "b", "s-hung.jsonl"), `{"cwd":"`+hung+`"}`+"\n")
+	// The hung session is the newest, so the scan reaches it first: the good one must not be left with
+	// what is answered at once after that wait. Its read is slow, as on a loaded machine.
+	now := time.Now()
+	for name, age := range map[string]time.Duration{"a/s-good.jsonl": time.Minute, "b/s-hung.jsonl": 0} {
+		if err := os.Chtimes(filepath.Join(tr, name), now, now.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var hungReads atomic.Int32
 	r := &sessionRegistry{readGit: func(d string) gitInfo {
 		if strings.HasPrefix(d, "/Volumes/Hung") {
 			hungReads.Add(1)
 			<-block // a blocked open(2): never returns while the disk hangs
 		}
+		time.Sleep(300 * time.Millisecond)
 		return readGitInfo(d)
 	}}
 	for round := 0; round < 3; round++ { // the stuck read is reused, not started again each scan
