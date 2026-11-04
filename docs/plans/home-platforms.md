@@ -650,6 +650,7 @@ line. Stage names only; the order is the dependency order.
 
 ### P9 MicroVM backend for Linux
 
+- **Status (spike done, owner's decisions of 2026-11-05).** The open questions of 2.7 are answered in `docs/design/linux-microvm.md`: QEMU/KVM with virtio-fs (virtiofsd) and a virtio-serial control channel; QEMU and virtiofsd are pinned builds signed with the release key, like T3 and Node; virtiofsd runs with `--sandbox none` under a Landlock rule set of the launcher (Ubuntu 24.04 gives unconfined programs no capable user namespace). Built so far: `internal/home/agent/microvm` (the QEMU and virtiofsd command lines, the guest's mount table, the KVM check) with its tests. Not yet: the guest agent, the launcher, the CI builds, the backend, T3 sessions, and the live test, which waits for a test machine with KVM.
 - **Work.** A spike first, to answer the open questions of 2.7 (KVM access, virtio-fs or 9p, shipping QEMU and
   `virtiofsd`, vsock or serial); then the guest agent, the CI build of the kernel and root file system, the backend,
   the setup wizard steps (KVM present, QEMU present or installed, image downloaded and checked), and the sweep.
