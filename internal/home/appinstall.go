@@ -1,10 +1,8 @@
 package home
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -12,8 +10,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strings"
-	"text/template"
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
@@ -25,64 +21,10 @@ import (
 // -psn_...). RunApp is then the whole install and update: copy the binary to where the script installer puts it,
 // write and load the same LaunchAgent, wait for the helper, show the pairing window. Nothing is typed anywhere.
 
-// AgentLabel is the LaunchAgent's label (and the app's bundle identifier).
-const AgentLabel = "com.rubi-project.home"
-
 const (
 	appWaitLimit = 10 * time.Second
 	appPoll      = 250 * time.Millisecond
-	launchctl    = "/bin/launchctl"
 )
-
-// IsAppLaunch says whether Finder opened the app: no arguments (or only -psn_*), from a *.app/Contents/MacOS/ folder
-// whose Contents/Info.plist names this app. A bare run of the binary elsewhere keeps printing its usage.
-func IsAppLaunch(args []string, exe string) bool {
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-psn_") {
-			return false
-		}
-	}
-	return InAppBundle(exe) && bundleID(filepath.Join(filepath.Dir(filepath.Dir(exe)), "Info.plist")) == AgentLabel
-}
-
-// bundleID is the CFBundleIdentifier of an XML Info.plist (the build script writes one), or "".
-func bundleID(path string) string {
-	f, err := os.Open(path)
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	dec := xml.NewDecoder(io.LimitReader(f, 64<<10))
-	var key, text string
-	var in, wantValue bool
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return ""
-		}
-		switch e := tok.(type) {
-		case xml.StartElement:
-			if e.Name.Local == "key" || e.Name.Local == "string" {
-				in, text = true, ""
-			}
-		case xml.CharData:
-			if in {
-				text += string(e)
-			}
-		case xml.EndElement:
-			switch e.Name.Local {
-			case "key":
-				key, in, wantValue = text, false, true
-			case "string":
-				in = false
-				if wantValue && key == "CFBundleIdentifier" {
-					return strings.TrimSpace(text)
-				}
-				wantValue = false
-			}
-		}
-	}
-}
 
 // UserHome is the user's home folder from the account database (the environment can lie), else $HOME; it must be
 // an absolute path.
@@ -100,47 +42,6 @@ func UserHome() (string, error) {
 	return filepath.Clean(h), nil
 }
 
-// InAppBundle is true for <name>.app/Contents/MacOS/<file>.
-func InAppBundle(exe string) bool {
-	if exe == "" {
-		return false
-	}
-	macos := filepath.Dir(exe)
-	contents := filepath.Dir(macos)
-	return filepath.Base(macos) == "MacOS" && filepath.Base(contents) == "Contents" &&
-		strings.HasSuffix(filepath.Base(filepath.Dir(contents)), ".app")
-}
-
-// AgentPlistTemplate is the LaunchAgent that panel/install-home.sh writes, with its two variables: Bin is the
-// installed binary and Logs the log folder. A test keeps the script and this one the same.
-const AgentPlistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.rubi-project.home</string>
-  <key>ProgramArguments</key><array><string>{{xml .Bin}}</string><string>run</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ProcessType</key><string>Background</string>
-  <key>StandardOutPath</key><string>{{xml .Logs}}/rubi-home.log</string>
-  <key>StandardErrorPath</key><string>{{xml .Logs}}/rubi-home.log</string>
-</dict>
-</plist>
-`
-
-var agentPlist = template.Must(template.New("agent").Funcs(template.FuncMap{"xml": func(s string) (string, error) {
-	var b bytes.Buffer
-	err := xml.EscapeText(&b, []byte(s))
-	return b.String(), err
-}}).Parse(AgentPlistTemplate))
-
-// AgentPlist is the LaunchAgent file for a binary and a log folder.
-func AgentPlist(bin, logs string) (string, error) {
-	var b bytes.Buffer
-	err := agentPlist.Execute(&b, struct{ Bin, Logs string }{bin, logs})
-	return b.String(), err
-}
-
 // AppEnv is what RunApp touches; tests replace every part.
 type AppEnv struct {
 	Home      string // the user's home folder (~/.rubi-home and ~/Library/LaunchAgents are in it)
@@ -151,6 +52,7 @@ type AppEnv struct {
 	HasLog    bool   // the app log is being written, so a dialog may point to it
 	Run       RunFunc
 	Dialogs   Dialogs                           // the notice and error dialogs; the desktop's when nil
+	Autostart Autostart                         // the start at login; the system's when nil
 	Version   func(path string) (string, error) // `path version` (an installed binary's version)
 	Now       func() time.Time
 	Sleep     func(time.Duration)
@@ -213,6 +115,9 @@ func (env *AppEnv) defaults() {
 	if env.OpenTimeout == 0 {
 		env.OpenTimeout = 10 * time.Minute
 	}
+	if env.Autostart == nil { // last: it takes the clock, the log and the timeout set above
+		env.Autostart = NewAutostart(AutostartEnv{Run: env.Run, Home: env.Home, UID: env.UID, Logf: env.Logf, Sleep: env.Sleep, CallTimeout: env.CallTimeout})
+	}
 }
 
 // show puts up a one-button dialog; it gives up after DialogTimeout.
@@ -226,14 +131,6 @@ func (env AppEnv) show(ctx context.Context, text string) {
 	if _, err := env.Dialogs.Message(ctx, text, btnOK); err != nil {
 		env.Logf("rubi-home app: a dialog: %v", err)
 	}
-}
-
-// launch runs launchctl under CallTimeout.
-func (env AppEnv) launch(ctx context.Context, args ...string) error {
-	ctx, cancel := context.WithTimeout(ctx, env.CallTimeout)
-	defer cancel()
-	_, err := env.Run(ctx, "", launchctl, args...)
-	return err
 }
 
 // RunApp is what opening the app does. A failure is logged and shown in a dialog (the dialog has no command in
@@ -277,20 +174,18 @@ func runApp(ctx context.Context, env AppEnv) error {
 	} else if res.kept {
 		env.show(ctx, fmt.Sprintf("Another build of Rubi Home (%s) is already installed; this app is %s. The installed one stays.", shownVersion(res.installed), shownVersion(env.Self)))
 	}
-	plist := filepath.Join(env.Home, "Library", "LaunchAgents", AgentLabel+".plist")
-	plistChanged, err := writeAgent(plist, bin, logs, env.Logf)
+	started, err := env.Autostart.Install(ctx, AutostartSpec{Bin: bin, Logs: logs, BinChanged: res.changed})
 	if err != nil {
-		return appFail("Rubi Home could not set itself up to start when you log in.", err)
-	}
-	loaded, restarted, err := loadAgent(ctx, env, plist, res.changed, plistChanged)
-	if err != nil {
+		if errors.Is(err, errAutostartWrite) {
+			return appFail("Rubi Home could not set itself up to start when you log in.", err)
+		}
 		return appFail("Rubi Home could not start itself.", err)
 	}
 	err = waitForHelper(ctx, env, bin)
-	if err != nil && loaded && !restarted && ctx.Err() == nil {
+	if err != nil && started.WasLoaded && !started.Restarted && ctx.Err() == nil {
 		// Loaded, yet nothing answers: the process is stuck or gone. Restart it once.
 		env.Logf("rubi-home app: the loaded agent does not answer; restarting it: %v", err)
-		if kerr := env.launch(ctx, "kickstart", "-k", fmt.Sprintf("gui/%d/%s", env.UID, AgentLabel)); kerr != nil {
+		if kerr := env.Autostart.Restart(ctx); kerr != nil {
 			return appFail("Rubi Home was installed but did not start. Open it again in a minute.", fmt.Errorf("restarting the agent: %w", kerr))
 		}
 		err = waitForHelper(ctx, env, bin)
@@ -448,87 +343,6 @@ func fileSum(path string) ([32]byte, error) {
 	}
 	copy(sum[:], h.Sum(nil))
 	return sum, nil
-}
-
-// writeAgent writes the LaunchAgent file unless it is already exactly this; it reports whether it wrote. A symlink
-// in its place is replaced by a regular file (the rename does that) and logged.
-func writeAgent(path, bin, logs string, logf func(string, ...any)) (bool, error) {
-	want, err := AgentPlist(bin, logs)
-	if err != nil {
-		return false, err
-	}
-	if fi, err := os.Lstat(path); err == nil {
-		if fi.Mode().IsRegular() {
-			if have, err := os.ReadFile(path); err == nil && string(have) == want {
-				return false, nil
-			}
-		} else {
-			logf("rubi-home app: %s is not a regular file; replacing it", path)
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return false, err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".rubi-home-agent-*")
-	if err != nil {
-		return false, err
-	}
-	ok := false
-	defer func() {
-		if !ok {
-			tmp.Close()
-			os.Remove(tmp.Name())
-		}
-	}()
-	if _, err := tmp.WriteString(want); err != nil {
-		return false, err
-	}
-	if err := tmp.Sync(); err != nil {
-		return false, err
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return false, err
-	}
-	ok = true
-	return true, nil
-}
-
-// loadAgent starts the agent: a new one (or a changed file) is booted out, if there, and bootstrapped; an
-// agent that is loaded with the same file is restarted only when the binary changed. It reports whether the
-// agent was loaded before and whether this call started (or restarted) it.
-func loadAgent(ctx context.Context, env AppEnv, plist string, binChanged, plistChanged bool) (loaded, restarted bool, err error) {
-	domain := fmt.Sprintf("gui/%d", env.UID)
-	loaded = env.launch(ctx, "print", domain+"/"+AgentLabel) == nil
-	if !loaded || plistChanged {
-		if err := env.launch(ctx, "bootout", domain, plist); err != nil {
-			env.Logf("rubi-home app: nothing to unload: %v", err) // normal for a first install
-		}
-		if err := env.launch(ctx, "bootstrap", domain, plist); err != nil {
-			// The unload can still be settling, or the user switched the agent off in Login Items: enable it, then once more.
-			env.Logf("rubi-home app: loading the agent failed, enabling it and trying again: %v", err)
-			if eerr := env.launch(ctx, "enable", domain+"/"+AgentLabel); eerr != nil {
-				env.Logf("rubi-home app: enabling the agent: %v", eerr)
-			}
-			env.Sleep(time.Second)
-			if err := env.launch(ctx, "bootstrap", domain, plist); err != nil {
-				return loaded, false, fmt.Errorf("loading the agent: %w", err)
-			}
-		}
-		return loaded, true, nil
-	}
-	if binChanged {
-		if err := env.launch(ctx, "kickstart", "-k", domain+"/"+AgentLabel); err != nil {
-			return loaded, false, fmt.Errorf("restarting the agent: %w", err)
-		}
-		return loaded, true, nil
-	}
-	return loaded, false, nil
 }
 
 // waitForHelper waits up to ten seconds for the helper to listen on its local socket: the first thing a

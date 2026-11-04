@@ -557,13 +557,33 @@ line. Stage names only; the order is the dependency order.
   on Windows. The argv, the stdin and the answer handling are tested with fake programs; the windows themselves need a
   look on a Linux desktop and on Windows 11.
 
-### P4 Autostart and the app flow
+### P4 Autostart and the app flow (done)
 
-- **Work.** 2.3: `Autostart` with launchd (moved), systemd user and Scheduled Task; `install-autostart`; the shell
-  installer calls it; `IsAppLaunch` moves to `app_darwin.go` with a `false` for the others.
-- **Done when.** On each OS Home starts at login, restarts after a crash, and an update restarts it.
-- **Tests.** Fake `Run` tests for the launchd calls (exist), the systemd calls and the task XML; unit file and task
-  XML golden files; a manual log-out and log-in on each OS. Removes the P4 lines.
+- **Work.**
+  - `Autostart` (`autostart.go`): `Install`, `Restart`, `Remove`, `Loaded`, per user and never elevated. One form per system:
+    - macOS (`app_darwin.go`, `autostart_darwin.go`): the LaunchAgent and the `launchctl` calls moved out of
+      `appinstall.go` unchanged. The app flow's tests (`appinstall_darwin_test.go`) are the old ones, unchanged, and
+      `AgentPlist` is still checked against the heredoc in `install-home.sh`.
+    - Linux (`autostart_systemd.go`): the systemd user unit. Its text and its calls (`daemon-reload`, `enable --now`,
+      `restart`) are what `install-home.sh` did, byte for byte for a plain path; a path with a space is quoted now.
+    - Windows (`autostart_schtasks.go`): a Scheduled Task of the user, from an XML file, run at that user's logon with
+      the interactive token and the least privilege. `validateTaskXML` refuses a startup trigger, a trigger or principal
+      for anyone else, a group, a system account, a password or S4U logon and the highest rights; `schtasks` is run
+      by its System32 path with no `/RU`, `/RP` or `/RL`; "access denied" is `ErrNeedsElevation` and nothing else is
+      tried. The approach (a standard user may register a task that runs as themselves at their own logon, which is how
+      per-user installers do it) is from Task Scheduler's documented behaviour and is not verified here: the CI job
+      creates and deletes a real task as an administrator, and a standard account needs a manual try.
+  - `IsAppLaunch`, `InAppBundle`, `bundleID` and the plist are in `app_darwin.go`; `app_notmac.go` has the same functions,
+    which say no.
+  - `RunApp` takes an `Autostart` (the system's by default) and keeps its sentences: a failed write is "could not set itself
+    up to start when you log in", any other failure "could not start itself".
+  - `rubi-home install-autostart [--bin PATH] [--remove]` (internal) makes the start at login with the same code;
+    `install-home.sh` runs it on Linux and no longer holds the unit. The macOS part of the script is untouched.
+  - `OpenAppLog` was already under `hostpaths.HelperHome` (P2).
+- **Allow-list.** The 7 P4 lines are gone. 18 are left: P5 4, P7 1, P8 13.
+- **Not done:** XDG autostart for a Linux box with no systemd; a start at login for Windows when the Task Scheduler refuses a
+  standard user (the run key, which restarts nothing); a log file for the Windows task (the task has no console, so
+  `rubi-home run` logs nowhere there yet).
 
 ### P5 The administrator step
 

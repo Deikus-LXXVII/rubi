@@ -17,6 +17,9 @@
 //	                         copy this binary to the root-owned hook path (default /usr/local/bin/rubi-home)
 //	                         with administrator rights, then verify it; --with-claude-plugin also installs the
 //	                         embedded Claude Code plugin (the sister tools) to a root-owned directory
+//	rubi-home install-autostart [--bin PATH] [--remove]
+//	                         internal, run by the installer: start Rubi Home at login (a systemd user unit, a Scheduled
+//	                         Task or a LaunchAgent, with the user's own rights), or take that away
 //	rubi-home claude-mcp     the stdio MCP server of the Claude Code plugin: rubi_sisters, rubi_ask, rubi_reply
 //	                         and rubi_inbox_status, for the sister bound to the calling session (reads no config)
 //	rubi-home claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS]
@@ -36,6 +39,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -108,6 +112,8 @@ func main() {
 		return
 	case "install-hook": // needs no configuration either
 		os.Exit(runInstallHook(os.Args[2:]))
+	case "install-autostart": // internal, run by the installer: the start at login; needs no configuration either
+		os.Exit(runInstallAutostart(os.Args[2:]))
 	}
 	dir := mustDir()
 	var h *home.Helper
@@ -329,6 +335,49 @@ func runInstallHook(args []string) int {
 	}
 	o.Src = exe
 	if err := home.InstallHook(context.Background(), os.Stdout, o); err != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runInstallAutostart is `rubi-home install-autostart [--bin PATH] [--remove]`; it returns the exit code. The installer runs
+// it (it is not for people to type): it makes Rubi Home start when the user logs in, with the system's own way.
+func runInstallAutostart(args []string) int {
+	var bin string
+	remove := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--remove":
+			remove = true
+		case "--bin":
+			if i+1 >= len(args) {
+				usage()
+			}
+			i++
+			bin = args[i]
+		default:
+			usage()
+		}
+	}
+	if bin == "" {
+		exe, err := home.RunningExecutable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "rubi-home: can't find this binary: %v\n", err)
+			return 1
+		}
+		bin = exe
+	}
+	homeDir, err := home.UserHome()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
+		return 1
+	}
+	as := home.NewAutostart(home.AutostartEnv{Home: homeDir, UID: os.Getuid()})
+	if err := home.RunInstallAutostart(context.Background(), as, homeDir, bin, remove); err != nil {
+		if errors.Is(err, home.ErrNeedsElevation) {
+			fmt.Fprintln(os.Stderr, "rubi-home: this computer needs administrator rights to start Rubi Home at login; Rubi Home does not ask for them, so it did not set that up")
+		}
 		fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
 		return 1
 	}

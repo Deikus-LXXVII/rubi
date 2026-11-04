@@ -106,24 +106,9 @@ PLIST
   launchctl bootstrap "gui/$(id -u)" "$plist"
   say "running at login (LaunchAgent com.rubi-project.home)"
 else
-  unit="$HOME/.config/systemd/user/rubi-home.service"
-  mkdir -p "$(dirname "$unit")"
-  cat > "$unit" <<UNIT
-[Unit]
-Description=Rubi Home
-After=network-online.target
-
-[Service]
-ExecStart=$bin run
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-UNIT
-  systemctl --user daemon-reload
-  systemctl --user enable --now rubi-home.service
-  systemctl --user restart rubi-home.service
+  # The systemd user unit is made by Rubi Home itself (the same code the apps use): the unit file, then daemon-reload,
+  # enable --now and restart, as this script used to do.
+  "$bin" install-autostart --bin "$bin" || fail "couldn't set Rubi Home up to start at login"
   say "running as a systemd user service (for it to run without you logged in: loginctl enable-linger)"
 fi
 

@@ -20,10 +20,14 @@ type progRun struct {
 	calls []progCall
 	out   map[string]string
 	err   map[string]error
+	run2  func() // called at each call, before it is answered (a test looks at the world then)
 }
 
 func (p *progRun) run(_ context.Context, stdin, name string, args ...string) (string, error) {
 	p.calls = append(p.calls, progCall{stdin, name, args})
+	if p.run2 != nil {
+		p.run2()
+	}
 	return p.out[name], p.err[name]
 }
 

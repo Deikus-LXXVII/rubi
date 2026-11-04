@@ -5,13 +5,6 @@
 internal/home/agent/apple.go || /usr/local/bin/container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/agent/apple.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/agentvm.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
-internal/home/appinstall.go || .plist file || P4: the plist, the app bundle and launchd calls move to the macOS autostart file
-internal/home/appinstall.go || /bin/launchctl || P4: launchd moves to autostart_darwin.go; systemd and Scheduled Task beside it
-internal/home/appinstall.go || Info.plist || P4: the plist, the app bundle and launchd calls move to the macOS autostart file
-internal/home/appinstall.go || LaunchAgents || P4: the plist, the app bundle and launchd calls move to the macOS autostart file
-internal/home/appinstall.go || Library || P4: the LaunchAgents path is built from ~/Library
-internal/home/appinstall.go || MacOS || P4: the plist, the app bundle and launchd calls move to the macOS autostart file
-internal/home/appinstall.go || property list || P4: the plist, the app bundle and launchd calls move to the macOS autostart file
 internal/home/home.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/installhook.go || /usr/bin/osascript || P5: the administrator run moves behind Elevator
 internal/home/installhook.go || AppleScript || P5: the administrator run moves behind Elevator
