@@ -100,8 +100,16 @@ func TestInstallHomePs1UsesTheBytesItChecked(t *testing.T) {
 			t.Errorf("install-home.ps1 contains %q: something may be written before the check", bad)
 		}
 	}
-	if i := strings.Index(main, "$bin"); i >= 0 && i < check {
-		t.Error("the install folder is used before the signature is checked")
+	// The signature that matters here is the list's (the feed has its own check, earlier); the installed copy is only asked
+	// for its version before it, and nothing on disk is made, moved or deleted.
+	check = strings.Index(main, "Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $sumsBytes $sigBytes")
+	if check < 0 {
+		t.Fatal("no check of the signed list in Main")
+	}
+	for _, act := range []string{"CreateDirectory", "File]::Move", "File]::Delete", "Stop-RunningCopy $bin", "FileStream"} {
+		if i := strings.Index(main, act); i >= 0 && i < check {
+			t.Errorf("%q comes before the signed list is checked", act)
+		}
 	}
 	if i := strings.Index(main, "ZipArchive"); i < check {
 		t.Error("the archive is opened before the signature is checked")
@@ -156,6 +164,13 @@ func TestInstallHomePs1RunsNoProgramToCheckTheSignature(t *testing.T) {
 			t.Errorf("a code line names openssl: %q", l)
 		}
 	}
+	// the one ProcessStartInfo is the installed copy's `version`, read with a time limit, outside the check
+	if fn := s[strings.Index(s, "function Get-InstalledVersion("):]; strings.Count(s, "ProcessStartInfo") != 1 ||
+		!strings.Contains(fn[:strings.Index(fn, "\n}\n")], "New-Object System.Diagnostics.ProcessStartInfo") ||
+		!strings.Contains(fn[:strings.Index(fn, "\n}\n")], "$p.WaitForExit(5000)") {
+		t.Error("a process is started outside Get-InstalledVersion, or without its time limit")
+	}
+	s = strings.Replace(s, "New-Object System.Diagnostics.ProcessStartInfo", "", 1)
 	for _, bad := range []string{"ProcessStartInfo", "GitForWindows", "RUBI_GIT_ROOT", "Find-Git", "Get-Command", "where.exe", "$env:PATH", "$env:Path", "Start-Process"} {
 		if strings.Contains(s, bad) {
 			t.Errorf("install-home.ps1 contains %q", bad)
@@ -417,7 +432,10 @@ func TestCIRunsTheWindowsInstallerAgainstAFakeRelease(t *testing.T) {
 	for _, want := range []string{"runs-on: windows-latest", "install-home.ps1", "RUBI_DOWNLOAD_BASE", "-NoPairing", "a bad signature was not refused",
 		"a malleated signature (S + L) was not refused", "$big + $order", "a bad checksum was not refused", "schtasks /Query", "install-autostart --remove",
 		"genpkey -algorithm ed25519", "the environment changed where the installer downloads from or installs to",
-		"a test address that is not this computer was accepted", "RUBI_INSTALL_TEST"} {
+		"a test address that is not this computer was accepted", "RUBI_INSTALL_TEST",
+		"a feed without a signature was not refused", "a tampered feed was not refused", "a signed list of another release was not refused",
+		"an older release was installed over a newer one", "a replayed feed installed an older release", "RUBI_RELEASE_FEED", "latest.json.sig",
+		"release feed is not signed", "the signed checksums are for", "older than the installed", "the upgrade through the feed failed"} {
 		if !strings.Contains(job, want) {
 			t.Errorf("the job lacks %q", want)
 		}
@@ -437,6 +455,15 @@ func TestCIRunsTheWindowsInstallerAgainstAFakeRelease(t *testing.T) {
 	lin = lin[:strings.Index(lin[3:], "\n  # ")+3]
 	if !strings.Contains(lin, "runs-on: ubuntu-latest") || !strings.Contains(lin, "shell: pwsh") || !strings.Contains(lin, "scripts/test-install-home-ed25519.ps1") {
 		t.Error("the vectors do not run under pwsh on ubuntu-latest")
+	}
+	// both also check the newest published release's real signature with the key in the script
+	for name, job := range map[string]string{"home-ed25519-windows": win, "home-ed25519-pwsh": lin} {
+		for _, want := range []string{"GH_TOKEN: ${{ github.token }}", "releases?per_page=20", "-not $_.draft", "$_.name -eq 'SHA256SUMS.sig'", "Select-Object -Last 1", "--pattern SHA256SUMS --pattern SHA256SUMS.sig",
+			"scripts/test-install-home-ed25519.ps1 -Sums real/SHA256SUMS -Sig real/SHA256SUMS.sig"} {
+			if !strings.Contains(job, want) {
+				t.Errorf("%s lacks %q", name, want)
+			}
+		}
 	}
 }
 
@@ -483,5 +510,43 @@ func TestInstallMdHasAWindowsSection(t *testing.T) {
 		if strings.Contains(strings.ReplaceAll(sec, "Don't open an elevated shell", ""), bad) {
 			t.Errorf("the Windows subsection tells the Bot to use %q", bad)
 		}
+	}
+}
+
+// The release-version rule (docs/design/rubi-home.md) in the script's steps: the feed's signature is checked before its
+// version is read; the older-release check comes before anything is made, moved, stopped or replaced; the signed list is
+// checked for another release's files before the archive is unpacked.
+func TestInstallHomePs1FollowsTheReleaseVersionRule(t *testing.T) {
+	s := psCode(ps1(t))
+	main := s[strings.Index(s, "function Main {"):]
+	order(t, main,
+		"Get-Bytes $feed 1048576",
+		"Get-Bytes ($feed + '.sig') 4096",
+		"Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $feedBytes $feedSig",
+		"[System.Text.Encoding]::UTF8.GetString($feedBytes)", // the version is read from the bytes that were verified
+		"$Version = $found.Groups[1].Value",
+		"Get-InstalledVersion $bin",
+		"Test-ReleaseNewer $have $Version",
+		"Get-Bytes ($release + '/SHA256SUMS')",
+		"Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $sumsBytes $sigBytes",
+		"Get-OtherVersion ([System.Text.Encoding]::UTF8.GetString($sumsBytes)) $Version",
+		"ComputeHash($zipBytes)",
+		"CreateDirectory($bindir)",
+		"Stop-RunningCopy $bin",
+		"[System.IO.File]::Move($new, $bin)")
+	for _, want := range []string{"the release feed is not signed with the Rubi release key", "is older than the installed", "the signed checksums are for"} {
+		if !strings.Contains(main, want) {
+			t.Errorf("Main lacks the message %q", want)
+		}
+	}
+	// no way around it: no switch, no environment name for it
+	for _, bad := range []string{"-Force", "$Force", "AllowDowngrade", "RUBI_ALLOW"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("install-home.ps1 has %q: the older-release refusal has no override", bad)
+		}
+	}
+	// the version never comes from the feed without its signature: the only read of "version" is after the check
+	if strings.Count(main, `"version"`) != 1 {
+		t.Error(`the script reads "version" from text more than once`)
 	}
 }

@@ -74,7 +74,8 @@ type InstallOptions struct {
 	PluginDst  string
 	// VersionTimeout bounds `dst version` (HookBinaryTimeout when zero).
 	VersionTimeout time.Duration
-	tools          *installTools // a test seam: the tools the script uses
+	tools          *installTools     // a test seam: the tools the script uses
+	inspectTweak   func(*HookBinary) // a test seam: changes what the look at the installed hook found (see Helper.hookTweak)
 }
 
 // privilegedPath is the only PATH the privileged commands get (and every tool in the script is absolute).
@@ -199,6 +200,7 @@ const (
 	CodePlanChanged = "plan_changed" // the plan is not the one that was approved
 	CodePlanNeeded  = "plan_needed"  // hook.install without the hash of the approved plan
 	CodeInUse       = "in_use"       // the installed hook is running (Windows can't replace a running program)
+	CodeDowngrade   = "downgrade"    // the installed hook is newer than this Rubi Home
 )
 
 // coded is an error with a reason code. Its Error() is the detailed text for the log and the command line.
@@ -301,6 +303,21 @@ func checkRootTargets(o InstallOptions) error {
 	return nil
 }
 
+// refuseOlderHook is the release-version rule (docs/design/rubi-home.md) for the hook: this Rubi Home's binary never replaces
+// an installed hook that is newer than it. Only a hook that passes the trust check is believed about its version: running
+// and trusting the `version` of a file that others can write would let it block the repair of itself. A hook that is
+// missing, insecure, unreadable or a development build is replaced as before; the same version again is a reinstall.
+func refuseOlderHook(dst, self string, timeout time.Duration, tweak func(*HookBinary)) error {
+	b := inspectHook(dst, timeout, inspectOpts{afterSecure: tweak})
+	if b.Missing || !b.Secure || b.Version == "" {
+		return nil
+	}
+	if versionOlder(self, b.Version) {
+		return codedf(CodeDowngrade, "the installed hook %s is %s, newer than this Rubi Home (%s); not replacing it with an older one. Update Rubi Home instead", dst, b.Version, self)
+	}
+	return nil
+}
+
 // InstallHook plans, runs and verifies the installation, telling w what it does.
 func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 	if err := checkRootTargets(o); err != nil {
@@ -338,6 +355,13 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 	if run == nil {
 		run = elev.Run
 	}
+	vt := o.VersionTimeout
+	if vt <= 0 {
+		vt = HookBinaryTimeout
+	}
+	if err := refuseOlderHook(o.Dst, p.Version, vt, o.inspectTweak); err != nil {
+		return err
+	}
 	fmt.Fprintf(w, "Source:  %s\n         version %s\n         sha256 %s\n", p.Src, p.Version, p.SHA256)
 	fmt.Fprintf(w, "Target:  %s\n", p.Dst)
 	fmt.Fprintln(w, "That sha256 is of the file at the source path, not proof that it is a genuine release: if you got Rubi Home")
@@ -370,10 +394,6 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 	}
 	if got != p.SHA256 {
 		return codedf(CodeVerify, "verification failed: %s has sha256 %s, expected %s from %s; it was NOT updated correctly (remove it and install again)", p.Dst, got, p.SHA256, p.Src)
-	}
-	vt := o.VersionTimeout
-	if vt <= 0 {
-		vt = HookBinaryTimeout
 	}
 	v, err := runVersion(p.Dst, vt)
 	if err != nil {

@@ -161,6 +161,7 @@ func (r *Registry) PublishRubi(version string) {
 	feed, _ := json.Marshal(map[string]string{"version": version, "notes_url": r.Server.URL + "/rubi/notes/" + version})
 	r.mu.Lock()
 	r.files["/rubi/latest.json"] = feed
+	r.files["/rubi/latest.json.sig"] = ed25519.Sign(r.releaseKey, feed)
 	r.files["/rubi/"+version+"/SHA256SUMS"] = sums
 	r.files["/rubi/"+version+"/SHA256SUMS.sig"] = ed25519.Sign(r.releaseKey, sums)
 	r.mu.Unlock()

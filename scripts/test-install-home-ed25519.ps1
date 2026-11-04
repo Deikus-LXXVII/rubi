@@ -28,7 +28,10 @@ $pem = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.Funct
 $fail = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Fail' }, $true)
 $key = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$ReleaseKey' }, $true)
 if (-not $pem -or -not $fail -or -not $key) { throw 'install-home.ps1 lacks ConvertFrom-Ed25519Pem, Fail or $ReleaseKey' }
-. ([scriptblock]::Create($fail.Extent.Text + "`n" + $region + "`n" + $pem.Extent.Text + "`n" + $key.Extent.Text))
+$newer = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-ReleaseNewer' }, $true)
+$other = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-OtherVersion' }, $true)
+if (-not $newer -or -not $other) { throw 'install-home.ps1 lacks Test-ReleaseNewer or Get-OtherVersion' }
+. ([scriptblock]::Create($fail.Extent.Text + "`n" + $region + "`n" + $pem.Extent.Text + "`n" + $key.Extent.Text + "`n" + $newer.Extent.Text + "`n" + $other.Extent.Text))
 
 function ConvertFrom-Hex([string]$Hex) {
   $b = New-Object byte[] ($Hex.Length / 2)
@@ -63,6 +66,23 @@ if ($Sums -or $Sig) {
   $bad[63] = $bad[63] -bxor 1
   if (Test-Ed25519 $releaseKey $list $bad) { $failed++; Write-Output 'FAIL a changed signature verifies' }
 }
+
+# the release-version rule: the order is update.Newer's (internal/update), and the signed list must carry one version
+foreach ($c in @(
+    @('v0.2.0', 'v0.1.0', $true), @('v0.1.0', 'v0.2.0', $false), @('v0.1.0', 'v0.1.0', $false),
+    @('v0.10.0', 'v0.9.0', $true), @('v0.9.0', 'v0.10.0', $false), @('v1.2.4', 'v1.2.3', $true), @('v1.2.3', 'v1.2.4', $false),
+    @('v1.0.0', 'v1.0.0-rc1', $true), @('v1.0.0-rc1', 'v1.0.0', $false),
+    @('v1.0.0-rc2', 'v1.0.0-rc1', $true), @('v1.0.0-rc1', 'v1.0.0-rc2', $false), @('v1.0.0-rc9', 'v1.0.0-rc10', $true),
+    @('dev', 'v0.1.0', $false), @('v0.2.0', 'dev', $false))) {
+  $got = Test-ReleaseNewer $c[0] $c[1]
+  if ($got -ne $c[2]) { $failed++; Write-Output ('FAIL Test-ReleaseNewer ' + $c[0] + ' ' + $c[1] + ': got ' + $got) }
+}
+$h = 'a' * 64
+$list = $h + '  rubi-home-v0.2.0-windows-amd64.zip' + "`n" + $h + '  rubi-v0.2.0-linux-amd64.tar.gz' + "`n" + $h + '  bin/rubi-linux-amd64' + "`n"
+if ((Get-OtherVersion $list 'v0.2.0') -ne '') { $failed++; Write-Output 'FAIL a list of one version has another' }
+if ((Get-OtherVersion ($list + $h + "  rubi-home-v0.1.0-macos-universal.zip`r`n") 'v0.2.0') -ne 'v0.1.0') { $failed++; Write-Output 'FAIL an asset of another version was not found' }
+if ((Get-OtherVersion ($h + '  rubi-home-v0.2.0-rc1-windows-amd64.zip' + "`n") 'v0.2.0') -ne 'v0.2.0-rc1') { $failed++; Write-Output 'FAIL a pre-release asset passed for its release' }
+if ((Get-OtherVersion ($h + '  rubi-home-v0.2.0-windows-amd64.zip' + "`n") 'v0.2.0-rc1') -ne 'v0.2.0') { $failed++; Write-Output 'FAIL a release asset passed for its pre-release' }
 
 # the key reader takes only an Ed25519 SubjectPublicKeyInfo
 foreach ($wrong in @('', 'x', "-----BEGIN PUBLIC KEY-----`nMCowBQYDK2VuAyEAjH/Smxzuzy59qWgOAVCSSbeNFzaZFqnFTgVPKQlgMIU=`n-----END PUBLIC KEY-----")) {

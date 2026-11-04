@@ -490,7 +490,7 @@ func TestHookRefusalsCarryACodeAndNoPath(t *testing.T) {
 	}
 	// Every code has its own sentence, none of them with a path or a placeholder.
 	for _, c := range []string{CodeBadPath, CodeNoSource, CodeNotDir, CodeNotPlain, CodeUnsafeDir, CodeSelf, CodePlugin, CodeVerify,
-		CodeCooldown, CodeUpToDate, CodeBusy, CodeBadRequest, ""} {
+		CodeCooldown, CodeUpToDate, CodeBusy, CodeBadRequest, CodeDowngrade, ""} {
 		if s := hookSentence(c); s == "" || strings.ContainsAny(s, "/%") {
 			t.Errorf("%q: %q", c, s)
 		}

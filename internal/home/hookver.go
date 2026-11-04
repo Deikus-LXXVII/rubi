@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/Deikus-LXXVII/rubi/internal/update"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -266,15 +267,11 @@ func semver(s string) (nums [3]int, pre bool, ok bool) {
 // versionOlder reports whether version a is older than b. Versions that can't be compared (a dev build, an
 // empty string) are never older.
 func versionOlder(a, b string) bool {
-	an, apre, aok := semver(a)
-	bn, bpre, bok := semver(b)
-	if !aok || !bok {
+	if _, _, ok := semver(a); !ok {
 		return false
 	}
-	for i := range an {
-		if an[i] != bn[i] {
-			return an[i] < bn[i]
-		}
+	if _, _, ok := semver(b); !ok {
+		return false
 	}
-	return apre && !bpre
+	return update.Newer(b, a) // the order the installers and the core updater use, pre-releases included
 }

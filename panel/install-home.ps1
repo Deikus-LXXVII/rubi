@@ -10,7 +10,9 @@
 # Home's pairing window. Running it again upgrades in place.
 #
 # The script is constant: nothing a person writes is put into it. The only input is the optional release tag, checked
-# against a pattern before it is used. The tests set RUBI_INSTALL_TEST=1, and only then are the names RUBI_RELEASE_FEED,
+# against a pattern before it is used. Without a tag the version comes from the release feed, and only when the feed
+# carries the release key's signature. It never installs an older release than the installed one. The tests set
+# RUBI_INSTALL_TEST=1, and only then are the names RUBI_RELEASE_FEED,
 # RUBI_DOWNLOAD_BASE (both must be this computer), and RUBI_HOME_INSTALL read; -NoPairing leaves out the
 # last step. Without that flag the environment cannot change where anything is downloaded from or installed to.
 #
@@ -238,6 +240,68 @@ function Get-Bytes([string]$Url, [long]$Max) {
   Fail 'too many redirects'
 }
 
+# The release-version rule (docs/design/rubi-home.md). Is release A newer than release B? The order of update.Newer in
+# internal/update: the numbers, then a release over its pre-release, then the pre-release names as text.
+function Test-ReleaseNewer([string]$A, [string]$B) {
+  $re = '^v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.]+))?\z'
+  $ma = [regex]::Match($A, $re)
+  $mb = [regex]::Match($B, $re)
+  if (-not $ma.Success -or -not $mb.Success) { return $false }
+  for ($i = 1; $i -le 3; $i++) {
+    $x = [System.Numerics.BigInteger]::Parse($ma.Groups[$i].Value)
+    $y = [System.Numerics.BigInteger]::Parse($mb.Groups[$i].Value)
+    if ($x -ne $y) { return ($x -gt $y) }
+  }
+  $pa = $ma.Groups[4].Value
+  $pb = $mb.Groups[4].Value
+  if ($pa -ceq $pb) { return $false }
+  if ($pa -eq '') { return $true }
+  if ($pb -eq '') { return $false }
+  return ([string]::CompareOrdinal($pa, $pb) -gt 0)
+}
+
+# The version of the first versioned asset (rubi-<v>-..., rubi-home-<v>-...) in the signed list that is not $Version, or ''.
+# Names without a version (bin/rubi-linux-amd64) are ignored.
+function Get-OtherVersion([string]$Sums, [string]$Version) {
+  foreach ($line in ($Sums -split "`n")) {
+    $m = [regex]::Match($line.Trim(), '^[0-9a-fA-F]{64}\s+\*?(\S+)$')
+    if (-not $m.Success) { continue }
+    $v = [regex]::Match($m.Groups[1].Value, '^rubi-(?:home-)?(v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(?:linux|darwin|macos|windows)-')
+    if ($v.Success -and $v.Groups[1].Value -cne $Version) { return $v.Groups[1].Value }
+  }
+  return ''
+}
+
+# What the installed copy says for `version` (its first line), or '' when it does not run, fails, or takes longer than
+# 5 seconds (then it is ended). It is the only program this script starts besides the new copy, and it plays no part in
+# the signature check.
+function Get-InstalledVersion([string]$Exe) {
+  if (-not [System.IO.File]::Exists($Exe)) { return '' }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $Exe
+  $psi.Arguments = 'version'
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.CreateNoWindow = $true
+  try {
+    $p = [System.Diagnostics.Process]::Start($psi)
+  } catch {
+    return ''
+  }
+  try {
+    $read = $p.StandardOutput.ReadToEndAsync()
+    if (-not $p.WaitForExit(5000)) {
+      try { $p.Kill() } catch { }
+      return ''
+    }
+    if ($p.ExitCode -ne 0) { return '' }
+    $first = ($read.Result -split "`n")[0]
+    return $first.Trim()
+  } catch {
+    return ''
+  } finally { $p.Dispose() }
+}
+
 # Ends a running copy of the installed program (by its path), so that the new one can be started in its place.
 function Stop-RunningCopy([string]$Exe) {
   foreach ($proc in [System.Diagnostics.Process]::GetProcessesByName('rubi-home')) {
@@ -276,13 +340,34 @@ function Main {
   if ($testFeed) { $feed = $testFeed }
   if ($testBase) { $base = $testBase }
   if (-not $Version) {
-    $text = [System.Text.Encoding]::UTF8.GetString((Get-Bytes $feed 1048576))
+    # The feed is signed (<feed>.sig, by the release key): the version is taken only from bytes that verify.
+    $feedBytes = Get-Bytes $feed 1048576
+    $feedSig = $null
+    try { $feedSig = Get-Bytes ($feed + '.sig') 4096 } catch { $feedSig = $null }
+    if ($null -eq $feedSig -or -not (Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $feedBytes $feedSig)) { Fail 'the release feed is not signed with the Rubi release key; not installing' }
+    $text = [System.Text.Encoding]::UTF8.GetString($feedBytes)
     $found = [regex]::Match($text, '"version"\s*:\s*"([^"]*)"')
     if (-not $found.Success) { Fail "couldn't find the latest release" }
     $Version = $found.Groups[1].Value
   }
   # Only a plain release tag: it becomes part of file names and addresses below.
   if ($Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?\z') { Fail 'bad version' }
+
+  # 1b. where to install, and never an older release than the installed one (the same version again is a reinstall)
+  $dir = [System.IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'Rubi Home')
+  $testDir = Get-TestSetting 'RUBI_HOME_INSTALL'
+  if ($testDir) { $dir = $testDir }
+  $bindir = [System.IO.Path]::Combine($dir, 'bin')
+  $new = [System.IO.Path]::Combine($bindir, 'rubi-home.exe.new')
+  $bin = [System.IO.Path]::Combine($bindir, 'rubi-home.exe')
+  $have = Get-InstalledVersion $bin
+  if (-not $have) {
+    if ([System.IO.File]::Exists($bin)) { Say "can't read the installed version; going on" }
+  } elseif ($have -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?\z') {
+    if (Test-ReleaseNewer $have $Version) { Fail ($Version + ' is older than the installed ' + $have + '; not installing (Rubi only updates forward)') }
+  } else {
+    Say ('the installed copy is a development build (' + $have + '); going on')
+  }
   $archive = 'rubi-home-' + $Version + '-windows-' + $arch + '.zip'
 
   # 2. download into memory, and check the signed list with the release key, by this script itself (no other program)
@@ -292,6 +377,10 @@ function Main {
   $sigBytes = Get-Bytes ($release + '/SHA256SUMS.sig') 4096
   $zipBytes = Get-Bytes ($release + '/' + $archive) 268435456
   if (-not (Test-Ed25519 (ConvertFrom-Ed25519Pem $ReleaseKey) $sumsBytes $sigBytes)) { Fail "the release signature doesn't verify; not installing" }
+
+  # the signed list binds the version: every versioned asset in it carries this version
+  $other = Get-OtherVersion ([System.Text.Encoding]::UTF8.GetString($sumsBytes)) $Version
+  if ($other) { Fail ('the signed checksums are for ' + $other + ', not ' + $Version + '; not installing') }
 
   # the archive's checksum, from the same bytes that are unpacked below
   $expected = ''
@@ -306,13 +395,7 @@ function Main {
   Say 'signature and checksum verified'
 
   # 3. unpack the one file we expect (by its name, never by a path from the archive) from those bytes
-  $dir = [System.IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'Rubi Home')
-  $testDir = Get-TestSetting 'RUBI_HOME_INSTALL'
-  if ($testDir) { $dir = $testDir }
-  $bindir = [System.IO.Path]::Combine($dir, 'bin')
   [void][System.IO.Directory]::CreateDirectory($bindir)
-  $new = [System.IO.Path]::Combine($bindir, 'rubi-home.exe.new')
-  $bin = [System.IO.Path]::Combine($bindir, 'rubi-home.exe')
   [void][System.Reflection.Assembly]::Load('System.IO.Compression, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
   if ([System.IO.File]::Exists($new)) { [System.IO.File]::Delete($new) }
   $za = New-Object System.IO.Compression.ZipArchive((New-Object System.IO.MemoryStream(, $zipBytes)), [System.IO.Compression.ZipArchiveMode]::Read)

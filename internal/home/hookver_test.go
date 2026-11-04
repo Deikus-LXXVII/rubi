@@ -311,6 +311,8 @@ func TestVersionOlder(t *testing.T) {
 		{"v0.12.3", "v0.13.0", true}, {"v0.13.0", "v0.13.0", false}, {"v0.13.1", "v0.13.0", false},
 		{"0.9.0", "v0.10.0", true}, {"v1.0.0-rc1", "v1.0.0", true}, {"v1.0.0", "v1.0.0-rc1", false},
 		{"dev", "v1.0.0", false}, {"v1.0.0", "dev", false}, {"", "v1.0.0", false}, {"v1.0", "v1.0.1", false},
+		// two pre-releases are ordered as the installers and the core updater order them (update.Newer)
+		{"v1.0.0-rc.1", "v1.0.0-rc.2", true}, {"v1.0.0-rc.2", "v1.0.0-rc.1", false}, {"v0.14.0-rc.2", "v0.14.0-rc.2", false},
 	} {
 		if got := versionOlder(tc.a, tc.b); got != tc.want {
 			t.Errorf("versionOlder(%q, %q) = %v", tc.a, tc.b, got)

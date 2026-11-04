@@ -50,12 +50,19 @@ jobs:
           mkdir -p panel/marketplace
           cp marketplace/catalog.json panel/marketplace/catalog.json
           umask 077
+          trap 'rm -f "$RUNNER_TEMP/key.pem"' EXIT
           printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
           openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in panel/marketplace/catalog.json \
             -out panel/marketplace/catalog.json.sig
+          # The release feed is signed too (raw Ed25519 over the exact bytes of latest.json): installers and
+          # updaters take the version only from verified bytes (the release-version rule, docs/design/rubi-home.md).
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in panel/releases/latest.json \
+            -out panel/releases/latest.json.sig
           rm -f "$RUNNER_TEMP/key.pem"
           openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in panel/marketplace/catalog.json \
             -sigfile panel/marketplace/catalog.json.sig
+          openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in panel/releases/latest.json \
+            -sigfile panel/releases/latest.json.sig
       - name: Version the panel's files
         # Browsers may keep rubi-panel.com files for hours; versioned URLs make a new release load at once.
         run: python3 deploy/pages/version-assets.py panel "${GITHUB_SHA::12}"

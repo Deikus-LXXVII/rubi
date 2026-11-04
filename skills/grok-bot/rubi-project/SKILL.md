@@ -17,8 +17,9 @@ need the user's passwords.
    - **public relays** only;
    - **their own Tailscale** network: the panel then opens only on their Tailscale devices.
    Then run: `curl -fsSL https://rubi-panel.com/install.sh | RUBI_TRANSPORT=<gateway|relays|tailscale> sh`
-   It verifies the release signature and installs to `~/.rubi`. If it reports an error, stop and tell the
-   user; don't try to work around a failed signature check.
+   It verifies the release signature and installs to `~/.rubi`. It also refuses a release older than the one
+   installed and a release feed that is not signed. If it reports an error, stop and tell the
+   user; don't try to work around a failed signature check, an unsigned feed or a refused older version.
 2. Add a custom MCP server named `rubi` that runs `~/.rubi/bin/rubi mcp` (use the absolute path the
    installer prints).
 3. Call `rubi_status`. It returns a link: send it to the user with one sentence ("Open this to set up
@@ -75,8 +76,9 @@ this computer" below.)
 ### macOS and Linux
 
 1. Run the installer: `curl -fsSL https://rubi-panel.com/install-home.sh | sh`
-   It verifies the signature of the release, installs `~/.rubi-home/bin/rubi-home` and starts it at login. If it
-   reports an error, stop and tell the user; don't work around a failed signature check. The installer ends by
+   It verifies the signature of the release, installs `~/.rubi-home/bin/rubi-home` and starts it at login. It also
+   refuses a release older than the one installed and a release feed that is not signed. If it reports an error,
+   stop and tell the user; don't work around a failed signature check, an unsigned feed or a refused older version. The installer ends by
    printing a pairing code: don't send it to the user or show it in chat; use step 2.
 2. Run `~/.rubi-home/bin/rubi-home open`.
    - **macOS:** it opens Rubi Home's own window on the user's screen. The user must be at the computer, logged in.
@@ -103,8 +105,9 @@ system packages without being asked.
    systems; it then needs nothing else on trust, because it checks everything it installs against the release signature.
    It downloads the release, checks the signature of its checksums (Ed25519) and then the archive's checksum, installs
    `rubi-home.exe` under `%LOCALAPPDATA%\Rubi Home`, starts it at login with a Scheduled Task of the user's own (no
-   administrator rights), and opens Rubi Home's pairing window. If it reports an error, stop and tell the user; never work
-   around a failed signature or checksum check.
+   administrator rights), and opens Rubi Home's pairing window. It also refuses a release older than the one installed and a
+   release feed that is not signed. If it reports an error, stop and tell the user; never work around a failed signature or
+   checksum check, an unsigned feed or a refused older version.
 2. **Nothing to install first.** The installer checks the release signature itself, with code inside the script; it needs
    no Git, no OpenSSL and no other program. If the signature or the checksum does not verify, it stops and installs
    nothing.

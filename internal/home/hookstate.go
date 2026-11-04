@@ -141,6 +141,8 @@ func hookSentence(code string) string {
 		return "the installation needs the hash of the approved plan; ask for the approval again"
 	case CodeInUse:
 		return "a Claude Code hook is running; close Claude Code and try again"
+	case CodeDowngrade:
+		return "the Claude Code hook on that computer is newer than this Rubi Home; update Rubi Home instead"
 	}
 	return "the hook could not be installed; see Rubi Home's log"
 }
@@ -438,6 +440,7 @@ func (h *Helper) installHook(args json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), limit) // its own: not the request's
 		defer cancel()
 		o.ExpectPlanSHA256 = PlanSHA256(plan) // the plan InstallHook makes must be the one just checked
+		o.inspectTweak = h.hookTweak
 		err := InstallHook(ctx, io.Discard, o)
 		res := hookResultOf(ctx, err)
 		h.hookMu.Lock()
