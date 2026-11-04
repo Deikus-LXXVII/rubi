@@ -55,8 +55,12 @@ const (
 
 // psBoot is run by the elevated PowerShell: it checks the SHA-256 of the script file and runs the script. %FILE% is the path
 // of the script file in base64 and %HASH% the hash (hex, checked) of its bytes. It is short on purpose: the elevated command line
-// is its base64, and ShellExecute is happier with a short one.
-const psBoot = `$f=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%FILE%'))
+// is its base64, and ShellExecute is happier with a short one. Its first line limits module loading to Windows PowerShell's
+// own modules: commands such as Invoke-Expression, ConvertFrom-Json and Get-Acl are loaded from PSModulePath when first
+// used, and the elevated process may have the user's PSModulePath (HKCU\Environment, or one of PowerShell 7), which would
+// load a module the user can write into an administrator's process, or one Windows PowerShell cannot load.
+const psBoot = `$env:PSModulePath=$PSHOME+'\Modules'
+$f=[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%FILE%'))
 $b=[System.IO.File]::ReadAllBytes($f)
 $h=([System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($b)) -replace '-','').ToLower()
 if($h -ne '%HASH%'){exit 11}
@@ -67,7 +71,8 @@ Invoke-Expression ([System.Text.Encoding]::UTF8.GetString($b))
 // uacInner). It has no check of the folders above its target: it creates its own folder with a protected access list, and the
 // caller looks at every folder above the target from outside afterwards (verifyAdminOnly), which is the check that matters.
 // The target and the plugin folder come from the plan, which has the hash the person approved.
-const psInstall = `$ErrorActionPreference = 'Stop'
+const psInstall = `$env:PSModulePath = $PSHOME + '\Modules'
+$ErrorActionPreference = 'Stop'
 $mutex = New-Object System.Threading.Mutex($false, 'Global\RubiHomeInstall')
 if (-not $mutex.WaitOne(0)) { exit 15 }
 $planPath = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('%PLAN%'))

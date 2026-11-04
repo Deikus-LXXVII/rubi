@@ -326,6 +326,12 @@ func TestUACScriptOrderAndAccessList(t *testing.T) {
 			t.Errorf("the elevated script has %q", bad)
 		}
 	}
+	// both elevated scripts load modules only from Windows PowerShell's own folder, before any command that loads one
+	for name, text := range map[string]string{"bootstrap": psBoot, "script": psInstall} {
+		if !strings.HasPrefix(text, "$env:PSModulePath=$PSHOME+'\\Modules'\n") && !strings.HasPrefix(text, "$env:PSModulePath = $PSHOME + '\\Modules'\n") {
+			t.Errorf("the elevated %s does not first set PSModulePath to $PSHOME\\Modules:\n%s", name, text[:min(len(text), 80)])
+		}
+	}
 	// the bootstrap: the hash is checked before the script runs, and nothing else is in it
 	if i, j := strings.Index(psBoot, "if($h -ne '%HASH%'){exit 11}"), strings.Index(psBoot, "Invoke-Expression"); i < 0 || j < 0 || i > j {
 		t.Errorf("the bootstrap:\n%s", psBoot)
