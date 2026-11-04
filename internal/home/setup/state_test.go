@@ -46,7 +46,10 @@ func TestContainerStep(t *testing.T) {
 		{"not a Mac", version161, "linux", Failed, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			e := newTestEnv(t, func(o *Options) { o.GOOS = c.goos })
+			e := newTestEnv(t)
+			if c.goos == "linux" {
+				e.s.opt.Backend = noBackendLinux
+			}
 			e.m.version = c.out
 			if st := e.step("container"); st.State != c.state || st.Action != c.action {
 				t.Errorf("%+v", st)

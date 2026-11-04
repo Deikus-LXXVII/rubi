@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 )
 
@@ -89,17 +90,15 @@ func opFeature(op string) string {
 type FeatureEnv struct {
 	GOOS    string
 	Desktop Desktop // for the check that a program is registered for the claude:// link
+	// Backend is the VM backend of this computer (agent.VMBackend); agents and T3 are available where it is. Nil is none.
+	Backend agent.VMBackend
 }
 
 // systemFeatureEnv is the environment of the system Home runs on (a variable so that the tests of the operations, which run
 // on every system, can run them as on a Mac, where everything is available).
 var systemFeatureEnv = func() FeatureEnv {
-	return FeatureEnv{GOOS: runtime.GOOS, Desktop: NewDesktop(DesktopEnv{})}
+	return FeatureEnv{GOOS: runtime.GOOS, Desktop: NewDesktop(DesktopEnv{}), Backend: agent.PlatformBackend(agent.BackendConfig{})}
 }
-
-// hasVMBackend says whether the system has a virtual machine backend for agents. Today only macOS has one (Apple's
-// container tool); stage P8 turns this into the backend's own answer, and P9 and P12 add Linux and Windows.
-func hasVMBackend(goos string) bool { return goos == "darwin" }
 
 // ComputeFeatures says which features are available in env.
 func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
@@ -120,9 +119,15 @@ func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
 	default:
 		out[FeatureClaudeStart] = Feature{Available: true}
 	}
-	agents := Feature{Available: true}
-	if !hasVMBackend(env.GOOS) {
-		agents = Feature{Reason: "agents don't run on " + systemName(env.GOOS) + " yet"}
+	// agents and T3 sessions run in VMs: they are available where the computer has a VM backend (agent.VMBackend), and the
+	// backend says why not
+	agents := Feature{Reason: "agents don't run on " + systemName(env.GOOS) + " yet"}
+	if env.Backend != nil {
+		if av := env.Backend.Available(ctx); av.OK {
+			agents = Feature{Available: true}
+		} else if av.Reason != "" {
+			agents = Feature{Reason: av.Reason}
+		}
 	}
 	out[FeatureAgent], out[FeatureT3] = agents, agents
 	return out

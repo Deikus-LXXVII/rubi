@@ -547,7 +547,7 @@ func TestFoldersSayWhetherThisComputerRunsAgents(t *testing.T) {
 	if !l.Agents {
 		t.Error("a Mac runs agents")
 	}
-	e.s.opt.GOOS = "linux"
+	e.s.opt.Backend = noBackendLinux
 	l, _ = e.s.ListFolders("")
 	if l.Agents {
 		t.Error("a computer that does not run agents says it does")
@@ -576,7 +576,7 @@ func TestProjectResolve(t *testing.T) {
 			t.Errorf("%q resolved to %v", bad, res)
 		}
 	}
-	e.s.opt.GOOS = "linux"
+	e.s.opt.Backend = noBackendLinux
 	if _, err := e.op("project.resolve", map[string]any{"dir": filepath.Join(home, "real")}); err == nil {
 		t.Error("resolve off a Mac")
 	}

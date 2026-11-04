@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 )
 
@@ -57,6 +58,19 @@ var (
 	windowsTools = []string{`C:\Windows\System32\rundll32.exe`, `C:\Windows\System32\reg.exe`}
 )
 
+// backendOf is the backend a system has: Apple's on a Mac, none (with its reason) elsewhere, as agent.PlatformBackend gives.
+func backendOf(goos string) agent.VMBackend {
+	switch goos {
+	case "darwin":
+		return agent.NewAppleBackend(agent.BackendConfig{})
+	case "linux":
+		return agent.NoBackend("agents don't run on Linux yet")
+	case "windows":
+		return agent.NoBackend("agents don't run on Windows yet")
+	}
+	return agent.NoBackend("agents don't run on this system yet")
+}
+
 func avail(f map[string]Feature) string {
 	var on []string
 	for _, n := range featureOrder {
@@ -95,7 +109,7 @@ func TestFeaturesPerSystem(t *testing.T) {
 			map[string]string{"agent": "agents don't run on this system yet"}},
 	} {
 		f := &fakeDesktop{registered: c.registered}
-		got := ComputeFeatures(ctx, FeatureEnv{GOOS: c.goos, Desktop: c.desktop(f)})
+		got := ComputeFeatures(ctx, FeatureEnv{GOOS: c.goos, Desktop: c.desktop(f), Backend: backendOf(c.goos)})
 		if avail(got) != c.want {
 			t.Errorf("%s: available %q, want %q", name, avail(got), c.want)
 		}
@@ -152,7 +166,7 @@ func TestSchemeHandlerChecksUseFixedArguments(t *testing.T) {
 
 // Run on the system the tests are running on, with nothing faked but the desktop: the real build gives the real answer.
 func TestFeaturesOfThisSystem(t *testing.T) {
-	got := ComputeFeatures(context.Background(), FeatureEnv{GOOS: runtime.GOOS})
+	got := ComputeFeatures(context.Background(), FeatureEnv{GOOS: runtime.GOOS, Backend: agent.PlatformBackend(agent.BackendConfig{})})
 	mac := runtime.GOOS == "darwin"
 	for _, n := range []string{FeatureShortcuts, FeatureAppleHome, FeatureAgent, FeatureT3} {
 		if got[n].Available != mac {
@@ -245,8 +259,8 @@ func TestEveryOpOfAnUnavailableFeatureAnswersNotAvailableHere(t *testing.T) {
 		}
 	}
 	for name, env := range map[string]FeatureEnv{
-		"Linux":   {GOOS: "linux", Desktop: xdgDesktop((&fakeDesktop{}).env("linux", linuxTools...))},
-		"Windows": {GOOS: "windows", Desktop: winDesktop((&fakeDesktop{}).env("windows", windowsTools...))},
+		"Linux":   {GOOS: "linux", Desktop: xdgDesktop((&fakeDesktop{}).env("linux", linuxTools...)), Backend: backendOf("linux")},
+		"Windows": {GOOS: "windows", Desktop: winDesktop((&fakeDesktop{}).env("windows", windowsTools...)), Backend: backendOf("windows")},
 	} {
 		h := helperAs(t, env)
 		for _, f := range featureOrder {
@@ -278,13 +292,13 @@ func TestEveryOpOfAnUnavailableFeatureAnswersNotAvailableHere(t *testing.T) {
 // hello says what is available, lists in `can` only that, and carries every feature with its reason; on a Mac it lists what it
 // always did.
 func TestHelloListsOnlyWhatIsAvailable(t *testing.T) {
-	mac := helperAs(t, FeatureEnv{GOOS: "darwin"})
+	mac := helperAs(t, FeatureEnv{GOOS: "darwin", Backend: backendOf("darwin")})
 	hello := mac.hello()
 	want := []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup", "t3-agent", "t3-setup"}
 	if got := hello["can"].([]string); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("macOS can: %v", got)
 	}
-	win := helperAs(t, FeatureEnv{GOOS: "windows", Desktop: winDesktop((&fakeDesktop{registered: true}).env("windows", windowsTools...))})
+	win := helperAs(t, FeatureEnv{GOOS: "windows", Backend: backendOf("windows"), Desktop: winDesktop((&fakeDesktop{registered: true}).env("windows", windowsTools...))})
 	hello = win.hello()
 	if got := hello["can"].([]string); strings.Join(got, ",") != "hue,claude,claude-sessions,claude-start" {
 		t.Fatalf("Windows can: %v", got)
@@ -313,7 +327,7 @@ func TestFeaturesAreCachedAndRefreshed(t *testing.T) {
 	h.featureEnv = func() FeatureEnv {
 		calls++
 		f := &fakeDesktop{registered: registered}
-		return FeatureEnv{GOOS: "linux", Desktop: xdgDesktop(f.env("linux", linuxTools...))}
+		return FeatureEnv{GOOS: "linux", Backend: backendOf("linux"), Desktop: xdgDesktop(f.env("linux", linuxTools...))}
 	}
 	h.Features()
 	h.Features()

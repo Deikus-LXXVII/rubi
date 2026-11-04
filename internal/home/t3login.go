@@ -21,13 +21,13 @@ func (t *T3Home) login() *setup.Setup {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.loginSetup == nil {
-		var agents setup.Agents = setup.ManagerAgents{M: t.h.Agent, SignInDir: t.signInDir, Auth: func() *agent.AppleContainer {
-			return &agent.AppleContainer{RunnerDir: t.h.Fresh().AgentRunnerDir, EnvDir: t.h.Dir}
+		var agents setup.Agents = setup.ManagerAgents{M: t.h.Agent, SignInDir: t.signInDir, Login: func() agent.LoginHost {
+			return t.h.backend().Login()
 		}}
 		if t.LoginAgents != nil {
 			agents = t.LoginAgents
 		}
-		opt := setup.Options{Dir: t.h.Dir, Agents: agents, LoginHelper: agent.LoginHelper, Opener: NewDesktop(DesktopEnv{}).Opener,
+		opt := setup.Options{Dir: t.h.Dir, Agents: agents, Backend: t.h.backend, LoginHelper: agent.LoginHelper, Opener: NewDesktop(DesktopEnv{}).Opener,
 			LoginEnv: func() map[string]string {
 				dir := t.signInDir()
 				if real, err := agent.EnsureSignInDir(dir); err == nil {

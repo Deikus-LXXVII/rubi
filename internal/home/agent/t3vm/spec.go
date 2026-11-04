@@ -49,7 +49,7 @@ func NewName(role string) (string, error) {
 // SessionSpec is everything the VM of one T3 provider session is made from. Every directory is mounted at its host
 // path (T3 and its history worker see the same paths as the claude inside).
 type SessionSpec struct {
-	// Bin is the container CLI ("container" when empty) and Image the runner image's tag.
+	// Bin is the VM tool's path (the backend's; required) and Image the runner image's tag.
 	Bin   string
 	Image string
 	// Name is the container's name (NewName).
@@ -81,12 +81,8 @@ type SessionSpec struct {
 	Memory string
 }
 
-func (s SessionSpec) bin() string {
-	if s.Bin != "" {
-		return s.Bin
-	}
-	return "container"
-}
+// bin is the VM tool's path, which the host (the backend) gives; the spec never names a tool itself.
+func (s SessionSpec) bin() string { return s.Bin }
 
 // checkPath refuses a path that can't be put into a mount option or a volume argument safely.
 func checkPath(what, p string) error {
@@ -223,6 +219,9 @@ func (s SessionSpec) check() (*resolved, error) {
 	}
 	if s.Image == "" {
 		return nil, errors.New("t3vm: no image")
+	}
+	if s.Bin == "" {
+		return nil, errors.New("t3vm: no VM tool")
 	}
 	if s.Role == "" {
 		return nil, errors.New("t3vm: no role")

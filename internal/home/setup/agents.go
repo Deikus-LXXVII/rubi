@@ -2,15 +2,16 @@ package setup
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
 
-// ManagerAgents adapts the agent manager, and the container tool for the sign-in, to Agents.
+// ManagerAgents adapts the agent manager, and the VM backend for the sign-in, to Agents.
 type ManagerAgents struct {
 	M *agent.Manager
-	// Auth makes the container definition the sign-in uses (image, runner sources).
-	Auth func() *agent.AppleContainer
+	// Login makes the host of the sign-in VM (the backend's image and runner sources).
+	Login func() agent.LoginHost
 	// SignInDir is the shared sign-in folder (<helper dir>/agent-signin).
 	SignInDir func() string
 }
@@ -21,9 +22,15 @@ func (a ManagerAgents) Projects() []agent.Project { return a.M.Projects() }
 func (a ManagerAgents) SignedIn(context.Context) bool { return agent.SignedInAt(a.SignInDir()) }
 
 func (a ManagerAgents) StartAuth(ctx context.Context) (AuthSession, error) {
-	s, err := a.Auth().StartLogin(ctx, a.SignInDir())
+	host := a.Login()
+	if host == nil {
+		return nil, errNoLogin
+	}
+	s, err := host.StartLogin(ctx, a.SignInDir())
 	if err != nil {
 		return nil, err
 	}
 	return s, nil
 }
+
+var errNoLogin = errors.New("signing in isn't available on this computer")

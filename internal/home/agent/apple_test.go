@@ -350,26 +350,6 @@ func TestExtractRunnerRewritesAnythingPlanted(t *testing.T) {
 	}
 }
 
-func TestContainerBinPrefersTheInstalledOne(t *testing.T) {
-	old := installedBin
-	defer func() { installedBin = old }()
-	dir := t.TempDir()
-	installedBin = filepath.Join(dir, "container")
-	if err := os.WriteFile(installedBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	other := t.TempDir()
-	os.WriteFile(filepath.Join(other, "container"), []byte("#!/bin/sh\n"), 0o755)
-	t.Setenv("PATH", other)
-	if got := ContainerBin(); got != installedBin {
-		t.Errorf("got %q", got)
-	}
-	installedBin = filepath.Join(dir, "missing")
-	if got := ContainerBin(); got != filepath.Join(other, "container") {
-		t.Errorf("fallback to PATH: %q", got)
-	}
-}
-
 // A role's leftovers are removed on start under the current name and under the old-style names, whatever the role
 // was called then; other containers are left alone.
 func TestAppleContainerRoleLeftovers(t *testing.T) {

@@ -247,12 +247,15 @@ func newTestEnv(t *testing.T, mods ...func(*Options)) *testEnv {
 	}
 	e.m.extra = func([]string) ([]byte, error, bool) { return nil, nil, false }
 	e.cmd = &fakeCmd{fn: e.m.fn}
-	opt := Options{Dir: e.dir, Agents: e.ag, Cmd: e.cmd, GOOS: "darwin", SystemTrees: []string{},
+	opt := Options{Dir: e.dir, Agents: e.ag, Cmd: e.cmd, SystemTrees: []string{},
 		Settings: func() Settings { return e.cfg },
 		Update: func(fn func(*Settings)) error {
 			fn(&e.cfg)
 			return nil
 		}}
+	opt.Backend = func() agent.VMBackend {
+		return agent.NewAppleBackend(agent.BackendConfig{Bin: "container", RunnerDir: e.cfg.RunnerDir, EnvDir: e.dir})
+	}
 	for _, f := range mods {
 		f(&opt)
 	}
@@ -309,3 +312,6 @@ func (e *testEnv) wait() {
 	}
 	e.t.Fatal("the job didn't end")
 }
+
+// noBackendLinux is the backend of a computer with none, as Linux is today.
+func noBackendLinux() agent.VMBackend { return agent.NoBackend("agents don't run on Linux yet") }

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"io"
 	"net/http"
 	"net/url"
@@ -242,21 +243,12 @@ func checkAssessment(out, team string) error {
 }
 
 func (s *Setup) verifySignature(ctx context.Context, pkg string) error {
-	if !s.mac() {
-		return errNotMac
-	}
-	out, err := s.opt.Cmd.Run(ctx, []string{"/usr/sbin/pkgutil", "--check-signature", pkg})
-	if err != nil {
-		return errors.New("the signature check failed")
-	}
-	if err := checkSignature(string(out), s.opt.Release.Team); err != nil {
-		return err
-	}
-	out, err = s.opt.Cmd.Run(ctx, []string{"/usr/sbin/spctl", "--assess", "--type", "install", "-vv", pkg})
-	if err != nil {
-		return errors.New("macOS rejected the package")
-	}
-	return checkAssessment(string(out), s.opt.Release.Team)
+	return verifyPackage(ctx, s.opt.Cmd, pkg, s.opt.Release.Team)
+}
+
+func cmpVersion(a, b string) int {
+	c, _ := agent.CompareVersions(a, b)
+	return c
 }
 
 // ---- administrator install ----
@@ -349,16 +341,17 @@ var installLimit = 30 * time.Minute
 
 func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
 	log := j.log(s)
-	if !s.mac() {
-		return outcome{Failed, "Setting up agents works only on a Mac."}
+	p, av := s.prov(ctx)
+	if p == nil {
+		return outcome{Failed, "Setting up agents isn't available on this computer (" + av.Reason + ")."}
 	}
 	rel := s.opt.Release
-	want, _ := parseVersion([]byte("version " + rel.Version))
-	if v, ok, present := s.installed(ctx); present && !ok {
+	want := agent.NormalizeVersion(rel.Version)
+	if v, ok, present := p.Installed(ctx, s.opt.Cmd); present && !ok {
 		// a tool that runs but whose version can't be read is never installed over
 		return outcome{Failed, "Unknown container version; not reinstalling."}
-	} else if present && v.cmp(want) >= 0 {
-		return outcome{Done, "Version " + v.String() + " is installed."} // never reinstall, never downgrade
+	} else if cmp, _ := agent.CompareVersions(v, want); present && cmp >= 0 {
+		return outcome{Done, "Version " + v + " is installed."} // never reinstall, never downgrade
 	}
 	pkg, err := s.download(ctx, filepath.Join(s.opt.Dir, "setup"), log)
 	if err != nil {
@@ -394,8 +387,8 @@ func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
 		return outcome{Failed, "The installer failed. " + installFailure(string(out))}
 	}
 	_ = os.Remove(pkg)
-	if v, ok, present := s.installed(ctx); !present || !ok || v.cmp(want) < 0 {
-		return outcome{Failed, "The installer finished, but the container tool isn't at version " + want.String() + "."}
+	if v, ok, present := p.Installed(ctx, s.opt.Cmd); cmpVersion(v, want) < 0 || !present || !ok {
+		return outcome{Failed, "The installer finished, but the container tool isn't at version " + want + "."}
 	}
-	return outcome{Done, "Installed version " + want.String() + "."}
+	return outcome{Done, "Installed version " + want + "."}
 }

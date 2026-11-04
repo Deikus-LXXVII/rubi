@@ -12,11 +12,15 @@ var serviceWait = 60 * time.Second
 
 func (s *Setup) runService(ctx context.Context, j *job) outcome {
 	log := j.log(s)
+	p, av := s.prov(ctx)
+	if p == nil {
+		return outcome{Failed, errNoBackend(av).Error()}
+	}
 	if st := s.probeService(ctx); st.State == Done {
 		return outcome{Done, st.Reason}
 	}
 	log("Starting the container service...")
-	if err := s.opt.Cmd.Stream(ctx, []string{"container", "system", "start", "--enable-kernel-install"}, log); err != nil {
+	if err := p.StartService(ctx, s.opt.Cmd, log); err != nil {
 		if ctx.Err() != nil {
 			return outcome{Todo, "Cancelled."}
 		}
@@ -31,8 +35,7 @@ func (s *Setup) runService(ctx context.Context, j *job) outcome {
 			return outcome{Todo, "Cancelled."}
 		}
 		if time.Now().After(deadline) {
-			_, raw, _ := s.systemStatus(ctx)
-			return outcome{Failed, "The service didn't start in " + serviceWait.String() + ". " + safeText(string(raw))}
+			return outcome{Failed, "The service didn't start in " + serviceWait.String() + ". " + safeText(p.ServiceDetail(ctx, s.opt.Cmd))}
 		}
 		select {
 		case <-ctx.Done():
@@ -51,17 +54,18 @@ func (s *Setup) runNetwork(ctx context.Context, j *job) outcome {
 
 func (s *Setup) runImage(ctx context.Context, j *job) outcome {
 	log := j.log(s)
+	p, av := s.prov(ctx)
+	if p == nil {
+		return outcome{Failed, errNoBackend(av).Error()}
+	}
 	if st := s.probeImage(ctx); st.State == Done {
 		return outcome{Done, st.Reason}
 	}
-	vm := s.appleVM()
-	argv, err := vm.BuildCommand()
-	if err != nil {
+	prepared, err := p.BuildImage(ctx, s.opt.Cmd, log)
+	if !prepared {
 		return outcome{Failed, safeText(err.Error())}
 	}
-	argv[0] = "container"
-	log("Building " + vm.ImageTag() + " (this takes a few minutes)...")
-	if err := s.opt.Cmd.Stream(ctx, argv, log); err != nil {
+	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return outcome{Todo, "Cancelled."}
 		}

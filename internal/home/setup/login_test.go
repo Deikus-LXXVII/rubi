@@ -366,7 +366,7 @@ func TestLoginOpen(t *testing.T) {
 	}
 	e.s.Cancel()
 	e.wait()
-	e.s.opt.GOOS = "linux"
+	e.s.opt.Backend = noBackendLinux
 	if err := e.s.LoginOpen(context.Background()); err == nil {
 		t.Error("opened on a non-Mac")
 	}

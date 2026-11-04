@@ -39,7 +39,7 @@ func TestProjectAddWithoutAFolderShowsNoChooser(t *testing.T) {
 	if len(e.cmd.calls) != 0 {
 		t.Errorf("a program was run: %v", e.cmd.calls)
 	}
-	e.s.opt.GOOS = "linux"
+	e.s.opt.Backend = noBackendLinux
 	if _, err := e.op("project.add", map[string]any{"dir": t.TempDir()}); err == nil || !strings.Contains(err.Error(), "agents") {
 		t.Errorf("not a Mac: %v", err)
 	}

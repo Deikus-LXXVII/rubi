@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"runtime"
 	"sync"
 	"time"
 
@@ -29,11 +28,12 @@ const (
 	StepLogin = "login"
 )
 
-var stepOrder = []string{StepContainer, StepService, StepNetwork, StepImage, StepProjects}
+var stepOrder = [...]string{StepContainer, StepService, StepNetwork, StepImage, StepProjects}
 
+// stepTitles are the names of the steps; the first two are the VM backend's (Provisioner.Titles) when it has them.
 var stepTitles = map[string]string{
-	StepContainer: "Apple container",
-	StepService:   "Container service",
+	StepContainer: "Virtual machine tool",
+	StepService:   "Virtual machine service",
 	StepNetwork:   "VM network (none needed)",
 	StepImage:     "Runner image",
 	StepProjects:  "Projects",
@@ -113,8 +113,9 @@ type Options struct {
 	// BrowseRoots are the mounted disks the folder browser may start in besides the home folder (nil:
 	// hostpaths.BrowseRoots).
 	BrowseRoots func() []string
-	// GOOS is the operating system (runtime.GOOS when empty); the Mac-only parts refuse elsewhere.
-	GOOS string
+	// Backend makes the VM backend the steps probe and build with (nil: the system's, agent.PlatformBackend, made from the
+	// runner directory of Settings and Dir). It is called at each use, so a changed setting applies.
+	Backend func() agent.VMBackend
 	// Now is the clock.
 	Now func() time.Time
 	// LoginHelper is the sign-in helper run in the sign-in container and LoginEnv the environment it gets besides the
@@ -159,9 +160,6 @@ func New(opt Options) *Setup {
 	if opt.Cmd == nil {
 		opt.Cmd = osCommander{}
 	}
-	if opt.GOOS == "" {
-		opt.GOOS = runtime.GOOS
-	}
 	if opt.Now == nil {
 		opt.Now = time.Now
 	}
@@ -180,9 +178,26 @@ func New(opt Options) *Setup {
 	return &Setup{opt: opt, last: map[string]result{}}
 }
 
-func (s *Setup) mac() bool { return s.opt.GOOS == "darwin" }
+// backend is the VM backend now.
+func (s *Setup) backend() agent.VMBackend {
+	if s.opt.Backend != nil {
+		return s.opt.Backend()
+	}
+	return agent.PlatformBackend(agent.BackendConfig{RunnerDir: s.opt.Settings().RunnerDir, EnvDir: s.opt.Dir})
+}
+
+// agentsHere says whether this computer has a VM backend, and if not, why (the inside of "That isn't available on this
+// computer (...)").
+func (s *Setup) agentsHere(ctx context.Context) agent.Availability {
+	return s.backend().Available(ctx)
+}
 
 var errNotMac = errors.New("this works only on macOS")
+
+// errNoBackend answers a step that needs a VM backend on a computer that has none.
+func errNoBackend(a agent.Availability) error {
+	return fmt.Errorf("That isn't available on this computer (%s).", a.Reason)
+}
 
 // ---- jobs ----
 

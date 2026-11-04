@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
@@ -28,6 +29,9 @@ type ClientOptions struct {
 	Exec func(path string, argv, env []string, conn *os.File) error
 	// Relay runs the command with this process's stdio and returns its exit status (relayProcess when nil).
 	Relay func(path string, argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
+	// ExecTool is the name of the program a command from Home may run: the VM backend's tool (agent.ExecToolName when empty;
+	// empty on a system with no backend, where no command is run).
+	ExecTool string
 	// Getwd, Environ and LookPath are os.Getwd, os.Environ and exec.LookPath when nil.
 	Getwd    func() (string, error)
 	Environ  func() []string
@@ -126,7 +130,11 @@ func Run(socket, role string, claudeArgs []string, stdout, stderr io.Writer, o C
 	_ = conn.SetDeadline(time.Time{})
 	// What is run is the container tool's `exec`, at the path Home named: a confused or hostile answer must not
 	// make this process run something else.
-	if filepath.Base(rep.ExecArgv[0]) != "container" || rep.ExecArgv[1] != "exec" {
+	tool := o.ExecTool
+	if tool == "" {
+		tool = agent.ExecToolName()
+	}
+	if tool == "" || filepath.Base(rep.ExecArgv[0]) != tool || rep.ExecArgv[1] != "exec" {
 		return fail("Rubi Home's answer was not a container exec")
 	}
 	path := rep.ExecArgv[0]

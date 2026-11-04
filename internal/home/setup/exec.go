@@ -8,12 +8,10 @@ import (
 	"io"
 	"os/exec"
 	"strings"
-
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
 
-// Commander runs commands on the Mac. It is the only way this package starts a process, so tests give it a
-// fake and never run a real command. argv[0] == "container" means the container CLI wherever it is installed.
+// Commander runs commands on this computer. It is the only way this package starts a process, so tests give it a
+// fake and never run a real command.
 type Commander interface {
 	// Run runs argv to completion and returns its combined output (at most 1 MiB).
 	Run(ctx context.Context, argv []string) ([]byte, error)
@@ -25,11 +23,7 @@ type Commander interface {
 type osCommander struct{}
 
 func resolve(argv []string) *exec.Cmd {
-	bin := argv[0]
-	if bin == "container" {
-		bin = agent.ContainerBin()
-	}
-	return exec.Command(bin, argv[1:]...)
+	return exec.Command(argv[0], argv[1:]...)
 }
 
 type capped struct {

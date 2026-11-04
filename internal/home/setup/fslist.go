@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/user"
@@ -303,7 +304,7 @@ func (s *Setup) ListFolders(path string) (*FolderList, error) {
 		return nil, errNotBrowsable
 	}
 	existing := s.opt.Settings().Projects
-	out := &FolderList{Path: real, Name: filepath.Base(real), Places: roots, Folders: []FolderEntry{}, Agents: s.mac()}
+	out := &FolderList{Path: real, Name: filepath.Base(real), Places: roots, Folders: []FolderEntry{}, Agents: s.agentsHere(context.Background()).OK}
 	if filepath.Dir(real) == real {
 		out.Name = real
 	}

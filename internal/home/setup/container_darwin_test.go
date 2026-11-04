@@ -330,7 +330,7 @@ func TestContainerInstallRefusals(t *testing.T) {
 	})
 	t.Run("not a Mac", func(t *testing.T) {
 		c := newContainerEnv(t)
-		c.s.opt.GOOS = "linux"
+		c.s.opt.Backend = noBackendLinux
 		c.runJob()
 		if st := c.step("container"); st.State != Failed || len(c.osaCalls) != 0 || c.cmd.ran("/usr/sbin/pkgutil") != 0 {
 			t.Errorf("%+v", st)

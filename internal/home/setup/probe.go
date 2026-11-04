@@ -2,12 +2,7 @@ package setup
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -146,12 +141,26 @@ func (s *Setup) rawAll(ctx context.Context) []Step {
 				bad = i
 			}
 		}
-		st.ID, st.Title = stepOrder[i], stepTitles[stepOrder[i]]
+		st.ID, st.Title = stepOrder[i], s.title(stepOrder[i])
 		out = append(out, st)
 	}
 	pr := s.probeProjects()
 	pr.ID, pr.Title = StepProjects, stepTitles[StepProjects]
 	return append(out, pr)
+}
+
+// title is a step's name: the backend's own for the tool and its service.
+func (s *Setup) title(id string) string {
+	if id == StepContainer || id == StepService {
+		if b := s.backend(); b.Available(context.Background()).OK {
+			t := b.Provision().Titles()
+			if id == StepContainer {
+				return t.Tool
+			}
+			return t.Service
+		}
+	}
+	return stepTitles[id]
 }
 
 // firstUnmet returns the number (1-based) of the first of the first n steps that isn't done, or 0.
@@ -167,105 +176,35 @@ func (s *Setup) firstUnmet(ctx context.Context, n int) int {
 	return 0
 }
 
-// ---- versions ----
+// ---- probes: the backend's own steps are asked of its Provisioner ----
 
-var versionRE = regexp.MustCompile(`version (\d+)\.(\d+)\.(\d+)`)
-
-type version [3]int
-
-func parseVersion(out []byte) (version, bool) {
-	m := versionRE.FindSubmatch(out)
-	if m == nil {
-		return version{}, false
+// prov is the backend's setup part, or nil (with the reason) where the computer has no backend.
+func (s *Setup) prov(ctx context.Context) (agent.Provisioner, agent.Availability) {
+	b := s.backend()
+	if av := b.Available(ctx); !av.OK {
+		return nil, av
 	}
-	var v version
-	for i := range v {
-		n, err := strconv.Atoi(string(m[i+1]))
-		if err != nil {
-			return version{}, false
-		}
-		v[i] = n
-	}
-	return v, true
+	return b.Provision(), agent.Availability{OK: true}
 }
 
-func (v version) String() string { return fmt.Sprintf("%d.%d.%d", v[0], v[1], v[2]) }
-
-// cmp is -1, 0 or 1.
-func (v version) cmp(o version) int {
-	for i := range v {
-		switch {
-		case v[i] < o[i]:
-			return -1
-		case v[i] > o[i]:
-			return 1
-		}
-	}
-	return 0
+func fromBackend(st agent.StepStatus) Step {
+	return Step{State: st.State, Reason: st.Reason, Action: st.Action}
 }
-
-func (s *Setup) installed(ctx context.Context) (version, bool, bool) {
-	out, err := s.opt.Cmd.Run(ctx, []string{"container", "--version"})
-	if err != nil {
-		return version{}, false, false
-	}
-	v, ok := parseVersion(out)
-	return v, ok, true
-}
-
-// ---- probes ----
 
 func (s *Setup) probeContainer(ctx context.Context) Step {
-	if !s.mac() {
-		return Step{State: Failed, Reason: "Setting up agents works only on a Mac."}
+	p, av := s.prov(ctx)
+	if p == nil {
+		return Step{State: Failed, Reason: "Setting up agents isn't available on this computer (" + av.Reason + ")."}
 	}
-	want, _ := parseVersion([]byte("version " + s.opt.Release.Version))
-	v, ok, present := s.installed(ctx)
-	switch {
-	case !present:
-		return Step{State: Todo, Reason: "Apple's container tool isn't installed. Rubi Home installs version " + want.String() + ".", Action: "install"}
-	case !ok:
-		return Step{State: Failed, Reason: "Can't read the version of the installed container tool."}
-	case v.cmp(want) < 0:
-		return Step{State: Todo, Reason: "Version " + v.String() + " is installed; Rubi Home needs " + want.String() + ".", Action: "upgrade"}
-	}
-	return Step{State: Done, Reason: "Version " + v.String() + "."}
-}
-
-type systemStatus struct {
-	Host struct {
-		Architecture string `json:"architecture"`
-	} `json:"host"`
-	Paths struct {
-		AppRoot string `json:"appRoot"`
-	} `json:"paths"`
-	Status string `json:"status"`
-}
-
-var archRE = regexp.MustCompile(`^[a-z0-9_]{1,16}$`)
-
-func (s *Setup) systemStatus(ctx context.Context) (systemStatus, []byte, bool) {
-	out, _ := s.opt.Cmd.Run(ctx, []string{"container", "system", "status", "--format", "json"})
-	var st systemStatus
-	if json.Unmarshal(out, &st) != nil {
-		return st, out, false
-	}
-	return st, out, true
+	return fromBackend(p.Tool(ctx, s.opt.Cmd, s.opt.Release.Version))
 }
 
 func (s *Setup) probeService(ctx context.Context) Step {
-	st, _, ok := s.systemStatus(ctx)
-	if !ok || st.Status != "running" {
-		return Step{State: Todo, Reason: "The container service isn't running.", Action: "start"}
+	p, av := s.prov(ctx)
+	if p == nil {
+		return Step{State: Failed, Reason: "Setting up agents isn't available on this computer (" + av.Reason + ")."}
 	}
-	if !archRE.MatchString(st.Host.Architecture) || !filepath.IsAbs(st.Paths.AppRoot) {
-		return Step{State: Failed, Reason: "The container service reports a layout Rubi Home doesn't understand."}
-	}
-	kernel := filepath.Join(st.Paths.AppRoot, "kernels", "default.kernel-"+st.Host.Architecture)
-	if _, err := os.Stat(kernel); err != nil {
-		return Step{State: Todo, Reason: "The service runs, but the default kernel isn't installed.", Action: "start"}
-	}
-	return Step{State: Done, Reason: "The service is running."}
+	return fromBackend(p.Service(ctx, s.opt.Cmd))
 }
 
 // networkNotNeeded is the network step's reason. VMs run with `--network none` and reach the proxy and the Claude
@@ -277,18 +216,12 @@ func (s *Setup) probeNetwork(ctx context.Context) Step {
 	return Step{State: Done, Reason: networkNotNeeded}
 }
 
-// appleVM is the VM definition the image and the network are checked and built with.
-func (s *Setup) appleVM() *agent.AppleContainer {
-	cfg := s.opt.Settings()
-	return &agent.AppleContainer{Bin: "container", RunnerDir: cfg.RunnerDir, EnvDir: s.opt.Dir}
-}
-
 func (s *Setup) probeImage(ctx context.Context) Step {
-	tag := s.appleVM().ImageTag()
-	if _, err := s.opt.Cmd.Run(ctx, []string{"container", "image", "inspect", tag}); err != nil {
-		return Step{State: Todo, Reason: "The runner image " + tag + " isn't built yet.", Action: "build"}
+	p, av := s.prov(ctx)
+	if p == nil {
+		return Step{State: Failed, Reason: "Setting up agents isn't available on this computer (" + av.Reason + ")."}
 	}
-	return Step{State: Done, Reason: "The runner image " + tag + " is built."}
+	return fromBackend(p.Image(ctx, s.opt.Cmd))
 }
 
 // noFolderYet: the agents' folders are added by a Bot the user asks (with the user's approval), not by the setup.

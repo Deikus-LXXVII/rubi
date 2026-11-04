@@ -142,8 +142,10 @@ const maxPairAttempts = 5
 type Helper struct {
 	Dir string
 	ID  *identity.Identity
-	// vmOverride, when set, makes the agents' VM instead of the Apple container (a seam for tests).
-	vmOverride func(agent.Project) agent.VM
+	// vmOverride, when set, makes the agents' VM instead of the backend's, and backendOverride the VM backend itself (seams
+	// for tests).
+	vmOverride      func(agent.Project) agent.VM
+	backendOverride func() agent.VMBackend
 	// Shortcuts runs the shortcuts command (a seam for tests).
 	Shortcuts func(ctx context.Context, args ...string) ([]byte, error)
 	Hue       *Hue
@@ -260,16 +262,22 @@ func (h *Helper) removeLegacyAuthDir() {
 	log.Printf("agent: removed the old sign-in folder %s (the earlier design's token); sign in again for T3 Agents", legacyAuthDirName)
 }
 
-// sweepSignIn removes the sign-in containers of both paths (a variable so that a test can see that SweepAgent calls it).
-var sweepSignIn = (*agent.AppleContainer).Sweep
+// sweepSignIn removes the sign-in VMs of both paths (a variable so that a test can see that SweepAgent calls it).
+var sweepSignIn = func(b agent.VMBackend, ctx context.Context) { b.Sweep(ctx) }
 
-// SweepAgent removes what a crash of an earlier run can have left in the container tool: the sign-in
-// container. It is for Rubi Home's start (not for tests, which never run the real tool).
+// backend is the VM backend of this computer, made from the configuration now (the CLI's changes apply at once).
+func (h *Helper) backend() agent.VMBackend {
+	if h.backendOverride != nil {
+		return h.backendOverride()
+	}
+	return agent.PlatformBackend(agent.BackendConfig{RunnerDir: h.Fresh().AgentRunnerDir, EnvDir: h.Dir})
+}
+
+// SweepAgent removes what a crash of an earlier run can have left in the VM backend: the sign-in
+// VM. It is for Rubi Home's start (not for tests, which never run the real tool).
 func (h *Helper) SweepAgent(ctx context.Context) {
 	h.removeLegacyAuthDir()
-	c := h.Fresh()
-	ac := &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir}
-	sweepSignIn(ac, ctx)
+	sweepSignIn(h.backend(), ctx)
 }
 
 // AgentCredFile is the git credential file for agents in the helper's directory (see agent.FileCredSource).
@@ -287,8 +295,7 @@ func (h *Helper) newAgent() *agent.Manager {
 			if h.vmOverride != nil {
 				return h.vmOverride(p)
 			}
-			c := h.Fresh()
-			return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir}
+			return h.backend().New(p)
 		},
 		AllowedHosts:    func() []string { return h.Fresh().AgentAllowedHosts },
 		NoDefaultForges: func() bool { return h.Fresh().AgentNoDefaultForges },
@@ -321,10 +328,8 @@ func (h *Helper) newSetup() *setup.Setup {
 	return setup.New(setup.Options{
 		Dir: h.Dir, Opener: NewDesktop(DesktopEnv{}).Opener,
 		Agents: setup.ManagerAgents{M: h.Agent, SignInDir: func() string { return agent.SignInDirOf(h.Dir) },
-			Auth: func() *agent.AppleContainer {
-				c := h.Fresh()
-				return &agent.AppleContainer{RunnerDir: c.AgentRunnerDir, EnvDir: h.Dir}
-			}},
+			Login: func() agent.LoginHost { return h.backend().Login() }},
+		Backend: h.backend,
 		Settings: func() setup.Settings {
 			c := h.Fresh()
 			return setup.Settings{Projects: c.AgentProjects, ProxyListen: c.AgentProxyListen,

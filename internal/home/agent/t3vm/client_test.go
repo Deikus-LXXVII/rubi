@@ -86,6 +86,7 @@ func TestClientSendsTheFolderArgumentsAndEnvironmentThenExecs(t *testing.T) {
 	var gotArgv, gotEnv []string
 	var eofEarly bool
 	o := ClientOptions{
+		ExecTool: "container",
 		Getwd:    func() (string, error) { return "/w/proj", nil },
 		Environ:  func() []string { return []string{"A=1", "B=x=y", "PATH=/bin"} },
 		LookPath: func(s string) (string, error) { return "/usr/local/bin/" + s, nil },
@@ -128,7 +129,7 @@ func TestClientSendsTheFolderArgumentsAndEnvironmentThenExecs(t *testing.T) {
 
 func TestClientNeverRunsClaudeWithoutAVM(t *testing.T) {
 	ran := func(*testing.T) ClientOptions {
-		return ClientOptions{Getwd: func() (string, error) { return "/w", nil }, Environ: func() []string { return nil },
+		return ClientOptions{ExecTool: "container", Getwd: func() (string, error) { return "/w", nil }, Environ: func() []string { return nil },
 			Exec: func(string, []string, []string, *os.File) error { t.Error("exec was called"); return errors.New("x") }}
 	}
 	cases := map[string]struct {
@@ -152,6 +153,28 @@ func TestClientNeverRunsClaudeWithoutAVM(t *testing.T) {
 			}
 		})
 	}
+	// The program a command from Home may run is the VM backend's tool, not a name written into the shim: another backend's
+	// tool is run, the Apple one is then refused, and a computer with no backend (no tool name) runs nothing.
+	t.Run("the tool is the backend's", func(t *testing.T) {
+		var gotPath string
+		o := ran(t)
+		o.ExecTool = "vmtool"
+		o.Exec = func(path string, argv, env []string, conn *os.File) error {
+			gotPath = path
+			return errors.New("stop here")
+		}
+		home := newFakeHome(t, StartReply{OK: true, ExecArgv: []string{"/opt/vm/vmtool", "exec", "a", "b"}})
+		var stderr bytes.Buffer
+		Run(home.sock, "r", nil, io.Discard, &stderr, o)
+		if gotPath != "/opt/vm/vmtool" {
+			t.Fatalf("ran %q, stderr %q", gotPath, stderr.String())
+		}
+		home2 := newFakeHome(t, StartReply{OK: true, ExecArgv: []string{"/usr/local/bin/container", "exec", "a", "b"}})
+		stderr.Reset()
+		if code := Run(home2.sock, "r", nil, io.Discard, &stderr, o); code == 0 || !strings.Contains(stderr.String(), "not a container exec") {
+			t.Fatalf("another tool: exit %d, stderr %q", code, stderr.String())
+		}
+	})
 	t.Run("home not running", func(t *testing.T) {
 		var stderr bytes.Buffer
 		if code := Run(filepath.Join(t.TempDir(), "none"), "r", nil, io.Discard, &stderr, ran(t)); code == 0 || !strings.Contains(stderr.String(), "isn't reachable") {
@@ -196,7 +219,7 @@ func TestClientNeverRunsClaudeWithoutAVM(t *testing.T) {
 func TestClientRealExecKeepsTheConnectionUntilTheProcessEnds(t *testing.T) {
 	if os.Getenv("T3VM_CLIENT_HELPER") == "1" {
 		role, argv, _ := ParseArgs(strings.Split(os.Getenv("T3VM_CLIENT_ARGS"), " "))
-		os.Exit(Run(os.Getenv("T3VM_CLIENT_SOCK"), role, argv, os.Stdout, os.Stderr, ClientOptions{}))
+		os.Exit(Run(os.Getenv("T3VM_CLIENT_SOCK"), role, argv, os.Stdout, os.Stderr, ClientOptions{ExecTool: "container"}))
 	}
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh")
@@ -231,7 +254,7 @@ func TestClientRealExecKeepsTheConnectionUntilTheProcessEnds(t *testing.T) {
 func TestClientAsksHomeForTheVersionAndStartsNothing(t *testing.T) {
 	home := newFakeHome(t, StartReply{OK: true, Output: "2.1.314 (Claude Code)\n"})
 	var out, errb bytes.Buffer
-	o := ClientOptions{Getwd: func() (string, error) { return "/w", nil }, Environ: func() []string { return []string{"SECRET=1"} },
+	o := ClientOptions{ExecTool: "container", Getwd: func() (string, error) { return "/w", nil }, Environ: func() []string { return []string{"SECRET=1"} },
 		Exec: func(string, []string, []string, *os.File) error { t.Error("exec was called"); return nil }}
 	if code := Run(home.sock, "r_aaaaaa01", []string{"--version"}, &out, &errb, o); code != 0 || out.String() != "2.1.314 (Claude Code)\n" {
 		t.Fatalf("exit %d, out %q, err %q", code, out.String(), errb.String())
@@ -257,7 +280,7 @@ func TestClientAsksHomeForTheVersionAndStartsNothing(t *testing.T) {
 func TestClientUsesTheAbsoluteContainerPathWithoutLookingItUp(t *testing.T) {
 	home := newFakeHome(t, StartReply{OK: true, ExecArgv: []string{"/opt/tools/container", "exec", "-i", "c", "claude"}})
 	var gotPath string
-	o := ClientOptions{Getwd: func() (string, error) { return "/w", nil }, Environ: func() []string { return nil },
+	o := ClientOptions{ExecTool: "container", Getwd: func() (string, error) { return "/w", nil }, Environ: func() []string { return nil },
 		LookPath: func(string) (string, error) { t.Error("the PATH was searched"); return "/elsewhere/container", nil },
 		Exec:     func(path string, argv, env []string, conn *os.File) error { gotPath = path; return errors.New("stop") }}
 	Run(home.sock, "r", nil, io.Discard, io.Discard, o)

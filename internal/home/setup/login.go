@@ -207,8 +207,8 @@ func (s *Setup) LoginCode(code string) error {
 
 // LoginOpen opens the running sign-in's link in the default browser, through the Opener.
 func (s *Setup) LoginOpen(ctx context.Context) error {
-	if !s.mac() {
-		return errNotMac
+	if av := s.agentsHere(ctx); !av.OK {
+		return errNoBackend(av)
 	}
 	s.mu.Lock()
 	raw := ""

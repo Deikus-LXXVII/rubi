@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,7 +73,7 @@ func (s *Setup) refuseFolder(dir string, existing []string) (string, error) {
 // AddProjectDir adds dir (an absolute path, the folder a Bot named and the user approved) to the projects, with
 // the same checks as a chosen folder. It returns the folder's real path.
 func (s *Setup) AddProjectDir(dir string) (string, error) {
-	if !s.mac() {
+	if !s.agentsHere(context.Background()).OK {
 		return "", errNoAgentsHere
 	}
 	var real string
@@ -95,7 +96,7 @@ var errNoAgentsHere = errors.New("projects are for agents, which this computer d
 // anything. Core asks it before it lets a project.add through, so that the folder the user approved is the folder Home
 // adds, and a plugin can show the user the path as Home resolves it.
 func (s *Setup) ResolveProjectDir(dir string) (string, error) {
-	if !s.mac() {
+	if !s.agentsHere(context.Background()).OK {
 		return "", errNoAgentsHere
 	}
 	return s.refuseFolder(dir, s.opt.Settings().Projects)

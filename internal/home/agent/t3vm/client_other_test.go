@@ -46,7 +46,7 @@ func TestRunRelaysWhereThereIsNoExec(t *testing.T) {
 	var gotPath string
 	var gotArgv []string
 	ran := make(chan time.Time, 1)
-	o := ClientOptions{Getwd: func() (string, error) { return `C:\work`, nil }, Environ: func() []string { return nil },
+	o := ClientOptions{ExecTool: "container", Getwd: func() (string, error) { return `C:\work`, nil }, Environ: func() []string { return nil },
 		Relay: func(path string, argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 			gotPath, gotArgv = path, argv
 			time.Sleep(200 * time.Millisecond) // the command runs; the connection must still be open

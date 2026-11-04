@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -160,7 +159,10 @@ func loginLife(t *testing.T) (*life, *loginBox, *fakeOpen, string) {
 	box := &loginBox{t: t, dir: agent.SignInDirOf(l.h.Dir), script: goodScript("CODE-9876-xyz")}
 	op := &fakeOpen{}
 	l.t3.LoginAgents = box
-	l.t3.LoginOptions = func(o *setup.Options) { o.Cmd, o.Opener, o.GOOS = op, op, "darwin" }
+	l.t3.LoginOptions = func(o *setup.Options) {
+		o.Cmd, o.Opener = op, op
+		o.Backend = func() agent.VMBackend { return agent.NewAppleBackend(agent.BackendConfig{}) } // the sign-in runs as on a Mac
+	}
 	t.Cleanup(func() { l.t3.login().Cancel() })
 	return l, box, op, role
 }
@@ -378,20 +380,23 @@ func TestT3LoginStateComesFromTheFolderOnly(t *testing.T) {
 
 var _ = time.Second
 
-// Rubi Home's start sweeps the sign-in containers a crash left, the T3 roles' as well as the runner path's: SweepAgent
-// calls AppleContainer.Sweep (which removes both kinds, see the agent package's test of it).
+// sweepRecorder is a backend that notes the sweep.
+type sweepRecorder struct {
+	agent.VMBackend
+	swept bool
+}
+
+func (r *sweepRecorder) Sweep(context.Context) { r.swept = true }
+
+// Rubi Home's start sweeps the sign-in VMs a crash left, the T3 roles' as well as the runner path's: SweepAgent asks the
+// backend to sweep (the Apple backend's Sweep removes both kinds, see the agent package's test of it).
 func TestSweepAgentSweepsBothSignInContainers(t *testing.T) {
-	if reflect.ValueOf(sweepSignIn).Pointer() != reflect.ValueOf((*agent.AppleContainer).Sweep).Pointer() {
-		t.Fatal("SweepAgent doesn't call AppleContainer.Sweep")
-	}
-	old := sweepSignIn
-	defer func() { sweepSignIn = old }()
-	var got *agent.AppleContainer
-	sweepSignIn = func(ac *agent.AppleContainer, _ context.Context) { got = ac }
 	h, _, _ := agentHelper(t)
+	rec := &sweepRecorder{VMBackend: agent.NoBackend("test")}
+	h.backendOverride = func() agent.VMBackend { return rec }
 	h.SweepAgent(context.Background())
-	if got == nil || got.EnvDir != h.Dir {
-		t.Fatalf("the sweep was not run for Home's folder: %+v", got)
+	if !rec.swept {
+		t.Fatal("SweepAgent did not ask the backend to sweep")
 	}
 }
 
@@ -485,7 +490,7 @@ func TestT3LoginRefusesALinkThatCarriesACredential(t *testing.T) {
 // folder of Home's own directory is removed, never what a link points to.
 func TestStartRemovesTheEarlierDesignsTokenFolder(t *testing.T) {
 	old := sweepSignIn
-	sweepSignIn = func(*agent.AppleContainer, context.Context) {}
+	sweepSignIn = func(agent.VMBackend, context.Context) {}
 	defer func() { sweepSignIn = old }()
 	h, _, _ := agentHelper(t)
 	legacy := filepath.Join(h.Dir, "agent-auth")

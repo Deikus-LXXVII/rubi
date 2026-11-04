@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 )
 
@@ -44,9 +43,12 @@ func (h *Helper) ServeAgentVM(ctx context.Context) error {
 	} else if res.Changed() {
 		log.Printf("T3 role instances: added %v, updated %v, removed %v", res.Added, res.Updated, res.Removed)
 	}
-	agentCfg := h.Fresh()
-	ac := &agent.AppleContainer{RunnerDir: agentCfg.AgentRunnerDir, EnvDir: h.Dir}
-	srv := t3vm.NewServer(t3vm.Options{Dir: h.Dir, Backend: h.Agent, Host: ac, T3Port: c.T3Port, T3Pid: h.T3Pid,
+	be := h.backend()
+	if av := be.Available(ctx); !av.OK {
+		log.Printf("T3 sessions: not available on this computer (%s)", av.Reason)
+		return nil
+	}
+	srv := t3vm.NewServer(t3vm.Options{Dir: h.Dir, Backend: h.Agent, Host: be.Sessions(), T3Port: c.T3Port, T3Pid: h.T3Pid,
 		Attachments: filepath.Join(c.T3BaseDir, "userdata", "attachments")})
 	h.sessMu.Lock()
 	h.sess = srv

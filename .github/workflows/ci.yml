@@ -48,6 +48,18 @@ jobs:
             CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=$arch go build -trimpath -o /dev/null ./cmd/rubi-home
           done
 
+  # The macOS-only files of Home (Apple's container tool, the package check, the Mac helpers) are built and tested only here;
+  # the Apple backend's command lines are plain Go and also run on Linux, but their tool name and path are darwin files.
+  home-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test Home
+        run: go test ./internal/home/... ./internal/homeproto ./cmd/rubi-home
+
   # The Windows-only helpers run on a real Windows host.
   home-windows:
     runs-on: windows-latest

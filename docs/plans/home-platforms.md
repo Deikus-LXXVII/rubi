@@ -633,17 +633,20 @@ line. Stage names only; the order is the dependency order.
 - **Tests.** `features_test.go` (a table per system with fake desktops, the argv of the handler checks, every op of every unavailable feature read from `Handle`'s source, `hello`, the cache), `core/homenotavailable_test.go` (code mapping, approval text, `features` in the check), `repocheck` (panel line is calm, the Bot-facing text). Tests of the operations run as on a Mac (`features_testenv_test.go`). The P7 line is gone from the allow-list.
 - **What a plugin needs** (T3 Agents, Shortcuts users): treat `CodeHomeNotAvailable` like "the capability is not there": cache it as a no, stop polling, do not say "no answer, it may have been started", and show the sentence calmly. The T3 Agents plugin's places are listed in the report of this stage.
 
-### P8 VM backend interface
+### P8 VM backend interface (done)
 
-- **Work.** 2.7: `VMBackend`; `AppleContainer` moves to `apple_darwin.go` with the macOS-only setup (package check,
-  administrator install, service start); every `container ...` argv in `setup`, `t3login` and the `agent-vm` shim goes
-  through the backend; the shim relays stdio to Home instead of `syscall.Exec`; `home.go:newAgent` asks for the
-  backend of the OS; on an OS with no backend `Available` says so.
-- **Done when.** macOS behaves exactly as before; Linux and Windows build and answer "not available on this computer"
-  for agents through the backend, not through `s.mac()`.
-- **Tests.** The existing VM and setup tests run against the Apple backend unchanged; a fake backend drives the same
-  tests; argv tests for the Apple backend; a test that the shim's stream relay carries stdio and the exit code. Removes
-  the P8 lines.
+- **The interface** (`internal/home/agent/backend.go`). `VMBackend{Name; Available(ctx) Availability; New(Project) VM; Sweep; Login() LoginHost; Sessions() SessionHost; Provision() Provisioner}`. It carries what the microvm backend of 2.7 needs, and no more:
+  - *lifecycle and exec with stdio*: `New` returns a `VM` (`Start`, `Exec`, `Stop`, `State`; `Conn` is a process's stdin and stdout, however it is carried).
+  - *shared folders*: `Project.Mounts()`, the one ordered list of host folders a VM shows (project read-write at `/work`, the shield and the role's content read-only, the role's config directory read-write). Apple's `RunArgs` turns it into `--mount type=bind,...`; a microvm turns each into a virtio-fs share.
+  - *control channel*: `StartSpec.Pipe` and `netpipe`, unchanged: no network card, the proxy, the hook gate and T3's port are streams over what the backend provides.
+  - *resource limits*: `BackendConfig.Limits{CPUs, Memory}`.
+  - *image and setup*: `Provisioner{Titles, Tool, Installed, Service, StartService, ServiceDetail, Image, BuildImage, ImageTag}`; the setup wizard keeps its steps and states and asks the backend for how each stands.
+  - *availability*: `Available` says whether this computer can use the backend at all and gives the reason (`Availability`); `NoBackend(reason)` is the backend of a computer with none.
+- **macOS unchanged.** `AppleBackend` (`apple_backend.go`) wraps `AppleContainer`. Tool name and path (`ContainerBin`, `installedBin`, `ExecToolName`) and the platform choice are in `apple_darwin.go` with `apple_other.go` beside it (Linux and Windows: no tool, backend "none": "agents don't run on Linux yet" / "...Windows yet"); the package check (`pkgutil`, `spctl`) is in `setup/container_darwin.go` with `container_other.go`. The command-line builders stay plain Go, so the Apple argv tests also run on Linux CI. (This differs from the plan's wording, which moved the whole `AppleContainer` to a darwin file: that would have needed about forty stubs for the guard and taken the argv tests off Linux CI. A `home-macos` CI job now runs the darwin-only tests.)
+- **Proof it is byte-identical.** Golden tables taken from the code before the change: `agent/testdata/apple_argv.golden.json` (every `container` command line of a VM: run for a project, a role and a shielded role, exec, stop, delete, image, build, ls, inspect, the sign-in, a whole start and stop), `setup/testdata/container_argv.golden.json` (the wizard's probes and jobs) and `agent/t3vm/testdata/session_argv.golden.json` (a T3 session's VM). They are files of literal argv lists, not computed.
+- **Callers.** `home.go` (`backend()`, `newAgent`, `SweepAgent`, `newSetup`), `agentvm.go` (the session server runs only where the backend is available), `t3login.go`, `setup` (`Options.Backend` replaces `GOOS`; `s.mac()` is gone), `features.go` (`agent` and `t3` ask `Backend.Available`), `t3vm.SessionSpec` (no tool name of its own: `Bin` is required) and the `agent-vm` shim (`ClientOptions.ExecTool`, the backend's tool; still `syscall.Exec` on Unix, the stdio relay of P6 elsewhere).
+- **Still Apple's, for P9 to widen.** The tool *install* step (`setup/container.go`: download, signature, administrator install) is the Apple package's own and is not behind the `Provisioner`; a backend with another installer (QEMU, `virtiofsd`, KVM access) needs an `Install` there. The shim hands the exec to the tool itself; for a guest agent Home must attach the shim's stream to a guest exec (open question 5 of 2.7).
+- **Allow-list.** Empty: all 13 lines are gone.
 
 ### P9 MicroVM backend for Linux
 

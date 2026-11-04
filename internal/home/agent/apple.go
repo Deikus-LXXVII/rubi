@@ -73,21 +73,6 @@ func (a *AppleContainer) bin() string {
 	return ContainerBin()
 }
 
-// ContainerBin is the container CLI: where Apple's installer puts it, else "container" in PATH (a launchd
-// job's PATH doesn't have /usr/local/bin, and a PATH entry isn't trusted over the installed one).
-func ContainerBin() string {
-	if st, err := os.Stat(installedBin); err == nil && st.Mode().IsRegular() {
-		return installedBin
-	}
-	if p, err := exec.LookPath("container"); err == nil {
-		return p
-	}
-	return "container"
-}
-
-// installedBin is where Apple's installer puts the CLI; it is preferred to whatever PATH names.
-var installedBin = "/usr/local/bin/container"
-
 func (a *AppleContainer) image() string {
 	if a.Image != "" {
 		return a.Image
@@ -242,23 +227,19 @@ func (a *AppleContainer) imageInspectArgs() []string {
 func (a *AppleContainer) RunArgs(p Project) []string {
 	args := []string{a.bin(), "run", "-d", "--name", containerName(p), "--init",
 		"--network", "none", "--user", runnerUID, "--cap-drop", "ALL", "--read-only",
-		"--tmpfs", "/tmp",
-		"--mount", "type=bind,source=" + p.Dir + ",target=/work"}
+		"--tmpfs", "/tmp"}
+	// The shared folders, in Project.Mounts' order: the project, then (for a role) the shield over /work/.rubi and the
+	// project's own .claude and .git/hooks, the role's content and its config directory. These binds sit on top of the
+	// read-write one of /work. A role VM never gets the user's SSH agent (no --ssh).
+	for _, m := range p.Mounts() {
+		spec := "type=bind,source=" + m.Source + ",target=" + m.Target
+		if m.ReadOnly {
+			spec += ",readonly"
+		}
+		args = append(args, "--mount", spec)
+	}
 	if p.Role != "" {
-		// A role VM sees its own content (read-only) and its own config directory, nothing of any other role, no
-		// sign-in and never the user's SSH agent (no --ssh). The legacy role's state
-		// (/work/.rubi) is covered by an empty read-only directory and the project's own .claude is read-only, so a
-		// role can't rewrite what the other roles load. These binds sit on top of the read-write one of /work.
-		if p.EmptyDir != "" {
-			args = append(args, "--mount", "type=bind,source="+p.EmptyDir+",target=/work/.rubi,readonly")
-		}
-		for _, m := range p.ReadOnly {
-			args = append(args, "--mount", "type=bind,source="+m.Source+",target=/work/"+filepath.ToSlash(m.Name)+",readonly")
-		}
-		args = append(args,
-			"--mount", "type=bind,source="+p.RoleDir+",target="+RoleMountDir+",readonly",
-			"--mount", "type=bind,source="+p.ClaudeDir+",target="+RoleClaudeDir,
-			"--env", "RUBI_ROLE_DIR="+RoleMountDir, "--env", "RUBI_CLAUDE_DIR="+RoleClaudeDir)
+		args = append(args, "--env", "RUBI_ROLE_DIR="+RoleMountDir, "--env", "RUBI_CLAUDE_DIR="+RoleClaudeDir)
 	}
 	args = append(args, "--workdir", "/work")
 	if a.CPUs != "" {
