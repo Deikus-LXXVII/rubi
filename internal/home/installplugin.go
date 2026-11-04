@@ -22,10 +22,11 @@ import (
 	"strings"
 
 	claudeplugin "github.com/Deikus-LXXVII/rubi/claude-plugin"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 // DefaultClaudePluginDir is where the marketplace is installed (and what managed settings point at).
-const DefaultClaudePluginDir = "/Library/Application Support/Rubi Home/claude-plugin"
+var DefaultClaudePluginDir = hostpaths.PluginDir()
 
 // maxPluginScript bounds the privileged script (it travels as one argument).
 const maxPluginScript = 256 << 10

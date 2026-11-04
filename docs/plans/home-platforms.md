@@ -482,13 +482,28 @@ line. Stage names only; the order is the dependency order.
 - **Tests.** `internal/home/fsx` tests (lock, no-follow open, link count, owner, process-group kill) on this host and on the
   Windows runner; the repocheck tests above, break-checked.
 
-### P2 Platform paths
+### P2 Platform paths (done)
 
-- **Work.** 2.1: `platformPaths()`, per-OS deny lists, the trusted-file check.
-- **Done when.** No source outside `paths_*.go` names `~/Library`, `/Library` or `/usr/local/bin/rubi-home`; the
-  Linux `DataDir` is unchanged; Windows paths resolve in a table test.
-- **Tests.** Table tests per OS with a fake environment; the hook owner check against files made in a temp folder;
-  a test that `DefaultDir` on Linux still returns the old path. Removes the P2 lines of the allow-list.
+- **Work.**
+  - New package `internal/home/hostpaths`, one file per system with the same functions: `DataBase`, `HelperHome`,
+    `HookBinary`, `PluginDir`, `ManagedSettings`, and the deny lists (`SensitiveHomeDirs`, `SensitiveSysDirs`,
+    `ExactOnlyDirs`, `SystemTrees`, `SystemExact`, `DeniedTrees`). macOS values are exactly the old literals; Linux keeps
+    the XDG `DataBase` and gets its own lists and `/usr/local/share/rubi-home/claude-plugin`; Windows uses
+    `%LOCALAPPDATA%` and `Program Files` from the system's known folders, not from environment variables.
+  - The call sites use it: `DefaultDir`, `DefaultHookBinary`, `DefaultClaudePluginDir` (now variables), `appinstall.go`
+    and `OpenAppLog`, `startsession.go`, `agent/manager.go`, `setup/project.go`.
+  - `fsx.TrustedByAdmin` and `fsx.TrustedAncestor` replace the bare owner checks in `hookcheck.go` and `installhook.go`.
+    Unix: owned by root, no group or other write. Windows: owner is Administrators, SYSTEM or TrustedInstaller, there is
+    an access list, and no entry that applies to the file gives a write right to anybody else (a whitelist, so the
+    user's own account counts as untrusted too). For a folder above the file only the rights to replace what is inside
+    count, because the drive root lets Authenticated Users add folders. The rule is `fsx.CheckACL`, plain logic tested
+    with constructed entries on every host; the Windows file only reads the descriptor.
+- **Not done here (P5/P6):** the plugin's `.mcp.json` still names `/usr/local/bin/rubi-home`; the install script is still
+  `sh`; the hook's folder on Windows is not created by anything yet.
+- **Done when.** No source outside `hostpaths` names `~/Library`, `/Library` or `/usr/local/bin/rubi-home`; the Linux
+  `DataBase` is unchanged; Windows paths resolve in a test on a Windows runner. The five P2 allow-list lines are gone.
+- **Tests.** Golden values for macOS; XDG for Linux; Windows paths; the ACL table; owner and mode on Unix; the deny
+  lists follow the platform in `home` and `agent`.
 
 ### P3 Opener, clipboard, dialogs and the panel folder browser
 

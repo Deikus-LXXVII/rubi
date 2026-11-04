@@ -4,7 +4,6 @@
 
 internal/home/agent/apple.go || /usr/local/bin/container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/agent/apple.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
-internal/home/agent/manager.go || Library || P2: the deny list gets per-OS entries
 internal/home/agentvm.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/appinstall.go || .plist file || P4: the plist, the app bundle and launchd calls move to the macOS autostart file
 internal/home/appinstall.go || /bin/launchctl || P4: launchd moves to autostart_darwin.go; systemd and Scheduled Task beside it
@@ -16,7 +15,6 @@ internal/home/appinstall.go || property list || P4: the plist, the app bundle an
 internal/home/home.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/installhook.go || /usr/bin/osascript || P5: the administrator run moves behind Elevator
 internal/home/installhook.go || AppleScript || P5: the administrator run moves behind Elevator
-internal/home/installplugin.go || Application Support || P2: the plugin folder comes from platformPaths
 internal/home/openwindow.go || /usr/bin/open || P3: open, pbcopy and osascript move behind Opener, Clipboard and Dialogs
 internal/home/openwindow.go || /usr/bin/osascript || P3: open, pbcopy and osascript move behind Opener, Clipboard and Dialogs
 internal/home/openwindow.go || /usr/bin/pbcopy || P3: open, pbcopy and osascript move behind Opener, Clipboard and Dialogs
@@ -31,10 +29,7 @@ internal/home/setup/login.go || /usr/bin/open || P3: the sign-in link opens thro
 internal/home/setup/probe.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/probe.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/project.go || /usr/bin/osascript || P3: the folder chooser moves behind Dialogs
-internal/home/setup/project.go || Library path || P2: the home-folder deny list gets per-OS entries
 internal/home/setup/setup.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/shortcuts.go || shortcuts || P7: Shortcuts become a macOS-only file and a not-available answer elsewhere
 internal/home/startsession.go || /usr/bin/open || P7: the Claude desktop link goes through Opener, behind a feature check
-internal/home/startsession.go || Library || P2: the deny lists get per-OS entries
-internal/home/startsession.go || Library path || P2: the deny lists get per-OS entries
 internal/home/t3login.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file

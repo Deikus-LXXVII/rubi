@@ -29,6 +29,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
@@ -179,13 +180,14 @@ type Helper struct {
 	sess   *t3vm.Server // the T3 session server while it serves (see ServeAgentVM)
 }
 
-// DefaultDir is ~/Library/Application Support/Rubi Home on a Mac (the user config dir elsewhere). It fails
+// DefaultDir is Rubi Home's folder: "Rubi Home" in hostpaths.DataBase (~/Library/Application Support on a Mac, the XDG
+// config folder on Linux, %LOCALAPPDATA% on Windows). It fails
 // when there is no config dir (it never falls back to the working directory).
 func DefaultDir() (string, error) {
 	if d := os.Getenv("RUBI_HOME_DIR"); d != "" {
 		return d, nil
 	}
-	base, err := os.UserConfigDir()
+	base, err := hostpaths.DataBase()
 	if err != nil || base == "" {
 		return "", errors.New("can't find a configuration folder for Rubi Home; set RUBI_HOME_DIR")
 	}

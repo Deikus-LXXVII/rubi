@@ -21,6 +21,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/sshtarget"
 	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 // lockedAfter: Rubi counts as present while a claude-agent.next is open and this long after one ends.
@@ -432,7 +433,7 @@ func (m *Manager) projects() []Project {
 }
 
 // deniedTrees are directories under the user's home that never become a project, nor anything inside them.
-var deniedTrees = []string{".ssh", "Library", ".gnupg", ".aws", ".config", ".kube"}
+var deniedTrees = hostpaths.DeniedTrees()
 
 func badMountPath(dir string) bool {
 	return strings.ContainsAny(dir, ",\x00\r\n") || strings.ContainsFunc(dir, unicode.IsControl)

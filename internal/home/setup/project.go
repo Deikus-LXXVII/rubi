@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 // systemTrees are never projects, nor anything inside them; systemExact only themselves.
 var (
-	systemTrees = []string{"/System", "/Library", "/usr", "/bin", "/sbin", "/etc", "/var", "/private", "/dev", "/cores", "/Applications", "/tmp"}
-	systemExact = []string{"/Volumes", "/Users", "/home", "/opt"}
+	systemTrees = hostpaths.SystemTrees()
+	systemExact = hostpaths.SystemExact()
 )
 
 // refuseFolder says why dir (an absolute path) can't be a project, or returns its real path.

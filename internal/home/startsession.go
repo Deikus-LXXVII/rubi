@@ -31,6 +31,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 const (
@@ -155,10 +157,9 @@ func checkTaskText(s string) error {
 // Names starting with .zsh (shell startup files) are refused as well. /Volumes itself is refused (a volume is
 // not a project) but not what is inside it.
 var (
-	sensitiveHomeDirs = []string{".claude", ".ssh", ".gnupg", ".aws", ".kube", ".config", ".docker", ".local", ".npm", ".oh-my-zsh", "Library"}
-	sensitiveSysDirs  = []string{"/etc", "/private/etc", "/System", "/Library", "/usr", "/bin", "/sbin", "/dev", "/proc", "/sys",
-		"/var", "/private/var", "/Applications", "/opt"}
-	exactOnlyDirs = []string{"/Volumes"}
+	sensitiveHomeDirs = hostpaths.SensitiveHomeDirs()
+	sensitiveSysDirs  = hostpaths.SensitiveSysDirs()
+	exactOnlyDirs     = hostpaths.ExactOnlyDirs()
 )
 
 func pathWithin(p, root string) bool {

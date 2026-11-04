@@ -4,6 +4,7 @@ package fsx
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
@@ -74,3 +75,31 @@ func KillTree(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 }
+
+// AdminName is how the trusted owner of a file is called in messages.
+const AdminName = "root"
+
+// TrustedByAdmin says whether fi (what os.Stat saw at path) can be changed only by root: it is owned by root and
+// neither the group nor others can write it. why says what is wrong when it is not.
+func TrustedByAdmin(_ string, fi os.FileInfo) (ok bool, why string) {
+	if uid, _, known := OwnerOf(fi); !known || uid != 0 {
+		return false, "not owned by root"
+	}
+	if fi.Mode().Perm()&0o022 != 0 {
+		return false, fmt.Sprintf("writable by group or others (mode %04o)", fi.Mode().Perm())
+	}
+	return true, ""
+}
+
+// TrustedAncestor is TrustedByAdmin for a folder above the file: on Unix the same rule (a folder others can write
+// lets them rename what is inside).
+func TrustedAncestor(path string, fi os.FileInfo) (bool, string) { return TrustedByAdmin(path, fi) }
+
+// ExplainTrust says whether a failed trust check gives a reason worth showing (on Unix the owner and the mode say it).
+const ExplainTrust = false
+
+// OthersName is who must not be able to write a trusted file.
+const OthersName = "group or others"
+
+// Reparse is false on Unix: a symbolic link is judged by its owner where it matters (see hookcheck.go).
+func Reparse(string, os.FileInfo) bool { return false }

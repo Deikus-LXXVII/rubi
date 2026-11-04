@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -252,7 +253,7 @@ func runApp(ctx context.Context, env AppEnv) error {
 	if !filepath.IsAbs(env.Home) || env.Exe == "" || env.HelperDir == "" {
 		return appFail("Rubi Home can't find your home folder or its own data folder.", errors.New("home, executable or data folder unknown"))
 	}
-	dir := filepath.Join(env.Home, ".rubi-home")
+	dir := hostpaths.HelperHome(env.Home)
 	bin := filepath.Join(dir, "bin", "rubi-home")
 	logs := filepath.Join(dir, "logs")
 
@@ -577,7 +578,7 @@ func dialSocket(ctx context.Context, path string) (string, error) {
 // OpenAppLog opens the app's log, ~/.rubi-home/logs/rubi-home-app.log (private); the caller closes it. Failing
 // that it returns nil.
 func OpenAppLog(homeDir string) *os.File {
-	dir := filepath.Join(homeDir, ".rubi-home")
+	dir := hostpaths.HelperHome(homeDir)
 	logs := filepath.Join(dir, "logs")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil

@@ -348,7 +348,7 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 	if o.RequireRoot {
 		b := InspectHookBinary(p.Dst, vt)
 		if !b.Secure {
-			return codedf(CodeVerify, "verification failed: %s must be owned by root, a plain file, and not writable by group or others (uid %d, mode %04o)", p.Dst, b.Owner, b.Mode.Perm())
+			return codedf(CodeVerify, "verification failed: %s must be owned by %s, a plain file, and not writable by %s (%s)", p.Dst, fsx.AdminName, fsx.OthersName, insecureDetail(b))
 		}
 	}
 	fmt.Fprintf(w, "Installed %s (version %s, sha256 %s).\nVerified: the file's sha256 and `version` match the source.\n", p.Dst, v, got)
@@ -389,9 +389,37 @@ func verifyPlugin(p PluginPlan, asRoot bool) error {
 		if err != nil {
 			return err
 		}
-		if uid, _, ok := fsx.OwnerOf(fi); !ok || uid != 0 || fi.Mode().Perm()&0o022 != 0 {
-			return codedf(CodeVerify, "verification failed: %s must be owned by root and not writable by group or others", fp)
+		if fsx.Reparse(fp, fi) {
+			return codedf(CodeVerify, "verification failed: %s is a link or a junction", fp)
+		}
+		if ok, why := fsx.TrustedByAdmin(fp, fi); !ok {
+			return codedf(CodeVerify, "verification failed: %s must be owned by %s and not writable by %s%s", fp, fsx.AdminName, fsx.OthersName, trustDetail(why))
 		}
 		return nil
 	})
+}
+
+// trustDetail is ": <why>" where a failed trust check has a reason worth showing (Windows), else "".
+func trustDetail(why string) string {
+	if fsx.ExplainTrust && why != "" {
+		return ": " + why
+	}
+	return ""
+}
+
+// insecureDetail is what the error says about a hook binary that is not trusted: on Unix its owner and mode, as it
+// always did; where those mean nothing (Windows), the reason the trust check gave, or the folder above it.
+func insecureDetail(b HookBinary) string {
+	if !fsx.ExplainTrust {
+		return fmt.Sprintf("uid %d, mode %04o", b.Owner, b.Mode.Perm())
+	}
+	switch {
+	case b.Symlink:
+		return "it is a link or a junction"
+	case b.WhyFile != "":
+		return "it is " + b.WhyFile
+	case b.WhyInsecure != "":
+		return b.WhyInsecure
+	}
+	return "its permissions are not an administrator's"
 }

@@ -19,11 +19,12 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 // DefaultHookBinary is where Claude Code's managed settings run the hook from: root-owned on purpose, so
 // no process of the user's can swap it for one that allows everything.
-const DefaultHookBinary = "/usr/local/bin/rubi-home"
+var DefaultHookBinary = hostpaths.HookBinary()
 
 // HookBinaryTimeout bounds `<hook> version`.
 const HookBinaryTimeout = 3 * time.Second
@@ -49,7 +50,10 @@ type HookBinary struct {
 	Symlink bool
 	// WhyInsecure names the directory above the binary that anyone but root could change.
 	WhyInsecure string
-	VersionE    string // why the version couldn't be read ("" when it was)
+	// WhyFile says why the trust check refused the binary itself (set on every system; it is shown only where
+	// fsx.ExplainTrust is true, because on Unix the owner and mode already say it).
+	WhyFile  string
+	VersionE string // why the version couldn't be read ("" when it was)
 }
 
 // limitWriter keeps the first n bytes and drops the rest.
@@ -133,20 +137,20 @@ func insecureAncestors(path string) string {
 		if err != nil {
 			return fmt.Sprintf("can't look at %s: %v", d, err)
 		}
+		if fsx.Reparse(d, li) {
+			return d + " is a link or a junction"
+		}
 		if li.Mode()&os.ModeSymlink != 0 {
 			if uid, _, ok := fsx.OwnerOf(li); !ok || uid != 0 {
-				return d + " is a symlink that root doesn't own"
+				return d + " is a symlink that " + fsx.AdminName + " doesn't own"
 			}
 		}
 		fi, err := os.Stat(d)
 		if err != nil || !fi.IsDir() {
 			return fmt.Sprintf("%s isn't a directory", d)
 		}
-		if uid, _, ok := fsx.OwnerOf(fi); !ok || uid != 0 {
-			return d + " is not owned by root"
-		}
-		if fi.Mode().Perm()&0o022 != 0 {
-			return fmt.Sprintf("%s is writable by group or others (mode %04o)", d, fi.Mode().Perm())
+		if ok, why := fsx.TrustedAncestor(d, fi); !ok {
+			return d + " is " + why
 		}
 		if d == filepath.Dir(d) {
 			return ""
@@ -174,7 +178,7 @@ func inspectHook(path string, timeout time.Duration, o inspectOpts) HookBinary {
 		b.VersionE = err.Error()
 		return b
 	}
-	b.Symlink = li.Mode()&os.ModeSymlink != 0
+	b.Symlink = li.Mode()&os.ModeSymlink != 0 || fsx.Reparse(path, li)
 	fi, err := os.Stat(path)
 	if err != nil {
 		b.VersionE = err.Error()
@@ -188,7 +192,11 @@ func inspectHook(path string, timeout time.Duration, o inspectOpts) HookBinary {
 	if uid, _, ok := fsx.OwnerOf(fi); ok {
 		b.Owner = int(uid)
 	}
-	b.Secure = b.Owner == 0 && !b.Symlink && fi.Mode().Perm()&0o022 == 0
+	trusted, whyFile := fsx.TrustedByAdmin(path, fi)
+	b.Secure = trusted && !b.Symlink
+	if !trusted {
+		b.WhyFile = whyFile
+	}
 	if b.Secure {
 		if why := insecureAncestors(path); why != "" {
 			b.Secure, b.WhyInsecure = false, why
@@ -233,6 +241,9 @@ func (b HookBinary) WritePlain(w io.Writer, self string) {
 			b.Owner, b.Mode.Perm(), map[bool]string{true: "yes", false: "NO"}[b.Secure])
 		if b.WhyInsecure != "" {
 			fmt.Fprintf(w, "  directories: %s\n", b.WhyInsecure)
+		}
+		if fsx.ExplainTrust && b.WhyFile != "" {
+			fmt.Fprintf(w, "  the file: %s\n", b.WhyFile)
 		}
 		if b.Symlink {
 			fmt.Fprintln(w, "  it is a symlink; a hook binary must be a plain file")
