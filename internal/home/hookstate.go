@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	claudeplugin "github.com/Deikus-LXXVII/rubi/claude-plugin"
@@ -20,6 +21,7 @@ import (
 
 const (
 	hookInstallLimit = 5 * time.Minute  // how long the administrator dialog may stay open
+	hookNoAgentFor   = 5 * time.Minute  // how long "nobody to ask" is believed
 	hookCooldown     = 2 * time.Minute  // no new installation this long after a dialog nobody answered
 	hookCacheTTL     = 10 * time.Second // how long an inspection of the hook file is reused
 )
@@ -133,6 +135,12 @@ func hookSentence(code string) string {
 		return "the hook is being installed already; answer the administrator dialog on that computer"
 	case CodeBadRequest:
 		return "bad arguments"
+	case CodePlanChanged:
+		return "what would be installed is not what was approved; ask for the approval again"
+	case CodePlanNeeded:
+		return "the installation needs the hash of the approved plan; ask for the approval again"
+	case CodeInUse:
+		return "a Claude Code hook is running; close Claude Code and try again"
 	}
 	return "the hook could not be installed; see Rubi Home's log"
 }
@@ -266,6 +274,41 @@ func (h *Helper) hookStatus() map[string]any {
 
 type hookArgs struct {
 	WithPlugin bool `json:"with_plugin"`
+	// PlanSHA256 is the hash of the plan the person approved (hook.plan gave it): when set, hook.install runs only a plan
+	// with exactly that hash.
+	PlanSHA256 string `json:"plan_sha256"`
+}
+
+// elevator is how the administrator is asked on this computer.
+func (h *Helper) elevator() Elevator {
+	if h.hookElev != nil {
+		return h.hookElev
+	}
+	return NewElevator(ElevateEnv{})
+}
+
+// fullPlan is the whole plan hook.install would run: the hook binary and, with o.WithPlugin, the Claude Code plugin.
+func fullPlan(o InstallOptions) (InstallPlan, error) {
+	tools := defaultTools()
+	if o.tools != nil {
+		tools = *o.tools
+	}
+	p, err := planInstall(o.Src, o.Dst, o.RequireRoot, tools)
+	if err != nil {
+		return p, err
+	}
+	if o.WithPlugin {
+		dst := o.PluginDst
+		if dst == "" {
+			dst = DefaultClaudePluginDir
+		}
+		pp, err := planClaudePlugin(claudeplugin.Files, dst, o.RequireRoot, tools)
+		if err != nil {
+			return p, &coded{CodePlugin, err}
+		}
+		p.Plugin = &pp
+	}
+	return p, nil
 }
 
 func parseHookArgs(args json.RawMessage) (hookArgs, error) {
@@ -323,12 +366,20 @@ func (h *Helper) planHook(args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, refusal(err)
 	}
-	p, _, err := h.hookPreflight(in.WithPlugin)
+	_, o, err := h.hookPreflight(in.WithPlugin)
 	if err != nil {
 		log.Printf("hook.plan: %v", err)
 		return nil, refusal(err)
 	}
-	return map[string]any{"target": p.Dst, "version": p.Version, "sha256": p.SHA256}, nil
+	p, err := fullPlan(o)
+	if err != nil {
+		log.Printf("hook.plan: %v", err)
+		return nil, refusal(err)
+	}
+	// plan_sha256 is the hash of everything that would run as administrator (the binary's hash, the paths, the plugin's
+	// files). The approval shows it and hook.install is told it; "admin" says what the person will be asked.
+	return map[string]any{"target": p.Dst, "version": p.Version, "sha256": p.SHA256, "plan_sha256": PlanSHA256(p),
+		"admin": h.elevator().Sentence(), "plugin": p.Plugin != nil}, nil
 }
 
 // installHook is the `hook.install` op. Args: {"with_plugin": bool}. It checks what it can, starts the
@@ -344,6 +395,34 @@ func (h *Helper) installHook(args json.RawMessage) (any, error) {
 		log.Printf("hook.install: refused: %v", err)
 		return nil, refusal(err)
 	}
+	// The plan is made again here and compared with the one that was approved: a binary or a file swapped since the
+	// approval changes the hash, and nothing is run.
+	plan, err := fullPlan(o)
+	if err != nil {
+		log.Printf("hook.install: refused: %v", err)
+		return nil, refusal(err)
+	}
+	if in.PlanSHA256 == "" && o.Run == nil {
+		// Without the hash of the approved plan there is nothing to hold the plan to: the answer might be a command for the
+		// Bot, and the person approved a hash, not "whatever Home makes now".
+		log.Printf("hook.install: refused: no plan hash")
+		return nil, refusal(&coded{CodePlanNeeded, errors.New("no plan hash")})
+	}
+	if in.PlanSHA256 != "" && strings.ToLower(in.PlanSHA256) != PlanSHA256(plan) {
+		log.Printf("hook.install: refused: the plan is not the approved one")
+		return nil, refusal(&coded{CodePlanChanged, errors.New("the plan changed")})
+	}
+	elev := h.elevator()
+	o.Elevator = elev
+	h.hookMu.Lock()
+	// "Nobody to ask" is remembered for a few minutes only: a polkit agent can start, a session can begin.
+	noAgent := !h.hookNoAgentAt.IsZero() && h.clock().Sub(h.hookNoAgentAt) < hookNoAgentFor
+	h.hookMu.Unlock()
+	if aerr := elev.Available(context.Background()); o.Run == nil && (noAgent || errors.Is(aerr, ErrNoAgent)) {
+		// Nobody to ask for the administrator password on this computer: the person's approval in the panel stands in for
+		// it, and the Bot runs one command as root. Home runs nothing itself.
+		return h.botSudoAnswer(o, plan), nil
+	}
 	h.hookMu.Lock()
 	if err := h.hookRefusedNow(); err != nil {
 		h.hookMu.Unlock()
@@ -358,10 +437,14 @@ func (h *Helper) installHook(args json.RawMessage) (any, error) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), limit) // its own: not the request's
 		defer cancel()
+		o.ExpectPlanSHA256 = PlanSHA256(plan) // the plan InstallHook makes must be the one just checked
 		err := InstallHook(ctx, io.Discard, o)
 		res := hookResultOf(ctx, err)
 		h.hookMu.Lock()
 		res.At = h.clock()
+		if errors.Is(err, ErrNoAgent) {
+			h.hookNoAgentAt = res.At // the next request goes the headless way
+		}
 		h.hookBusy, h.hookLast, h.hookSeen = false, &res, hookCached{}
 		h.hookMu.Unlock()
 		if err != nil {
@@ -379,6 +462,8 @@ func hookResultOf(ctx context.Context, err error) hookResult {
 		return hookResult{Result: HookResultOK, Message: "The Claude Code hook is installed."}
 	case errors.Is(err, ErrAdminCancelled):
 		return hookResult{Result: HookResultCancelled, Message: "The administrator dialog was cancelled."}
+	case errors.Is(err, ErrNoAgent):
+		return hookResult{Result: HookResultFailed, Code: "no_agent", Message: "There was nobody to ask for the administrator password; your Bot can install it."}
 	case ctx.Err() != nil:
 		return hookResult{Result: HookResultTimeout, Message: "The administrator dialog timed out; try again."}
 	}
@@ -395,4 +480,22 @@ func capitalize(s string) string {
 		r[0] -= 'a' - 'A'
 	}
 	return string(r)
+}
+
+// sudoCommand is the headless command: `/usr/bin/sudo -- /bin/sh -c SCRIPT`, by absolute paths, with the plan's own script as the
+// one argument. It is what pkexec runs, and it is checkable: sha256(SCRIPT) is the plan hash the person approved.
+func sudoCommand(p InstallPlan) []string {
+	return []string{"/usr/bin/sudo", "--", "/bin/sh", "-c", p.FullScript()}
+}
+
+// botSudoAnswer is hook.install's answer where nobody can be asked for the administrator password (no polkit agent, no
+// desktop): the exact argument list for the Bot to run, and the hash of the script in it. Rubi Home runs nothing itself and
+// its own binary is never run as root, so no file the user can write is ever executed with root's rights. The script reads
+// the binary to install once, checks the SHA-256 of that copy against the approved plan, uses absolute tools, checks that
+// the folders above its target are root's, and replaces only a file called rubi-home and a folder called claude-plugin that is
+// the Rubi plugin. A Bot that runs anything else with sudo gets nothing from this.
+func (h *Helper) botSudoAnswer(o InstallOptions, plan InstallPlan) map[string]any {
+	return map[string]any{"started": false, "needs_bot_sudo": true, "plan_sha256": PlanSHA256(plan), "argv": sudoCommand(plan),
+		"version": version.Version,
+		"note":    "No one can be asked for the administrator password on this computer. Run the argument list in argv as it is (no shell around it, nothing added), and nothing else with administrator rights. You may check first that the SHA-256 of the last element of argv is plan_sha256, the hash the user approved."}
 }

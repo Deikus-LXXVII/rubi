@@ -420,7 +420,7 @@ func TestInstallHookDryRun(t *testing.T) {
 	}
 	sum, _ := fileSHA256(src)
 	for _, want := range []string{"Source:  " + src, "sha256 " + sum, "version " + version.Version, "Target:  " + dst,
-		"src='" + src + "'", "dst='" + dst + "'", "SHA256SUMS", "not proof", "/usr/bin/osascript", "with administrator privileges", "Dry run: nothing was run"} {
+		"src='" + src + "'", "dst='" + dst + "'", "SHA256SUMS", "not proof", "Run via: " + NewElevator(ElevateEnv{}).Describe(), "Plan sha256 (the panel shows the same): ", "Dry run: nothing was run"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("dry run lacks %q:\n%s", want, out.String())
 		}
@@ -603,27 +603,6 @@ func TestRootInstallScriptCreatesNothingBelowAWritableAncestor(t *testing.T) {
 	}
 }
 
-// The argv of the administrator run: the script and the prompt are arguments of the run handler (nothing is
-// spliced into the AppleScript), and the dialog names who is asking.
-func TestOsascriptArgvCarriesTheScriptAndThePrompt(t *testing.T) {
-	p := InstallPlan{Script: "echo hi '\"' $x"}
-	a := osascriptArgs(p)
-	if len(a) != 8 || a[0] != "-e" || a[1] != "on run argv" || a[6] != p.FullScript() || a[7] != adminPrompt {
-		t.Fatalf("argv: %q", a)
-	}
-	if !strings.Contains(a[3], "with prompt (item 2 of argv)") || !strings.Contains(a[3], "(item 1 of argv)") {
-		t.Fatalf("handler: %q", a[3])
-	}
-	for _, x := range a[:6] {
-		if strings.Contains(x, "echo hi") || strings.Contains(x, "Rubi Home wants") {
-			t.Fatalf("data spliced into AppleScript: %q", x)
-		}
-	}
-	if !strings.Contains(adminPrompt, "Rubi Home wants to install the Claude Code hook") {
-		t.Fatal(adminPrompt)
-	}
-}
-
 // ---- B4 review fixes ----
 
 // hostTools finds the script's tools on the test host (the real ones are absolute macOS/Linux paths).
@@ -641,7 +620,7 @@ func hostTools(t *testing.T) installTools {
 		sha = look("sha256sum")
 	}
 	return installTools{Cat: look("cat"), Sha: sha, Cut: look("cut"), Mktemp: look("mktemp"), Rm: look("rm"),
-		Chmod: look("chmod"), Mv: look("mv"), Group: "root", Mkdir: look("mkdir")}
+		Chmod: look("chmod"), Mv: look("mv"), Group: "root", Mkdir: look("mkdir"), Find: look("find"), Rmdir: look("rmdir")}
 }
 
 func runScript(t *testing.T, script string) (string, error) {
@@ -655,13 +634,14 @@ func runScript(t *testing.T, script string) (string, error) {
 func TestInstallScriptShape(t *testing.T) {
 	sum := strings.Repeat("ab", 32)
 	for _, tools := range []installTools{defaultTools(), {Stat: "/usr/bin/stat -L -c '%u:%a'", Cat: "/bin/cat", Sha: "/usr/bin/sha256sum", Cut: "/usr/bin/cut",
-		Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm", Chown: "/bin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "root", Mkdir: "/bin/mkdir"}} {
+		Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm", Chown: "/bin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "root", Mkdir: "/bin/mkdir",
+		Find: "/usr/bin/find", Rmdir: "/bin/rmdir"}} {
 		sc := installScript(tools, "/home/u/rubi-home", "/usr/local/bin/rubi-home", sum, true)
 		if strings.Count(sc, `"$src"`) != 1 {
 			t.Errorf("the source must be read exactly once:\n%s", sc)
 		}
 		pos := func(sub string) int { return strings.Index(sc, sub) }
-		if !(pos("mktemp") < pos("trap ") && pos("trap ") < pos(`"$src" > "$tmp"`) && pos(`"$src" > "$tmp"`) < pos(`= "$want"`) &&
+		if !(pos("mkdir \"$lock\"") < pos("trap ") && pos("trap ") < pos("mktemp") && pos("mktemp") < pos(`"$src" > "$tmp"`) && pos(`"$src" > "$tmp"`) < pos(`= "$want"`) &&
 			pos(`= "$want"`) < pos("chown") && pos("chown") < pos("chmod") && pos("chmod") < pos("mv -f")) {
 			t.Errorf("order:\n%s", sc)
 		}
@@ -670,7 +650,7 @@ func TestInstallScriptShape(t *testing.T) {
 			t.Errorf("script:\n%s", sc)
 		}
 		for _, l := range strings.Split(sc, "\n") { // every command is an absolute path
-			for _, tool := range []string{"cat ", "shasum", "sha256sum", "cut ", "mktemp", "rm ", "chown", "chmod", "mv ", "stat ", "dirname", "mkdir"} {
+			for _, tool := range []string{"cat ", "shasum", "sha256sum", "cut ", "mktemp", "rm ", "chown", "chmod", "mv ", "stat ", "dirname", "mkdir", "find ", "rmdir"} {
 				if i := strings.Index(l, tool); i > 0 && !strings.Contains(l[:i], "/") && !strings.Contains(l, "echo") && !strings.HasPrefix(strings.TrimSpace(l), "src=") {
 					t.Errorf("relative tool %q in %q", tool, l)
 				}

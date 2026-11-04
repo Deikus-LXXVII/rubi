@@ -28,7 +28,11 @@ type fakeHook struct {
 	home            *home.Helper      // the real Rubi Home behind the fake ops
 	resolveTo       map[string]string // project.resolve: the real path of a folder (itself when absent)
 	resolveErr      error
-	adds            []string // the folders a project.add reached Home with
+	planHash        string       // hook.plan: plan_sha256
+	admin           string       // hook.plan: the sentence for the person at that computer
+	sudoArgv        []string     // when set, hook.install answers needs_bot_sudo with this command
+	installArgs     atomic.Value // the last hook.install arguments (json.RawMessage)
+	adds            []string     // the folders a project.add reached Home with
 	mu              sync.Mutex
 }
 
@@ -63,7 +67,14 @@ func pairedFakeHomeVia(t *testing.T, c *Core, f *fakeHook, link bool) string {
 			if f.planErr != nil {
 				return nil, f.planErr
 			}
-			return map[string]any{"target": "/usr/local/bin/rubi-home", "version": "v1.0.0", "sha256": fakeSHA}, nil
+			m := map[string]any{"target": "/usr/local/bin/rubi-home", "version": "v1.0.0", "sha256": fakeSHA}
+			if f.planHash != "" {
+				m["plan_sha256"] = f.planHash
+			}
+			if f.admin != "" {
+				m["admin"] = f.admin
+			}
+			return m, nil
 		case "agent-setup.project.resolve", "t3-setup.project.resolve":
 			var in struct {
 				Dir string `json:"dir"`
@@ -88,6 +99,10 @@ func pairedFakeHomeVia(t *testing.T, c *Core, f *fakeHook, link bool) string {
 			return map[string]any{"added": in.Dir}, nil
 		case "hook.install":
 			f.installs.Add(1)
+			f.installArgs.Store(env.Args)
+			if f.sudoArgv != nil {
+				return map[string]any{"started": false, "needs_bot_sudo": true, "argv": f.sudoArgv, "plan_sha256": f.planHash}, nil
+			}
 			if f.installErr != nil {
 				return nil, f.installErr
 			}

@@ -163,16 +163,18 @@ type Helper struct {
 	T3 *T3Home
 
 	// hook state and installation (hookstate.go); the lower-case fields are seams for tests.
-	hookMu    sync.Mutex  // guards hookBusy, hookLast and hookSeen
-	hookBusy  bool        // an installation is running
-	hookLast  *hookResult // how the last installation ended, until the next one starts
-	hookSeen  hookCached  // the last inspection of the hook file
-	hookPath  string      // the hook binary's path ("" is DefaultHookBinary)
-	pluginAt  string      // the Claude Code plugin's directory ("" is DefaultClaudePluginDir)
-	hookOpts  func(*InstallOptions)
-	hookTweak func(*HookBinary) // changes what the inspection found (a test cannot make a root-owned file)
-	hookLimit time.Duration     // how long an installation may take (hookInstallLimit when zero)
-	hookClock func() time.Time  // the time the cooldown and the cache use (time.Now when nil)
+	hookMu        sync.Mutex  // guards hookBusy, hookLast and hookSeen
+	hookBusy      bool        // an installation is running
+	hookLast      *hookResult // how the last installation ended, until the next one starts
+	hookSeen      hookCached  // the last inspection of the hook file
+	hookPath      string      // the hook binary's path ("" is DefaultHookBinary)
+	pluginAt      string      // the Claude Code plugin's directory ("" is DefaultClaudePluginDir)
+	hookOpts      func(*InstallOptions)
+	hookElev      Elevator          // how the administrator is asked (the system's when nil); a seam for tests
+	hookNoAgentAt time.Time         // when an administrator prompt last found nobody to ask: installs go the headless way for a while (hookMu)
+	hookTweak     func(*HookBinary) // changes what the inspection found (a test cannot make a root-owned file)
+	hookLimit     time.Duration     // how long an installation may take (hookInstallLimit when zero)
+	hookClock     func() time.Time  // the time the cooldown and the cache use (time.Now when nil)
 
 	mu  sync.Mutex
 	cfg Config

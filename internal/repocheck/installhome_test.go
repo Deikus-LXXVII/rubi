@@ -122,3 +122,37 @@ func TestInstallHomeShMacPartIsUntouched(t *testing.T) {
 		t.Error("the macOS part was changed to use install-autostart")
 	}
 }
+
+// The command Rubi Home hands the Bot on a computer with no polkit agent runs the plan's script with sh, by absolute paths. It
+// never runs Rubi Home's own binary as root (a file the user can write), and install-hook has no flag that would let a root
+// process take a plan from outside.
+func TestHeadlessCommandNeverRunsRubiHomeAsRoot(t *testing.T) {
+	state := readRepo(t, "internal/home/hookstate.go")
+	i := strings.Index(state, "func sudoCommand")
+	if i < 0 {
+		t.Fatal("no sudoCommand")
+	}
+	end := strings.Index(state[i:], "\n}\n")
+	body := state[i : i+end]
+	if !strings.Contains(body, `[]string{"/usr/bin/sudo", "--", "/bin/sh", "-c", p.FullScript()}`) {
+		t.Errorf("the headless command is not /usr/bin/sudo -- /bin/sh -c SCRIPT:\n%s", body)
+	}
+	for _, bad := range []string{".Src", "install-hook", "rubi-home", "Executable"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("the headless command mentions %q", bad)
+		}
+	}
+	main := readRepo(t, "cmd/rubi-home/main.go")
+	for _, bad := range []string{"expect-plan-sha256", "ExpectPlanSHA256"} {
+		if strings.Contains(main, bad) {
+			t.Errorf("install-hook has %q: a root process must not take a plan from outside", bad)
+		}
+	}
+	// no form of Elevator runs Rubi Home as root
+	for _, f := range []string{"elevate.go", "elevate_pkexec.go", "elevate_uac.go", "elevate_darwin.go"} {
+		src := readRepo(t, "internal/home/"+f)
+		if strings.Contains(src, "rootElevator") || strings.Contains(src, "RootDirect") {
+			t.Errorf("%s has a root form", f)
+		}
+	}
+}

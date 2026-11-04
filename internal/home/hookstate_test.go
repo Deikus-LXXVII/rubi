@@ -36,7 +36,7 @@ func hookHelper(t *testing.T) (*Helper, string) {
 	}
 	dir := t.TempDir()
 	h.hookPath = filepath.Join(dir, "bin", "rubi-home")
-	h.pluginAt = filepath.Join(dir, "plugin")
+	h.pluginAt = filepath.Join(dir, "claude-plugin")
 	h.hookOpts = func(o *InstallOptions) { o.RequireRoot = false; o.Run = makeDirAndCopy }
 	return h, dir
 }
@@ -394,7 +394,10 @@ func TestHookInstallIncludesThePluginInTheSameRun(t *testing.T) {
 		t.Fatalf("with_plugin ignored: %d plans", len(p))
 	}
 	// Installed already (and not the embedded files): updated in the same single run, one dialog.
-	if err := os.MkdirAll(h.pluginAt, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(h.pluginAt, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.pluginAt, ".claude-plugin", "marketplace.json"), []byte("{}"), 0o644); err != nil { // what an earlier install left
 		t.Fatal(err)
 	}
 	if _, err := handle(t, h, "tok", "hook.install", nil); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -260,9 +261,12 @@ func (c *Core) InstallHookOnDevice(ctx context.Context, id string) (string, erro
 	pctx, cancel := context.WithTimeout(ctx, hookCallTimeout)
 	defer cancel()
 	var plan struct {
-		Target  string `json:"target"`
-		Version string `json:"version"`
-		SHA256  string `json:"sha256"`
+		Target     string `json:"target"`
+		Version    string `json:"version"`
+		SHA256     string `json:"sha256"`
+		PlanSHA256 string `json:"plan_sha256"` // everything that would run as administrator
+		Admin      string `json:"admin"`       // what the person at that computer will be asked
+		Plugin     bool   `json:"plugin"`
 	}
 	if err := cl.Call(pctx, "hook.plan", map[string]any{}, &plan); err != nil {
 		c.Audit.Record("device.hook.failed", audit.Fields{"device": dev.ID, "reason": "refused"})
@@ -279,23 +283,49 @@ func (c *Core) InstallHookOnDevice(ctx context.Context, id string) (string, erro
 	if sha256Hex.MatchString(plan.SHA256) {
 		preview["sha256"] = plan.SHA256
 	}
+	if sha256Hex.MatchString(plan.PlanSHA256) {
+		// What the approval is for: if anything that would be installed changes before it runs, this hash changes and nothing
+		// is installed.
+		preview["plan"] = plan.PlanSHA256
+	}
+	if plan.Plugin {
+		preview["plugin"] = "yes: the Claude Code sister tools (a plugin) are installed with it"
+	} else {
+		preview["plugin"] = "no"
+	}
 	preview["check"] = "macOS will ask for the administrator password on that computer; approve only if you asked for this"
+	if a := strings.TrimSpace(plan.Admin); a != "" {
+		preview["check"] = clipRunes(a, 300)
+	}
 	return c.requestSettings(ctx, "Install the Claude Code hook on "+dev.Name, preview,
 		func(ctx context.Context) (any, error) {
 			cctx, cancel := context.WithTimeout(ctx, hookCallTimeout)
 			defer cancel()
 			var res map[string]any
-			if err := cl.Call(cctx, "hook.install", map[string]any{}, &res); err != nil {
+			args := map[string]any{}
+			if sha256Hex.MatchString(plan.PlanSHA256) {
+				args["plan_sha256"] = plan.PlanSHA256 // Home refuses unless the plan is still this one
+			}
+			if plan.Plugin {
+				args["with_plugin"] = true
+			}
+			if err := cl.Call(cctx, "hook.install", args, &res); err != nil {
 				c.Audit.Record("device.hook.failed", audit.Fields{"device": dev.ID, "reason": hookCallReason(err)})
 				return nil, err
+			}
+			if sudo, _ := res["needs_bot_sudo"].(bool); sudo {
+				return c.botSudoResult(dev, plan.PlanSHA256, res)
 			}
 			if started, _ := res["started"].(bool); !started {
 				c.Audit.Record("device.hook.failed", audit.Fields{"device": dev.ID, "reason": "refused"})
 				return nil, errors.New("Rubi Home didn't start the installation")
 			}
 			c.Audit.Record("device.hook.started", audit.Fields{"device": dev.ID})
-			return map[string]any{"started": true,
-				"receipt": "macOS is asking for the administrator password on " + dev.Name + "."}, nil
+			receipt := "macOS is asking for the administrator password on " + dev.Name + "."
+			if a := plan.Admin; a != "" && !strings.Contains(a, "macOS") {
+				receipt = "The administrator prompt is open on " + dev.Name + ". Answer it there."
+			}
+			return map[string]any{"started": true, "receipt": receipt}, nil
 		})
 }
 
@@ -424,4 +454,40 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 		return nil, &rubiplugin.Error{Code: code, Message: dev.Name + ": " + err.Error()}
 	}
 	return out, nil
+}
+
+// botSudoResult is the result of a hook installation where no one can be asked for the administrator password on that
+// computer: the Bot runs one command with sudo. Core passes on exactly one shape and nothing else, with no prefix matching:
+//
+//	{"/usr/bin/sudo", "--", "/bin/sh", "-c", SCRIPT}   with sha256(SCRIPT) equal to the hash the user approved
+//
+// SCRIPT is the plan's own script (the same text pkexec would run); Rubi Home's binary is not in the command, so nothing the
+// user can write is run as root. A command with another program, more arguments, or a script that does not have the approved
+// hash is never passed on.
+func (c *Core) botSudoResult(dev *vault.Device, approved string, res map[string]any) (any, error) {
+	raw, _ := res["argv"].([]any)
+	var argv []string
+	for _, a := range raw {
+		s, ok := a.(string)
+		if !ok {
+			return nil, errors.New("Rubi Home gave a command that can't be passed on")
+		}
+		argv = append(argv, s)
+	}
+	sum := sha256.Sum256([]byte(lastOf(argv)))
+	if !sha256Hex.MatchString(approved) || len(argv) != 5 || argv[0] != "/usr/bin/sudo" || argv[1] != "--" || argv[2] != "/bin/sh" ||
+		argv[3] != "-c" || len(argv[4]) == 0 || len(argv[4]) > 512<<10 || hex.EncodeToString(sum[:]) != approved {
+		c.Audit.Record("device.hook.failed", audit.Fields{"device": dev.ID, "reason": "refused"})
+		return nil, errors.New("Rubi Home gave a command for another installation than the one you approved")
+	}
+	c.Audit.Record("device.hook.started", audit.Fields{"device": dev.ID})
+	return map[string]any{"started": false, "needs_bot_sudo": true, "plan_sha256": approved, "argv": argv,
+		"receipt": "Nobody can be asked for the administrator password on " + dev.Name + ". Run the argument list in argv there as it is, and nothing else with administrator rights; its last element is the script whose SHA-256 you approved: " + approved}, nil
+}
+
+func lastOf(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+	return s[len(s)-1]
 }

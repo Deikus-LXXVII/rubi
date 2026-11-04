@@ -6,13 +6,9 @@ internal/home/agent/apple.go || /usr/local/bin/container || P8: the VM backend b
 internal/home/agent/apple.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/agentvm.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/home.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
-internal/home/installhook.go || /usr/bin/osascript || P5: the administrator run moves behind Elevator
-internal/home/installhook.go || AppleScript || P5: the administrator run moves behind Elevator
 internal/home/setup/agents.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
-internal/home/setup/container.go || /usr/bin/osascript || P5: the administrator install uses Elevator
 internal/home/setup/container.go || /usr/sbin/pkgutil || P8: Apple package checks move into the macOS VM backend
 internal/home/setup/container.go || /usr/sbin/spctl || P8: Apple package checks move into the macOS VM backend
-internal/home/setup/container.go || AppleScript || P5: the administrator install uses Elevator
 internal/home/setup/exec.go || agent.ContainerBin || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/jobs.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/probe.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file

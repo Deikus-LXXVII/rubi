@@ -82,6 +82,23 @@ so and stop.
 If the installer says the computer lacks `curl`, `tar` or `openssl`, tell the user which is missing; don't install
 system packages without being asked.
 
+## The Claude Code hook on a computer nobody can ask for a password (Linux without a desktop)
+
+When the user approves installing the Claude Code hook in the Rubi panel (Settings, Rubi Home), Rubi Home asks for the
+administrator password through the computer's own prompt. On a Linux computer with no desktop session there is no prompt;
+the approval's result then has `needs_bot_sudo: true`, an `argv` and a `plan_sha256`. The approval showed the user that
+same hash, and that approval is their consent. Then:
+
+1. `argv` is exactly five elements: `/usr/bin/sudo`, `--`, `/bin/sh`, `-c`, and a script. If it is anything else, stop and
+   tell the user; don't run it.
+2. You may check first that the SHA-256 of the script (the last element) equals `plan_sha256`. If it does not, stop.
+3. Run `argv` as it is: the program and its arguments, with no shell around it and nothing added, changed or removed. Do
+   not run any other command with `sudo` for this, and never run `rubi-home` itself with `sudo`. The script checks the
+   binary it installs against the approved hash, uses absolute tools, and replaces only a file named `rubi-home` and a
+   folder named `claude-plugin` that is the Rubi plugin.
+4. Tell the user the result. If `sudo` asks for a password, the user types it in the system's own prompt; never ask for
+   it in chat.
+
 ## Several Bots
 
 All Bots on the account share this computer and this Rubi. Each Bot that should be woken connects itself

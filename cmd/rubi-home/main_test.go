@@ -82,3 +82,30 @@ func TestAgentVMSubcommandFailsPlainlyWithoutHome(t *testing.T) {
 		t.Errorf("no role: exit %d, %q", code, msg)
 	}
 }
+
+// install-hook reads each flag once, and nothing it does not know; as root it is further limited to the fixed places (see
+// internal/home checkRootTargets).
+func TestParseInstallHookArgs(t *testing.T) {
+	o, err := parseInstallHookArgs([]string{"--dry-run", "--with-claude-plugin", "--to", "/opt/x/rubi-home", "--plugin-to", "/opt/x/claude-plugin"})
+	if err != nil || !o.DryRun || !o.WithPlugin || o.Dst != "/opt/x/rubi-home" || o.PluginDst != "/opt/x/claude-plugin" || !o.RequireRoot {
+		t.Fatalf("%+v %v", o, err)
+	}
+	if o, err := parseInstallHookArgs(nil); err != nil || o.Dst != home.DefaultHookBinary {
+		t.Fatalf("defaults: %+v %v", o, err)
+	}
+	for name, args := range map[string][]string{
+		"the same flag twice":     {"--dry-run", "--dry-run"},
+		"--to twice":              {"--to", "/a/rubi-home", "--to", "/usr/bin/sudo"},
+		"--plugin-to twice":       {"--with-claude-plugin", "--plugin-to", "/a/claude-plugin", "--plugin-to", "/usr/bin"},
+		"--with-claude-plugin x2": {"--with-claude-plugin", "--with-claude-plugin"},
+		"a trailing flag":         {"--dry-run", "--bogus"},
+		"a trailing --to":         {"--to"},
+		"a trailing --plugin-to":  {"--plugin-to"},
+		"a word":                  {"install"},
+		"the old hash flag":       {"--expect-plan-sha256", strings.Repeat("a", 64)},
+	} {
+		if o, err := parseInstallHookArgs(args); err == nil {
+			t.Errorf("%s was accepted: %+v", name, o)
+		}
+	}
+}

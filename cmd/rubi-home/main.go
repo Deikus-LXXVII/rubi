@@ -303,10 +303,16 @@ func hookPath(args []string) string {
 	return home.HookBinaryPath()
 }
 
-// runInstallHook is `rubi-home install-hook`; it returns the exit code.
-func runInstallHook(args []string) int {
+// parseInstallHookArgs reads install-hook's flags. A flag given twice is refused: the last would win, and nobody who reads the
+// line sees which; a value that looks like a flag is a value only right after --to or --plugin-to.
+func parseInstallHookArgs(args []string) (home.InstallOptions, error) {
 	o := home.InstallOptions{Dst: home.DefaultHookBinary, RequireRoot: true}
+	seen := map[string]bool{}
 	for i := 0; i < len(args); i++ {
+		if seen[args[i]] {
+			return o, fmt.Errorf("%s is given twice", args[i])
+		}
+		seen[args[i]] = true
 		switch args[i] {
 		case "--dry-run":
 			o.DryRun = true
@@ -314,19 +320,29 @@ func runInstallHook(args []string) int {
 			o.WithPlugin = true
 		case "--plugin-to":
 			if i+1 >= len(args) {
-				usage()
+				return o, errors.New("--plugin-to needs a folder")
 			}
 			i++
 			o.PluginDst = args[i]
 		case "--to":
 			if i+1 >= len(args) {
-				usage()
+				return o, errors.New("--to needs a file")
 			}
 			i++
 			o.Dst = args[i]
 		default:
-			usage()
+			return o, fmt.Errorf("unknown argument %q", args[i])
 		}
+	}
+	return o, nil
+}
+
+// runInstallHook is `rubi-home install-hook`; it returns the exit code.
+func runInstallHook(args []string) int {
+	o, perr := parseInstallHookArgs(args)
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home install-hook: %v\n", perr)
+		usage()
 	}
 	exe, err := home.RunningExecutable()
 	if err != nil {

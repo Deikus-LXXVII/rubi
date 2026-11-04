@@ -313,11 +313,6 @@ func installFailure(out string) string {
 // shellQuote quotes one word for sh.
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// asString quotes text as an AppleScript string literal.
-func asString(s string) string {
-	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) + `"`
-}
-
 // installCommand is the osascript argv for the administrator install of pkg. The script is a constant; the
 // package path, hash and team are quoted words, so no value can add a command.
 func installCommand(pkg, sha, team string) ([]string, error) {
@@ -335,7 +330,11 @@ func installCommandAs(pkg, sha, team, uid string) ([]string, error) {
 		return nil, errors.New("the package path isn't absolute")
 	}
 	sh := "/bin/sh -c " + shellQuote(installScript) + " rubi-install " + shellQuote(pkg) + " " + shellQuote(sha) + " " + shellQuote(team) + " " + shellQuote(uid)
-	return []string{"/usr/bin/osascript", "-e", "do shell script " + asString(sh) + " with administrator privileges"}, nil
+	argv := adminCommand(sh)
+	if argv == nil {
+		return nil, errNotMac
+	}
+	return argv, nil
 }
 
 // cancelled says whether osascript's output is the user cancelling the administrator dialog (error -128).
