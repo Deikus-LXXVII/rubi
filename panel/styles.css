@@ -1164,6 +1164,14 @@ button.copy { box-shadow: none; }
 .ask-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, 0.55); }
 .ask-box { display: grid; gap: 12px; width: min(420px, 100%); padding: 18px; border-radius: 14px; background: var(--card); border: 1px solid var(--line-2); }
 .ask-box h2 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
+.folder-box { max-height: 100%; grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto; }
+.folder-box h2, .folder-box p { margin: 0; }
+.folder-places { display: flex; flex-wrap: wrap; gap: 8px; }
+.folder-where { font-size: 0.85rem; overflow-wrap: anywhere; color: var(--muted, inherit); }
+.folder-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; overflow-y: auto; min-height: 0; max-height: 40vh; }
+.folder-row { display: grid; gap: 2px; justify-items: start; text-align: left; width: 100%; min-height: 44px; padding: 10px 12px;
+  border-radius: 10px; background: var(--card); border: 1px solid var(--line-2); color: inherit; font: inherit; }
+.folder-name { overflow-wrap: anywhere; font-weight: 600; }
 .ask-box label { display: grid; gap: 6px; overflow-wrap: anywhere; }
 
 /* ============================================================ skill library */

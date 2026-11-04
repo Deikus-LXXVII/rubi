@@ -1,7 +1,12 @@
 package hostpaths
 
 import (
+	"os"
+	"os/user"
+	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +31,37 @@ func TestLinuxPaths(t *testing.T) {
 }
 
 // The macOS entries are gone from the Linux lists, the Linux ones are in, and what Linux used before stays denied.
+// The roots are the disks this user has mounted under /run/media/<user> and /media/<user>: not /mnt (on WSL /mnt/c is the
+// Windows system drive), not /srv, not the folder that holds the disks.
+func TestLinuxBrowseRootsAreTheUsersMountedDisks(t *testing.T) {
+	a, b := t.TempDir(), t.TempDir()
+	old := mediaBases
+	mediaBases = func() []string { return []string{a, b, filepath.Join(a, "missing")} }
+	t.Cleanup(func() { mediaBases = old })
+	os.Mkdir(filepath.Join(a, "disk1"), 0o755)
+	os.Mkdir(filepath.Join(b, "disk2"), 0o755)
+	os.WriteFile(filepath.Join(b, "file"), nil, 0o644)
+	os.Symlink("/", filepath.Join(a, "link-to-root"))
+	want := []string{filepath.Join(a, "disk1"), filepath.Join(b, "disk2")}
+	if got := BrowseRoots(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	// the real bases name this user and nothing else
+	mediaBases = old
+	u, err := user.Current()
+	if err != nil {
+		t.Skip(err)
+	}
+	if got := mediaBases(); !reflect.DeepEqual(got, []string{"/run/media/" + u.Username, "/media/" + u.Username}) {
+		t.Errorf("bases %v", got)
+	}
+	for _, r := range BrowseRoots() {
+		if r == "/mnt" || strings.HasPrefix(r, "/mnt/") || strings.HasPrefix(r, "/srv") {
+			t.Errorf("root %q", r)
+		}
+	}
+}
+
 func TestLinuxListsHaveNoMacFolders(t *testing.T) {
 	for _, l := range [][]string{SensitiveHomeDirs(), DeniedTrees(), SensitiveSysDirs(), SystemTrees(), SystemExact(), ExactOnlyDirs()} {
 		for _, bad := range []string{"Library", "/Library", "/System", "/private", "/Applications", "/Volumes", "/Users", "/cores", "/private/etc", "/private/var"} {

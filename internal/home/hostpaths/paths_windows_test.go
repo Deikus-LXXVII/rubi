@@ -28,3 +28,13 @@ func TestWindowsPaths(t *testing.T) {
 		t.Errorf("the Windows folder is not denied: %v", SensitiveSysDirs())
 	}
 }
+
+// The system drive is never a root, and every root is a drive root.
+func TestWindowsBrowseRootsAreNotTheSystemDrive(t *testing.T) {
+	system := strings.ToUpper(filepath.VolumeName(winDir()))
+	for _, r := range BrowseRoots() {
+		if strings.ToUpper(filepath.VolumeName(r)) == system || len(r) != 3 || r[1:] != `:\` {
+			t.Errorf("root %q (system drive %s)", r, system)
+		}
+	}
+}

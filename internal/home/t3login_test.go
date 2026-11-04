@@ -133,8 +133,16 @@ func goodScript(code string) func(b *loginBox, c *loginConn) {
 }
 
 type fakeOpen struct {
-	mu   sync.Mutex
-	runs [][]string
+	mu     sync.Mutex
+	runs   [][]string
+	opened []string // the links the Opener was asked to open
+}
+
+func (f *fakeOpen) Open(_ context.Context, link string) error {
+	f.mu.Lock()
+	f.opened = append(f.opened, link)
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *fakeOpen) Run(_ context.Context, argv []string) ([]byte, error) {
@@ -152,7 +160,7 @@ func loginLife(t *testing.T) (*life, *loginBox, *fakeOpen, string) {
 	box := &loginBox{t: t, dir: agent.SignInDirOf(l.h.Dir), script: goodScript("CODE-9876-xyz")}
 	op := &fakeOpen{}
 	l.t3.LoginAgents = box
-	l.t3.LoginOptions = func(o *setup.Options) { o.Cmd, o.GOOS = op, "darwin" }
+	l.t3.LoginOptions = func(o *setup.Options) { o.Cmd, o.Opener, o.GOOS = op, op, "darwin" }
 	t.Cleanup(func() { l.t3.login().Cancel() })
 	return l, box, op, role
 }
@@ -324,8 +332,8 @@ func TestT3LoginOpenOpensTheLink(t *testing.T) {
 	}
 	op.mu.Lock()
 	defer op.mu.Unlock()
-	if len(op.runs) != 1 || strings.Join(op.runs[0], " ") != "/usr/bin/open "+loginLink {
-		t.Errorf("opened: %v", op.runs)
+	if len(op.opened) != 1 || op.opened[0] != loginLink || len(op.runs) != 0 {
+		t.Errorf("opened: %v, commands run: %v", op.opened, op.runs)
 	}
 }
 
@@ -343,8 +351,8 @@ func TestT3LoginRefusesAForeignLink(t *testing.T) {
 	if step["url"] != nil || !strings.Contains(step["reason"].(string), "doesn't point to a Claude") {
 		t.Errorf("foreign link: %v", step)
 	}
-	if len(op.runs) != 0 {
-		t.Errorf("opened %v", op.runs)
+	if len(op.runs)+len(op.opened) != 0 {
+		t.Errorf("opened %v %v", op.runs, op.opened)
 	}
 }
 
@@ -468,8 +476,8 @@ func TestT3LoginRefusesALinkThatCarriesACredential(t *testing.T) {
 	if step["url"] != nil || strings.Contains(string(b), "sk-ant") {
 		t.Errorf("the link was shown: %s", b)
 	}
-	if _, err := handle(t, l.h, "tok", "t3-setup.login.open", nil); err == nil || len(op.runs) != 0 {
-		t.Errorf("open: %v %v", err, op.runs)
+	if _, err := handle(t, l.h, "tok", "t3-setup.login.open", nil); err == nil || len(op.runs)+len(op.opened) != 0 {
+		t.Errorf("open: %v %v %v", err, op.runs, op.opened)
 	}
 }
 

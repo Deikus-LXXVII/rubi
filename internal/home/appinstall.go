@@ -150,6 +150,7 @@ type AppEnv struct {
 	Self      string // this app's version (version.Version when empty)
 	HasLog    bool   // the app log is being written, so a dialog may point to it
 	Run       RunFunc
+	Dialogs   Dialogs                           // the notice and error dialogs; the desktop's when nil
 	Version   func(path string) (string, error) // `path version` (an installed binary's version)
 	Now       func() time.Time
 	Sleep     func(time.Duration)
@@ -181,6 +182,9 @@ const appLogHint = " The details are in the file rubi-home-app.log in the folder
 func (env *AppEnv) defaults() {
 	if env.Run == nil {
 		env.Run = execRun
+	}
+	if env.Dialogs == nil {
+		env.Dialogs = NewDesktop(DesktopEnv{Run: env.Run}).Dialogs
 	}
 	if env.Version == nil {
 		env.Version = func(p string) (string, error) { return runVersion(p, HookBinaryTimeout) }
@@ -215,7 +219,11 @@ func (env *AppEnv) defaults() {
 func (env AppEnv) show(ctx context.Context, text string) {
 	ctx, cancel := context.WithTimeout(ctx, env.DialogTimeout)
 	defer cancel()
-	if _, err := dialog(ctx, OpenEnv{Run: env.Run}, text, btnOK); err != nil {
+	if env.Dialogs == nil {
+		env.Logf("rubi-home app: no way to show a dialog: %s", text)
+		return
+	}
+	if _, err := env.Dialogs.Message(ctx, text, btnOK); err != nil {
 		env.Logf("rubi-home app: a dialog: %v", err)
 	}
 }

@@ -227,3 +227,18 @@ func TestT3HomeCapabilitiesAreReserved(t *testing.T) {
 		}
 	}
 }
+
+// "fs" is no Rubi Home capability: the folder browser's op fs.list is the panel's alone, and a manifest that asks for
+// the prefix is refused, whoever signed it.
+func TestNoPluginCanDeclareTheFolderBrowser(t *testing.T) {
+	for _, h := range []string{"fs", "fs.list", "folders", "FS"} {
+		m := manifest(t, `{"home":["`+h+`"]}`)
+		if err := Check(&m); err == nil || !strings.Contains(err.Error(), "unknown Rubi Home capability") {
+			t.Errorf("home capability %q: %v", h, err)
+		}
+	}
+	ok := manifest(t, `{"home":["hue"]}`)
+	if err := Check(&ok); err != nil {
+		t.Fatal(err)
+	}
+}

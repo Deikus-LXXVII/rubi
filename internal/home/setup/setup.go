@@ -81,6 +81,11 @@ type Agents interface {
 	StartAuth(ctx context.Context) (AuthSession, error)
 }
 
+// Opener opens a link in the user's browser (home.Opener).
+type Opener interface {
+	Open(ctx context.Context, link string) error
+}
+
 // Options configures a Setup.
 type Options struct {
 	// Dir is Rubi Home's directory: downloads go to Dir/setup, the runner sources to Dir/runner-build.
@@ -91,6 +96,8 @@ type Options struct {
 	Agents   Agents
 	// Cmd runs every command (nil: the real ones).
 	Cmd Commander
+	// Opener opens a link in the browser (nil: nothing can be opened).
+	Opener Opener
 	// Release is the container release to install (Pinned when zero).
 	Release Release
 	// HTTP downloads it (nil: a default client); DownloadHosts and RedirectHosts are the hosts (as in a URL's
@@ -99,8 +106,13 @@ type Options struct {
 	HTTP          *http.Client
 	DownloadHosts []string
 	RedirectHosts []string
-	// SystemTrees are the folders no project may be in (nil: the macOS system folders).
+	// SystemTrees are the folders no project may be in (nil: hostpaths.SystemTrees). A tree that holds the user's home
+	// folder or a mounted disk the browser starts in does not apply to what is inside that place (a home in
+	// /var/home, a disk in /run/media).
 	SystemTrees []string
+	// BrowseRoots are the mounted disks the folder browser may start in besides the home folder (nil:
+	// hostpaths.BrowseRoots).
+	BrowseRoots func() []string
 	// GOOS is the operating system (runtime.GOOS when empty); the Mac-only parts refuse elsewhere.
 	GOOS string
 	// Now is the clock.
@@ -115,10 +127,12 @@ type Options struct {
 type Setup struct {
 	opt Options
 
-	mu       sync.Mutex
-	job      *job
-	last     map[string]result // a finished job's outcome, per step (or step|project dir)
-	choosing bool              // a folder chooser is open
+	mu   sync.Mutex
+	job  *job
+	last map[string]result // a finished job's outcome, per step (or step|project dir)
+
+	// beforeOpen is a test seam: it runs after a folder was checked and before it is opened.
+	beforeOpen func(path string)
 }
 
 type outcome struct {

@@ -1,13 +1,11 @@
 package setup
 
 import (
-	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
@@ -31,24 +29,21 @@ func (s *Setup) refuseFolder(dir string, existing []string) (string, error) {
 	if st, err := os.Stat(real); err != nil || !st.IsDir() {
 		return "", errors.New("that isn't a folder")
 	}
-	if real == string(filepath.Separator) {
+	if filepath.Dir(real) == real { // "/" or a drive root
 		return "", errors.New("the whole disk can't be a project")
 	}
-	system := systemTrees
-	if s.opt.SystemTrees != nil {
-		system = s.opt.SystemTrees
+	home, roots, _ := s.places()
+	root := rootOf(real, roots)
+	if s.systemHit(real, root) {
+		return "", errors.New("a system folder can't be a project")
 	}
-	for _, t := range system {
-		if agent.Within(real, t) {
-			return "", errors.New("a system folder can't be a project")
+	for _, r := range roots[min(1, len(roots)):] { // a disk's own root: a project is a folder on it
+		if strings.EqualFold(real, r.Path) {
+			return "", errors.New("the root of a disk can't be a project; choose a folder inside it")
 		}
 	}
 	if slices.ContainsFunc(systemExact, func(e string) bool { return strings.EqualFold(e, real) }) {
 		return "", errors.New("that folder holds other people's or other disks' folders; choose a folder inside it")
-	}
-	home, _ := os.UserHomeDir()
-	if h, err := filepath.EvalSymlinks(home); err == nil {
-		home = h
 	}
 	if reason := sharedPlace(real, home); reason != "" {
 		return "", errors.New(reason)
@@ -78,7 +73,7 @@ func (s *Setup) refuseFolder(dir string, existing []string) (string, error) {
 // the same checks as a chosen folder. It returns the folder's real path.
 func (s *Setup) AddProjectDir(dir string) (string, error) {
 	if !s.mac() {
-		return "", errNotMac
+		return "", errNoAgentsHere
 	}
 	var real string
 	var rerr error
@@ -92,49 +87,23 @@ func (s *Setup) AddProjectDir(dir string) (string, error) {
 	return real, rerr
 }
 
-// AddProject shows the macOS folder chooser and adds the chosen folder to the projects. It returns the
-// folder, or "" when the chooser was cancelled.
-func (s *Setup) AddProject(ctx context.Context) (string, error) {
+// errNoAgentsHere answers a project.add on a computer that does not run agents (projects are for agents; they run on
+// a Mac for now). The folder browser says it before the user picks (FolderList.Agents).
+var errNoAgentsHere = errors.New("projects are for agents, which this computer doesn't run yet")
+
+// ResolveProjectDir is what project.add would add for dir: its real path, after the same checks, without adding
+// anything. Core asks it before it lets a project.add through, so that the folder the user approved is the folder Home
+// adds, and a plugin can show the user the path as Home resolves it.
+func (s *Setup) ResolveProjectDir(dir string) (string, error) {
 	if !s.mac() {
-		return "", errNotMac
+		return "", errNoAgentsHere
 	}
-	if len(s.opt.Settings().Projects) >= MaxProjects {
-		return "", errors.New("there are already 20 projects")
-	}
-	s.mu.Lock()
-	if s.choosing {
-		s.mu.Unlock()
-		return "", errBusy
-	}
-	s.choosing = true
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		s.choosing = false
-		s.mu.Unlock()
-	}()
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
-	out, err := s.opt.Cmd.Run(cctx, []string{"/usr/bin/osascript", "-e",
-		`POSIX path of (choose folder with prompt "Choose a folder the agents may work in")`})
-	if err != nil {
-		if cancelled(string(out)) {
-			return "", nil
-		}
-		return "", errors.New("the folder chooser failed")
-	}
-	chosen := strings.TrimSpace(string(out))
-	var real string
-	var rerr error
-	if uerr := s.opt.Update(func(c *Settings) {
-		if real, rerr = s.refuseFolder(chosen, c.Projects); rerr == nil {
-			c.Projects = append(c.Projects, real)
-		}
-	}); uerr != nil {
-		return "", uerr
-	}
-	return real, rerr
+	return s.refuseFolder(dir, s.opt.Settings().Projects)
 }
+
+// errChooseInPanel answers a project.add that names no folder. Home shows no folder chooser of its own on any system:
+// the folder is chosen in the Rubi panel's folder browser (fs.list), and project.add gets its path.
+var errChooseInPanel = errors.New("choose the folder in the Rubi panel; Rubi Home shows no folder chooser")
 
 // RemoveProject removes a project folder from the configuration (the folder itself is not touched).
 func (s *Setup) RemoveProject(dir string) error {

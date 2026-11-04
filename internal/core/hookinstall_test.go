@@ -2,9 +2,11 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,8 +24,12 @@ type fakeHook struct {
 	plans, installs atomic.Int32
 	planErr         error
 	installErr      error
-	last            atomic.Value // map[string]any: hello.hook.last
-	home            *home.Helper // the real Rubi Home behind the fake ops
+	last            atomic.Value      // map[string]any: hello.hook.last
+	home            *home.Helper      // the real Rubi Home behind the fake ops
+	resolveTo       map[string]string // project.resolve: the real path of a folder (itself when absent)
+	resolveErr      error
+	adds            []string // the folders a project.add reached Home with
+	mu              sync.Mutex
 }
 
 const fakeSHA = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -58,6 +64,28 @@ func pairedFakeHomeVia(t *testing.T, c *Core, f *fakeHook, link bool) string {
 				return nil, f.planErr
 			}
 			return map[string]any{"target": "/usr/local/bin/rubi-home", "version": "v1.0.0", "sha256": fakeSHA}, nil
+		case "agent-setup.project.resolve", "t3-setup.project.resolve":
+			var in struct {
+				Dir string `json:"dir"`
+			}
+			_ = json.Unmarshal(env.Args, &in)
+			if f.resolveErr != nil {
+				return nil, f.resolveErr
+			}
+			real := in.Dir
+			if r, ok := f.resolveTo[in.Dir]; ok {
+				real = r
+			}
+			return map[string]any{"dir": real}, nil
+		case "agent-setup.project.add", "t3-setup.project.add":
+			var in struct {
+				Dir string `json:"dir"`
+			}
+			_ = json.Unmarshal(env.Args, &in)
+			f.mu.Lock()
+			f.adds = append(f.adds, in.Dir)
+			f.mu.Unlock()
+			return map[string]any{"added": in.Dir}, nil
 		case "hook.install":
 			f.installs.Add(1)
 			if f.installErr != nil {

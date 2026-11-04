@@ -814,7 +814,7 @@ func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessag
 		return t.agentSetup(ctx, "agent-setup.run", args)
 	case name == "run" && !agentSetupStep[in.Step]:
 		return nil, fmt.Errorf("unknown setup step %q", clipStr(in.Step, 32))
-	case name == "run", name == "project.add", name == "project.remove":
+	case name == "run", name == "project.add", name == "project.resolve", name == "project.remove":
 		return t.agentSetup(ctx, "agent-setup."+name, args)
 	}
 	return nil, fmt.Errorf("Rubi Home doesn't do %q", op)

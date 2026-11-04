@@ -9,8 +9,8 @@ import (
 	"io"
 	"net/url"
 	"os/exec"
-	"runtime"
 	"strings"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 )
@@ -46,9 +46,11 @@ type RunFunc func(ctx context.Context, stdin string, name string, args ...string
 
 // OpenEnv is what the open window talks to; tests replace it.
 type OpenEnv struct {
-	Run  RunFunc
-	Out  io.Writer // where the non-macOS fallback prints
-	GOOS string    // runtime.GOOS when empty
+	Run      RunFunc
+	Out      io.Writer // where the text mode prints
+	Desktop  *Desktop  // the windows, the browser and the clipboard; NewDesktop of this system when nil
+	LookPath func(string) (string, error)
+	Getenv   func(string) string
 }
 
 func execRun(ctx context.Context, stdin string, name string, args ...string) (string, error) {
@@ -56,8 +58,18 @@ func execRun(ctx context.Context, stdin string, name string, args ...string) (st
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
+	// A program that keeps a copy of the clipboard in the background (xclip, wl-copy) holds our pipe open; after
+	// the program itself ends we wait a second for it and then let go.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	return string(out), err
+}
+
+func (env OpenEnv) desktop() Desktop {
+	if env.Desktop != nil {
+		return *env.Desktop
+	}
+	return NewDesktop(DesktopEnv{Run: env.Run, LookPath: env.LookPath, Getenv: env.Getenv})
 }
 
 // who names this computer the way the Rubi panel shows it: the user compares the two.
@@ -68,25 +80,14 @@ func (h *Helper) who() string {
 // RunOpen is `rubi-home open`: the window the user sees when they open Rubi Home. A pairing code is made only
 // when the user presses Copy or Open (a still-good pending one is reused, not replaced), so Close leaves
 // nothing live behind. The pending secret goes in the config, which a running helper reloads.
+//
+// Where the computer has a desktop with a way to show a window (macOS; Linux with zenity or kdialog; Windows) the
+// window shows the PIN and offers to copy the code and to open the panel. Where it has none, the same things are
+// printed (the link, the PIN and the code) for whoever runs Rubi Home, a Bot included, to pass on.
 func RunOpen(ctx context.Context, h *Helper, env OpenEnv) error {
-	if env.Run == nil {
-		env.Run = execRun
-	}
-	if env.GOOS == "" {
-		env.GOOS = runtime.GOOS
-	}
-	if env.GOOS != "darwin" {
-		code, pin, err := h.PairingCode(true)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(env.Out, "Pair this computer with your Rubi. The code works once, for 15 minutes.")
-		fmt.Fprintln(env.Out, h.who())
-		fmt.Fprintln(env.Out, "Open this link in a browser, then type the PIN "+homeproto.FormatPIN(pin)+" in the Rubi panel:")
-		fmt.Fprintln(env.Out, PairingLink(code.WithoutSecret().String()))
-		fmt.Fprintln(env.Out, "Or paste this code in the Rubi panel (Settings, Rubi Home, Add a home computer), with no PIN:")
-		fmt.Fprintln(env.Out, code.String())
-		return nil
+	d := env.desktop()
+	if d.Dialogs == nil || (d.Opener == nil && d.Clipboard == nil) {
+		return printPairing(h, env.Out)
 	}
 	if cfg := h.Fresh(); len(cfg.Paired) > 0 {
 		p := cfg.Paired[len(cfg.Paired)-1]
@@ -96,16 +97,58 @@ func RunOpen(ctx context.Context, h *Helper, env OpenEnv) error {
 		}
 		text := fmt.Sprintf("Paired with %s since %s. Fingerprint %s (the Rubi panel shows the same when you pair).",
 			label, p.At.Local().Format("2 January 2006"), h.Fingerprint())
-		c, err := dialog(ctx, env, text, btnClose, btnPairAgain)
-		if err != nil || c != btnPairAgain {
-			return err
+		c, err := d.Dialogs.Message(ctx, text, btnClose, btnPairAgain)
+		if errors.Is(err, ErrNoDesktop) {
+			return printPairing(h, env.Out)
+		}
+		if err != nil {
+			return windowFailed(env.Out, err)
+		}
+		if c != btnPairAgain {
+			return nil
 		}
 	}
-	return pairFlow(ctx, h, env)
+	return pairFlow(ctx, h, env.Out, d)
 }
 
-func pairFlow(ctx context.Context, h *Helper, env OpenEnv) error {
-	c, err := dialog(ctx, env, pairText+"\n\n"+h.who(), btnClose, btnCopy, btnOpenPanel)
+// windowFailed is what a window that failed for another reason than "there is no desktop" says: the error, and the way to
+// pair from the panel. It prints no code and makes none: a failure is not a reason to put a secret on a screen or in a log.
+func windowFailed(out io.Writer, err error) error {
+	fmt.Fprintln(out, "Rubi Home couldn't show its window. To pair this computer, open the Rubi panel ("+PanelURL+"),")
+	fmt.Fprintln(out, "go to Settings, Rubi Home, and ask for a pairing code from Rubi Home's window once it opens, or try again.")
+	return err
+}
+
+// printPairing is the text mode: it makes a code and prints what the window would show.
+func printPairing(h *Helper, out io.Writer) error {
+	code, pin, err := h.PairingCode(true)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "Pair this computer with your Rubi. The code works once, for 15 minutes.")
+	fmt.Fprintln(out, h.who())
+	fmt.Fprintln(out, "Open this link in a browser, then type the PIN "+homeproto.FormatPIN(pin)+" in the Rubi panel:")
+	fmt.Fprintln(out, PairingLink(code.WithoutSecret().String()))
+	fmt.Fprintln(out, "Or paste this code in the Rubi panel (Settings, Rubi Home, Add a home computer), with no PIN:")
+	fmt.Fprintln(out, code.String())
+	return nil
+}
+
+func pairFlow(ctx context.Context, h *Helper, out io.Writer, d Desktop) error {
+	buttons := []string{btnClose}
+	if d.Clipboard != nil {
+		buttons = append(buttons, btnCopy)
+	}
+	if d.Opener != nil {
+		buttons = append(buttons, btnOpenPanel)
+	}
+	c, err := d.Dialogs.Message(ctx, pairText+"\n\n"+h.who(), buttons...)
+	if errors.Is(err, ErrNoDesktop) {
+		return printPairing(h, out)
+	}
+	if err != nil {
+		return windowFailed(out, err)
+	}
 	var code homeproto.Code
 	var pin, follow string
 	for err == nil && c != btnClose && c != btnOK {
@@ -116,11 +159,11 @@ func pairFlow(ctx context.Context, h *Helper, env OpenEnv) error {
 		}
 		switch c {
 		case btnOpenPanel: // the link carries no secret: the PIN in the next dialog is typed in the panel
-			_, err = env.Run(ctx, "", "/usr/bin/open", PairingLink(code.WithoutSecret().String()))
+			err = d.Opener.Open(ctx, PairingLink(code.WithoutSecret().String()))
 			follow = "Open Rubi from your own link, then Settings, Rubi Home, \"Pair the waiting Rubi Home\", type the PIN, approve with your passkey." +
 				"\n\nPIN: " + homeproto.FormatPIN(pin)
 		case btnCopy, btnCopyAgain:
-			_, err = env.Run(ctx, code.String(), "/usr/bin/pbcopy") // on stdin, never in argv
+			err = d.Clipboard.Copy(ctx, code.String()) // on stdin, never in argv
 			if follow == "" {
 				follow = "The code is on your clipboard. In the Rubi panel: Settings, Rubi Home, Add a home computer, paste it, then Pair. Approve with your passkey."
 			}
@@ -130,41 +173,11 @@ func pairFlow(ctx context.Context, h *Helper, env OpenEnv) error {
 		if err != nil {
 			break
 		}
-		c, err = dialog(ctx, env, follow+"\n\n"+h.who()+"\n(it must match the Rubi panel)", btnOK, btnCopyAgain)
+		next := []string{btnOK}
+		if d.Clipboard != nil {
+			next = append(next, btnCopyAgain)
+		}
+		c, err = d.Dialogs.Message(ctx, follow+"\n\n"+h.who()+"\n(it must match the Rubi panel)", next...)
 	}
 	return err
-}
-
-// dialogArgs is osascript's argv. Every text travels as an argument of the run handler, so AppleScript
-// never has to quote it. The last button is the default.
-func dialogArgs(text string, buttons ...string) []string {
-	a := []string{"-e", "on run argv",
-		"-e", "set bs to items 3 thru -1 of argv",
-		"-e", "set r to display dialog (item 1 of argv) with title (item 2 of argv) buttons bs default button (last item of bs)",
-		"-e", "return button returned of r",
-		"-e", "end run", text, dialogTitle}
-	return append(a, buttons...)
-}
-
-// dialog shows text with up to three buttons (the last is the default) and returns the one pressed;
-// Escape counts as the first button, which is always the harmless one.
-func dialog(ctx context.Context, env OpenEnv, text string, buttons ...string) (string, error) {
-	out, err := env.Run(ctx, "", "/usr/bin/osascript", dialogArgs(text, buttons...)...)
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && strings.Contains(string(ee.Stderr), "(-128)") {
-			return buttons[0], nil
-		}
-		if strings.Contains(err.Error(), "(-128)") {
-			return buttons[0], nil
-		}
-		return "", fmt.Errorf("dialog: %w", err)
-	}
-	pressed := strings.TrimSpace(out)
-	for _, b := range buttons {
-		if b == pressed {
-			return b, nil
-		}
-	}
-	return buttons[0], nil
 }

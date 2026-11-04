@@ -57,4 +57,6 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Test the OS helpers
-        run: go test ./internal/home/fsx/... ./internal/home/hostpaths/...
+        run: |
+          go test ./internal/home/fsx/... ./internal/home/hostpaths/...
+          go test ./internal/home -run "XDG|Zenity|Kdialog|WindowsOpen|WindowsClipboard|WindowsDialog|WindowsOffers|WindowsRefuses|AsciiJSON"

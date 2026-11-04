@@ -27,7 +27,7 @@ func (t *T3Home) login() *setup.Setup {
 		if t.LoginAgents != nil {
 			agents = t.LoginAgents
 		}
-		opt := setup.Options{Dir: t.h.Dir, Agents: agents, LoginHelper: agent.LoginHelper,
+		opt := setup.Options{Dir: t.h.Dir, Agents: agents, LoginHelper: agent.LoginHelper, Opener: NewDesktop(DesktopEnv{}).Opener,
 			LoginEnv: func() map[string]string {
 				dir := t.signInDir()
 				if real, err := agent.EnsureSignInDir(dir); err == nil {

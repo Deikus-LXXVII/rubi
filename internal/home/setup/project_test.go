@@ -7,36 +7,19 @@ import (
 	"testing"
 )
 
-func chooser(path string) func(argv []string) ([]byte, error, bool) {
-	return func(argv []string) ([]byte, error, bool) {
-		if argv[0] == "/usr/bin/osascript" {
-			return []byte(path + "\n"), nil, true
-		}
-		return nil, nil, false
-	}
-}
-
 func TestProjectAdd(t *testing.T) {
 	e := newTestEnv(t)
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
 	proj := filepath.Join(dir, "my-project")
 	os.Mkdir(proj, 0o755)
-	e.m.extra = chooser(proj + "/")
-	res, err := e.op("project.add", nil)
+	res, err := e.op("project.add", map[string]any{"dir": proj})
 	if err != nil || res["added"] != proj {
 		t.Fatalf("%v %v", res, err)
 	}
 	if len(e.cfg.Projects) != 1 || e.cfg.Projects[0] != proj {
 		t.Errorf("config: %v", e.cfg.Projects)
 	}
-	var argv []string
-	for _, c := range e.cmd.calls {
-		argv = c
-	}
-	if argv[0] != "/usr/bin/osascript" || argv[1] != "-e" || !strings.Contains(argv[2], "POSIX path of (choose folder") {
-		t.Errorf("chooser argv: %v", argv)
-	}
-	if _, err := e.op("project.add", nil); err == nil || !strings.Contains(err.Error(), "already") {
+	if _, err := e.op("project.add", map[string]any{"dir": proj}); err == nil || !strings.Contains(err.Error(), "already") {
 		t.Errorf("same folder twice: %v", err)
 	}
 	if len(e.cfg.Projects) != 1 {
@@ -44,21 +27,20 @@ func TestProjectAdd(t *testing.T) {
 	}
 }
 
-func TestProjectAddCancelled(t *testing.T) {
+// Rubi Home shows no folder chooser on any system: a project.add that names no folder is refused, and no program
+// is run to ask for one.
+func TestProjectAddWithoutAFolderShowsNoChooser(t *testing.T) {
 	e := newTestEnv(t)
-	e.m.extra = func(argv []string) ([]byte, error, bool) {
-		return []byte("0:59: execution error: User canceled. (-128)"), os.ErrInvalid, true
+	for _, args := range []map[string]any{nil, {}, {"dir": ""}} {
+		if res, err := e.op("project.add", args); err == nil || !strings.Contains(err.Error(), "Rubi panel") || len(e.cfg.Projects) != 0 {
+			t.Errorf("%v: %v %v %v", args, res, err, e.cfg.Projects)
+		}
 	}
-	res, err := e.op("project.add", nil)
-	if err != nil || res["cancelled"] != true || len(e.cfg.Projects) != 0 {
-		t.Errorf("%v %v %v", res, err, e.cfg.Projects)
-	}
-	e.m.extra = func(argv []string) ([]byte, error, bool) { return []byte("boom"), os.ErrInvalid, true }
-	if _, err := e.op("project.add", nil); err == nil {
-		t.Error("a failing chooser isn't an error")
+	if len(e.cmd.calls) != 0 {
+		t.Errorf("a program was run: %v", e.cmd.calls)
 	}
 	e.s.opt.GOOS = "linux"
-	if _, err := e.op("project.add", nil); err == nil || !strings.Contains(err.Error(), "macOS") {
+	if _, err := e.op("project.add", map[string]any{"dir": t.TempDir()}); err == nil || !strings.Contains(err.Error(), "agents") {
 		t.Errorf("not a Mac: %v", err)
 	}
 }
@@ -100,33 +82,20 @@ func TestProjectAddRefusals(t *testing.T) {
 			c = d
 		}
 		e.cfg.Projects = nil
-		e.m.extra = chooser(c)
-		if res, err := e.op("project.add", nil); err == nil || len(e.cfg.Projects) != 0 {
-			t.Errorf("%s accepted: %v %v", name, res, e.cfg.Projects)
-		}
-		// The same folder named by a Bot (dir) gets the same checks.
 		if c != "" {
 			if res, err := e.op("project.add", map[string]any{"dir": c}); err == nil || len(e.cfg.Projects) != 0 {
-				t.Errorf("%s accepted as dir: %v %v", name, res, e.cfg.Projects)
+				t.Errorf("%s accepted: %v %v", name, res, e.cfg.Projects)
 			}
 		}
 	}
 	// a folder in the home is fine
-	e.m.extra = chooser(filepath.Join(realHome, "work", "app"))
-	if res, err := e.op("project.add", nil); err != nil || res["added"] != filepath.Join(realHome, "work", "app") {
-		t.Errorf("fine folder: %v %v", res, err)
-	}
-	// and named by a Bot: added without the folder chooser
 	e.cfg.Projects = nil
 	e.cmd.calls = nil
-	e.m.extra = nil
 	if res, err := e.op("project.add", map[string]any{"dir": filepath.Join(realHome, "work", "app")}); err != nil || res["added"] != filepath.Join(realHome, "work", "app") {
 		t.Errorf("fine folder as dir: %v %v", res, err)
 	}
-	for _, c := range e.cmd.calls {
-		if c[0] == "/usr/bin/osascript" {
-			t.Errorf("the folder chooser was shown for a named folder: %v", c)
-		}
+	if len(e.cmd.calls) != 0 {
+		t.Errorf("a program was run: %v", e.cmd.calls)
 	}
 }
 
@@ -136,15 +105,11 @@ func TestProjectAddLimit(t *testing.T) {
 		e.cfg.Projects = append(e.cfg.Projects, filepath.Join("/x", string(rune('a'+i))))
 	}
 	dir, _ := filepath.EvalSymlinks(t.TempDir())
-	e.m.extra = chooser(dir)
-	if _, err := e.op("project.add", nil); err == nil || !strings.Contains(err.Error(), "20") {
+	if _, err := e.op("project.add", map[string]any{"dir": dir}); err == nil || !strings.Contains(err.Error(), "20") {
 		t.Errorf("21st project: %v", err)
 	}
 	if len(e.cfg.Projects) != MaxProjects {
 		t.Error("config changed")
-	}
-	if e.cmd.ran("/usr/bin/osascript") != 0 {
-		t.Error("the chooser was shown although no project can be added")
 	}
 }
 

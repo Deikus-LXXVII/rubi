@@ -2,7 +2,9 @@ package hostpaths
 
 import (
 	"os"
+	"os/user"
 	"path/filepath"
+	"strings"
 )
 
 // DataBase is the user's configuration folder: $XDG_CONFIG_HOME, else ~/.config.
@@ -47,4 +49,32 @@ func SystemExact() []string { return []string{"/home", "/opt", "/mnt", "/media",
 // DeniedTrees are folders under the user's home that never become a project, nor anything inside them.
 func DeniedTrees() []string {
 	return []string{".ssh", ".gnupg", ".aws", ".config", ".kube", ".password-store"}
+}
+
+// mediaBases are the folders where a desktop mounts removable disks for this user (a variable so that a test can point
+// it elsewhere). Not /mnt (WSL's /mnt/c is the Windows system drive), and not /srv.
+var mediaBases = func() []string {
+	u, err := user.Current()
+	if err != nil || u.Username == "" || strings.ContainsAny(u.Username, `/\`) || u.Username == "." || u.Username == ".." {
+		return nil
+	}
+	return []string{filepath.Join("/run/media", u.Username), filepath.Join("/media", u.Username)}
+}
+
+// BrowseRoots are the places besides the home folder where the folder browser may start: each removable disk this user
+// has mounted, /run/media/<user>/<disk> or /media/<user>/<disk>.
+func BrowseRoots() []string {
+	var out []string
+	for _, base := range mediaBases() {
+		ents, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, e := range ents {
+			if e.IsDir() {
+				out = append(out, filepath.Join(base, e.Name()))
+			}
+		}
+	}
+	return out
 }

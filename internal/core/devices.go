@@ -202,6 +202,28 @@ func (c *Core) CheckDevice(ctx context.Context, id string) (map[string]any, erro
 	return hello, nil
 }
 
+// ListDeviceFolders lists the folders in path (empty: the home folder) on a Home computer, for the panel's folder
+// browser. Only the panel asks for it (panelapi: a full settings link); a plugin's call for "fs.list" is refused by
+// attestHomeCall, and no manifest can declare the capability. Home answers folder names and nothing else, and
+// refuses the places a project can never be in. The panel draws the answer as text.
+func (c *Core) ListDeviceFolders(ctx context.Context, id, path string) (map[string]any, error) {
+	dev, err := c.device(id)
+	if err != nil {
+		return nil, err
+	}
+	cl, err := c.deviceClient(dev)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var out map[string]any
+	if err := cl.Call(ctx, opFsList, map[string]any{"path": path}, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // hookCallTimeout bounds each call to Home about the hook. Both answer at once: the install only starts
 // (the administrator dialog stays open on Home for minutes; the panel watches `hello.hook` for the end).
 const hookCallTimeout = 30 * time.Second
@@ -385,6 +407,11 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 	}
 	ctx, cancel := context.WithTimeout(ctx, 100*time.Second)
 	defer cancel()
+	if homeOp(op) == opProjectAdd {
+		if err := c.checkProjectResolves(ctx, cl, op, args); err != nil {
+			return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeFailed, Message: err.Error()}
+		}
+	}
 	var out json.RawMessage
 	if err := cl.Call(ctx, op, args, &out); err != nil {
 		code := rubiplugin.CodeHomeFailed

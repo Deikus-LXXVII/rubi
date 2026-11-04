@@ -40,18 +40,20 @@ func (s *Setup) Handle(ctx context.Context, op string, args json.RawMessage) (an
 		}
 		return map[string]any{"opened": true}, nil
 	case "project.add":
-		add := s.AddProject
-		if in.Dir != "" { // a folder the user approved by name (core checks the approval); else the folder chooser
-			add = func(context.Context) (string, error) { return s.AddProjectDir(in.Dir) }
+		if in.Dir == "" { // the folder is named by the panel's folder browser, and approved by the user
+			return nil, errChooseInPanel
 		}
-		dir, err := add(ctx)
+		dir, err := s.AddProjectDir(in.Dir)
 		if err != nil {
 			return nil, err
 		}
-		if dir == "" {
-			return map[string]any{"cancelled": true}, nil
-		}
 		return map[string]any{"added": dir}, nil
+	case "project.resolve":
+		dir, err := s.ResolveProjectDir(in.Dir)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"dir": dir}, nil
 	case "project.remove":
 		if err := s.RemoveProject(in.Dir); err != nil {
 			return nil, err

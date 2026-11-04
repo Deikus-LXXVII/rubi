@@ -505,16 +505,57 @@ line. Stage names only; the order is the dependency order.
 - **Tests.** Golden values for macOS; XDG for Linux; Windows paths; the ACL table; owner and mode on Unix; the deny
   lists follow the platform in `home` and `agent`.
 
-### P3 Opener, clipboard, dialogs and the panel folder browser
+### P3 Opener, clipboard, dialogs and the panel folder browser (done)
 
-- **Work.** 2.2: `Opener`, `Clipboard`, `Dialogs`; the Linux and Windows implementations; text mode as the fallback; the
-  folder browser (`fs.list`, `device.fs.list`, the panel section) replaces `choose folder`.
-- **Done when.** `rubi-home open` shows the PIN and the link in a window on a Linux desktop and on Windows, and prints
-  them where there is none; `login.go` opens the browser through `Opener`; an agent project is chosen in the panel on a
-  phone, on every OS, with no native dialog.
-- **Tests.** Fake runners for the argv of each tool; the existing `openwindow_test.go` cases run for each OS table; `fs.list`
-  tests (deny lists, links, the drive list, a path outside home); a panel flow test; a core test that a Bot can not call
-  `device.fs.list`; a manual check on a Linux desktop and on Windows 11. Removes the P3 lines.
+- **Work.**
+  - `Opener`, `Clipboard` and `Dialogs` (`desktop.go`), one form per system, argv only:
+    - macOS: `open`, `pbcopy`, and an `osascript` handler that takes the text as an argument (`desktop_darwin.go`).
+    - Linux: `xdg-open`; `wl-copy`, `xclip` or `xsel` with the code on stdin; `zenity` (text joined to `--text=`, `--no-markup`,
+      an extra button for the middle label) or `kdialog` (`desktop_xdg.go`). It all needs `DISPLAY` or `WAYLAND_DISPLAY`.
+    - Windows: `rundll32.exe url.dll,FileProtocolHandler <link>`; `clip.exe` with the code on stdin; a PowerShell window
+      whose script is a constant and whose text, title and labels arrive as ASCII-only JSON on stdin (`desktop_winps.go`).
+      Windows has no shell in it and never `cmd /c`.
+    - Every form refuses a link that is not http, https or claude, or holds a space, a control character, a quote or a
+      character the quoting of a command line could treat specially (`checkLink`).
+  - `rubi-home open` uses them. A part a computer lacks is nil, and the window offers what remains; with no window at all
+    (no display, no zenity or kdialog, a PowerShell that can not show one) it prints the link, the PIN and the code.
+  - `setup/login.go` and `startsession.go` open links through the Opener; the Claude desktop link works on macOS and
+    Windows only.
+  - The native folder chooser is gone: `project.add` with no folder answers "choose the folder in the Rubi panel".
+  - The folder browser: Home op `fs.list` (`setup/fslist.go`), core `ListDeviceFolders` behind the panel's
+    `device.fs.list` (a full settings link only), and the panel's `askFolder`, which a plugin page opens with an action's
+    `folder {arg, device, label}`. The panel sends the chosen path to the plugin's op, which still raises its approval and
+    calls `project.add {dir}`, whose `refuseFolder` decides again.
+- **The listing.** Folders only (no file, size, date or content), under the home folder or a disk mount point
+  (`hostpaths.BrowseRoots`), never above them; not inside a system tree, a private folder of the home or Rubi Home's own
+  folder, and those are not listed in their parent either; no dot folders and no names with control characters; a link
+  or junction is listed only if it leads to a folder of the same root that is not one of those; at most 500 entries.
+  Each folder says whether it can be chosen and why not.
+- **Panel-only.** Core refuses `fs.list` from any plugin (`attestHomeCall`), no manifest can declare an `fs`
+  capability, and `device.fs.list` answers a full settings link only.
+- **Allow-list.** The 5 P3 lines are gone, and the P7 line for the `open` in `startsession.go` went with them
+  (the Opener removed it). 25 lines are left: P4 7, P5 4, P7 1, P8 13.
+- **Hardening after review.**
+  - A core that has been taken over holds the pairing token and could crawl `fs.list`. Home limits it (30 calls a minute,
+    300 an hour, two at once), logs one line per call with a count and no name, and shows the last hour's count in `hello`
+    (`fs_list_calls`), which the panel shows next to the computer. A key held by the panel and checked by Home is a design
+    decision for the owner and is not built.
+  - The roots are the home folder and the removable disks this user has mounted (`/Volumes/*`; `/run/media/<user>/*` and
+    `/media/<user>/*`; the drive letters that are not the system drive). Not `/mnt` (WSL's `/mnt/c`), not `/srv`. The browser
+    goes 8 levels below a root; another user's home (a `Users` or `home` folder on a disk) is neither listed nor entered.
+  - A system tree does not apply inside a root that sits in it (a home in `/var/home`, a disk in `/run/media`); the private
+    folders of the home stay denied. A disk's root is never a project.
+  - The folder is opened, and the opened folder is checked (final path on Windows, `os.SameFile` on Unix) before its
+    entries are read; a Windows junction is not listed. Core asks Home to resolve the folder (`project.resolve`) before it
+    lets a `project.add` through, so the folder the user approved is the folder Home adds.
+  - A computer that does not run agents says so in the browser ("Projects are for agents, which this computer doesn't run
+    yet") and `project.add` answers the same, instead of "works only on macOS".
+  - The Windows programs are those of the System32 folder by full path; the window's text cannot be a mnemonic; kdialog's
+    text cannot be rich text; osascript gets `--` before the text; the pairing code is printed only when there is really no
+    desktop, and a window that fails for another reason reports the error and the panel's address, without a code.
+- **Not verified on real systems:** the `--` before osascript's arguments (it must not appear in `argv`; a manual look on a Mac), the zenity and kdialog calls on a Linux desktop, and the PowerShell window and `clip.exe`
+  on Windows. The argv, the stdin and the answer handling are tested with fake programs; the windows themselves need a
+  look on a Linux desktop and on Windows 11.
 
 ### P4 Autostart and the app flow
 

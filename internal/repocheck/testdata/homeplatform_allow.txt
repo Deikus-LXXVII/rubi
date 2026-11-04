@@ -15,9 +15,6 @@ internal/home/appinstall.go || property list || P4: the plist, the app bundle an
 internal/home/home.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/installhook.go || /usr/bin/osascript || P5: the administrator run moves behind Elevator
 internal/home/installhook.go || AppleScript || P5: the administrator run moves behind Elevator
-internal/home/openwindow.go || /usr/bin/open || P3: open, pbcopy and osascript move behind Opener, Clipboard and Dialogs
-internal/home/openwindow.go || /usr/bin/osascript || P3: open, pbcopy and osascript move behind Opener, Clipboard and Dialogs
-internal/home/openwindow.go || /usr/bin/pbcopy || P3: open, pbcopy and osascript move behind Opener, Clipboard and Dialogs
 internal/home/setup/agents.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/container.go || /usr/bin/osascript || P5: the administrator install uses Elevator
 internal/home/setup/container.go || /usr/sbin/pkgutil || P8: Apple package checks move into the macOS VM backend
@@ -25,11 +22,8 @@ internal/home/setup/container.go || /usr/sbin/spctl || P8: Apple package checks 
 internal/home/setup/container.go || AppleScript || P5: the administrator install uses Elevator
 internal/home/setup/exec.go || agent.ContainerBin || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/jobs.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
-internal/home/setup/login.go || /usr/bin/open || P3: the sign-in link opens through Opener
 internal/home/setup/probe.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/setup/probe.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
-internal/home/setup/project.go || /usr/bin/osascript || P3: the folder chooser moves behind Dialogs
 internal/home/setup/setup.go || container || P8: the VM backend becomes an interface; Apple container moves to a macOS file
 internal/home/shortcuts.go || shortcuts || P7: Shortcuts become a macOS-only file and a not-available answer elsewhere
-internal/home/startsession.go || /usr/bin/open || P7: the Claude desktop link goes through Opener, behind a feature check
 internal/home/t3login.go || agent.AppleContainer || P8: the VM backend becomes an interface; Apple container moves to a macOS file

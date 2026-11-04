@@ -147,6 +147,7 @@ type Helper struct {
 	// Shortcuts runs the shortcuts command (a seam for tests).
 	Shortcuts func(ctx context.Context, args ...string) ([]byte, error)
 	Hue       *Hue
+	fsLimit   callLimiter // the folder browser's listing: how often it is answered
 	// Watch, when set, watches the paired Rubi and wakes its administrator when it goes down or stays locked.
 	Watch *watch.Watcher
 	// T3Pid, when set, gives the process id of the T3 server Home runs (0 while it isn't running): T3 sessions are
@@ -310,7 +311,7 @@ func (h *Helper) newAgent() *agent.Manager {
 // newSetup makes the agent setup; it reads and changes the agent_* configuration like the CLI does.
 func (h *Helper) newSetup() *setup.Setup {
 	return setup.New(setup.Options{
-		Dir: h.Dir,
+		Dir: h.Dir, Opener: NewDesktop(DesktopEnv{}).Opener,
 		Agents: setup.ManagerAgents{M: h.Agent, SignInDir: func() string { return agent.SignInDirOf(h.Dir) },
 			Auth: func() *agent.AppleContainer {
 				c := h.Fresh()
@@ -597,10 +598,12 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		"t3-agent.role.list", "t3-agent.role.get", "t3-agent.role.history", "t3-agent.role.diff", "t3-agent.role.put",
 		"t3-agent.ssh.scan", "t3-agent.ssh.register", "t3-agent.ssh.list", "t3-agent.ssh.remove", "t3-agent.ssh.audit":
 		return h.T3.handleAgent(ctx, env.Op, env.Args)
-	case "t3-setup.status", "t3-setup.run", "t3-setup.login.code", "t3-setup.login.open", "t3-setup.project.add",
+	case "t3-setup.status", "t3-setup.run", "t3-setup.login.code", "t3-setup.login.open", "t3-setup.project.add", "t3-setup.project.resolve",
 		"t3-setup.project.remove", "t3-setup.cancel":
 		return h.T3.handleSetup(ctx, env.Op, env.Args)
-	case "agent-setup.status", "agent-setup.run", "agent-setup.login.code", "agent-setup.login.open",
+	case "fs.list":
+		return h.listFolders(env.Args)
+	case "agent-setup.status", "agent-setup.run", "agent-setup.project.resolve", "agent-setup.login.code", "agent-setup.login.open",
 		"agent-setup.project.add", "agent-setup.project.remove", "agent-setup.cancel":
 		return h.Setup.Handle(ctx, env.Op, env.Args)
 	}
@@ -708,7 +711,7 @@ func (h *Helper) hello() map[string]any {
 	cfg := h.Config()
 	return map[string]any{"name": cfg.Name, "version": version.Version, "shortcuts_folder": cfg.ShortcutsFolder,
 		"can":  []string{"hue", "shortcuts", "claude", "claude-sessions", "claude-start", "claude-agent", "agent-setup", "t3-agent", "t3-setup"},
-		"hook": h.hookStatus(), "hue_bridges": h.Hue.Bridges()}
+		"hook": h.hookStatus(), "hue_bridges": h.Hue.Bridges(), "fs_list_calls": h.fsLimit.lastHour()}
 }
 
 func (h *Helper) pair(args json.RawMessage) (any, error) {
@@ -797,3 +800,26 @@ func computerName(host string) string {
 }
 
 var macModel = regexp.MustCompile(`(?i)(MacBook( (Air|Pro))?|Mac mini|Mac Studio|Mac Pro|iMac)( \d+)?$`)
+
+// listFolders is the folder browser's listing (see setup.ListFolders). Only the Rubi panel asks for it, through core.
+func (h *Helper) listFolders(args json.RawMessage) (any, error) {
+	var in struct {
+		Path string `json:"path"`
+	}
+	if len(args) > 0 && string(args) != "null" && json.Unmarshal(args, &in) != nil {
+		return nil, errors.New("bad arguments")
+	}
+	done, err := h.fsLimit.begin()
+	if err != nil {
+		log.Printf("fs.list: refused (%d calls in the last hour): %v", h.fsLimit.lastHour(), err)
+		return nil, err
+	}
+	defer done()
+	l, err := h.Setup.ListFolders(in.Path)
+	if err != nil {
+		log.Printf("fs.list: failed (%d calls in the last hour)", h.fsLimit.lastHour()) // never a folder name, never a path
+		return nil, err
+	}
+	log.Printf("fs.list: %d folders listed (%d calls in the last hour)", len(l.Folders), h.fsLimit.lastHour())
+	return l, nil
+}

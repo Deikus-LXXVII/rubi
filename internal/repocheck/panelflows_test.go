@@ -273,7 +273,7 @@ func TestPanelDrawsEverythingAPluginPageCanSay(t *testing.T) {
 	js := readRepo(t, "panel/js/app.js")
 	sdk := readRepo(t, "sdk/rubiplugin/manifest.go")
 	// the parts of an "view" page and of a button, as the manifest documents them
-	for _, k := range []string{"title", "note", "refresh", "sections", "empty", "items", "detail", "actions", "label", "op", "args", "danger", "confirm", "prompt", "open", "up", "chat", "input"} {
+	for _, k := range []string{"title", "note", "refresh", "sections", "empty", "items", "detail", "actions", "label", "op", "args", "danger", "confirm", "prompt", "folder", "open", "up", "chat", "input"} {
 		doc := k
 		if k == "chat" {
 			doc = `kind "chat"`

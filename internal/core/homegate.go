@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/Deikus-LXXVII/rubi/internal/approvals"
+	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 )
 
@@ -44,6 +46,9 @@ const (
 	// opHueForget drops a bridge's pinned certificate. Only the user does that, in the panel (ForgetHueBridge).
 	opHueForget  = "hue.forget"
 	opProjectAdd = "agent-setup.project.add"
+	// opFsList is the folder browser's listing. Only the panel asks for it (ListDeviceFolders); no capability gives a
+	// plugin the "fs" prefix, and this refusal holds even if one ever did.
+	opFsList = "fs.list"
 )
 
 // roleApprovalKinds are the approval kinds whose ids a role.put may name.
@@ -131,6 +136,9 @@ func (c *Core) beginExec(plugin, kind string, payload json.RawMessage) func() {
 func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.RawMessage, error) {
 	ns := kindNS(plugin)
 	switch homeOp(op) {
+	case opFsList:
+		// The listing shows the names of the user's folders; a plugin that could ask would learn them.
+		return nil, errors.New("Rubi refused: the folder browser is for the user, in the Rubi panel")
 	case opHueForget:
 		// A plugin that could forget the pin could then pair a look-alike device: the pin is what stops it.
 		return nil, errors.New("Rubi refused: forgetting a Hue Bridge's certificate is done by the user, in the Rubi panel")
@@ -237,6 +245,31 @@ func (c *Core) attestProjectAdd(plugin string, args json.RawMessage) error {
 		}
 	}
 	return errors.New("Rubi refused: no approval from the user is being executed for adding this folder")
+}
+
+// checkProjectResolves asks Rubi Home what a project.add for dir would add (its project.resolve: the real path, after the
+// same checks), and lets the call through only when that is dir itself. The approval the user decided shows a path;
+// a folder that is a link, or whose path a listing passed on in another form, would be added as the folder it leads to,
+// which is not the one the user saw. The plugin gets the answer, and asks again with the path Home resolves it to.
+func (c *Core) checkProjectResolves(ctx context.Context, cl *homeproto.Client, op string, args json.RawMessage) error {
+	var in struct {
+		Dir string `json:"dir"`
+	}
+	if len(args) == 0 || string(args) == "null" || json.Unmarshal(args, &in) != nil || in.Dir == "" {
+		return nil // no folder: Home refuses it itself
+	}
+	var res struct {
+		Dir string `json:"dir"`
+	}
+	resolve := strings.TrimSuffix(op, "project.add") + "project.resolve"
+	if err := cl.Call(ctx, resolve, map[string]any{"dir": in.Dir}, &res); err != nil {
+		return err
+	}
+	if res.Dir != in.Dir {
+		return fmt.Errorf("Rubi refused: the folder in the approval is %q, but Rubi Home would add %q; ask for the approval again with the folder as Rubi Home resolves it (agent-setup.project.resolve)",
+			clipRunes(in.Dir, 200), clipRunes(res.Dir, 200))
+	}
+	return nil
 }
 
 // checkApprovalID accepts an id that is (a) a core approval of this plugin, of a role kind, that is executing or

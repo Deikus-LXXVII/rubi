@@ -46,3 +46,22 @@ func SystemExact() []string { return []string{"/Volumes", "/Users", "/home", "/o
 
 // DeniedTrees are folders under the user's home that never become a project, nor anything inside them.
 func DeniedTrees() []string { return []string{".ssh", "Library", ".gnupg", ".aws", ".config", ".kube"} }
+
+// volumesDir is where macOS mounts disks (a variable so that a test can point it elsewhere).
+var volumesDir = "/Volumes"
+
+// BrowseRoots are the places besides the home folder where the folder browser may start: each disk mounted under
+// /Volumes. /Volumes itself is not one, and neither is the startup disk (a link there to "/").
+func BrowseRoots() []string {
+	ents, err := os.ReadDir(volumesDir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range ents {
+		if e.IsDir() { // not a symbolic link: the startup disk is "Macintosh HD" -> /
+			out = append(out, filepath.Join(volumesDir, e.Name()))
+		}
+	}
+	return out
+}

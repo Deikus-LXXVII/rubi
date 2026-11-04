@@ -183,3 +183,21 @@ func volumeOK(path string) (bool, string) {
 	}
 	return CheckVolume(flags, windows.GetDriveType(root))
 }
+
+// FinalPath is the path the system says an open file really is, after every link and junction on the way
+// (GetFinalPathNameByHandle), in the ordinary form. It is what makes a check made on a path hold for the file that
+// was opened.
+func FinalPath(f *os.File) (string, error) {
+	h := windows.Handle(f.Fd())
+	buf := make([]uint16, 512)
+	for {
+		n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), 0)
+		if err != nil {
+			return "", err
+		}
+		if int(n) <= len(buf) {
+			return TrimExtendedPrefix(windows.UTF16ToString(buf[:n])), nil
+		}
+		buf = make([]uint16, n+1)
+	}
+}

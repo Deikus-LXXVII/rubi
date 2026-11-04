@@ -140,3 +140,26 @@ func TestJunctionIsRefused(t *testing.T) {
 		t.Errorf("the system drive: %s", why)
 	}
 }
+
+// The final path of an open folder is the real one, in the ordinary form, even when it was opened through a junction.
+func TestFinalPathFollowsAJunction(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "junction")
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		t.Skip("no junctions here:", err, string(out))
+	}
+	f, err := os.Open(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	got, err := FinalPath(f)
+	want, _ := filepath.EvalSymlinks(target)
+	if err != nil || !strings.EqualFold(got, want) || strings.HasPrefix(got, `\\?\`) {
+		t.Fatalf("got %q (%v), want %q", got, err, want)
+	}
+}

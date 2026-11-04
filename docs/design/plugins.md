@@ -296,7 +296,13 @@ shows a box it draws itself, titled "<plugin name> asks:", with `label` as plain
 a text field prefilled with `value` (cut at 200, the answer is at most 200 too); Cancel, Escape or a click outside
 sends nothing. The panel refuses a `label` that mentions a password, passkey, PIN or Rubi (case-insensitive), so
 a plugin can't dress its question as an unlock or approval prompt. The answer, possibly empty, is passed as
-`args[arg]`. A panel that predates `prompt` sends the call without that key, so a plugin op that takes text must
+`args[arg]`. A button may instead carry `folder: {arg, device, label}`: the panel opens its own folder browser on the
+Rubi Home computer with id `device` (folder names only, from `device.fs.list`, which only a full settings link may
+call, and never inside the system's or the user's private folders), in a box titled "<plugin name> asks:" with
+`label` as plain text, checked like a prompt's. The user taps folders to open them and chooses the open one; the
+path goes to the op as `args[arg]`, and the plugin sees nothing else of the user's folders. The op still has to
+raise its approval and call `agent-setup.project.add {dir}`, whose checks decide again. Rubi Home shows no native
+folder chooser on any system. A panel that predates `prompt` sends the call without that key, so a plugin op that takes text must
 refuse a call where the key is missing instead of reading it as empty. The page is the user's own request: it
 needs a settings link, and what a button does needs no approval unless the plugin asks for one.
 

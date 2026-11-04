@@ -64,11 +64,12 @@ All are `agent-setup.*`, listed in the hello as capability `agent-setup`.
   and no address). Running `network` does nothing and ends `done` ("Not needed"); it never runs a network command.
 - `agent-setup.login.code {project, code}` -> `{sent: true}`: writes the code and a newline to the running sign-in's
   stdin. At most 512 printable ASCII characters, no spaces; refused when no sign-in waits; the `project` argument is ignored.
-- `agent-setup.login.open {}` -> `{opened: true}`: opens the sign-in link in the Mac's default browser
-  (`/usr/bin/open`), only when it is an `https://` link to `claude.com`, `claude.ai`, `platform.claude.com` or
+- `agent-setup.login.open {}` -> `{opened: true}`: opens the sign-in link in the computer's default browser
+  (through Rubi Home's Opener: `open` on a Mac), only when it is an `https://` link to `claude.com`, `claude.ai`, `platform.claude.com` or
   `console.anthropic.com`.
-- `agent-setup.project.add {}` -> `{added: dir}` or `{cancelled: true}`: shows the macOS folder chooser on the
-  Mac and adds the chosen folder to `agent_projects` (refused: the home folder itself or a folder holding it,
+- `agent-setup.project.add {dir}` -> `{added: dir}`: adds the folder to `agent_projects`. The folder is chosen in the
+  Rubi panel's folder browser (Home's `fs.list`, asked through core by the panel only); without `dir` Home answers that
+  the folder is chosen in the panel and shows no chooser of its own (refused: the home folder itself or a folder holding it,
   its private folders such as `.ssh` and `Library`, `/`, system folders, a folder that is or holds Rubi Home's
   directory, a folder already added, more than 20 projects).
 - `agent-setup.project.remove {dir}` -> `{removed: true}`; refused while a job works on that project.
@@ -250,7 +251,7 @@ Anthropic to the helper in the sign-in container and into the sign-in directory;
 | Service doesn't start in 60 s | step 2 `failed` with the last lines of `container system status` |
 | (no row: the network step cannot fail; VMs have no network) | step 3 `done`, "Not needed" |
 | Build fails | step 4 `failed` with the last progress lines |
-| Folder chooser cancelled, or folder refused | step 5 unchanged, reason says why |
+| Folder browser cancelled, or folder refused | step 5 unchanged, reason says why |
 | Sign-in: link never appears, 15 minutes pass, `claude` exits non-zero | step 6 `failed` |
 | Self-test: any check fails | step 7 `failed` naming the check |
 | Rubi Home restarted mid-job | the job is gone; the row shows what the probe finds |

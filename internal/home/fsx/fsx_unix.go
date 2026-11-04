@@ -103,3 +103,6 @@ const OthersName = "group or others"
 
 // Reparse is false on Unix: a symbolic link is judged by its owner where it matters (see hookcheck.go).
 func Reparse(string, os.FileInfo) bool { return false }
+
+// FinalPath is not available on Unix; the caller compares the open file with the path (os.SameFile).
+func FinalPath(*os.File) (string, error) { return "", ErrNoFinalPath }

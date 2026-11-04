@@ -3,6 +3,7 @@ package hostpaths
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -70,4 +71,33 @@ func SystemExact() []string { return []string{drive() + "Users", drive()} }
 // DeniedTrees are folders under the user's home that never become a project, nor anything inside them.
 func DeniedTrees() []string {
 	return []string{".ssh", ".gnupg", ".aws", ".config", ".kube", "AppData"}
+}
+
+// BrowseRoots are the places besides the home folder where the folder browser may start: the local drives that are
+// not the system drive.
+func BrowseRoots() []string {
+	mask, err := windows.GetLogicalDrives()
+	if err != nil {
+		return nil
+	}
+	system := strings.ToUpper(filepath.VolumeName(winDir()))
+	var out []string
+	for i := 0; i < 26; i++ {
+		if mask&(1<<uint(i)) == 0 {
+			continue
+		}
+		letter := string(rune('A' + i))
+		root := letter + `:\`
+		if strings.ToUpper(letter+":") == system {
+			continue
+		}
+		p, err := windows.UTF16PtrFromString(root)
+		if err != nil {
+			continue
+		}
+		if t := windows.GetDriveType(p); t == windows.DRIVE_FIXED || t == windows.DRIVE_REMOVABLE {
+			out = append(out, root)
+		}
+	}
+	return out
 }

@@ -24,7 +24,6 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -70,10 +69,12 @@ func desktopURL(cwd, prompt string) string {
 	return "claude://code/new?" + strings.ReplaceAll(q.Encode(), "+", "%20")
 }
 
-// desktopLauncher opens desktopURL with /usr/bin/open (macOS). run and goos are seams for tests.
+// desktopLauncher opens desktopURL through the system's Opener (the Claude desktop app owns the claude:// scheme).
+// The app exists for macOS and Windows; Linux has none, and says so. opener and goos are seams for tests.
 type desktopLauncher struct {
-	run  func(ctx context.Context, name string, args ...string) error
-	goos string
+	opener   Opener
+	goos     string
+	noSystem bool // test seam: do not fall back to the system's Opener
 }
 
 func (d desktopLauncher) Launch(ctx context.Context, cwd, prompt string) error {
@@ -81,16 +82,17 @@ func (d desktopLauncher) Launch(ctx context.Context, cwd, prompt string) error {
 	if goos == "" {
 		goos = runtime.GOOS
 	}
-	if goos != "darwin" {
-		return errors.New("starting a session works through the Claude desktop app, which this Rubi Home can only open on a Mac")
+	if goos != "darwin" && goos != "windows" {
+		return errors.New("starting a session works through the Claude desktop app, which exists for a Mac or a Windows computer only")
 	}
-	run := d.run
-	if run == nil {
-		run = func(ctx context.Context, name string, args ...string) error {
-			return exec.CommandContext(ctx, name, args...).Run()
-		}
+	op := d.opener
+	if op == nil && !d.noSystem {
+		op = NewDesktop(DesktopEnv{}).Opener
 	}
-	if err := run(ctx, "/usr/bin/open", desktopURL(cwd, prompt)); err != nil {
+	if op == nil {
+		return errors.New("this computer has no way to open the Claude desktop app")
+	}
+	if err := op.Open(ctx, desktopURL(cwd, prompt)); err != nil {
 		return fmt.Errorf("couldn't open the Claude desktop app (%v): is it installed?", err)
 	}
 	return nil

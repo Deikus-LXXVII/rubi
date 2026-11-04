@@ -1,6 +1,8 @@
 package hostpaths
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -35,5 +37,31 @@ func TestMacValuesAreUnchanged(t *testing.T) {
 		if !reflect.DeepEqual(c[0], c[1]) {
 			t.Errorf("%s: got %v, want %v", name, c[0], c[1])
 		}
+	}
+}
+
+// Only the disks mounted under /Volumes are roots: not /Volumes, not a file, not the startup disk (a link to "/").
+func TestMacBrowseRootsAreTheMountedDisks(t *testing.T) {
+	dir := t.TempDir()
+	old := volumesDir
+	volumesDir = dir
+	t.Cleanup(func() { volumesDir = old })
+	for _, d := range []string{"Backup", "USB Stick"} {
+		if err := os.Mkdir(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(filepath.Join(dir, "afile"), nil, 0o644)
+	if err := os.Symlink("/", filepath.Join(dir, "Macintosh HD")); err != nil {
+		t.Fatal(err)
+	}
+	got := BrowseRoots()
+	want := []string{filepath.Join(dir, "Backup"), filepath.Join(dir, "USB Stick")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	volumesDir = filepath.Join(dir, "missing")
+	if len(BrowseRoots()) != 0 {
+		t.Error("roots with no /Volumes")
 	}
 }

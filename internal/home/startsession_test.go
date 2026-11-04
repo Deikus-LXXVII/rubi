@@ -508,24 +508,32 @@ func TestDesktopURLEncoding(t *testing.T) {
 	}
 }
 
-func TestDesktopLauncherOpensTheURL(t *testing.T) {
-	var name string
-	var args []string
-	l := desktopLauncher{goos: "darwin", run: func(_ context.Context, n string, a ...string) error { name, args = n, a; return nil }}
-	if err := l.Launch(context.Background(), "/p", "hi there"); err != nil {
-		t.Fatal(err)
+func TestDesktopLauncherOpensTheURLThroughTheOpener(t *testing.T) {
+	var links []string
+	op := openerFunc(func(_ context.Context, link string) error { links = append(links, link); return nil })
+	for _, goos := range []string{"darwin", "windows"} {
+		links = nil
+		l := desktopLauncher{goos: goos, opener: op}
+		if err := l.Launch(context.Background(), "/p", "hi there"); err != nil {
+			t.Fatal(err)
+		}
+		if len(links) != 1 || links[0] != "claude://code/new?folder=%2Fp&q=hi%20there" {
+			t.Fatalf("%s: %q", goos, links)
+		}
 	}
-	if name != "/usr/bin/open" || len(args) != 1 || args[0] != "claude://code/new?folder=%2Fp&q=hi%20there" {
-		t.Fatalf("%s %q", name, args)
-	}
-	l.run = func(context.Context, string, ...string) error { return os.ErrNotExist }
+	l := desktopLauncher{goos: "darwin", opener: openerFunc(func(context.Context, string) error { return os.ErrNotExist })}
 	if err := l.Launch(context.Background(), "/p", "x"); err == nil || !strings.Contains(err.Error(), "installed") {
 		t.Fatalf("open failure: %v", err)
 	}
-	called := false
-	l = desktopLauncher{goos: "linux", run: func(context.Context, string, ...string) error { called = true; return nil }}
-	if err := l.Launch(context.Background(), "/p", "x"); err == nil || called {
-		t.Fatalf("linux: %v called=%v", err, called)
+	// Linux has no Claude desktop app: nothing is opened
+	links = nil
+	l = desktopLauncher{goos: "linux", opener: op}
+	if err := l.Launch(context.Background(), "/p", "x"); err == nil || len(links) != 0 {
+		t.Fatalf("linux: %v opened %q", err, links)
+	}
+	// a computer with no way to open a link says so
+	if err := (desktopLauncher{goos: "darwin", opener: nil, noSystem: true}).Launch(context.Background(), "/p", "x"); err == nil {
+		t.Fatal("no opener, no error")
 	}
 }
 

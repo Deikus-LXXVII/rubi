@@ -205,7 +205,7 @@ func (s *Setup) LoginCode(code string) error {
 	return nil
 }
 
-// LoginOpen opens the running sign-in's link in the Mac's default browser.
+// LoginOpen opens the running sign-in's link in the default browser, through the Opener.
 func (s *Setup) LoginOpen(ctx context.Context) error {
 	if !s.mac() {
 		return errNotMac
@@ -223,7 +223,10 @@ func (s *Setup) LoginOpen(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if _, err := s.opt.Cmd.Run(ctx, []string{"/usr/bin/open", u}); err != nil {
+	if s.opt.Opener == nil {
+		return errors.New("this computer has no way to open the browser")
+	}
+	if err := s.opt.Opener.Open(ctx, u); err != nil {
 		return errors.New("couldn't open the browser")
 	}
 	return nil

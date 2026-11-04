@@ -1820,7 +1820,7 @@ async function settingsScreen(ctx, tab) {
               state.className = "status-dot " + (r.online ? "on" : "off");
               state.title = r.online ? `Online · ${r.version || ""}` : "Not answering";
               state.textContent = r.online ? "Online" : "Not answering";
-              hookBox.replaceChildren(...(r.online ? [...hookLines(r.hook, installHook(d)), ...hueLines(r.hue_bridges, (b) => change("device.hue.forget", () => ({ id: d.id, bridge: b })))] : []));
+              hookBox.replaceChildren(...(r.online ? [...hookLines(r.hook, installHook(d)), ...hueLines(r.hue_bridges, (b) => change("device.hue.forget", () => ({ id: d.id, bridge: b }))), ...folderLines(r.fs_list_calls)] : []));
             }).catch((x) => showError(err, x));
           } }, "Check"),
           menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]),
@@ -1930,6 +1930,13 @@ function hookLines(hook, install) {
 
 // hueLines list the Hue Bridges whose certificate Rubi Home recorded, each with the button that forgets it
 // (after a bridge was replaced or reset). `forget(bridge)` makes the click handler.
+// folderLines says how often the folder browser was asked on that computer in the last hour (Rubi Home counts every call).
+// You use it a handful of times when you pick a folder; a number that grows when you are not looking means something
+// is listing your folders.
+function folderLines(n) {
+  if (!Number.isFinite(n) || n <= 0) return [];
+  return [h("p", { class: "muted small" }, `Folder browser: asked ${Math.floor(n)} ${n === 1 ? "time" : "times"} in the last hour. Picking a folder takes a few; if this grows while you are not choosing one, tell your agent.`)];
+}
 function hueLines(bridges, forget) {
   if (!Array.isArray(bridges) || !bridges.length) return [];
   return bridges.map((b) => h("div", { class: "device-hue" },
@@ -2276,12 +2283,77 @@ function askText(title, label, value) {
   });
 }
 
+// askFolder shows the panel's folder browser in a box it draws itself, titled "<plugin name> asks:", and resolves the
+// folder the user chose (its path, as Rubi Home on that computer lists it), or null on Cancel / Escape / a click outside.
+// The listing comes from Rubi Home through Rubi (device.fs.list, full settings links only); it holds folder names and
+// nothing else, and is drawn as text. The plugin learns only the path of the folder the user chose. The user taps a
+// folder to open it, and chooses the folder that is open.
+function askFolder(client, title, label, device) {
+  return new Promise((resolve) => {
+    const note = h("p", { class: "muted small folder-note" });
+    const where = h("p", { class: "folder-where" });
+    const places = h("div", { class: "folder-places" });
+    const list = h("ul", { class: "folder-list" });
+    const choose = h("button", { type: "button", class: "primary", disabled: true }, "Choose this folder");
+    const up = h("button", { type: "button", class: "secondary small", disabled: true }, "Up");
+    let current = null;
+    let latest = 0; // the number of the newest load: an answer to an older one is dropped
+    const done = (v) => { overlay.remove(); document.removeEventListener("keydown", onKey, true); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); done(null); } };
+    const strs = (v, n) => clip(v, n);
+    const load = async (path) => {
+      const mine = ++latest;
+      note.textContent = "Loading\u2026";
+      choose.disabled = up.disabled = true;
+      try {
+        const r = await client.call("device.fs.list", { id: device, path });
+        if (mine !== latest) return;
+        if (!r || typeof r !== "object" || typeof r.path !== "string") throw new UserError("Rubi Home sent a folder list the panel can't read.");
+        current = r;
+        where.textContent = strs(r.path, 300);
+        places.replaceChildren(...objs(r.places, 8).map((p) => h("button", { type: "button", class: "secondary small", onclick: () => load(String(p.path || "")) }, strs(p.name, 40))));
+        const rows = objs(r.folders, 500);
+        list.replaceChildren(...(rows.length ? rows.map((f) => h("li", {},
+          h("button", { type: "button", class: "folder-row", onclick: () => load(String(f.path || "")) },
+            h("span", { class: "folder-name" }, strs(f.name, 200)),
+            f.can_choose ? null : h("span", { class: "muted small" }, strs(f.reason, 200)))))
+          : [h("li", { class: "muted small" }, "No folders in here.")]));
+        // Projects are for agents: a computer that does not run them yet says so before you pick, not as an error after
+        const noAgents = r.agents === false;
+        note.textContent = noAgents ? "Projects are for agents, which this computer doesn't run yet."
+          : r.deep ? "The folders below this one aren't shown. You can choose this folder."
+          : r.truncated ? "Only the first folders are shown." : (r.can_choose ? "" : strs(r.reason, 300));
+        choose.disabled = !r.can_choose || noAgents;
+        up.disabled = !r.parent;
+      } catch (e) {
+        if (mine !== latest) return;
+        note.textContent = e instanceof UserError ? e.message : friendly(e);
+        up.disabled = !(current && current.parent);
+      }
+    };
+    choose.onclick = () => { if (current && current.can_choose) done(current.path); };
+    up.onclick = () => { if (current && current.parent) load(current.parent); };
+    const box = h("div", { class: "ask-box folder-box", role: "dialog", "aria-modal": "true" },
+      h("h2", {}, title),
+      h("p", { class: "muted small" }, label),
+      places, where, list, note,
+      h("div", { class: "view-actions" }, up,
+        h("button", { type: "button", class: "secondary small", onclick: () => done(null) }, "Cancel"), choose));
+    const overlay = h("div", { class: "ask-overlay", onclick: (e) => { if (e.target === overlay) done(null); } }, box);
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(overlay);
+    load("");
+  });
+}
+
 // pluginViewScreen shows a plugin's own page, described by the plugin: sections of items, each with
 // buttons. The plugin answers op "view" (with the page's args: {} for the first page); a button calls its op with its
 // args (the user's own request), then the page reloads. An action with prompt {arg, label, value} first asks the user for text in a box titled
 // "<plugin name> asks:" (label shown as plain text, at most 200 characters; value prefilled, at most 200; a label
 // that mentions a password, passkey, PIN or Rubi is refused, so a plugin can't pose as Rubi's own prompts; cancel
-// does nothing) and adds the answer to args under arg. An action with open {..} calls nothing: it shows the page the
+// does nothing) and adds the answer to args under arg. An action with folder {arg, device, label} opens the panel's folder
+// browser (askFolder) on the Rubi Home computer with id device, in a box titled the same way, and adds the path of the
+// folder the user chose to args under arg (label is checked like a prompt's; Cancel does nothing). An action with open {..} calls nothing: it shows the page the
 // plugin returns for "view" with those args (a drill-down), and the page's up {label, open} is the way back.
 // A section of kind "chat" is a message list with an input (see chatSection). Pages with refresh reload themselves
 // (e.g. a countdown to sending), but not while a box on the page holds text the user typed or a prompt box is open,
@@ -2357,6 +2429,15 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       const v = await askText(`${name} asks:`, label, clip(pr.value, 200));
       if (v === null || currentView !== mine) return;
       args = { ...args, [String(pr.arg)]: v };
+    }
+    const fo = a.folder && typeof a.folder === "object" ? a.folder : null;
+    if (fo && fo.arg && typeof fo.device === "string" && fo.device.length <= 100) {
+      // The plugin wants a folder of the user's computer: the user picks it in the panel's own browser.
+      const label = clip(fo.label, 200);
+      if (PROMPT_FORBIDDEN.test(label)) { showError(err, new UserError("This plugin asked for a folder in a way the panel won't show.")); return; }
+      const v = await askFolder(ctx.client, `${name} asks:`, label, fo.device);
+      if (v === null || currentView !== mine) return;
+      args = { ...args, [String(fo.arg)]: v };
     }
     btn.disabled = true;
     try {

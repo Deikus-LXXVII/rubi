@@ -327,7 +327,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "device.hook.install", "device.hue.forget", "transport.get", "transport.set", "account.agents", "watch.set", "plugin.panel",
+		"devices.get", "device.fs.list", "device.pair", "device.remove", "device.check", "device.hook.install", "device.hue.forget", "transport.get", "transport.set", "account.agents", "watch.set", "plugin.panel",
 		"approval.list", "approval.open",
 		"library.list", "library.entry", "library.version", "library.queue", "library.curator.set", "library.withdraw":
 		return s.settings(ctx, purpose, env)
@@ -704,6 +704,11 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	if strings.HasPrefix(env.Op, "library.") && purpose != "settings" {
 		return nil, errViewOnly
 	}
+	// The folder browser shows the names of the user's folders: only a full settings link, never a forwarded
+	// approval, setup or view-only link.
+	if env.Op == "device.fs.list" && purpose != "settings" {
+		return nil, errViewOnly
+	}
 	if purpose != "settings" && purpose != settingsView && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
 		return nil, errors.New("this link can't change settings; ask your agent for a settings link")
 	}
@@ -731,6 +736,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Code    string            `json:"code"`
 		Pin     string            `json:"pin"`
 		Bridge  string            `json:"bridge"`
+		Path    string            `json:"path"`
 		Choice  string            `json:"choice"`
 		// ApprovalID is for approval.open.
 		ApprovalID string `json:"approval_id"`
@@ -869,6 +875,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return map[string]any{"devices": s.core.Devices()}, nil
 	case "device.check":
 		return s.core.CheckDevice(ctx, args.ID)
+	case "device.fs.list":
+		return s.core.ListDeviceFolders(ctx, args.ID, args.Path)
 	case "device.pair":
 		approvalID, err = s.core.PairDevice(ctx, args.Code, args.Pin)
 	case "device.hook.install":

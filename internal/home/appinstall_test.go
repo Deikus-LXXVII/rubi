@@ -81,11 +81,19 @@ func (r *appRig) run(ctx context.Context, _ string, name string, args ...string)
 			return "", errors.New("exit status 5")
 		}
 		return "", nil
-	case "/usr/bin/osascript":
-		r.dialogs = append(r.dialogs, dialogText(runCall{args: args}))
-		return btnOK + "\n", nil
 	}
 	return "", fmt.Errorf("unexpected program %s", name)
+}
+
+// dialog plays the desktop's dialogs: it records the text and answers OK. block makes it wait for the context, the way a
+// dialog nobody answers does.
+func (r *appRig) dialog(ctx context.Context, text string, buttons ...string) (string, error) {
+	if r.block["/usr/bin/osascript"] {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	r.dialogs = append(r.dialogs, text)
+	return btnOK, nil
 }
 
 func (r *appRig) env() AppEnv {
@@ -93,6 +101,7 @@ func (r *appRig) env() AppEnv {
 		Home: r.home, UID: 501, Exe: r.exe, HelperDir: filepath.Join(r.home, "data"),
 		Self: r.self, HasLog: r.hasLog,
 		Run:     r.run,
+		Dialogs: dialogsFunc(r.dialog),
 		Version: func(string) (string, error) { r.versions++; return r.installed, r.installedErr },
 		Now:     func() time.Time { return r.now },
 		Sleep:   func(d time.Duration) { r.now = r.now.Add(d) },

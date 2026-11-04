@@ -5,6 +5,7 @@ package fsx
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -67,5 +68,16 @@ func TestTrustedByAdminOnUnix(t *testing.T) {
 	}
 	if AdminName != "root" {
 		t.Errorf("AdminName %q", AdminName)
+	}
+}
+
+func TestFinalPathIsNotAvailableOnUnix(t *testing.T) {
+	f, err := os.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := FinalPath(f); !errors.Is(err, ErrNoFinalPath) {
+		t.Fatalf("%v", err)
 	}
 }

@@ -105,3 +105,20 @@ func TestLinkCount(t *testing.T) {
 		t.Fatalf("two names: got %d links", n)
 	}
 }
+
+func TestTrimExtendedPrefix(t *testing.T) {
+	for in, want := range map[string]string{
+		`\\?\C:\Users\a\work`:      `C:\Users\a\work`,
+		`\\?\UNC\server\share\dir`: `\\server\share\dir`,
+		`C:\plain`:                 `C:\plain`,
+		`/unix/path`:               `/unix/path`,
+		`\\?\Volume{1234}\x`:       `\\?\Volume{1234}\x`,
+		`\\server\share`:           `\\server\share`,
+		``:                         ``,
+		`\\?\C:`:                   `C:`,
+	} {
+		if got := TrimExtendedPrefix(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}

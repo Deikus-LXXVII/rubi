@@ -44,6 +44,12 @@ func TestListsAreWellFormed(t *testing.T) {
 			t.Errorf("%s %q is not absolute", name, p)
 		}
 	}
+	// the places the folder browser starts in depend on the disks mounted now: they may be none, and are absolute
+	for _, r := range BrowseRoots() {
+		if !filepath.IsAbs(r) {
+			t.Errorf("BrowseRoots: %q is not absolute", r)
+		}
+	}
 	if HelperHome("/h") == "" {
 		t.Error("HelperHome is empty")
 	}

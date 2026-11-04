@@ -346,12 +346,8 @@ func TestLoginOpen(t *testing.T) {
 	}
 	got := make(chan string, 1)
 	e.ag.sess.login = scriptedHelper(claudeURL, got)
-	e.m.extra = func(argv []string) ([]byte, error, bool) {
-		if argv[0] == "/usr/bin/open" {
-			return nil, nil, true
-		}
-		return nil, nil, false
-	}
+	op := &fakeOpener{}
+	e.s.opt.Opener = op
 	if err := e.s.StartLogin("claudeai"); err != nil {
 		t.Fatal(err)
 	}
@@ -360,14 +356,13 @@ func TestLoginOpen(t *testing.T) {
 	if err != nil || res["opened"] != true {
 		t.Fatalf("%v %v", res, err)
 	}
-	var open []string
+	if len(op.links) != 1 || op.links[0] != claudeURL {
+		t.Errorf("opened: %v", op.links)
+	}
 	for _, c := range e.cmd.calls {
 		if c[0] == "/usr/bin/open" {
-			open = c
+			t.Errorf("a command was run to open the link: %v", c)
 		}
-	}
-	if len(open) != 2 || open[1] != claudeURL {
-		t.Errorf("open argv: %v", open)
 	}
 	e.s.Cancel()
 	e.wait()
@@ -375,4 +370,15 @@ func TestLoginOpen(t *testing.T) {
 	if err := e.s.LoginOpen(context.Background()); err == nil {
 		t.Error("opened on a non-Mac")
 	}
+}
+
+// fakeOpener is the browser: it records the links it was asked to open.
+type fakeOpener struct {
+	links []string
+	err   error
+}
+
+func (f *fakeOpener) Open(_ context.Context, link string) error {
+	f.links = append(f.links, link)
+	return f.err
 }
