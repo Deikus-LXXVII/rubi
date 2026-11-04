@@ -75,6 +75,10 @@ type ExecRequest struct {
 	GID  int               `json:"gid"`
 }
 
+// validID is a user or group id a process may run as: not root, and one that fits the kernel's 32 bits (a larger
+// number would wrap, maybe to 0) without being the "no id" value.
+func validID(id int) bool { return id >= 1 && int64(id) < 1<<32-1 }
+
 // ExecStarted answers it; Error is empty when the process runs.
 type ExecStarted struct {
 	Error string `json:"error,omitempty"`

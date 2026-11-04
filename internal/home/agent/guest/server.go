@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 )
@@ -25,6 +27,9 @@ type Server struct {
 	Prepare func(cmd *exec.Cmd, req ExecRequest)
 	// Kill ends a started command and what it started (nil: the process alone).
 	Kill func(cmd *exec.Cmd)
+	// AwaitExit waits until the command's leader has exited without reaping it (Linux: waitid with WNOWAIT), so that
+	// Kill can still end its group by the leader's id; nil skips that step.
+	AwaitExit func(cmd *exec.Cmd)
 	// Logf gets what goes wrong (nil discards).
 	Logf func(format string, args ...any)
 
@@ -131,8 +136,8 @@ func command(req ExecRequest) (*exec.Cmd, error) {
 	if len(req.Argv) == 0 || req.Argv[0] == "" {
 		return nil, errors.New("no program")
 	}
-	if req.UID <= 0 || req.GID <= 0 {
-		return nil, errors.New("a process doesn't run as root")
+	if !validID(req.UID) || !validID(req.GID) {
+		return nil, errors.New("a process doesn't run as root (a user and group from 1 to 4294967294)")
 	}
 	if !path.IsAbs(req.Dir) {
 		return nil, errors.New("the folder must be an absolute path")
@@ -169,6 +174,12 @@ func command(req ExecRequest) (*exec.Cmd, error) {
 }
 
 // exec runs one process for one stream.
+//
+// What ends it: the process's leader exiting (then what it started is killed with it: Kill ends the group), or Home
+// closing the stream or the channel ending (PeerDone; then it is killed at once, whether or not anything reads the
+// stream: a process that ignores its stdin can't keep the reader stuck). Output still in its pipes after the leader's
+// exit is passed on for at most outputGrace, so a descendant that escaped the group and keeps the pipes open can't hold
+// the stream.
 func (s *Server) exec(st *netpipe.Stream) {
 	defer st.Close()
 	line, err := readLine(st)
@@ -188,18 +199,40 @@ func (s *Server) exec(st *netpipe.Stream) {
 	if s.Prepare != nil {
 		s.Prepare(cmd, req)
 	}
-	stdin, err1 := cmd.StdinPipe()
-	stdout, err2 := cmd.StdoutPipe()
-	stderr, err3 := cmd.StderrPipe()
+	// The pipes are the guest agent's own files (not exec's copying goroutines), so that Wait returns when the leader
+	// exits, whoever else holds them.
+	inR, inW, err1 := os.Pipe()
+	outR, outW, err2 := os.Pipe()
+	errR, errW, err3 := os.Pipe()
+	closeAll := func(fs ...*os.File) {
+		for _, f := range fs {
+			if f != nil {
+				_ = f.Close()
+			}
+		}
+	}
 	if err := errors.Join(err1, err2, err3); err != nil {
+		closeAll(inR, inW, outR, outW, errR, errW)
 		_ = writeLine(st, ExecStarted{Error: err.Error()})
 		return
 	}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = inR, outW, errW
 	if err := cmd.Start(); err != nil {
+		closeAll(inR, inW, outR, outW, errR, errW)
 		_ = writeLine(st, ExecStarted{Error: err.Error()})
 		return
 	}
+	closeAll(inR, outW, errW) // the child's ends
+
+	// kill ends the process (and its group) while its leader has not been reaped; after that its pid may be another's.
+	var kmu sync.Mutex
+	reaped := false
 	kill := func() {
+		kmu.Lock()
+		defer kmu.Unlock()
+		if reaped {
+			return
+		}
 		if s.Kill != nil {
 			s.Kill(cmd)
 		} else {
@@ -214,30 +247,32 @@ func (s *Server) exec(st *netpipe.Stream) {
 	}
 	if err := writeLine(st, ExecStarted{}); err != nil {
 		kill()
+		closeAll(inW, outR, errR)
 		_ = cmd.Wait()
 		return
 	}
-	// Home's side: stdin and its end; a stream that ends or breaks before the process does kills it.
-	exited := make(chan struct{})
+	leaderDone := make(chan struct{})
+	// Home leaving kills the process, whatever the reader below is doing.
 	go func() {
-		defer stdin.Close()
+		select {
+		case <-st.PeerDone():
+			kill()
+		case <-leaderDone:
+		}
+	}()
+	// Home's side: stdin and its end. A write to a process that doesn't read blocks only this goroutine.
+	go func() {
+		defer inW.Close()
 		for {
 			kind, b, err := readChunk(st)
 			if err != nil {
-				select {
-				case <-exited:
-				default:
-					kill()
-				}
 				return
 			}
 			switch kind {
 			case ChunkStdin:
-				if _, err := stdin.Write(b); err != nil {
-					continue // the process closed its stdin; keep reading so a close of the stream is still seen
-				}
+				_, _ = inW.Write(b) // a process that closed its stdin: keep reading, the stream's end is still to come
 			case ChunkStdinEOF:
-				_ = stdin.Close()
+				_ = inW.Close()
 			default:
 				kill()
 				return
@@ -245,17 +280,14 @@ func (s *Server) exec(st *netpipe.Stream) {
 		}
 	}()
 	var pumps sync.WaitGroup
-	pump := func(r io.Reader, kind byte) {
+	pump := func(r *os.File, kind byte) {
 		defer pumps.Done()
 		buf := make([]byte, MaxChunk)
 		for {
 			n, err := r.Read(buf)
-			if n > 0 {
-				if send(kind, buf[:n]) != nil {
-					kill()
-					_, _ = io.Copy(io.Discard, r)
-					return
-				}
+			if n > 0 && send(kind, buf[:n]) != nil {
+				kill()
+				return
 			}
 			if err != nil {
 				return
@@ -263,12 +295,32 @@ func (s *Server) exec(st *netpipe.Stream) {
 		}
 	}
 	pumps.Add(2)
-	go pump(stdout, ChunkStdout)
-	go pump(stderr, ChunkStderr)
-	pumps.Wait()
+	go pump(outR, ChunkStdout)
+	go pump(errR, ChunkStderr)
+
+	// The leader's end: what it started goes with it, then the leader is reaped.
+	if s.AwaitExit != nil {
+		s.AwaitExit(cmd) // exited, not yet reaped: the group still has its id
+		kill()
+	}
 	_ = cmd.Wait()
-	close(exited)
+	kmu.Lock()
+	reaped = true
+	kmu.Unlock()
+	close(leaderDone)
+	pumped := make(chan struct{})
+	go func() { pumps.Wait(); close(pumped) }()
+	select {
+	case <-pumped:
+	case <-time.After(outputGrace):
+		closeAll(outR, errR) // a descendant outside the group still holds the pipes
+		<-pumped
+	}
+	closeAll(outR, errR)
 	code := int32(cmd.ProcessState.ExitCode())
 	_ = send(ChunkExit, []byte{byte(code >> 24), byte(code >> 16), byte(code >> 8), byte(code)})
 	_ = st.CloseWrite()
 }
+
+// outputGrace is how long output left in the pipes is passed on after the leader's exit.
+var outputGrace = 2 * time.Second

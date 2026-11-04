@@ -125,7 +125,10 @@ What keeps an agent in its VM, and what keeps the VM's helpers in their place:
   starting virtiofsd it applies a **Landlock** rule set (unprivileged, Linux 5.13 and later) that lets the process reach
   only its shared folder, read-only for a read-only share, plus the libraries it loads. On a kernel without Landlock the
   backend is not available (it does not run an unconfined file server). virtiofsd's own seccomp filter stays on.
-- **Paths.** Every path given to QEMU must be absolute and clean, with no control characters; a comma inside an option
+- **Nothing the guest writes is stored by QEMU.** The serial console is a socket in the VM's folder that Home reads
+  into a bounded buffer; QEMU drops console output nobody reads. No chardev is a file.
+- **Paths.** Every path given to QEMU must be absolute and clean, with no control characters, and the VM's folder
+  short enough for its Unix sockets (107 bytes with the socket's name); a comma inside an option
   value is doubled (QEMU's only escape), so a folder named `a,readonly=off` can't add an option. Guest places must be
   absolute, clean and not `/`, and no place is shared twice.
 
@@ -137,7 +140,13 @@ What keeps an agent in its VM, and what keeps the VM's helpers in their place:
 - **Start.** As PID 1 it mounts `/proc`, `/sys` (read-only), `/dev`, `/tmp` and `/run`, starts itself again as
   `rubi-guest serve`, and from then on only reaps: every orphan of the VM becomes PID 1's child, and a wait for any
   child must not take an exit status the server is waiting for, so the server runs in a process of its own. When the
-  server ends, PID 1 powers the VM off.
+  server ends, PID 1 ends the VM.
+- **Ending the VM.** The guest restarts rather than powers off, and QEMU runs with `-no-reboot`, so any restart ends
+  QEMU: the x86 `microvm` machine has no ACPI power button, and `reboot=t` on its kernel command line makes the restart
+  a triple fault. A kernel panic restarts at once (`panic=-1`), so it ends QEMU too. To be confirmed in a live VM.
+- **Home may come and go.** Home connects to the control port after the VM has started; until then a read gives end of
+  file and a write fails. The server opens the port and serves it again each time the channel ends (with a HELLO each
+  time), so a late or restarted Home finds it. Processes of a channel that ended are killed with it.
 - **The control channel.** The server finds the virtio-serial port by its name (`/sys/class/virtio-ports/*/name` is
   `rubi.control`; there is no udev in the guest to make `/dev/virtio-ports/`), opens `/dev/vportNpM` and serves it with
   package netpipe's frames. It says HELLO when it is ready. Home opens every stream and the guest opens none, so stream
@@ -146,14 +155,31 @@ What keeps an agent in its VM, and what keeps the VM's helpers in their place:
   `microvm.GuestMounts`; each share is mounted `nosuid,nodev`, and `ro` when read-only), `ping`, `poweroff`.
 - **Processes** (service 2): one stream per process. Home writes the request (argv, the whole environment, the folder,
   the user and group: never root), the guest answers whether it started, then chunks follow (a kind byte, a 4-byte
-  length, at most 32 KiB): stdin and its end from Home; stdout, stderr and, last, the exit status from the guest. A
-  stream that Home closes kills the process's whole process group. The process runs as the request's user with no
-  extra groups, in a session of its own, with nothing of the guest agent's environment.
+  length, at most 32 KiB): stdin and its end from Home; stdout, stderr and, last, the exit status from the guest. The
+  process runs as the request's user with no extra groups, in a session of its own, with nothing of the guest agent's
+  environment.
+- **What ends a process.** Home closing its stream (or the channel ending) kills its process group at once, seen even
+  when nothing reads the stream (netpipe's `PeerDone`), so a process that ignores its stdin can't keep a writer stuck.
+  The leader's exit also ends its group: the guest waits for the exit without reaping (`waitid` with `WNOWAIT`), kills
+  the group while its id is still taken, then reaps. Output still in the pipes is passed on for two seconds after the
+  leader's exit, so a descendant that left the group and keeps the pipes open can't hold the stream.
+- **Home's side of a process** (`guest.Process`, with `agent.Conn`'s methods): its stdout is not buffered, so the
+  reader reads to the end (or closes) for the exit status to arrive, as with a pipe; the stream is closed once the
+  exit status is in. Requests wait as long as the caller's context allows: callers give a deadline.
 - **Trust.** What runs in the VM may take over its root, so the guest is the less trusted side: Home's client bounds
   every line (64 KiB) and chunk (32 KiB) it reads, treats any other kind of chunk as a protocol error, and gives the
-  guest only what the request carries.
+  guest only what the request carries. User and group ids are 1 to 4294967294 on both sides (a larger number would
+  wrap to root).
 - **The netpipe** of the proxy, the hook gate and T3's port stays what it is: a process (`rubi-netpipe`) started in the
   VM with this exec, whose stdio carries its own multiplexed streams.
+
+## Machines and devices
+
+x86-64 uses the `microvm` machine, whose virtio devices are virtio-mmio (`virtio-blk-device`, `virtio-serial-device`,
+`vhost-user-fs-device`); arm64 uses the `virt` machine with its PCIe (`virtio-blk-pci` and so on), which needs no
+firmware for a `-kernel` boot. The runner's user and group inside the VM are 10001 (`microvm.GuestUID`, `GuestGID`);
+the runner's Dockerfile pins only the user, so the CI build of the root file system checks that the group is 10001 and
+stops otherwise (pinning it in the Dockerfile would change the runner image macOS users build).
 
 ## libkrun
 

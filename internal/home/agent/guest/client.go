@@ -85,8 +85,13 @@ func (c *Client) PowerOff(ctx context.Context) error {
 func (c *Client) Ping(ctx context.Context) error { return c.control(ctx, ControlRequest{Op: "ping"}) }
 
 // Exec starts a process in the VM. Its stdout is what Process reads, and its stderr goes to stderr (nil discards).
+// Requests wait for the guest's answer as long as ctx allows: callers give a deadline (a guest that never answers is
+// one whose VM has gone wrong).
 func (c *Client) Exec(ctx context.Context, req ExecRequest, stderr io.Writer) (*Process, error) {
-	if req.UID <= 0 || req.GID <= 0 {
+	if len(req.Argv) == 0 {
+		return nil, errors.New("guest: no program")
+	}
+	if !validID(req.UID) || !validID(req.GID) {
 		return nil, errors.New("guest: a process doesn't run as root")
 	}
 	st, err := c.mux.Open(SvcExec)
@@ -125,7 +130,9 @@ func (c *Client) Exec(ctx context.Context, req ExecRequest, stderr io.Writer) (*
 	return p, nil
 }
 
-// Process is a process in the VM: reads are its stdout, writes its stdin. It has the methods of agent.Conn.
+// Process is a process in the VM: reads are its stdout, writes its stdin. It has the methods of agent.Conn. Its stdout
+// is not buffered: the reader must read it to the end (or Close) for the exit status, and stderr after it, to arrive,
+// as with a pipe. A Write waits for the guest to take the bytes, and CloseWrite waits behind it.
 type Process struct {
 	st   *netpipe.Stream
 	out  *io.PipeReader
@@ -168,8 +175,8 @@ func (p *Process) read(stdout *io.PipeWriter, stderr io.Writer) {
 	p.mu.Lock()
 	p.err = err
 	p.mu.Unlock()
+	_ = p.st.Close() // the exit status is the last thing on it; the stream's slot is freed even if Close is never called
 	if err != nil {
-		_ = p.st.Close()
 		stdout.CloseWithError(err)
 	} else {
 		stdout.Close()

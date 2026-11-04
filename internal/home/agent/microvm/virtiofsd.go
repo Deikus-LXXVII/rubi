@@ -6,9 +6,13 @@ import (
 	"strconv"
 )
 
-// GuestUID is the user the runner runs as inside the VM (the runner image's "rubi", agent.runnerUID); its files are the
-// user's own on the computer.
-const GuestUID = 10001
+// GuestUID and GuestGID are the user and group the runner runs as inside the VM (the runner image's "rubi",
+// agent.runnerUID); its files are the user's own on the computer. The group is not pinned by the runner's Dockerfile, so
+// the CI build of the root file system checks that "rubi" has it (docs/design/linux-microvm.md).
+const (
+	GuestUID = 10001
+	GuestGID = 10001
+)
 
 // HostIDs are the user and group virtiofsd runs as: the person's own, never root.
 type HostIDs struct {
@@ -46,7 +50,7 @@ func VirtiofsdArgs(bin string, spec Spec, i int, ids HostIDs) ([]string, error) 
 		"--shared-dir", s.Source,
 		"--sandbox", "none",
 		"--translate-uid", "map:" + strconv.Itoa(GuestUID) + ":" + strconv.Itoa(ids.UID) + ":1",
-		"--translate-gid", "map:" + strconv.Itoa(GuestUID) + ":" + strconv.Itoa(ids.GID) + ":1",
+		"--translate-gid", "map:" + strconv.Itoa(GuestGID) + ":" + strconv.Itoa(ids.GID) + ":1",
 		"--cache", "auto",
 	}
 	if s.ReadOnly {

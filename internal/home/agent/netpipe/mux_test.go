@@ -663,3 +663,35 @@ func TestListenerAcceptWakesOnClose(t *testing.T) {
 		t.Fatal("Accept stayed blocked")
 	}
 }
+
+// PeerDone tells a side that has stopped reading that the peer is gone: closed with unread data waiting, and on a
+// channel that ends; it stays open while the peer is there.
+func TestPeerDone(t *testing.T) {
+	got := make(chan *Stream, 2)
+	a, b := pair(t, Config{}, Config{OnOpen: func(_ byte, s *Stream) bool { got <- s; return true }})
+	_ = b
+	sa, err := a.Open(SvcProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb := <-got
+	if _, err := sa.Write([]byte("unread")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sb.PeerDone():
+		t.Fatal("done while the peer is there")
+	case <-time.After(50 * time.Millisecond):
+	}
+	_ = sa.Close() // sb has not read "unread"
+	within(t, "PeerDone after the peer's close", 5*time.Second, func() { <-sb.PeerDone() })
+
+	sa2, err := a.Open(SvcProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb2 := <-got
+	_ = sa2
+	_ = a.Close()
+	within(t, "PeerDone after the channel ended", 5*time.Second, func() { <-sb2.PeerDone() })
+}

@@ -47,9 +47,9 @@ func TestQEMUArgsOfARoleVM(t *testing.T) {
 		"-nodefaults", "-no-user-config", "-nic", "none", "-display", "none", "-no-reboot",
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 		"-pidfile", d + "qemu.pid",
-		"-chardev", "file,id=console,path=" + d + "console.log", "-serial", "chardev:console",
+		"-chardev", "socket,id=console,path=" + d + "console.sock,server=on,wait=off", "-serial", "chardev:console",
 		"-kernel", "/opt/rubi/vm/vmlinux",
-		"-append", "console=ttyS0 root=/dev/vda ro rootfstype=ext4 init=/sbin/rubi-guest panic=-1 quiet",
+		"-append", "console=ttyS0 root=/dev/vda ro rootfstype=ext4 init=/sbin/rubi-guest panic=-1 quiet reboot=t",
 		"-drive", "file=/opt/rubi/vm/rootfs.img,if=none,id=root,format=raw,readonly=on",
 		"-device", "virtio-blk-device,drive=root",
 		"-device", "virtio-serial-device",
@@ -129,7 +129,7 @@ func TestQEMUArgsOnARM(t *testing.T) {
 	if m := valuesOf(args, "-machine"); !reflect.DeepEqual(m, []string{"virt,accel=kvm,gic-version=host,memory-backend=mem"}) {
 		t.Errorf("machine %q", m)
 	}
-	if a := valuesOf(args, "-append"); len(a) != 1 || !strings.HasPrefix(a[0], "console=ttyAMA0 ") {
+	if a := valuesOf(args, "-append"); len(a) != 1 || !strings.HasPrefix(a[0], "console=ttyAMA0 ") || strings.Contains(a[0], "reboot=t") {
 		t.Errorf("append %q", a)
 	}
 	for _, d := range valuesOf(args, "-device") {
@@ -187,21 +187,22 @@ func TestQEMUArgsResources(t *testing.T) {
 
 func TestQEMUArgsRefuseWhatCantBeRun(t *testing.T) {
 	for name, mutate := range map[string]func(*Spec){
-		"unknown CPU":            func(s *Spec) { s.Arch = "riscv64" },
-		"empty name":             func(s *Spec) { s.Name = "" },
-		"name with a comma":      func(s *Spec) { s.Name = "a,b" },
-		"name with a space":      func(s *Spec) { s.Name = "a b" },
-		"relative QEMU":          func(s *Spec) { s.QEMU = "qemu-system-x86_64" },
-		"relative kernel":        func(s *Spec) { s.Kernel = "vmlinux" },
-		"unclean root":           func(s *Spec) { s.Rootfs = "/opt/rubi/../rootfs.img" },
-		"no VM folder":           func(s *Spec) { s.Dir = "" },
-		"newline in a folder":    func(s *Spec) { s.Shares[0].Source = "/home/u/a\nb" },
-		"relative shared folder": func(s *Spec) { s.Shares[0].Source = "src" },
-		"guest root":             func(s *Spec) { s.Shares[0].Target = "/" },
-		"relative guest place":   func(s *Spec) { s.Shares[0].Target = "work" },
-		"unclean guest place":    func(s *Spec) { s.Shares[1].Target = "/work/../etc" },
-		"comma in guest place":   func(s *Spec) { s.Shares[1].Target = "/work/a,b" },
-		"shared twice":           func(s *Spec) { s.Shares[3].Target = "/work" },
+		"unknown CPU":                  func(s *Spec) { s.Arch = "riscv64" },
+		"empty name":                   func(s *Spec) { s.Name = "" },
+		"name with a comma":            func(s *Spec) { s.Name = "a,b" },
+		"name with a space":            func(s *Spec) { s.Name = "a b" },
+		"relative QEMU":                func(s *Spec) { s.QEMU = "qemu-system-x86_64" },
+		"relative kernel":              func(s *Spec) { s.Kernel = "vmlinux" },
+		"unclean root":                 func(s *Spec) { s.Rootfs = "/opt/rubi/../rootfs.img" },
+		"no VM folder":                 func(s *Spec) { s.Dir = "" },
+		"newline in a folder":          func(s *Spec) { s.Shares[0].Source = "/home/u/a\nb" },
+		"relative shared folder":       func(s *Spec) { s.Shares[0].Source = "src" },
+		"guest root":                   func(s *Spec) { s.Shares[0].Target = "/" },
+		"relative guest place":         func(s *Spec) { s.Shares[0].Target = "work" },
+		"unclean guest place":          func(s *Spec) { s.Shares[1].Target = "/work/../etc" },
+		"comma in guest place":         func(s *Spec) { s.Shares[1].Target = "/work/a,b" },
+		"shared twice":                 func(s *Spec) { s.Shares[3].Target = "/work" },
+		"folder too long for a socket": func(s *Spec) { s.Dir = "/home/" + strings.Repeat("x", 95) },
 	} {
 		spec := roleSpec()
 		spec.Shares = slices.Clone(spec.Shares)
@@ -217,5 +218,40 @@ func TestGuestMountsFollowTheShares(t *testing.T) {
 	want := []GuestMount{{"rubi0", "/work", false}, {"rubi1", "/work/.rubi", true}, {"rubi2", "/rubi-role", true}, {"rubi3", "/rubi-claude", false}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
+	}
+}
+
+// Nothing the guest writes is stored on the computer by QEMU: the console is a socket Home reads with a bound, and no
+// chardev is a file.
+func TestQEMUArgsStoreNothingTheGuestWrites(t *testing.T) {
+	args, err := QEMUArgs(roleSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range valuesOf(args, "-chardev") {
+		if !strings.HasPrefix(c, "socket,") {
+			t.Errorf("chardev %q", c)
+		}
+	}
+	for _, f := range []string{"-D", "-d", "-trace", "-serial", "-parallel", "-debugcon", "-mon"} {
+		for _, v := range valuesOf(args, f) {
+			if f != "-serial" || v != "chardev:console" {
+				t.Errorf("%s %s", f, v)
+			}
+		}
+	}
+}
+
+// The longest folder that still fits the sockets is accepted, one byte more is not.
+func TestQEMUArgsSocketPathBound(t *testing.T) {
+	spec := roleSpec()
+	n := maxSocketPath - 1 - len("control.sock") - len("/home/")
+	spec.Dir = "/home/" + strings.Repeat("x", n)
+	if _, err := QEMUArgs(spec); err != nil {
+		t.Fatalf("%d bytes: %v", len(spec.Dir), err)
+	}
+	spec.Dir += "x"
+	if _, err := QEMUArgs(spec); !errors.Is(err, ErrSpec) {
+		t.Fatalf("%d bytes accepted", len(spec.Dir))
 	}
 }

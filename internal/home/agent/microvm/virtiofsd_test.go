@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-var user = HostIDs{UID: 1000, GID: 1000}
+var user = HostIDs{UID: 1000, GID: 1001}
 
 func TestVirtiofsdArgs(t *testing.T) {
 	spec := roleSpec()
@@ -17,7 +17,7 @@ func TestVirtiofsdArgs(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"/opt/rubi/qemu/bin/virtiofsd", "--socket-path", d + "fs0.sock", "--shared-dir", "/home/u/src/web-app",
-		"--sandbox", "none", "--translate-uid", "map:10001:1000:1", "--translate-gid", "map:10001:1000:1", "--cache", "auto"}
+		"--sandbox", "none", "--translate-uid", "map:10001:1000:1", "--translate-gid", "map:10001:1001:1", "--cache", "auto"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got\n%q\nwant\n%q", got, want)
 	}

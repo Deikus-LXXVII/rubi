@@ -213,7 +213,7 @@ func (m *Mux) SendHello() error { return m.send(tHello, 0, []byte{Version}) }
 
 func (m *Mux) newStream(id uint32, svc byte) *Stream {
 	s := &Stream{m: m, id: id, svc: svc, credit: m.cfg.Window, rsig: make(chan struct{}, 1), wsig: make(chan struct{}, 1),
-		rdl: makeDeadline(), wdl: makeDeadline()}
+		rdl: makeDeadline(), wdl: makeDeadline(), pdone: make(chan struct{})}
 	return s
 }
 
@@ -390,6 +390,21 @@ type Stream struct {
 	rsig     chan struct{}
 	wsig     chan struct{}
 	rdl, wdl deadline
+	pdone    chan struct{} // closed when the peer has closed its side or the stream is dead (PeerDone)
+	pclosed  bool
+}
+
+// PeerDone is closed when the peer will send nothing more on the stream (it closed its side, reset the stream, or the
+// channel ended), whether or not what it sent before has been read. A side that has stopped reading uses it to see the
+// peer go.
+func (s *Stream) PeerDone() <-chan struct{} { return s.pdone }
+
+// peerDoneLocked closes pdone once; s.mu is held.
+func (s *Stream) peerDoneLocked() {
+	if !s.pclosed {
+		s.pclosed = true
+		close(s.pdone)
+	}
 }
 
 // ID and Service identify the stream.
@@ -409,6 +424,7 @@ func (s *Stream) abort(err error) {
 		s.dead = err
 	}
 	s.rbuf = nil
+	s.peerDoneLocked()
 	s.mu.Unlock()
 	signal(s.rsig)
 	signal(s.wsig)
@@ -435,6 +451,7 @@ func (s *Stream) onClose() {
 	s.mu.Lock()
 	s.rfin = true
 	both := s.wfin
+	s.peerDoneLocked()
 	s.mu.Unlock()
 	signal(s.rsig)
 	if both {

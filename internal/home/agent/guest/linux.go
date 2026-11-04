@@ -45,25 +45,26 @@ func MountShare(m Mount) error {
 	return unix.Mount(m.Tag, m.Target, "virtiofs", flags, "")
 }
 
-// LinuxServer is the guest agent's server with the real system under it.
+// LinuxServer is the guest agent's server with the real system under it. PowerOff restarts rather than powers off: with
+// QEMU's -no-reboot a restart ends QEMU on every machine (x86's microvm has no ACPI power button; reboot=t on its
+// command line makes the restart a triple fault), and a halted VM that never exits can't happen.
 func LinuxServer() *Server {
 	return &Server{
 		Mount: MountShare,
 		PowerOff: func() error {
 			unix.Sync()
-			return unix.Reboot(unix.LINUX_REBOOT_CMD_POWER_OFF)
+			return unix.Reboot(unix.LINUX_REBOOT_CMD_RESTART)
 		},
 		// The process runs as the request's user with no extra groups, in a session (and process group) of its own.
 		Prepare: func(cmd *exec.Cmd, req ExecRequest) {
 			cmd.SysProcAttr = &syscall.SysProcAttr{
 				Credential: &syscall.Credential{Uid: uint32(req.UID), Gid: uint32(req.GID), Groups: []uint32{}},
 				Setsid:     true,
-				Pdeathsig:  syscall.SIGKILL,
 			}
 		},
-		// The whole group: what the process started goes with it.
-		Kill: func(cmd *exec.Cmd) { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) },
-		Logf: log.Printf,
+		Kill:      killGroup,
+		AwaitExit: awaitExit,
+		Logf:      log.Printf,
 	}
 }
 
@@ -83,5 +84,16 @@ func Reap(child int) int {
 		if pid == child {
 			return ws.ExitStatus()
 		}
+	}
+}
+
+// killGroup ends the command's process group: what the process started goes with it.
+func killGroup(cmd *exec.Cmd) { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+
+// awaitExit waits until the command's leader has exited, leaving it unreaped (its pid, and so its group's id, stay
+// taken until exec.Cmd.Wait).
+func awaitExit(cmd *exec.Cmd) {
+	var info unix.Siginfo
+	for unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil) == unix.EINTR {
 	}
 }

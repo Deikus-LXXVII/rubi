@@ -59,7 +59,9 @@ const (
 const (
 	ControlSocket = "control.sock" // the control channel (virtio-serial port "rubi.control")
 	PidFile       = "qemu.pid"
-	ConsoleLog    = "console.log"
+	// ConsoleSocket carries the guest's serial console. Home reads it into a bounded buffer: a file would let what runs
+	// in the VM fill the computer's disk, and output nobody reads is dropped by QEMU, never stored.
+	ConsoleSocket = "console.sock"
 	// ControlPort is the name of the virtio-serial port the guest agent opens (/dev/virtio-ports/rubi.control).
 	ControlPort = "rubi.control"
 )
@@ -97,8 +99,13 @@ var (
 var ErrSpec = errors.New("the VM can't be made")
 
 // KernelCmdline is what the guest kernel is started with: the console on the first serial port, the read-only root on
-// the first virtio disk, the guest agent as PID 1, and a panic that powers the VM off (with -no-reboot, QEMU exits).
+// the first virtio disk, the guest agent as PID 1, and a panic that restarts at once. With -no-reboot every restart ends
+// QEMU; the guest ends the VM by restarting, too (package guest), and on x86 reboot=t makes the restart a triple fault,
+// since the microvm machine has nothing else to reset with.
 const KernelCmdline = "console=ttyS0 root=/dev/vda ro rootfstype=ext4 init=/sbin/rubi-guest panic=-1 quiet"
+
+// maxSocketPath is the longest path a Unix socket can have (sun_path holds 108 bytes with the final NUL).
+const maxSocketPath = 107
 
 // QEMUArgs is the command line of spec's VM. The VM has no network device at all, no display, no default devices and no
 // way to reboot; QEMU runs under its seccomp sandbox and never as root (the caller runs it as the user). Every folder it
@@ -111,17 +118,19 @@ func QEMUArgs(spec Spec) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var machine, consoleDev, mmio string
+	// bus is the suffix of the virtio devices: "device" for virtio-mmio (the microvm machine has no PCI), "pci" for the virt
+	// machine's PCIe.
+	var machine, cmdline, bus string
 	switch spec.Arch {
 	case X86_64:
 		// microvm: no PCI, no firmware, no legacy devices but the serial port the console needs
 		machine = "microvm,accel=kvm,x-option-roms=off,pit=off,pic=off,rtc=off,isa-serial=on,memory-backend=mem"
-		consoleDev = "ttyS0"
-		mmio = "device"
+		cmdline = KernelCmdline + " reboot=t"
+		bus = "device"
 	case AArch64:
 		machine = "virt,accel=kvm,gic-version=host,memory-backend=mem"
-		consoleDev = "ttyAMA0"
-		mmio = "pci"
+		cmdline = strings.Replace(KernelCmdline, "console=ttyS0", "console=ttyAMA0", 1)
+		bus = "pci"
 	}
 	dir := spec.Dir
 	args := []string{
@@ -139,13 +148,13 @@ func QEMUArgs(spec Spec) ([]string, error) {
 		"-no-reboot",
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 		"-pidfile", filepath.Join(dir, PidFile),
-		"-chardev", "file,id=console,path=" + optValue(filepath.Join(dir, ConsoleLog)),
+		"-chardev", "socket,id=console,path=" + optValue(filepath.Join(dir, ConsoleSocket)) + ",server=on,wait=off",
 		"-serial", "chardev:console",
 		"-kernel", spec.Kernel,
-		"-append", strings.Replace(KernelCmdline, "ttyS0", consoleDev, 1),
+		"-append", cmdline,
 		"-drive", "file=" + optValue(spec.Rootfs) + ",if=none,id=root,format=raw,readonly=on",
-		"-device", "virtio-blk-" + mmio + ",drive=root",
-		"-device", "virtio-serial-" + mmio,
+		"-device", "virtio-blk-" + bus + ",drive=root",
+		"-device", "virtio-serial-" + bus,
 		"-chardev", "socket,id=control,path=" + optValue(filepath.Join(dir, ControlSocket)) + ",server=on,wait=off",
 		"-device", "virtserialport,chardev=control,name=" + ControlPort,
 	}
@@ -153,7 +162,7 @@ func QEMUArgs(spec Spec) ([]string, error) {
 		id := "fs" + strconv.Itoa(i)
 		args = append(args,
 			"-chardev", "socket,id="+id+",path="+optValue(filepath.Join(dir, ShareSocket(i))),
-			"-device", "vhost-user-fs-"+mmio+",chardev="+id+",tag="+ShareTag(i))
+			"-device", "vhost-user-fs-"+bus+",chardev="+id+",tag="+ShareTag(i))
 	}
 	return args, nil
 }
@@ -172,6 +181,11 @@ func (spec Spec) check() error {
 		if err := hostPath(p); err != nil {
 			return fmt.Errorf("%w: the %s: %w", ErrSpec, what, err)
 		}
+	}
+	// the longest socket name in the folder is that of the last share (or control.sock / console.sock)
+	longest := max(len(ControlSocket), len(ConsoleSocket), len(ShareSocket(max(len(spec.Shares)-1, 0))))
+	if len(spec.Dir)+1+longest > maxSocketPath {
+		return fmt.Errorf("%w: the VM folder %q is too long for its sockets (at most %d bytes)", ErrSpec, spec.Dir, maxSocketPath-1-longest)
 	}
 	targets := map[string]bool{}
 	for i, s := range spec.Shares {
