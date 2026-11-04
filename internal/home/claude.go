@@ -28,6 +28,8 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 const (
@@ -623,17 +625,13 @@ func (c *Claude) within(ctx context.Context, key string, d time.Duration, fn fun
 // is no way to answer a request through the socket.
 func (c *Claude) Serve(ctx context.Context, path string) error {
 	if fi, err := os.Lstat(path); err == nil {
-		if fi.Mode()&os.ModeSocket == 0 {
+		if !fsx.IsSocket(fi) {
 			return fmt.Errorf("%s exists and isn't a socket", path)
 		}
 		_ = os.Remove(path) // left over from an earlier run
 	}
-	ln, err := net.Listen("unix", path)
+	ln, err := fsx.ListenLocal(path) // mode 0600; on Windows the folder is the user's alone and every peer is checked
 	if err != nil {
-		return err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
 		return err
 	}
 	stop := context.AfterFunc(ctx, func() { ln.Close() })
@@ -893,7 +891,7 @@ func askHelper(in io.Reader, sock string, limit time.Duration) ClaudeDecision {
 	if err := json.Compact(&line, raw); err != nil {
 		return claudeDeny("the hook input isn't valid JSON; denied.")
 	}
-	conn, err := net.DialTimeout("unix", sock, 5*time.Second)
+	conn, err := fsx.DialLocal(sock, 5*time.Second)
 	if err != nil {
 		return claudeDeny(ClaudeUnreachable)
 	}
@@ -921,7 +919,7 @@ func askHelperEvent(raw []byte, sock string) HookReply {
 	if json.Compact(&line, raw) != nil {
 		return HookReply{}
 	}
-	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	conn, err := fsx.DialLocal(sock, 2*time.Second)
 	if err != nil {
 		return HookReply{}
 	}

@@ -4,8 +4,8 @@ package fsx
 
 import (
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"unsafe"
 
@@ -15,30 +15,39 @@ import (
 // NonBlock does not exist on Windows.
 const NonBlock = 0
 
-// OpenNoFollow is os.OpenFile that refuses a path whose last element is a link (a symlink or a junction). The
-// path is looked at before it is opened and the opened file is compared with what was seen, so a swap in between
-// is caught. (Windows has no O_NOFOLLOW; a handle opened with FILE_FLAG_OPEN_REPARSE_POINT is the stronger form,
-// for stage P6.)
+// OpenNoFollow is os.OpenFile that refuses a path whose last element is a link of any kind (a symbolic link, a junction, any
+// reparse point). Windows has no O_NOFOLLOW; the file is opened with FILE_FLAG_OPEN_REPARSE_POINT, which opens the link itself
+// and does not follow it, and the handle's own attributes are then read: a reparse point is closed again and refused. There is
+// no gap between a look at the path and the open, because the decision is made on what was opened.
+//
+// The open never truncates (NoFollowPlan): O_TRUNC is carried out through the handle after the check, so a link planted at the
+// path can't get its target emptied. Sharing is read and write, as os.OpenFile does (not delete). Only files are opened; a
+// directory would need FILE_FLAG_BACKUP_SEMANTICS, which is left out on purpose (a directory fails to open).
 func OpenNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
-	before, err := os.Lstat(path)
-	switch {
-	case err == nil:
-		if before.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 {
-			return nil, &os.PathError{Op: "open", Path: path, Err: ErrLink}
-		}
-	case errors.Is(err, os.ErrNotExist):
-		before = nil
-	default:
-		return nil, err
-	}
-	f, err := os.OpenFile(path, flag, perm)
+	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
-	if before != nil {
-		if after, serr := f.Stat(); serr != nil || !os.SameFile(before, after) {
+	access, disp, truncate, attrs := NoFollowPlan(flag, perm)
+	h, err := windows.CreateFile(p, access, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, nil, disp,
+		attrs|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		windows.CloseHandle(h)
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	if IsReparse(0, info.FileAttributes) {
+		windows.CloseHandle(h)
+		return nil, &os.PathError{Op: "open", Path: path, Err: ErrLink}
+	}
+	f := os.NewFile(uintptr(h), path)
+	if truncate {
+		if err := f.Truncate(0); err != nil {
 			f.Close()
-			return nil, &os.PathError{Op: "open", Path: path, Err: ErrLink}
+			return nil, &os.PathError{Op: "truncate", Path: path, Err: err}
 		}
 	}
 	return f, nil
@@ -77,9 +86,6 @@ func LinkCount(f *os.File) (uint64, bool) {
 	return uint64(info.NumberOfLinks), true
 }
 
-// KillTree does nothing yet: cancelling kills the process but not its children (a Job Object, stage P6).
-func KillTree(*exec.Cmd) {}
-
 // AdminName is how the trusted owner of a file is called in messages.
 const AdminName = "an administrator"
 
@@ -102,29 +108,38 @@ func trusted(path string, check func(string, bool, []ACE) (bool, string)) (bool,
 	if ok, why := volumeOK(path); !ok {
 		return false, why
 	}
+	owner, null, aces, err := readACL(path)
+	if err != nil {
+		return false, "unreadable (" + err.Error() + ")"
+	}
+	return check(owner, null, aces)
+}
+
+// readACL reads the owner and the access list of a file or folder.
+func readACL(path string) (owner string, nullDACL bool, aces []ACE, err error) {
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
-		return false, "unreadable (its permissions can't be read: " + err.Error() + ")"
+		return "", false, nil, fmt.Errorf("its permissions can't be read: %w", err)
 	}
-	owner, _, err := sd.Owner()
-	if err != nil || owner == nil {
-		return false, "unreadable (its owner can't be read)"
+	o, _, err := sd.Owner()
+	if err != nil || o == nil {
+		return "", false, nil, errors.New("its owner can't be read")
 	}
+	owner = o.String()
 	dacl, _, err := sd.DACL()
 	if err != nil {
 		if errors.Is(err, windows.ERROR_OBJECT_NOT_FOUND) {
-			return check(owner.String(), true, nil)
+			return owner, true, nil, nil
 		}
-		return false, "unreadable (its access list can't be read: " + err.Error() + ")"
+		return "", false, nil, fmt.Errorf("its access list can't be read: %w", err)
 	}
 	if dacl == nil {
-		return check(owner.String(), true, nil)
+		return owner, true, nil, nil
 	}
-	var aces []ACE
 	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
 		var ace *windows.ACCESS_ALLOWED_ACE
 		if err := windows.GetAce(dacl, i, &ace); err != nil {
-			return false, "unreadable (its access list can't be read: " + err.Error() + ")"
+			return "", false, nil, fmt.Errorf("its access list can't be read: %w", err)
 		}
 		e := ACE{Mask: uint32(ace.Mask), Flags: ace.Header.AceFlags}
 		switch ace.Header.AceType {
@@ -140,7 +155,7 @@ func trusted(path string, check func(string, bool, []ACE) (bool, string)) (bool,
 		}
 		aces = append(aces, e)
 	}
-	return check(owner.String(), false, aces)
+	return owner, false, aces, nil
 }
 
 // ExplainTrust says whether a failed trust check gives a reason worth showing: on Windows the owner and mode of a

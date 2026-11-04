@@ -107,6 +107,22 @@ func startPoller(t *testing.T, m *Manager) *poller {
 		}
 	}()
 	t.Cleanup(func() { cancel(); wg.Wait() })
+	// Rubi counts as present only once the first Next call is open. Without waiting for that, a test that asks something
+	// right after startPoller can run before the polling goroutine has started (under load it does), find nobody there, and
+	// be refused at once: the ask is never made and the test waits ten seconds for an item that never comes.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m.mu.Lock()
+		ready := m.polls > 0 || !m.lastPoll.IsZero()
+		m.mu.Unlock()
+		if ready {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the poller never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	return p
 }
 

@@ -600,14 +600,25 @@ line. Stage names only; the order is the dependency order.
 - **Allow-list.** The 4 P5 lines are gone. 14 are left: P7 1, P8 13.
 - **Not verified on real systems:** UAC and the elevated script as a standard user on Windows (the CI job runs the script on an administrator runner, where UAC does not ask), and pkexec with a real polkit agent.
 
-### P6 Local sockets and peers on Windows
+### P6 Local sockets and peers on Windows (done)
 
-- **Work.** 2.5: `ListenLocal`/`DialLocal`; named pipe (or AF_UNIX) with DACL; `osProcs` for Windows in `internal/home` and
-  `agent/t3vm`; Job Object kill; the `agent-vm` shim without exec.
-- **Done when.** The hook, `claude-mcp` and `claude-send` talk to Home on Windows, and a process of another user, or one
-  that is not the installed hook, is refused.
-- **Tests.** Pipe tests in the same process and across two processes on a Windows runner; a second-user test by hand.
-  This is the security-sensitive stage: it needs the `reviewer` and a second opinion before it merges.
+- **Choice: AF_UNIX, not named pipes.** Go's `net.Listen("unix")` works on Windows 10 and later with deadlines and a clean `Close`. A named pipe has a stronger object-level access list, but a `net.Conn` with deadlines over overlapped pipe I/O needs go-winio or several hundred lines of our own (not added, as agreed). `fsx.ListenLocal` and `fsx.DialLocalContext` are the one way to make and reach the three sockets (hook, sister tools, agent-vm), on every system.
+- **Who may connect (Windows).**
+  - The socket's folder gets a protected access list for the current user alone (`UserOnlySDDL`), read back and checked (`CheckUserOnlyACL`).
+  - Every accepted connection is checked: the peer's process comes from the ioctl `SIO_AF_UNIX_GETPEERPID`, and its user SID and logon session must be this process's own (`PeerAllowed`). Another user, another session of the same user, or a peer that cannot be identified (an older Windows without the ioctl, a process this one may not open) is closed at once.
+  - A client checks the server it dialled the same way. All of this logic is plain code, tested on every host with constructed access lists and SIDs.
+- **Peers.** `osProcs` and `peerExe` for Windows in `internal/home`, and `peerPID`, `parentOf` and `peerIsSelf` in `agent/t3vm`, use `fsx.PeerPID` and `fsx.ProcInfo` (creation time, parent from a process snapshot, program name without `.exe`) and `fsx.ProcessImage`. Anything unknown is an error, and an error is a refusal; a pid of 0 or 1 is refused too.
+- **Process trees.** `fsx.KillTree` on Windows: `fsx.StartTree`/`fsx.RunTree` put the process in a Job Object (kill on close) right after the start, and cancelling terminates the job; a command started without them falls back to killing the descendants found by parent links. The hook's `version` run uses `RunTree`.
+- **Links.** `fsx.OpenNoFollow` on Windows opens with `FILE_FLAG_OPEN_REPARSE_POINT` and refuses what has the reparse attribute, deciding on the opened handle.
+- **The agent-vm shim** no longer needs exec where there is none: `handOver` runs the command with the shim's own input, output and exit status (`relayProcess`), holding the connection to Home open until it ends.
+- **Review round (P6).**
+  - Peers: a peer is the same user, the same terminal session and the same logon (the token's authentication id; an elevated token of the same user is another logon and is refused). The peer's process is opened right after its id is read and everything is read from that handle, and it must have been created before the connection was accepted (`PeerBorn`), so a reused pid is refused.
+  - Reused pids in the walk: `killDescendants` reads each process's creation time (`Proc`), takes a child only if it was created at or after its parent and the root (`Descendants`), and compares the time again on the opened process just before `TerminateProcess` (`Reap`, `SameProcess`). All of it is tested on every host with a fake table that includes a reused pid.
+  - Job race: `StartTree` creates the process suspended (`CREATE_SUSPENDED`, set through `SysProcAttr`, x/sys only), puts it in the job, then resumes its thread, so nothing it starts is outside the job. Cancelling always runs the guarded walk after terminating the job. `WaitTree` and `ReleaseTree` let go of the job (`RunTree` uses `WaitTree`).
+  - Links: `OpenNoFollow` looks for a reparse point before anything is created or truncated (`NoFollowPlan` never picks a truncating disposition; `O_TRUNC` runs through the handle afterwards), shares read and write only, and does not open folders. `privateFolder` works only inside Home's folders (`InsideRoots`: the data folder, `RUBI_HOME_DIR`, the helper folder), opens the folder without following links, refuses a reparse point and sets the access list through that handle. `IsSocket` accepts only the AF_UNIX file (`os.ModeSocket`), not every reparse point.
+  - Shim: the command runs in a job tied to the shim (`RunTree`), so killing the shim kills it; the shim catches Ctrl-C while the command runs and keeps the connection until the command ends.
+- **Not verified on a real Windows:** the ioctl (older builds lack it and then every connection is refused: that is the fail-closed answer), and whether the folder's access list alone stops another user's `connect`. The per-connection check does not depend on it. The Windows CI job runs the socket, junction, process and job tests on an administrator runner.
+- **Not changed:** the core's own sockets (`internal/daemon`, `internal/mcpproxy`) and the Unix-only `agent` package tests.
 
 ### P7 Feature availability
 

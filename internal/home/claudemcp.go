@@ -9,13 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -119,8 +119,9 @@ func callTool(ctx context.Context, cfg ToolsConfig, tool string, args map[string
 	if wait <= 0 {
 		wait = claudeToolDeadline + 3*time.Second
 	}
-	d := net.Dialer{Timeout: 2 * time.Second}
-	conn, err := d.DialContext(ctx, "unix", cfg.Sock)
+	dctx, cancelDial := context.WithTimeout(ctx, 2*time.Second)
+	conn, err := fsx.DialLocalContext(dctx, cfg.Sock)
+	cancelDial()
 	if err != nil {
 		return nil, errors.New("Rubi Home isn't running on this computer, so the sister tools can't work")
 	}

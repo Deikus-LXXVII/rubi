@@ -81,3 +81,45 @@ func TestFinalPathIsNotAvailableOnUnix(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+func TestListenLocalMakesAPrivateSocketAndDialLocalReachesIt(t *testing.T) {
+	dir, err := os.MkdirTemp("", "rl") // short: a socket path is limited to ~100 bytes
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	path := dir + "/s.sock"
+	ln, err := ListenLocal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	fi, err := os.Lstat(path)
+	if err != nil || !IsSocket(fi) || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the socket file: %v %v", fi, err)
+	}
+	go func() {
+		c, err := ln.Accept()
+		if err == nil {
+			c.Write([]byte("hi"))
+			c.Close()
+		}
+	}()
+	c, err := DialLocal(path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	buf := make([]byte, 2)
+	if _, err := c.Read(buf); err != nil || string(buf) != "hi" {
+		t.Fatalf("%q %v", buf, err)
+	}
+	if _, err := DialLocal(dir+"/missing.sock", time.Second); err == nil {
+		t.Error("dialled a missing socket")
+	}
+	f := dir + "/plain"
+	os.WriteFile(f, nil, 0o600)
+	if fi, _ := os.Lstat(f); IsSocket(fi) {
+		t.Error("a plain file is a socket")
+	}
+}

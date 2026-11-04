@@ -3,8 +3,10 @@
 package fsx
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"syscall"
@@ -106,3 +108,40 @@ func Reparse(string, os.FileInfo) bool { return false }
 
 // FinalPath is not available on Unix; the caller compares the open file with the path (os.SameFile).
 func FinalPath(*os.File) (string, error) { return "", ErrNoFinalPath }
+
+// ListenLocal makes a local socket at path, mode 0600.
+func ListenLocal(path string) (net.Listener, error) {
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+// DialLocalContext connects to a local socket.
+func DialLocalContext(ctx context.Context, path string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, "unix", path)
+}
+
+// IsSocket says whether a file is a socket.
+func IsSocket(fi os.FileInfo) bool { return fi.Mode()&os.ModeSocket != 0 }
+
+// StartTree is cmd.Start (a process group is made by KillTree).
+func StartTree(cmd *exec.Cmd) error { return cmd.Start() }
+
+// RunTree is cmd.Run (cancelling kills the process group KillTree made).
+func RunTree(cmd *exec.Cmd) error { return cmd.Run() }
+
+// WaitTree is cmd.Wait (on Windows it also lets go of the job StartTree made).
+func WaitTree(cmd *exec.Cmd) error { return cmd.Wait() }
+
+// ReleaseTree does nothing on Unix (on Windows it lets go of the job StartTree made).
+func ReleaseTree(*exec.Cmd) {}
+
+// AllowSocketRoot does nothing on Unix (on Windows it lets tests make sockets outside Home's folders).
+func AllowSocketRoot(string) {}

@@ -42,6 +42,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 const (
@@ -328,7 +330,7 @@ func callSend(sock string, req map[string]any, timeout time.Duration) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	conn, err := fsx.DialLocal(sock, 2*time.Second)
 	if err != nil {
 		return nil, errors.New("Rubi Home isn't running on this computer (its socket doesn't answer)")
 	}

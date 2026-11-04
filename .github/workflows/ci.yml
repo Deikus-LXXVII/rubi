@@ -59,4 +59,5 @@ jobs:
       - name: Test the OS helpers
         run: |
           go test ./internal/home/fsx/... ./internal/home/hostpaths/...
-          go test ./internal/home -run "XDG|Zenity|Kdialog|WindowsOpen|WindowsClipboard|WindowsDialog|WindowsOffers|WindowsRefuses|AsciiJSON|Task|UTF16|ValidateTaskXML|WindowsProgramsAre|UAC|WindowsPlanDocument|WindowsElevatedScript"
+          go test ./internal/home/agent/t3vm -run "PeerIsSelf|Relay"
+          go test ./internal/home -run "XDG|Zenity|Kdialog|WindowsOpen|WindowsClipboard|WindowsDialog|WindowsOffers|WindowsRefuses|AsciiJSON|Task|UTF16|ValidateTaskXML|WindowsProgramsAre|UAC|WindowsPlanDocument|WindowsElevatedScript|RealPeerPID|UnknownPeerIsRefused"

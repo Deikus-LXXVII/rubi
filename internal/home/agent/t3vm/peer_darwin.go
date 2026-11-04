@@ -5,6 +5,7 @@ package t3vm
 import (
 	"errors"
 	"net"
+	"os"
 
 	"golang.org/x/sys/unix"
 )
@@ -31,4 +32,10 @@ func peerUID(c net.Conn) (uint32, error) {
 		return 0, err
 	}
 	return uid, gerr
+}
+
+// peerIsSelf says whether the process on the other end is this user's, as the kernel says; false when it cannot be told.
+func peerIsSelf(c net.Conn) bool {
+	uid, err := peerUID(c)
+	return err == nil && int(uid) == os.Getuid()
 }

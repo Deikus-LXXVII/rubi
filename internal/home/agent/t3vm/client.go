@@ -11,19 +11,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 // ClientOptions are the seams of Run.
 type ClientOptions struct {
-	// Exec replaces the process (syscall.Exec when nil). conn is the open connection to Home, which the new process
-	// must inherit; Exec returns only on failure.
+	// Exec replaces the process (syscall.Exec when nil; Unix only). conn is the open connection to Home, which the new process
+	// must inherit; Exec returns only on failure. Where a process cannot be replaced (Windows) Run starts the command
+	// instead, with this process's input and output, and returns its exit status (see Relay).
 	Exec func(path string, argv, env []string, conn *os.File) error
+	// Relay runs the command with this process's stdio and returns its exit status (relayProcess when nil).
+	Relay func(path string, argv, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
 	// Getwd, Environ and LookPath are os.Getwd, os.Environ and exec.LookPath when nil.
 	Getwd    func() (string, error)
 	Environ  func() []string
@@ -69,9 +73,6 @@ func Run(socket, role string, claudeArgs []string, stdout, stderr io.Writer, o C
 	if o.LookPath == nil {
 		o.LookPath = exec.LookPath
 	}
-	if o.Exec == nil {
-		o.Exec = execProcess
-	}
 	cwd, err := o.Getwd()
 	if err != nil {
 		return fail("can't tell the working directory: %v", err)
@@ -82,7 +83,7 @@ func Run(socket, role string, claudeArgs []string, stdout, stderr io.Writer, o C
 			env[k] = v
 		}
 	}
-	conn, err := net.DialTimeout("unix", socket, 5*time.Second)
+	conn, err := fsx.DialLocal(socket, 5*time.Second)
 	if err != nil {
 		return fail("Rubi Home isn't reachable (%v); is it running?", err)
 	}
@@ -134,12 +135,5 @@ func Run(socket, role string, claudeArgs []string, stdout, stderr io.Writer, o C
 			return fail("can't find %s: %v", rep.ExecArgv[0], err)
 		}
 	}
-	f, err := conn.(*net.UnixConn).File() // a copy of the descriptor; the connection stays open while it does
-	if err != nil {
-		return fail("can't keep the connection to Rubi Home: %v", err)
-	}
-	_ = conn.Close() // the process that replaces this one holds the copy; the connection ends when that process does
-	err = o.Exec(path, rep.ExecArgv, o.Environ(), f)
-	f.Close()
-	return fail("can't run %s: %v", rep.ExecArgv[0], err)
+	return handOver(path, rep.ExecArgv, conn, o, stdout, stderr)
 }

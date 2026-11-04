@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -387,8 +386,7 @@ func sameFile(a, b string) bool {
 func dialSocket(ctx context.Context, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	var d net.Dialer
-	c, err := d.DialContext(ctx, "unix", path)
+	c, err := fsx.DialLocalContext(ctx, path)
 	if err != nil {
 		return "", err
 	}

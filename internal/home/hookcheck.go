@@ -81,7 +81,7 @@ func runVersion(path string, timeout time.Duration) (string, error) {
 	out := &limitWriter{n: 256}
 	cmd.Stdout = out
 	cmd.Stdin = nil
-	err := cmd.Run()
+	err := fsx.RunTree(cmd)
 	if ctx.Err() != nil {
 		return "", fmt.Errorf("it didn't answer `version` within %s", timeout)
 	}

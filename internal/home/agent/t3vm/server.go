@@ -29,6 +29,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
 
@@ -170,8 +171,7 @@ func NewServer(opt Options) *Server {
 	}
 	if opt.PeerOK == nil {
 		opt.PeerOK = func(c net.Conn) bool {
-			uid, err := peerUID(c)
-			if err != nil || int(uid) != os.Getuid() {
+			if !peerIsSelf(c) {
 				return false
 			}
 			if opt.T3Pid != nil {
@@ -202,17 +202,13 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	s.base = ctx
 	s.mu.Unlock()
 	if fi, err := os.Lstat(path); err == nil {
-		if fi.Mode()&os.ModeSocket == 0 {
+		if !fsx.IsSocket(fi) {
 			return fmt.Errorf("%s exists and isn't a socket", path)
 		}
 		_ = os.Remove(path) // left over from an earlier run
 	}
-	ln, err := net.Listen("unix", path)
+	ln, err := fsx.ListenLocal(path) // mode 0600; on Windows the folder is the user's alone and every peer is checked
 	if err != nil {
-		return err
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
 		return err
 	}
 	stopped := ctx
