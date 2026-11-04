@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -924,13 +925,18 @@ func TestProjectsRefuseSensitiveDirsAndMountPaths(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	e := newEnv(t)
-	for _, d := range []string{".ssh", ".gnupg", "Library/Application Support/x", "work/ok", "work/a,b"} {
+	// a folder of the home that is private on this system (hostpaths): Library on a Mac, .config on Linux
+	private := "Library"
+	if runtime.GOOS != "darwin" {
+		private = ".config"
+	}
+	for _, d := range []string{".ssh", ".gnupg", private + "/Application Support/x", "work/ok", "work/a,b"} {
 		os.MkdirAll(filepath.Join(home, d), 0o700)
 	}
 	rhome, _ := filepath.EvalSymlinks(home)
 	e.m.opt.Projects = func() []string {
-		return []string{home, filepath.Join(home, ".ssh"), filepath.Join(home, ".gnupg"), filepath.Join(home, "Library"),
-			filepath.Join(home, "Library/Application Support/x"), filepath.Join(home, ".ssh/sub"), filepath.Dir(home), filepath.Join(home, "work/a,b"),
+		return []string{home, filepath.Join(home, ".ssh"), filepath.Join(home, ".gnupg"), filepath.Join(home, private),
+			filepath.Join(home, private+"/Application Support/x"), filepath.Join(home, ".ssh/sub"), filepath.Dir(home), filepath.Join(home, "work/a,b"),
 			filepath.Join(home, "work/ok")}
 	}
 	ps := e.m.projects()

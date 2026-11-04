@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -221,13 +222,18 @@ func TestCreateRefusesASymlinkedPath(t *testing.T) {
 
 func TestDefaultSystemDirsAndVolumes(t *testing.T) {
 	c := &Claude{HomeDir: t.TempDir()}
-	for _, p := range []string{"/var/folders/x", "/private/var/tmp", "/Applications/Foo", "/opt/x", "/Volumes", "/etc/ssh"} {
+	// each system's own folders (hostpaths): a Mac's system folders and /Volumes, Linux's and /mnt
+	refused, onDisk := []string{"/var/folders/x", "/private/var/tmp", "/Applications/Foo", "/opt/x", "/Volumes", "/etc/ssh"}, "/Volumes/External/Projects"
+	if runtime.GOOS == "linux" {
+		refused, onDisk = []string{"/etc/ssh", "/usr/local/x", "/proc/1", "/var/tmp", "/opt/x", "/mnt", "/media"}, "/mnt/external/projects"
+	}
+	for _, p := range refused {
 		if c.refusedStartDir(p) == "" {
 			t.Errorf("%s allowed", p)
 		}
 	}
-	if c.refusedStartDir("/Volumes/External/Projects") != "" {
-		t.Error("a project on a volume was refused")
+	if c.refusedStartDir(onDisk) != "" {
+		t.Error("a project on a mounted disk was refused")
 	}
 }
 

@@ -134,6 +134,7 @@ try {
   }
   exit 0
 } catch {
+  [Console]::Error.WriteLine('rubi-home install: ' + $_.Exception.Message)
   exit 1
 }
 `

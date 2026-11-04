@@ -3,6 +3,7 @@ package setup
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -49,7 +50,12 @@ func TestProjectAddRefusals(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	realHome, _ := filepath.EvalSymlinks(home)
-	for _, d := range []string{".ssh", "Library/Caches", "work/app"} {
+	// a folder of the home that is private on this system (hostpaths): Library on a Mac, .config on Linux
+	private := filepath.Join("Library", "Caches")
+	if runtime.GOOS != "darwin" {
+		private = filepath.Join(".config", "x")
+	}
+	for _, d := range []string{".ssh", private, "work/app"} {
 		os.MkdirAll(filepath.Join(home, d), 0o755)
 	}
 	e := newTestEnv(t, func(o *Options) { o.SystemTrees = []string{filepath.Join(realHome, "work", "system")} })
@@ -65,7 +71,7 @@ func TestProjectAddRefusals(t *testing.T) {
 		"parent of home":     filepath.Dir(realHome),
 		"root":               "/",
 		"private folder":     filepath.Join(realHome, ".ssh"),
-		"Library":            filepath.Join(realHome, "Library", "Caches"),
+		"private on this OS": filepath.Join(realHome, private),
 		"system tree":        filepath.Join(realHome, "work", "system", "inner"),
 		"Rubi Home's folder": e.dir,
 		"inside Rubi Home":   inside,

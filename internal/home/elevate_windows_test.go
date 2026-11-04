@@ -44,11 +44,14 @@ func runInner(t *testing.T, planPath, hash string, tamper ...func(path string)) 
 		f(scriptPath)
 	}
 	ps := os.Getenv("SystemRoot") + `\System32\WindowsPowerShell\v1.0\powershell.exe`
-	err = exec.Command(ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", psEncoded(boot)).Run()
+	out, err := exec.Command(ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", psEncoded(boot)).CombinedOutput()
 	if err == nil {
 		return 0
 	}
 	if ee, ok := err.(*exec.ExitError); ok {
+		if len(out) > 0 {
+			t.Logf("exit %d: %s", ee.ExitCode(), out) // the script's own words, for a refusal that is not the expected one
+		}
 		return ee.ExitCode()
 	}
 	t.Fatal(err)

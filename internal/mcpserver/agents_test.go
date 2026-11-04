@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -673,8 +674,12 @@ func TestRubiHome(t *testing.T) {
 	}
 	r.waitFor("library key pinned", func() bool { return h.Config().LibraryKey == base64.StdEncoding.EncodeToString(pub) })
 	out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"})
-	if !strings.Contains(toString(out["out"]), "Lights off") {
-		t.Fatalf("shortcuts.list: %v", out)
+	if runtime.GOOS == "darwin" {
+		if !strings.Contains(toString(out["out"]), "Lights off") {
+			t.Fatalf("shortcuts.list: %v", out)
+		}
+	} else if out["code"] != float64(rubiplugin.CodeHomeNotAvailable) { // Shortcuts need macOS: paired, but not available here
+		t.Fatalf("shortcuts.list off macOS: %v", out)
 	}
 	if out := r.ag.call("demo_home", map[string]any{"op": "hue.discover"}); !strings.Contains(toString(out["error"]), "doesn't allow") {
 		t.Fatalf("an undeclared capability: %v", out)

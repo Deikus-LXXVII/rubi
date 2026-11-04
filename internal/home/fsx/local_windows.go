@@ -231,8 +231,9 @@ func PeerPID(c net.Conn) (int, error) {
 	if ierr != nil {
 		return 0, fmt.Errorf("the system can't name the process on the other end: %w", ierr)
 	}
-	if n != 4 || pid == 0 {
-		return 0, errors.New("the system gave no process for the other end")
+	// pid starts at 0, so a non-zero value was written by the system; some Windows builds report 0 bytes for this ioctl
+	if pid == 0 {
+		return 0, fmt.Errorf("the system gave no process for the other end (%d bytes)", n)
 	}
 	return int(pid), nil
 }

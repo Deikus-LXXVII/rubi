@@ -165,7 +165,7 @@ var featureTTL = time.Minute
 func (h *Helper) Features() map[string]Feature {
 	h.featMu.Lock()
 	defer h.featMu.Unlock()
-	if h.feat == nil || time.Since(h.featAt) > featureTTL {
+	if h.feat == nil || time.Since(h.featAt) >= featureTTL { // >=: a coarse clock (Windows) can say no time passed
 		env := systemFeatureEnv
 		if h.featureEnv != nil {
 			env = h.featureEnv
