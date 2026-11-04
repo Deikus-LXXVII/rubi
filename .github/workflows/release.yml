@@ -46,8 +46,79 @@ jobs:
           path: app/*.zip
           if-no-files-found: error
 
+  # Rubi Home for Windows: rubi-home.exe, not Authenticode-signed (the project does not plan a code-signing certificate), in a
+  # zip that the signed SHA256SUMS lists. The Bot's installer (panel/install-home.ps1) checks that signature and the zip's
+  # hash before it unpacks a byte. Built here, tested on a Windows runner next, then joined to the release.
+  windows-home:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the Windows zips
+        run: |
+          set -euo pipefail
+          mkdir -p windows
+          for arch in amd64 arm64; do
+            out="work/home-windows-$arch"
+            mkdir -p "$out"
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -buildid= -X github.com/Deikus-LXXVII/rubi/internal/version.Version=${GITHUB_REF_NAME}" \
+              -o "$out/rubi-home.exe" ./cmd/rubi-home
+            touch -d @0 "$out/rubi-home.exe"
+            (cd "$out" && zip -X -q -9 "$GITHUB_WORKSPACE/windows/rubi-home-${GITHUB_REF_NAME}-windows-$arch.zip" rubi-home.exe)
+          done
+          ls -l windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-home
+          path: windows/*.zip
+          if-no-files-found: error
+
+  # The zip that will be released is unpacked and run on Windows before anything is published.
+  windows-check:
+    needs: windows-home
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-home
+          path: windows
+      - name: The program starts and is this release
+        shell: pwsh
+        run: |
+          $zip = Join-Path $PWD "windows/rubi-home-$env:GITHUB_REF_NAME-windows-amd64.zip"
+          Expand-Archive -LiteralPath $zip -DestinationPath exe
+          $out = (& ./exe/rubi-home.exe version | Out-String).Trim()
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch [regex]::Escape($env:GITHUB_REF_NAME)) { throw "rubi-home.exe version said: $out" }
+      - name: Each zip holds the one program, for its CPU
+        # The installer takes the entry named rubi-home.exe and nothing else. The arm64 program cannot run on this runner, so it is
+        # looked at: one entry with that name, and a Windows program for the ARM64 machine type (0xAA64; amd64 is 0x8664).
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($case in @(@('amd64', 0x8664), @('arm64', 0xAA64))) {
+            $zip = Join-Path $PWD "windows/rubi-home-$env:GITHUB_REF_NAME-windows-$($case[0]).zip"
+            $za = [System.IO.Compression.ZipFile]::OpenRead($zip)
+            try {
+              $names = @($za.Entries | ForEach-Object { $_.FullName })
+              if ($names.Count -ne 1 -or $names[0] -cne 'rubi-home.exe') { throw "$zip holds: $($names -join ', ')" }
+              $in = $za.Entries[0].Open()
+              $head = New-Object byte[] 4096
+              [void]$in.Read($head, 0, $head.Length)
+              $in.Dispose()
+            } finally { $za.Dispose() }
+            if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { throw "$zip is not a Windows program" }
+            $machine = [BitConverter]::ToUInt16($head, [BitConverter]::ToInt32($head, 0x3C) + 4)
+            if ($machine -ne $case[1]) { throw ("{0}: machine type {1:X} is not {2:X}" -f $zip, $machine, $case[1]) }
+          }
+
   release:
-    needs: mac-app
+    needs: [mac-app, windows-check]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +132,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: mac-app
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-home
           path: dist
 
       - name: Build
@@ -87,9 +163,9 @@ jobs:
               -o "$out/rubi-home" ./cmd/rubi-home
             tar --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$out" -czf "dist/rubi-home-${GITHUB_REF_NAME}-$os-$arch.tar.gz" rubi-home
           done
-          # The Mac app zips came from the mac-app job (above, in dist/); the tar.gz files stay for the script
-          # installer and Linux.
-          ls dist/rubi-home-*-macos-universal.zip
+          # The Mac app zips came from the mac-app job (above, in dist/), the Windows zips from the windows-home job; the
+          # tar.gz files stay for the script installer and Linux.
+          ls dist/rubi-home-*-macos-universal.zip dist/rubi-home-"${GITHUB_REF_NAME}"-windows-amd64.zip dist/rubi-home-"${GITHUB_REF_NAME}"-windows-arm64.zip
           cd dist
           # Archives and Mac app zips for the installers, plus the bare binaries for Rubi's self-check.
           sha256sum rubi-*.tar.gz rubi-*.zip bin/rubi-* > SHA256SUMS

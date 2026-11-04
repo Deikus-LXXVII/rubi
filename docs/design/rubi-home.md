@@ -24,9 +24,9 @@ things on Rubi's request.
 
 1. On the home computer, the user's Grok Bot installs Rubi Home: the user sends it the message the panel's "Add a
    home computer" screen gives ("Install Rubi Home on this computer by following https://rubi-panel.com/install.md"),
-   and the Bot runs `install-home.sh` itself, then `~/.rubi-home/bin/rubi-home open` (the section "Install Rubi Home on
+   and the Bot runs `install-home.sh` itself (on Windows `install-home.ps1`, which opens the window itself), then `~/.rubi-home/bin/rubi-home open` (the section "Install Rubi Home on
    the user's computer" of the Bot skill, which is install.md). The user types nothing and only confirms what the
-   system asks. This is the main path, on macOS and Linux; Windows is not supported yet. A Mac user with no Bot
+   system asks. This is the main path, on macOS, Linux and Windows (Windows has Home, pairing, Hue, the hook and the sister tools; agents, T3 and Shortcuts are not available there yet). A Mac user with no Bot
    downloads `Rubi Home.app` (a zip) from the same screen, opens the zip and opens Rubi Home (see "The Mac app"
    below); Linux without a Bot has no path, because the user would have to type the script line (rule 2). Either
    way the helper starts at login (LaunchAgent / systemd user service). The script verifies the release signature

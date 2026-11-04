@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rubi Home installer: the helper for a computer at home (a Mac that stays on, or a Linux box) that lets
-# Rubi control Philips Hue and run your Shortcuts.
+# Rubi control Philips Hue and, on a Mac, run your Shortcuts. (Windows has its own installer, install-home.ps1.)
 #
 #   curl --proto =https --tlsv1.2 -fsSL https://rubi-panel.com/install-home.sh | sh
 #
@@ -43,6 +43,7 @@ esac
 platform="$os-$arch"
 case "$platform" in
   darwin-arm64 | darwin-amd64 | linux-amd64 | linux-arm64) ;;
+  windows-* | mingw* | msys* | cygwin*) fail "this is the installer for macOS and Linux; on Windows the Bot runs install-home.ps1 (see https://rubi-panel.com/install.md)" ;;
   *) fail "unsupported platform: $platform" ;;
 esac
 
@@ -134,7 +135,11 @@ if [ -x "$hook" ]; then
   wait "$hook_pid" 2>/dev/null || true
   if [ "$old_v" != "$new_v" ]; then
     say "warning: the Claude Code hook binary $hook is ${old_v:-of an unknown version}, Rubi Home is now ${new_v:-$version}."
-    say "update it in the Rubi panel (Settings, Home); macOS asks for your administrator password there."
+    if [ "$os" = darwin ]; then
+      say "update it in the Rubi panel (Settings, Home); macOS asks for your administrator password there."
+    else
+      say "update it in the Rubi panel (Settings, Home); your computer asks for the administrator password there, in its own window."
+    fi
   fi
 elif [ -e "$hook" ]; then
   say "warning: $hook exists but isn't an executable file; check it, then install the hook again from the Rubi panel (Settings, Home)."
@@ -144,7 +149,9 @@ fi
 echo
 "$bin" pair
 echo
-echo "Shortcuts: make a folder named \"Rubi\" in the Shortcuts app and put there only the shortcuts Rubi may run."
+if [ "$os" = darwin ]; then
+  echo "Shortcuts: make a folder named \"Rubi\" in the Shortcuts app and put there only the shortcuts Rubi may run."
+fi
 }
 
 main "$@"

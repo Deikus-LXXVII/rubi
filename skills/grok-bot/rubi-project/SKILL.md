@@ -57,12 +57,22 @@ to send you:
 
 > Install Rubi Home on this computer by following https://rubi-panel.com/install.md
 
-Rubi Home is the helper that lets Rubi reach a home network (Philips Hue, Apple Home shortcuts). Rubi must already be installed and set up (see above). You run
+Rubi Home is the helper that lets Rubi reach a home network (Philips Hue), bring Claude Code's approvals and messages to
+Bots, and run the user's Shortcuts on a Mac. Rubi must already be installed and set up (see above). You run
 the commands yourself; the user types nothing and only confirms what the system itself asks (a confirmation, or
-the administrator password or Touch ID in macOS's own window). Never ask for a password in chat.
+the administrator password or Touch ID in macOS's own window, or Windows' "allow this app to make changes" prompt).
+Never ask for a password in chat.
 
-Supported: macOS and Linux (x86-64 and arm64). **Windows is not supported yet**; if the computer is Windows, say
-so and stop.
+Supported: macOS, Linux (x86-64 and arm64) and Windows 10 or later (x86-64 and arm64). Tell which one you are on first:
+`uname -s` says Darwin or Linux; on Windows `$env:OS` is `Windows_NT` (and there is no `uname`).
+
+What each has. Rubi Home itself, pairing, Philips Hue, the Claude Code hook and the sister tools work on all three. The
+Shortcuts (Apple Home) work on a Mac only. Agents and T3 Agents run in a virtual machine and are available on a Mac only
+for now; on Linux and Windows they are **not available on this computer yet**. If you are on Linux or Windows, do not
+offer them, and do not look for a way around it. (The same sentence comes back from a tool: see "That isn't available on
+this computer" below.)
+
+### macOS and Linux
 
 1. Run the installer: `curl -fsSL https://rubi-panel.com/install-home.sh | sh`
    It verifies the signature of the release, installs `~/.rubi-home/bin/rubi-home` and starts it at login. If it
@@ -81,6 +91,36 @@ so and stop.
 
 If the installer says the computer lacks `curl`, `tar` or `openssl`, tell the user which is missing; don't install
 system packages without being asked.
+
+### Windows
+
+1. Download the installer to a file with a name nobody can guess, run it from there, and delete it afterwards, all in one
+   Windows PowerShell command (the file is a constant script; you add nothing to it):
+
+   `$u = Join-Path $env:TEMP ('rubi-' + [guid]::NewGuid().ToString('N') + '.ps1'); try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing https://rubi-panel.com/install-home.ps1 -OutFile $u; powershell -NoProfile -ExecutionPolicy Bypass -File $u } finally { Remove-Item -LiteralPath $u -Force -ErrorAction SilentlyContinue }`
+
+   The script is trusted because it came over TLS from rubi-panel.com, the same trust as `curl https://rubi-panel.com/install-home.sh | sh` on the other
+   systems; it then needs nothing else on trust, because it checks everything it installs against the release signature.
+   It downloads the release, checks the signature of its checksums (Ed25519) and then the archive's checksum, installs
+   `rubi-home.exe` under `%LOCALAPPDATA%\Rubi Home`, starts it at login with a Scheduled Task of the user's own (no
+   administrator rights), and opens Rubi Home's pairing window. If it reports an error, stop and tell the user; never work
+   around a failed signature or checksum check.
+2. **Git for Windows.** The signature check uses the OpenSSL that Git for Windows installs, taken only from Git's own
+   folder (an OpenSSL found anywhere else, or on `PATH`, is deliberately not used). If the installer says Git for Windows
+   is missing, tell the user it is needed to check the download and ask whether you may install it. If they agree, run
+   `winget install --id Git.Git -e`; Windows then asks them to confirm in its own prompt. Then run the installer again.
+   Never install it without asking.
+3. **What the user sees.** Nothing to confirm for Rubi Home itself. When the installer ends, Rubi Home's own window opens
+   on the screen with the PIN, a link and the buttons. Tell them: "Rubi Home's window is open on your computer. Press
+   Open the Rubi panel in it, then type the PIN the window shows." You never see the PIN when the window is shown; wait for
+   them. If there is no window (nobody is logged in at the screen), the installer's output holds the link and a PIN: send
+   both in one message, as on Linux.
+4. **The Claude Code hook** is installed later, from the Rubi panel (Settings, Rubi Home), not by you. Windows then asks the
+   user "Do you want to allow this app to make changes to your device?" and shows the publisher as unknown, because the
+   program is not signed with a certificate: tell them that is expected and to choose Yes. Don't open an elevated shell and
+   don't try to do that step yourself.
+5. When the user has paired it, the computer shows in the Rubi panel under Settings, Rubi Home. Check `rubi_status` or ask
+   them.
 
 ## The Claude Code hook on a computer nobody can ask for a password (Linux without a desktop)
 

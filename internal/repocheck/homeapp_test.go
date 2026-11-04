@@ -236,8 +236,8 @@ func TestReleaseBuildsTheUniversalMacAppBeforeTheSums(t *testing.T) {
 	if loop < 0 || lipo < loop || call < lipo {
 		t.Fatal("the mac-app job must build arm64 and amd64, lipo them, then build the sealed universal app, in that order")
 	}
-	if !strings.Contains(s[rel:rel+200], "needs: mac-app") {
-		t.Fatal("the release job does not wait for the mac-app job")
+	if !strings.Contains(s[rel:rel+200], "needs: [mac-app, windows-check]") {
+		t.Fatal("the release job does not wait for the mac-app and Windows jobs")
 	}
 	dl := strings.Index(s[rel:], "actions/download-artifact")
 	sums := strings.Index(s, "sha256sum rubi-*.tar.gz rubi-*.zip")
@@ -432,14 +432,20 @@ func TestHomeBotMessageIsWhatInstallMdServes(t *testing.T) {
 	if j := strings.Index(sec[3:], "\n## "); j >= 0 {
 		sec = sec[:j+3]
 	}
-	for _, want := range []string{m[1], "https://rubi-panel.com/install-home.sh", "~/.rubi-home/bin/rubi-home open", "macOS", "Linux", "Windows is not supported yet"} {
+	for _, want := range []string{m[1], "https://rubi-panel.com/install-home.sh", "~/.rubi-home/bin/rubi-home open", "macOS", "Linux", "Windows",
+		"https://rubi-panel.com/install-home.ps1", "-ExecutionPolicy Bypass -File", "Git for Windows", "Windows 10 or later", "not available on this computer yet"} {
 		if !strings.Contains(sec, want) {
 			t.Errorf("the Home section of install.md lacks %q", want)
 		}
 	}
-	// the script the Bot is told to run is the one the Pages deploy serves
-	if _, err := os.Stat(filepath.Join(root(t), "panel", "install-home.sh")); err != nil {
-		t.Errorf("install.md names install-home.sh, but panel/install-home.sh is missing: %v", err)
+	if strings.Contains(sec, "Windows is not supported yet") {
+		t.Error("install.md still says Windows is not supported")
+	}
+	// the scripts the Bot is told to run are the ones the Pages deploy serves
+	for _, f := range []string{"install-home.sh", "install-home.ps1"} {
+		if _, err := os.Stat(filepath.Join(root(t), "panel", f)); err != nil {
+			t.Errorf("install.md names %s, but panel/%s is missing: %v", f, f, err)
+		}
 	}
 }
 

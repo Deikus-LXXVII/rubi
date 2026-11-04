@@ -1999,7 +1999,8 @@ async function hookProgressScreen(ctx, d, back) {
 
 // The message the user sends their Bot to put Rubi Home on a computer. The Bot reads the same page the install
 // message of Rubi itself names (rubi-panel.com/install.md, the Bot skill), section "Install Rubi Home on the user's
-// computer". A Bot, not the user, runs the installer (project rule 2).
+// computer". A Bot, not the user, runs the installer (project rule 2). It is the same message for a Mac, Linux and
+// Windows: the Bot works out which installer to run.
 const HOME_BOT_MESSAGE = "Install Rubi Home on this computer by following https://rubi-panel.com/install.md";
 
 // homeWhoLine says which computer a code belongs to ("Mac mini · pX3k-9QaL"), worked out here from the code;
@@ -2045,7 +2046,9 @@ function homeInstallSteps(ctx) {
     h("p", { class: "install-label" }, "On the computer you are adding, tell your Grok Bot:"),
     h("div", { class: "prompt" }, HOME_BOT_MESSAGE),
     copyButton(HOME_BOT_MESSAGE, "Copy the message"),
-    h("p", { class: "muted" }, "Your Bot installs Rubi Home and checks its signature. Your computer may ask you to confirm, or for your password or Touch ID in its own window; that is all you do. On a Mac a Rubi Home window then opens: press Open the Rubi panel there. On Linux your Bot sends you a link to open and a PIN to type."),
+    h("p", { class: "muted" }, "Your Bot installs Rubi Home and checks its signature. Your computer may ask you to confirm, or for your password or Touch ID in its own window; that is all you do. On a Mac or a Windows computer a Rubi Home window then opens: press Open the Rubi panel there. On Linux your Bot sends you a link to open and a PIN to type."),
+    h("p", { class: "muted small" }, "On Windows your Bot may first ask whether it can install Git for Windows, which Rubi Home uses to check the download's signature; Windows asks you to confirm. Later, installing the Claude Code hook there asks you to allow the change; choose Yes."),
+    h("p", { class: "muted small" }, "Rubi Home works on a Mac, Linux and Windows. Agents run on a Mac only for now, and Shortcuts need a Mac: on the other computers they show as not available."),
     h("p", { class: "muted small" }, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run."),
     h("details", { class: "sideload" },
       h("summary", {}, "No Bot on that Mac? Download the app"),
