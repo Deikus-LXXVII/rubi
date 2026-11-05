@@ -190,7 +190,11 @@ qboot can start the kernel, through its PVH entry. So:
 
 Found with the live test (`internal/home/agent/microvm/live`) on Debian 13 with QEMU 10.0.13 and Alpine's virt kernel
 6.6 (its vmlinux has a PVH entry): with qboot the kernel was running in under 2 s, and a kernel panic with `panic=-1`
-ended QEMU with status 0 (`-no-reboot`).
+ended QEMU with status 0 (`-no-reboot`). The full test then passed in 2 s: the probe ran as PID 1, mounted `/proc`,
+`/sys` and `/dev`, found the control port (`/dev/vport1p1`, named `rubi.control`) and ended the VM the guest agent's way
+(a restart; QEMU exited with status 0). The two virtiofsd processes took every flag and their vhost-user connection and
+ended with QEMU. Alpine's kernel has virtio-fs only as a module, so the share wasn't mounted there; Rubi's kernel builds
+`CONFIG_VIRTIO_FS`, `CONFIG_VIRTIO_CONSOLE`, `CONFIG_VIRTIO_BLK` and `CONFIG_VIRTIO_MMIO` in (it has no modules).
 
 The runner's user and group inside the VM are 10001 (`microvm.GuestUID`, `GuestGID`);
 the runner's Dockerfile pins only the user, so the CI build of the root file system checks that the group is 10001 and
@@ -214,7 +218,8 @@ In order; each step has its tests:
 4. The backend (`VMBackend` on Linux: `Available` from `CheckKVM`, `New`, `Sweep`, `Provision` with the download steps),
    chosen in `platformBackend` for Linux.
 5. T3 sessions: the `agent-vm` shim's stream attached to a guest exec.
-6. The live test on a computer with KVM (started: boot to the initramfs, the firmware and the restart are checked) (boot, exec, no network, a read-only share refuses writes, a kill leaves nothing),
+6. The live test on a computer with KVM (started: boot, control port, the firmware, virtiofsd and the restart are checked; mounts, exec and the rest wait
+   for Rubi's kernel) (boot, exec, no network, a read-only share refuses writes, a kill leaves nothing),
    and the measurements of questions 5 and 6.
 
 ## Sources
