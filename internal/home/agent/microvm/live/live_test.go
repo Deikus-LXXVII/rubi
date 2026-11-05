@@ -88,7 +88,7 @@ func env(name, def string) string {
 // the console socket carries the guest's output, and that the guest's restart ends QEMU with status 0.
 //
 // RUBI_LIVE_KERNEL (default /boot/vmlinuz-<this kernel>), RUBI_LIVE_QEMU (/usr/bin/qemu-system-x86_64) and
-// RUBI_LIVE_VIRTIOFSD (/usr/libexec/virtiofsd) say what to run. The microvm machine boots without option ROMs, which
+// RUBI_LIVE_VIRTIOFSD (/usr/libexec/virtiofsd) say what to run, RUBI_LIVE_BIOS the firmware (QEMU's default when unset). The microvm machine boots without option ROMs, which
 // takes a kernel with a PVH entry (an ELF vmlinux); for a compressed bzImage the test also tries option ROMs on, to tell
 // the kernel's format from the rest.
 func TestLiveVM(t *testing.T) {
@@ -255,6 +255,11 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, v variant) {
 	}
 	qmp := filepath.Join(vm, "qmp.sock")
 	args = v.apply(args, qmp)
+	if bios := os.Getenv("RUBI_LIVE_BIOS"); bios != "" {
+		// the microvm machine's firmware: QEMU's own is qboot, which starts a PVH kernel itself; a distribution may ship
+		// another in its place
+		args = append(args, "-bios", bios)
+	}
 	args = append(args, "-initrd", initrd)
 	t.Logf("qemu: %q", args[1:])
 	began := time.Now()
