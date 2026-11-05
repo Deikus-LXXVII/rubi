@@ -3,6 +3,7 @@
 package live
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -100,13 +102,99 @@ func TestLiveVM(t *testing.T) {
 			t.Fatalf("%v", err)
 		}
 	}
-	if isBzImage(t, kernel) {
-		t.Logf("%s is a bzImage (no PVH entry): the exact command line is expected to fail to boot it", kernel)
-		t.Run("exact", func(t *testing.T) { boot(t, qemu, virtiofsd, kernel, false) })
-		t.Run("option-roms-on", func(t *testing.T) { boot(t, qemu, virtiofsd, kernel, true) })
+	exact := variant{wait: 60 * time.Second}
+	if os.Getenv("RUBI_LIVE_DEBUG") != "" {
+		// Where a VM that shows nothing stops: the kernel's own messages from the start, then the same with the legacy
+		// timers back or without ACPI. QEMU is asked where the CPU is before it is stopped.
+		v := variant{verbose: true, wait: 20 * time.Second}
+		t.Run("verbose", func(t *testing.T) { boot(t, qemu, virtiofsd, kernel, v) })
+		v.machine = map[string]string{"pit": "on", "pic": "on", "rtc": "on"}
+		t.Run("verbose-legacy-timers", func(t *testing.T) { boot(t, qemu, virtiofsd, kernel, v) })
+		v.machine = map[string]string{"acpi": "off"}
+		t.Run("verbose-no-acpi", func(t *testing.T) { boot(t, qemu, virtiofsd, kernel, v) })
 		return
 	}
-	boot(t, qemu, virtiofsd, kernel, false)
+	if isBzImage(t, kernel) {
+		t.Logf("%s is a bzImage (no PVH entry): the exact command line is expected to fail to boot it", kernel)
+		t.Run("exact", func(t *testing.T) { boot(t, qemu, virtiofsd, kernel, exact) })
+		roms := exact
+		roms.machine = map[string]string{"x-option-roms": "on"}
+		t.Run("option-roms-on", func(t *testing.T) { boot(t, qemu, virtiofsd, kernel, roms) })
+		return
+	}
+	boot(t, qemu, virtiofsd, kernel, exact)
+}
+
+// variant is how a boot departs from the exact command line, for finding out why one fails.
+type variant struct {
+	machine map[string]string // -machine options set to other values (or added)
+	verbose bool              // the kernel's messages from the start: no "quiet", early console on the serial port
+	wait    time.Duration     // how long the VM may run
+}
+
+func (v variant) apply(args []string, qmp string) []string {
+	out := slices.Clone(args)
+	for i := 1; i < len(out); i++ {
+		switch out[i-1] {
+		case "-machine":
+			opts := strings.Split(out[i], ",")
+			for k, val := range v.machine {
+				found := false
+				for j, o := range opts {
+					if strings.HasPrefix(o, k+"=") {
+						opts[j], found = k+"="+val, true
+					}
+				}
+				if !found {
+					opts = append(opts, k+"="+val)
+				}
+			}
+			out[i] = strings.Join(opts, ",")
+		case "-append":
+			if v.verbose {
+				out[i] = strings.Replace(out[i], " quiet", "", 1) + " earlyprintk=ttyS0,115200 ignore_loglevel"
+			}
+		}
+	}
+	if v.verbose {
+		out = append(out, "-qmp", "unix:"+qmp+",server=on,wait=off")
+	}
+	return out
+}
+
+// whereIsTheCPU asks QEMU (QMP) for the VM's state and the CPU's registers.
+func whereIsTheCPU(qmp string) string {
+	c, err := net.DialTimeout("unix", qmp, 2*time.Second)
+	if err != nil {
+		return fmt.Sprintf("qmp: %v", err)
+	}
+	defer c.Close()
+	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	r := bufio.NewReader(c)
+	var out strings.Builder
+	readReply := func() {
+		for {
+			l, err := r.ReadString('\n')
+			if err != nil {
+				fmt.Fprintf(&out, "qmp: %v\n", err)
+				return
+			}
+			if strings.Contains(l, `"return"`) || strings.Contains(l, `"error"`) {
+				out.WriteString(strings.ReplaceAll(l, `\r\n`, "\n"))
+				return
+			}
+		}
+	}
+	_, _ = r.ReadString('\n') // greeting
+	for _, cmd := range []string{
+		`{"execute":"qmp_capabilities"}`,
+		`{"execute":"query-status"}`,
+		`{"execute":"human-monitor-command","arguments":{"command-line":"info registers"}}`,
+	} {
+		_, _ = c.Write([]byte(cmd + "\n"))
+		readReply()
+	}
+	return out.String()
 }
 
 func isBzImage(t *testing.T, kernel string) bool {
@@ -122,7 +210,7 @@ func isBzImage(t *testing.T, kernel string) bool {
 	return string(h[:]) == "HdrS"
 }
 
-func boot(t *testing.T, qemu, virtiofsd, kernel string, optionROMs bool) {
+func boot(t *testing.T, qemu, virtiofsd, kernel string, v variant) {
 	dir, err := os.MkdirTemp("", "rubi-live-")
 	if err != nil {
 		t.Fatal(err)
@@ -165,11 +253,8 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, optionROMs bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if optionROMs {
-		for i, a := range args {
-			args[i] = strings.Replace(a, "x-option-roms=off", "x-option-roms=on", 1)
-		}
-	}
+	qmp := filepath.Join(vm, "qmp.sock")
+	args = v.apply(args, qmp)
 	args = append(args, "-initrd", initrd)
 	t.Logf("qemu: %q", args[1:])
 	began := time.Now()
@@ -195,10 +280,13 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, optionROMs bool) {
 
 	select {
 	case <-q.done:
-	case <-time.After(60 * time.Second):
+	case <-time.After(v.wait):
+		if v.verbose {
+			t.Logf("QEMU (QMP) before it is stopped:\n%s", whereIsTheCPU(qmp))
+		}
 		_ = q.cmd.Process.Kill()
 		<-q.done
-		t.Errorf("QEMU still ran after 60 s: the guest's restart did not end it")
+		t.Errorf("QEMU still ran after %v: the guest's restart did not end it", v.wait)
 	}
 	took := time.Since(began)
 	conn.Close()
@@ -206,6 +294,9 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, optionROMs bool) {
 	t.Logf("QEMU exit: %v after %v", q.err, took.Round(time.Millisecond))
 	t.Logf("QEMU said:\n%s", q.out())
 	t.Logf("console (lines from the probe):\n%s", probeLines(console.String()))
+	if v.verbose {
+		t.Logf("console (its end):\n%s", tail(console.String(), 6000))
+	}
 	if q.err != nil {
 		t.Errorf("QEMU ended with %v", q.err)
 	}
