@@ -11,7 +11,8 @@ import (
 func roleSpec() Spec {
 	return Spec{
 		QEMU: "/opt/rubi/qemu/bin/qemu-system-x86_64", Arch: X86_64, Name: "rubi-web-app-reviewer",
-		Kernel: "/opt/rubi/vm/vmlinux", Rootfs: "/opt/rubi/vm/rootfs.img", Dir: "/home/u/.local/state/rubi-home/vm/web-app",
+		Firmware: "/opt/rubi/qemu/share/qemu/qboot.rom",
+		Kernel:   "/opt/rubi/vm/vmlinux", Rootfs: "/opt/rubi/vm/rootfs.img", Dir: "/home/u/.local/state/rubi-home/vm/web-app",
 		Shares: []Share{
 			{Source: "/home/u/src/web-app", Target: "/work"},
 			{Source: "/home/u/.local/state/rubi-home/empty", Target: "/work/.rubi", ReadOnly: true},
@@ -48,6 +49,7 @@ func TestQEMUArgsOfARoleVM(t *testing.T) {
 		"-sandbox", "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny",
 		"-pidfile", d + "qemu.pid",
 		"-chardev", "socket,id=console,path=" + d + "console.sock,server=on,wait=off", "-serial", "chardev:console",
+		"-bios", "/opt/rubi/qemu/share/qemu/qboot.rom",
 		"-kernel", "/opt/rubi/vm/vmlinux",
 		"-append", "console=ttyS0 root=/dev/vda ro rootfstype=ext4 init=/sbin/rubi-guest panic=-1 quiet reboot=t",
 		"-drive", "file=/opt/rubi/vm/rootfs.img,if=none,id=root,format=raw,readonly=on",
@@ -72,6 +74,9 @@ func TestQEMUArgsKeepTheBoundary(t *testing.T) {
 	for _, arch := range []Arch{X86_64, AArch64} {
 		spec := roleSpec()
 		spec.Arch = arch
+		if arch != X86_64 {
+			spec.Firmware = ""
+		}
 		args, err := QEMUArgs(spec)
 		if err != nil {
 			t.Fatal(err)
@@ -81,7 +86,7 @@ func TestQEMUArgsKeepTheBoundary(t *testing.T) {
 		}
 		for _, a := range args[1:] {
 			if slices.Contains([]string{"-netdev", "-net", "-virtfs", "-fsdev", "-usb", "-usbdevice", "-vnc", "-spice", "-monitor", "-qmp", "-mon",
-				"-gdb", "-s", "-S", "-loadvm", "-incoming", "-fw_cfg", "-dtb", "-bios", "-hda", "-cdrom", "-runas", "-chroot", "-run-with", "-enable-kvm"}, a) {
+				"-gdb", "-s", "-S", "-loadvm", "-incoming", "-fw_cfg", "-dtb", "-hda", "-cdrom", "-runas", "-chroot", "-run-with", "-enable-kvm"}, a) {
 				t.Errorf("%s: %q in the command line", arch, a)
 			}
 			l := strings.ToLower(a)
@@ -90,6 +95,14 @@ func TestQEMUArgsKeepTheBoundary(t *testing.T) {
 					t.Errorf("%s: %q in the command line", arch, a)
 				}
 			}
+		}
+		// the firmware is the one named (x86's qboot), never QEMU's default; arm64 has none
+		wantBios := []string(nil)
+		if arch == X86_64 {
+			wantBios = []string{spec.Firmware}
+		}
+		if b := valuesOf(args, "-bios"); !reflect.DeepEqual(b, wantBios) {
+			t.Errorf("%s: -bios %q", arch, b)
 		}
 		if s := valuesOf(args, "-sandbox"); len(s) != 1 || s[0] != "on,obsolete=deny,elevateprivileges=deny,spawn=deny,resourcecontrol=deny" {
 			t.Errorf("%s: -sandbox %q", arch, s)
@@ -122,6 +135,7 @@ func TestQEMUArgsOnARM(t *testing.T) {
 	spec := roleSpec()
 	spec.Arch = AArch64
 	spec.QEMU = "/opt/rubi/qemu/bin/qemu-system-aarch64"
+	spec.Firmware = ""
 	args, err := QEMUArgs(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -193,6 +207,9 @@ func TestQEMUArgsRefuseWhatCantBeRun(t *testing.T) {
 		"name with a space":            func(s *Spec) { s.Name = "a b" },
 		"relative QEMU":                func(s *Spec) { s.QEMU = "qemu-system-x86_64" },
 		"relative kernel":              func(s *Spec) { s.Kernel = "vmlinux" },
+		"no firmware on x86":           func(s *Spec) { s.Firmware = "" },
+		"relative firmware":            func(s *Spec) { s.Firmware = "qboot.rom" },
+		"firmware on arm64":            func(s *Spec) { s.Arch, s.QEMU = AArch64, "/opt/rubi/qemu/bin/qemu-system-aarch64" },
 		"unclean root":                 func(s *Spec) { s.Rootfs = "/opt/rubi/../rootfs.img" },
 		"no VM folder":                 func(s *Spec) { s.Dir = "" },
 		"newline in a folder":          func(s *Spec) { s.Shares[0].Source = "/home/u/a\nb" },

@@ -177,7 +177,22 @@ What keeps an agent in its VM, and what keeps the VM's helpers in their place:
 
 x86-64 uses the `microvm` machine, whose virtio devices are virtio-mmio (`virtio-blk-device`, `virtio-serial-device`,
 `vhost-user-fs-device`); arm64 uses the `virt` machine with its PCIe (`virtio-blk-pci` and so on), which needs no
-firmware for a `-kernel` boot. The runner's user and group inside the VM are 10001 (`microvm.GuestUID`, `GuestGID`);
+firmware for a `-kernel` boot.
+
+On x86 the microvm machine always runs a firmware first, and without option ROMs (`x-option-roms=off`) only QEMU's own
+qboot can start the kernel, through its PVH entry. So:
+
+- the kernel is an ELF `vmlinux` built with `CONFIG_PVH` (a compressed bzImage has no PVH entry; QEMU loads it, the
+  firmware finds nothing to start, and the console stays empty);
+- the command line names the firmware (`-bios`, `microvm.Spec.Firmware`): the pinned build's `qboot.rom`. Debian 13's
+  QEMU makes a SeaBIOS build the microvm default (`bios-microvm.bin` from the seabios package), which can't start a
+  kernel without option ROMs: the live test sat in the firmware (real mode at `f000:…`) until `-bios qboot.rom`.
+
+Found with the live test (`internal/home/agent/microvm/live`) on Debian 13 with QEMU 10.0.13 and Alpine's virt kernel
+6.6 (its vmlinux has a PVH entry): with qboot the kernel was running in under 2 s, and a kernel panic with `panic=-1`
+ended QEMU with status 0 (`-no-reboot`).
+
+The runner's user and group inside the VM are 10001 (`microvm.GuestUID`, `GuestGID`);
 the runner's Dockerfile pins only the user, so the CI build of the root file system checks that the group is 10001 and
 stops otherwise (pinning it in the Dockerfile would change the runner image macOS users build).
 
@@ -199,7 +214,7 @@ In order; each step has its tests:
 4. The backend (`VMBackend` on Linux: `Available` from `CheckKVM`, `New`, `Sweep`, `Provision` with the download steps),
    chosen in `platformBackend` for Linux.
 5. T3 sessions: the `agent-vm` shim's stream attached to a guest exec.
-6. The live test on a computer with KVM (boot, exec, no network, a read-only share refuses writes, a kill leaves nothing),
+6. The live test on a computer with KVM (started: boot to the initramfs, the firmware and the restart are checked) (boot, exec, no network, a read-only share refuses writes, a kill leaves nothing),
    and the measurements of questions 5 and 6.
 
 ## Sources

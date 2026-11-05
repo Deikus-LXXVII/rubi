@@ -5,6 +5,7 @@ package live
 import (
 	"bufio"
 	"bytes"
+	"debug/elf"
 	"fmt"
 	"io"
 	"net"
@@ -88,7 +89,7 @@ func env(name, def string) string {
 // the console socket carries the guest's output, and that the guest's restart ends QEMU with status 0.
 //
 // RUBI_LIVE_KERNEL (default /boot/vmlinuz-<this kernel>), RUBI_LIVE_QEMU (/usr/bin/qemu-system-x86_64) and
-// RUBI_LIVE_VIRTIOFSD (/usr/libexec/virtiofsd) say what to run, RUBI_LIVE_BIOS the firmware (QEMU's default when unset). The microvm machine boots without option ROMs, which
+// RUBI_LIVE_VIRTIOFSD (/usr/libexec/virtiofsd) say what to run, RUBI_LIVE_BIOS the firmware (/usr/share/qemu/qboot.rom). The microvm machine boots without option ROMs, which
 // takes a kernel with a PVH entry (an ELF vmlinux); for a compressed bzImage the test also tries option ROMs on, to tell
 // the kernel's format from the rest.
 func TestLiveVM(t *testing.T) {
@@ -231,7 +232,8 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, v variant) {
 	writeInitrd(t, initrd)
 
 	spec := microvm.Spec{QEMU: qemu, Arch: microvm.X86_64, Name: "rubi-live", Kernel: kernel, Rootfs: rootfs,
-		CPUs: "1", Memory: "256M", Dir: vm,
+		Firmware: env("RUBI_LIVE_BIOS", "/usr/share/qemu/qboot.rom"),
+		CPUs:     "1", Memory: "256M", Dir: vm,
 		Shares: []microvm.Share{{Source: rw, Target: "/work"}, {Source: ro, Target: "/ref", ReadOnly: true}}}
 
 	ids := microvm.HostIDs{UID: os.Getuid(), GID: os.Getgid()}
@@ -255,11 +257,6 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, v variant) {
 	}
 	qmp := filepath.Join(vm, "qmp.sock")
 	args = v.apply(args, qmp)
-	if bios := os.Getenv("RUBI_LIVE_BIOS"); bios != "" {
-		// the microvm machine's firmware: QEMU's own is qboot, which starts a PVH kernel itself; a distribution may ship
-		// another in its place
-		args = append(args, "-bios", bios)
-	}
 	args = append(args, "-initrd", initrd)
 	t.Logf("qemu: %q", args[1:])
 	began := time.Now()
@@ -426,6 +423,17 @@ func writeInitrd(t *testing.T, path string) {
 	exe, err := os.ReadFile(self)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The initramfs has nothing but this binary: a dynamically linked one finds no loader, and the kernel falls back to
+	// init= and panics.
+	if f, err := elf.Open(self); err == nil {
+		for _, p := range f.Progs {
+			if p.Type == elf.PT_INTERP {
+				f.Close()
+				t.Fatal("the test binary is dynamically linked: run the test with CGO_ENABLED=0")
+			}
+		}
+		f.Close()
 	}
 	var b bytes.Buffer
 	ino := 1

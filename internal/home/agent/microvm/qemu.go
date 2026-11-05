@@ -36,7 +36,13 @@ type Spec struct {
 	Arch Arch
 	// Name names the VM (letters, digits, '-', '_', '.'); it is QEMU's -name, for logs and the process list.
 	Name string
-	// Kernel is the guest kernel and Rootfs the guest's root file system: a raw image, attached read-only.
+	// Firmware is the microvm machine's firmware on x86: QEMU's qboot from the same pinned build (qboot.rom), which starts
+	// the kernel through its PVH entry with no option ROM. It is named, not left to QEMU's default: a distribution's
+	// QEMU may make a SeaBIOS build the microvm default, and that one can't start a kernel without option ROMs (found on
+	// Debian 13). The arm64 virt machine starts the kernel with no firmware; there it is empty.
+	Firmware string
+	// Kernel is the guest kernel (on x86 an ELF vmlinux with a PVH entry, CONFIG_PVH) and Rootfs the guest's root file
+	// system: a raw image, attached read-only.
 	Kernel string
 	Rootfs string
 	// CPUs and Memory are the VM's resources: a count, and a size such as "2G" or "1536M" ("" = the defaults).
@@ -150,14 +156,19 @@ func QEMUArgs(spec Spec) ([]string, error) {
 		"-pidfile", filepath.Join(dir, PidFile),
 		"-chardev", "socket,id=console,path=" + optValue(filepath.Join(dir, ConsoleSocket)) + ",server=on,wait=off",
 		"-serial", "chardev:console",
+	}
+	if spec.Arch == X86_64 {
+		args = append(args, "-bios", spec.Firmware)
+	}
+	args = append(args,
 		"-kernel", spec.Kernel,
 		"-append", cmdline,
-		"-drive", "file=" + optValue(spec.Rootfs) + ",if=none,id=root,format=raw,readonly=on",
-		"-device", "virtio-blk-" + bus + ",drive=root",
-		"-device", "virtio-serial-" + bus,
-		"-chardev", "socket,id=control,path=" + optValue(filepath.Join(dir, ControlSocket)) + ",server=on,wait=off",
-		"-device", "virtserialport,chardev=control,name=" + ControlPort,
-	}
+		"-drive", "file="+optValue(spec.Rootfs)+",if=none,id=root,format=raw,readonly=on",
+		"-device", "virtio-blk-"+bus+",drive=root",
+		"-device", "virtio-serial-"+bus,
+		"-chardev", "socket,id=control,path="+optValue(filepath.Join(dir, ControlSocket))+",server=on,wait=off",
+		"-device", "virtserialport,chardev=control,name="+ControlPort,
+	)
 	for i := range spec.Shares {
 		id := "fs" + strconv.Itoa(i)
 		args = append(args,
@@ -177,7 +188,13 @@ func (spec Spec) check() error {
 	if !vmName.MatchString(spec.Name) {
 		return fmt.Errorf("%w: the name %q", ErrSpec, spec.Name)
 	}
-	for what, p := range map[string]string{"QEMU": spec.QEMU, "kernel": spec.Kernel, "root file system": spec.Rootfs, "VM folder": spec.Dir} {
+	paths := map[string]string{"QEMU": spec.QEMU, "kernel": spec.Kernel, "root file system": spec.Rootfs, "VM folder": spec.Dir}
+	if spec.Arch == X86_64 {
+		paths["firmware"] = spec.Firmware
+	} else if spec.Firmware != "" {
+		return fmt.Errorf("%w: no firmware on %s", ErrSpec, spec.Arch)
+	}
+	for what, p := range paths {
 		if err := hostPath(p); err != nil {
 			return fmt.Errorf("%w: the %s: %w", ErrSpec, what, err)
 		}
