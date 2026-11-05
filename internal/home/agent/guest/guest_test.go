@@ -9,6 +9,7 @@ import (
 	"net"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -117,6 +118,7 @@ func TestExecEnvironmentIsTheRequests(t *testing.T) {
 			got = append(got, l)
 		}
 	}
+	slices.Sort(got) // shells print their environment in an order of their own (bash on Linux)
 	if want := []string{"PATH=/usr/bin:/bin", "RUBI_X=a_b=c"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("environment %q", got)
 	}

@@ -180,7 +180,12 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, optionROMs bool) {
 	console := &bounded{max: 1 << 20}
 	conn, err := net.Dial("unix", filepath.Join(vm, microvm.ConsoleSocket))
 	if err != nil {
-		t.Fatal(err)
+		// QEMU made the socket and ended at once: say why
+		select {
+		case <-q.done:
+		case <-time.After(5 * time.Second):
+		}
+		t.Fatalf("console: %v; QEMU: %v, it said:\n%s", err, q.err, q.out())
 	}
 	read := make(chan struct{})
 	go func() { _, _ = io.Copy(console, conn); close(read) }()
