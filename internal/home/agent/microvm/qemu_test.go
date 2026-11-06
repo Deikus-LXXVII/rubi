@@ -42,7 +42,7 @@ func TestQEMUArgsOfARoleVM(t *testing.T) {
 	d := "/home/u/.local/state/rubi-home/vm/web-app/"
 	want := []string{"/opt/rubi/qemu/bin/qemu-system-x86_64",
 		"-name", "rubi-web-app-reviewer",
-		"-machine", "microvm,accel=kvm,x-option-roms=off,pit=off,pic=off,rtc=off,isa-serial=on,memory-backend=mem",
+		"-machine", "microvm,accel=kvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=off,isa-serial=on,memory-backend=mem",
 		"-cpu", "host", "-smp", "2", "-m", "2048M",
 		"-object", "memory-backend-memfd,id=mem,size=2048M,share=on",
 		"-nodefaults", "-no-user-config", "-nic", "none", "-display", "none", "-no-reboot",

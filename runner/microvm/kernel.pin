@@ -1,0 +1,4 @@
+# The guest kernel of the Linux VM backend: version and the SHA-256 of linux-<version>.tar.xz, as kernel.org's
+# sha256sums.asc lists it (signed by its checksum autosigner, B8868C80BA62A1FFFAF5FDA9632D3A06589DA6B1; checked
+# 2026-11-06). Longterm series 6.18. Update both together.
+6.18.60 3c2f44ef6acc021a7ad444d9a2e6ec1ef488ff09368793d0004a6080f69d621e

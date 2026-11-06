@@ -129,8 +129,10 @@ func QEMUArgs(spec Spec) ([]string, error) {
 	var machine, cmdline, bus string
 	switch spec.Arch {
 	case X86_64:
-		// microvm: no PCI, no firmware, no legacy devices but the serial port the console needs
-		machine = "microvm,accel=kvm,x-option-roms=off,pit=off,pic=off,rtc=off,isa-serial=on,memory-backend=mem"
+		// microvm: no PCI, no option ROMs, no legacy devices but the serial port the console needs, and no ACPI: QEMU
+		// names the virtio-mmio devices on the kernel command line (virtio_mmio.device=), so the guest kernel needs
+		// neither ACPI nor PCI (its ACPI tables don't load without PCI)
+		machine = "microvm,accel=kvm,acpi=off,x-option-roms=off,pit=off,pic=off,rtc=off,isa-serial=on,memory-backend=mem"
 		cmdline = KernelCmdline + " reboot=t"
 		bus = "device"
 	case AArch64:
