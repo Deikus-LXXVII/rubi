@@ -78,10 +78,10 @@ before the backend is called done; vsock stays the option if it is too slow.
 
 ### 6. Image size and boot time
 
-Not measured yet. A root file system with Node and the Agent SDK is expected at a few hundred MB per CPU uncompressed;
-the download is compressed and happens once per runner change. A trimmed kernel on the `microvm` machine is expected to
-reach the guest agent in well under a second. **Measure** both on the first KVM host; the setup wizard shows the
-download size before it starts.
+First measurements (x86-64): the root file system built from today's runner image is 1039 MiB uncompressed (the image
+export is 815 MB); the kernel is a 15.8 MB `vmlinux`. The download is compressed and happens once per runner change; the
+setup wizard shows its size before it starts. Boot: under QEMU's emulator (no KVM) Rubi's kernel reaches the probe and
+the VM has ended again in under a second; with KVM it is to be measured on the test machine.
 
 ### 7. Memory
 
@@ -179,6 +179,11 @@ x86-64 uses the `microvm` machine, whose virtio devices are virtio-mmio (`virtio
 `vhost-user-fs-device`); arm64 uses the `virt` machine with its PCIe (`virtio-blk-pci` and so on), which needs no
 firmware for a `-kernel` boot.
 
+On x86 the microvm machine runs with `acpi=off`: QEMU then names the virtio-mmio devices on the kernel command line
+(`virtio_mmio.device=`) and the interrupt controller is in the MP table, so the guest kernel needs neither ACPI nor PCI.
+With ACPI on, the tables of the minimal kernel (no PCI) didn't load ("AE_BAD_PARAMETER, During Region initialization")
+and no virtio device was found.
+
 On x86 the microvm machine always runs a firmware first, and without option ROMs (`x-option-roms=off`) only QEMU's own
 qboot can start the kernel, through its PVH entry. So:
 
@@ -199,6 +204,21 @@ ended with QEMU. Alpine's kernel has virtio-fs only as a module, so the share wa
 The runner's user and group inside the VM are 10001 (`microvm.GuestUID`, `GuestGID`);
 the runner's Dockerfile pins only the user, so the CI build of the root file system checks that the group is 10001 and
 stops otherwise (pinning it in the Dockerfile would change the runner image macOS users build).
+
+## The guest kernel and root file system
+
+`runner/microvm` builds both:
+
+- **Kernel** (`build-kernel.sh`): the longterm source pinned by its SHA-256 (`kernel.pin`, from kernel.org's signed
+  sums), `allnoconfig` plus the fragments in `kernel/` (what the VM uses and nothing else: the PVH entry, virtio-mmio on
+  x86 or PCIe on arm64, virtio-blk, -console and -fs, ext4, the serial console, loopback networking, seccomp and
+  namespaces for the tools' own sandboxes; no modules, no network card). `check-kernel-config.sh` fails the build when
+  an option didn't make it into the configuration (a missing dependency only warns in Kconfig), before and after
+  `make`. `TestGuestKernelDrivesTheCommandLine` ties the fragments to `QEMUArgs`. Initramfs support is built in for the
+  live test's probe; Rubi's VMs boot from the root disk.
+- **Root file system** (`build-rootfs.sh`): the runner image's files and `/sbin/rubi-guest` as a read-only ext4 image
+  without a journal, with the mount points outside `/work` made in it (`rootfs-dirs.txt`; the root is read-only). It
+  stops when the runner's user and group aren't 10001.
 
 ## The launcher
 
