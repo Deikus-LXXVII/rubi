@@ -179,6 +179,9 @@ func (r *shRig) release(v string, extra ...string) {
 	}
 	line([]byte("app"), "rubi-home-"+v+"-macos-universal.zip")
 	line([]byte("bin"), "bin/rubi-linux-amd64") // no version in the name: ignored
+	// the Linux VM files: versioned, but not a rubi-<v>- or rubi-home-<v>- asset, so not taken for another release
+	line([]byte("vm"), "rubi-vm-"+v+"-linux-x86_64-rootfs.tar.gz")
+	line([]byte("src"), "rubi-vm-"+v+"-sources.tar.gz")
 	for _, e := range extra {
 		line([]byte(e), e)
 	}

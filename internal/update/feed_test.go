@@ -112,8 +112,10 @@ func TestChecksumsMustNameTheRequestedVersion(t *testing.T) {
 	if _, err := Checksums(context.Background(), "v0.1.0-test", "v0.14.0"); err == nil {
 		t.Fatal("a list without the archive accepted")
 	}
-	// The real shape: versioned names for this version, unversioned binaries ignored.
-	r.sums("v0.14.0", h+"  "+name("v0.14.0")+"\n"+h+"  rubi-home-v0.14.0-windows-amd64.zip\n"+h+"  bin/rubi-linux-amd64\n")
+	// The real shape: versioned names for this version, unversioned binaries ignored, and the Linux VM files (which Rubi
+	// Home's setup looks up by their exact name) not taken for a release of their own.
+	r.sums("v0.14.0", h+"  "+name("v0.14.0")+"\n"+h+"  rubi-home-v0.14.0-windows-amd64.zip\n"+h+"  bin/rubi-linux-amd64\n"+
+		h+"  rubi-vm-v0.14.0-linux-x86_64-rootfs.tar.gz\n"+h+"  rubi-vm-v0.14.0-sources.tar.gz\n")
 	if _, err := Checksums(context.Background(), "v0.1.0-test", "v0.14.0"); err != nil {
 		t.Fatalf("a good list refused: %v", err)
 	}
