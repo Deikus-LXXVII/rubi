@@ -165,6 +165,11 @@ func (p microVMProvisioner) BuildImage(ctx context.Context, _ CmdRunner, log fun
 
 func (p microVMProvisioner) ImageTag() string { return "rubi-vm-" + p.b.files.Version }
 
+// InstallTool is the tool step's install (ToolInstaller): the VM files.
+func (p microVMProvisioner) InstallTool(ctx context.Context, log func(string)) error {
+	return p.b.InstallFiles(ctx, log)
+}
+
 // InstallFiles downloads and checks this release's VM files (the wizard's install of the tool step).
 func (b *MicroVMBackend) InstallFiles(ctx context.Context, log func(string)) error {
 	return b.files.Install(ctx, log)

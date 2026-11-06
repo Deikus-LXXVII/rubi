@@ -160,6 +160,26 @@ func TestMicroVMFilesInstall(t *testing.T) {
 	}
 }
 
+// The setup's tool step installs the files through the provisioner (ToolInstaller), and is done after it.
+func TestMicroVMToolStepInstallsTheFiles(t *testing.T) {
+	r := newRelease(t, microvm.X86_64)
+	b := &MicroVMBackend{files: microVMFiles{Root: t.TempDir(), Version: r.version, Arch: microvm.X86_64}}
+	p := b.Provision()
+	if st := p.Tool(context.Background(), nil, ""); st.State != StepTodo || st.Action != "install" {
+		t.Fatalf("%+v", st)
+	}
+	ti, ok := p.(ToolInstaller)
+	if !ok {
+		t.Fatal("not a ToolInstaller")
+	}
+	if err := ti.InstallTool(context.Background(), func(string) {}); err != nil {
+		t.Fatal(err)
+	}
+	if st := p.Tool(context.Background(), nil, ""); st.State != StepDone {
+		t.Fatalf("%+v", st)
+	}
+}
+
 // Nothing that doesn't check out is installed: a tampered archive, a signature by another key, a missing part, an archive
 // with a link or a path that leaves its folder.
 func TestMicroVMFilesInstallRefuses(t *testing.T) {

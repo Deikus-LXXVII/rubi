@@ -134,6 +134,10 @@ func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
 		}
 	}
 	out[FeatureAgent], out[FeatureT3] = agents, agents
+	// T3's sessions need the backend's session host; a backend may run agents before it has one (the Linux microvm)
+	if agents.Available && env.Backend.Sessions() == nil {
+		out[FeatureT3] = Feature{Reason: noSessionHost}
+	}
 	// T3 also needs a T3 build for this platform (upstream publishes none for Intel Macs)
 	if agents.Available && env.T3Platform != "" {
 		if pin, err := loadT3Pin(); err == nil {
@@ -144,6 +148,9 @@ func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
 	}
 	return out
 }
+
+// noSessionHost is why T3 is not available where agents are: the backend can't run T3's session VMs yet.
+const noSessionHost = "T3 sessions don't run in this computer's VMs yet"
 
 func systemName(goos string) string {
 	switch goos {

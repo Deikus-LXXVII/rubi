@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -86,7 +87,6 @@ func TestLiveRoles(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	cfg := h.Fresh()
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -97,9 +97,7 @@ func TestLiveRoles(t *testing.T) {
 	}
 	mgr := agent.New(agent.Options{
 		Dir: h.Dir, Projects: func() []string { return []string{proj} }, Wait: time.Minute,
-		NewVM: func(agent.Project) agent.VM {
-			return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, EnvDir: h.Dir}
-		},
+		NewVM: liveNewVM(t, h),
 	})
 	defer mgr.Close()
 	put := func(name string) string {
@@ -204,7 +202,6 @@ func TestLiveSSH(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	cfg := h.Fresh()
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -215,9 +212,7 @@ func TestLiveSSH(t *testing.T) {
 	}
 	mgr := agent.New(agent.Options{
 		Dir: h.Dir, Projects: func() []string { return []string{proj} }, Wait: time.Minute,
-		NewVM: func(agent.Project) agent.VM {
-			return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, EnvDir: h.Dir}
-		},
+		NewVM: liveNewVM(t, h),
 	})
 	defer mgr.Close()
 	call := func(op string, args any) any {
@@ -363,7 +358,6 @@ func TestLiveNetless(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
-	cfg := h.Fresh()
 	base, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -374,9 +368,7 @@ func TestLiveNetless(t *testing.T) {
 	}
 	mgr := agent.New(agent.Options{
 		Dir: h.Dir, Projects: func() []string { return []string{proj} }, Wait: time.Minute,
-		NewVM: func(agent.Project) agent.VM {
-			return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, EnvDir: h.Dir}
-		},
+		NewVM: liveNewVM(t, h),
 	})
 	defer mgr.Close()
 	skill := "---\nname: net-skill\ndescription: tiny\n---\nSay hi.\n"
@@ -531,19 +523,42 @@ const connect = (host, withAuth) => new Promise(res => { const s = net.connect({
 		t.Errorf("something listens on 3129 in the VM: %v", p["noGateway"])
 	}
 
-	// The pipe's exec process dies: Home starts it again and the proxy path works once more.
-	pids := liveNetpipePIDs(t)
-	if len(pids) != 1 {
-		t.Fatalf("expected one rubi-netpipe exec process of this test, found %v", pids)
+	// The pipe's exec process dies: Home starts it again and the proxy path works once more. With Apple's tool it is a
+	// `container exec` process of this test; on the microvm it is a guest exec, killed inside the VM.
+	guestPipe := func() string {
+		return strings.TrimSpace(run("sh", "-c", "for d in /proc/[0-9]*; do grep -q '[r]ubi-netpipe' $d/cmdline 2>/dev/null && basename $d; done"))
 	}
-	if err := syscallKill(pids[0]); err != nil {
-		t.Fatal(err)
+	var pipeID func() string
+	var killed string
+	if runtime.GOOS == "linux" {
+		pipeID = guestPipe
+		old := guestPipe()
+		if old == "" || strings.Contains(old, "\n") {
+			t.Fatalf("expected one rubi-netpipe process in the VM, found %q", old)
+		}
+		killed = old
+		run("kill", "-9", old)
+	} else {
+		pids := liveNetpipePIDs(t)
+		if len(pids) != 1 {
+			t.Fatalf("expected one rubi-netpipe exec process of this test, found %v", pids)
+		}
+		killed = strconv.Itoa(pids[0])
+		if err := syscallKill(pids[0]); err != nil {
+			t.Fatal(err)
+		}
+		pipeID = func() string {
+			if n := liveNetpipePIDs(t); len(n) == 1 {
+				return strconv.Itoa(n[0])
+			}
+			return ""
+		}
 	}
 	deadline := time.Now().Add(60 * time.Second)
 	var again map[string]any
 	for time.Now().Before(deadline) {
 		time.Sleep(2 * time.Second)
-		if n := liveNetpipePIDs(t); len(n) == 1 && n[0] != pids[0] {
+		if n := pipeID(); n != "" && n != killed && !strings.Contains(n, "\n") {
 			again = node(proxyProbe)
 			if s, _ := again["allowed"].(string); strings.Contains(s, " 200") {
 				break
@@ -553,7 +568,7 @@ const connect = (host, withAuth) => new Promise(res => { const s = net.connect({
 	if s, _ := again["allowed"].(string); !strings.Contains(s, " 200") {
 		t.Errorf("after the pipe's process was killed: %v", again)
 	} else {
-		t.Logf("pipe restarted: new exec process %v", liveNetpipePIDs(t))
+		t.Logf("pipe restarted: new process %v", pipeID())
 	}
 	if out := run("sh", "-c", "for f in /proc/[0-9]*/cmdline; do tr '\\0' ' ' < $f; echo; done 2>/dev/null | grep -c '[r]ubi-netpipe'"); strings.TrimSpace(out) != "1" {
 		t.Errorf("rubi-netpipe processes in the VM after the restart: %q (the old one should be gone)", strings.TrimSpace(out))
@@ -567,4 +582,16 @@ func syscallKill(pid int) error {
 		return err
 	}
 	return p.Kill()
+}
+
+// liveNewVM makes the live runs' VMs: Apple's container tool on a Mac, the microvm backend on Linux
+// (liveMicroVMBackend, which installs its files first).
+func liveNewVM(t *testing.T, h *Helper) func(agent.Project) agent.VM {
+	if be := liveMicroVMBackend(t, h); be != nil {
+		return be.New
+	}
+	cfg := h.Fresh()
+	return func(agent.Project) agent.VM {
+		return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, EnvDir: h.Dir}
+	}
 }

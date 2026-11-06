@@ -48,7 +48,12 @@ func (h *Helper) ServeAgentVM(ctx context.Context) error {
 		log.Printf("T3 sessions: not available on this computer (%s)", av.Reason)
 		return nil
 	}
-	srv := t3vm.NewServer(t3vm.Options{Dir: h.Dir, Backend: h.Agent, Host: be.Sessions(), T3Port: c.T3Port, T3Pid: h.T3Pid,
+	host := be.Sessions()
+	if host == nil {
+		log.Printf("T3 sessions: not available on this computer (%s)", noSessionHost)
+		return nil
+	}
+	srv := t3vm.NewServer(t3vm.Options{Dir: h.Dir, Backend: h.Agent, Host: host, T3Port: c.T3Port, T3Pid: h.T3Pid,
 		Attachments: filepath.Join(c.T3BaseDir, "userdata", "attachments")})
 	h.sessMu.Lock()
 	h.sess = srv

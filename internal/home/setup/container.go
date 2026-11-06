@@ -345,6 +345,9 @@ func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
 	if p == nil {
 		return outcome{Failed, "Setting up agents isn't available on this computer (" + av.Reason + ")."}
 	}
+	if ti, ok := p.(agent.ToolInstaller); ok {
+		return s.installTool(ctx, p, ti, log)
+	}
 	rel := s.opt.Release
 	want := agent.NormalizeVersion(rel.Version)
 	if v, ok, present := p.Installed(ctx, s.opt.Cmd); present && !ok {
@@ -391,4 +394,20 @@ func (s *Setup) runContainer(ctx context.Context, j *job) outcome {
 		return outcome{Failed, "The installer finished, but the container tool isn't at version " + want + "."}
 	}
 	return outcome{Done, "Installed version " + want + "."}
+}
+
+// installTool is the tool step of a backend whose tool Rubi Home installs by itself (agent.ToolInstaller): no package, no
+// administrator dialog. A cancel stops it, and the backend leaves nothing half installed.
+func (s *Setup) installTool(ctx context.Context, p agent.Provisioner, ti agent.ToolInstaller, log func(string)) outcome {
+	if st := fromBackend(p.Tool(ctx, s.opt.Cmd, s.opt.Release.Version)); st.State == Done {
+		return outcome{Done, st.Reason}
+	}
+	if err := ti.InstallTool(ctx, log); err != nil {
+		return outcome{Failed, safeText(err.Error())} // a cancelled job keeps no result (record)
+	}
+	st := fromBackend(p.Tool(ctx, s.opt.Cmd, s.opt.Release.Version))
+	if st.State != Done {
+		return outcome{Failed, "The install finished, but the tool step still isn't done: " + safeText(st.Reason)}
+	}
+	return outcome{Done, st.Reason}
 }

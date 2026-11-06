@@ -58,3 +58,42 @@ func TestAgentVMsComeFromTheBackend(t *testing.T) {
 		t.Fatalf("the wizard on a computer with no backend: %+v", st.Steps[0])
 	}
 }
+
+// agentsOnlyBackend runs agents but has no host for T3's sessions yet, like the Linux microvm backend.
+type agentsOnlyBackend struct{ agent.VMBackend }
+
+func (agentsOnlyBackend) Available(context.Context) agent.Availability {
+	return agent.Availability{OK: true}
+}
+func (agentsOnlyBackend) Sessions() agent.SessionHost { return nil }
+
+// A backend with no session host gets agents but not T3, and the session server serves nothing on it (it would have no
+// VMs to make).
+func TestT3NeedsTheBackendsSessionHost(t *testing.T) {
+	be := agentsOnlyBackend{agent.NoBackend("unused")}
+	got := ComputeFeatures(context.Background(), FeatureEnv{GOOS: "linux", Backend: be})
+	if !got[FeatureAgent].Available || got[FeatureT3].Available || got[FeatureT3].Reason != noSessionHost {
+		t.Fatalf("agent %+v, t3 %+v", got[FeatureAgent], got[FeatureT3])
+	}
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Update(func(c *Config) { c.T3Port, c.T3BaseDir = 4410, t.TempDir() }); err != nil {
+		t.Fatal(err)
+	}
+	h.backendOverride = func() agent.VMBackend { return be }
+	done := make(chan error, 1)
+	go func() { done <- h.ServeAgentVM(context.Background()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the session server serves with no session host")
+	}
+	if _, err := os.Stat(AgentVMSocketPath(h.Dir)); err == nil {
+		t.Error("a session socket was made")
+	}
+}

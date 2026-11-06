@@ -291,6 +291,25 @@ file server's end counts as a lost share).
 A Landlock rule set does not cover connecting to a Unix socket by path; virtiofsd could reach the VM's own control
 socket in the same folder. That gives it nothing it didn't have: it already serves the guest's file system.
 
+## The backend
+
+`agent.MicroVMBackend` is Linux's `VMBackend` (`platformBackend` picks it, with this release's version and Home's own
+program for `vm-confine`):
+
+- *Available*: a CPU with a guest kernel (x86-64 or arm64), Landlock, and KVM. A `/dev/kvm` the user can't open yet
+  still counts: an administrator can fix that, and the setup wizard's KVM step says so (it has no button).
+- *New* is a `MicroVM`: it boots the VM with the project's shares in order, waits for the guest agent, has it mount the
+  shares, and runs the network forwarder and the runner as guest execs (user 10001, `/work`, the runner image's
+  environment under each exec's own; a guest exec inherits nothing).
+- *Provision*: the tool step is the VM files, the service step is KVM, the image comes with the files. The tool step is
+  a `ToolInstaller`, so the setup wizard calls it instead of the Mac's administrator package install: the files are
+  downloaded from Home's own release, every archive is checked against the release's signed `SHA256SUMS` before it is
+  unpacked, only folders and regular files are unpacked, nothing lands outside its folder, and the finished folder is
+  renamed into place with a marker, so a cancelled or failed install leaves nothing half there.
+- *Login* and *Sessions* are nil for now: the sign-in VM and T3's session VMs on this backend are later steps. T3 says
+  "T3 sessions don't run in this computer's VMs yet" where agents are available but the backend has no session host,
+  and the session server serves nothing there.
+
 ## libkrun
 
 libkrun (Apache-2.0) is a VMM library with virtio-fs, vsock and KVM (and HVF on macOS) built in, used rootless by
@@ -306,8 +325,7 @@ In order; each step has its tests:
 1. The guest agent (`/sbin/rubi-guest`): done (above); tested over a pipe, its init only in a live VM.
 2. The launcher: done (`microvm.Launcher`, `PrepareDir`, `Sweeper`, `ExecConfined`, Home's `vm-confine`; below).
 3. CI builds: kernel, root file system, QEMU, virtiofsd per CPU, into `SHA256SUMS`; the QEMU source archive.
-4. The backend (`VMBackend` on Linux: `Available` from `CheckKVM`, `New`, `Sweep`, `Provision` with the download steps),
-   chosen in `platformBackend` for Linux.
+4. The backend: done (`MicroVMBackend`, above), chosen in `platformBackend` for Linux; the sign-in VM is still to do.
 5. T3 sessions: the `agent-vm` shim's stream attached to a guest exec.
 6. The live test on a computer with KVM (started: boot, control port, the firmware, virtiofsd and the restart are checked; mounts, exec and the rest wait
    for Rubi's kernel) (boot, exec, no network, a read-only share refuses writes, a kill leaves nothing),

@@ -127,6 +127,13 @@ type Provisioner interface {
 	ImageTag() string
 }
 
+// ToolInstaller is a Provisioner whose tool Rubi Home installs by itself, with no administrator: the microvm backend's VM
+// files, downloaded from Home's own release and checked against its signed SHA256SUMS. The setup wizard's tool step calls
+// InstallTool instead of the Mac's administrator package install; it says how it went through log.
+type ToolInstaller interface {
+	InstallTool(ctx context.Context, log func(string)) error
+}
+
 // SessionHost is the backend's part of the T3 session server (package t3vm): the VMs of T3 sessions are made, inspected and
 // removed through it.
 type SessionHost interface {

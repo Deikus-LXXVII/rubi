@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -152,5 +153,121 @@ func TestWizardOnAComputerWithNoBackend(t *testing.T) {
 	}
 	if len(e.cmd.calls) != 0 {
 		t.Errorf("a command was run: %v", e.cmd.calls)
+	}
+}
+
+// installingProvisioner is a backend whose tool Rubi Home installs by itself (agent.ToolInstaller), like the microvm
+// backend's VM files.
+type installingProvisioner struct {
+	*fakeProvisioner
+	installed bool
+	err       error
+	marks     bool // whether a successful install makes the tool step done
+	calls     int
+	block     chan struct{}
+}
+
+func (f *installingProvisioner) Provision() agent.Provisioner { return f }
+func (f *installingProvisioner) Tool(context.Context, agent.CmdRunner, string) agent.StepStatus {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.installed {
+		return agent.StepStatus{State: agent.StepDone, Reason: "Fake files are installed."}
+	}
+	return agent.StepStatus{State: agent.StepTodo, Reason: "Fake files are missing.", Action: "install"}
+}
+func (f *installingProvisioner) InstallTool(ctx context.Context, log func(string)) error {
+	log("fetching the fake files")
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+	if f.block != nil {
+		select {
+		case <-f.block:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err == nil && f.marks {
+		f.installed = true
+	}
+	return f.err
+}
+
+func installingEnv(t *testing.T) (*testEnv, *installingProvisioner) {
+	f := &installingProvisioner{fakeProvisioner: &fakeProvisioner{}, marks: true}
+	e := newTestEnv(t, func(o *Options) { o.Backend = func() agent.VMBackend { return f } })
+	return e, f
+}
+
+// The tool step of a backend that installs its own tool calls it: no package download, no administrator dialog, not one
+// command of the wizard's own. A tool already there is not installed again.
+func TestToolStepInstallsThroughTheBackend(t *testing.T) {
+	e, f := installingEnv(t)
+	ctx := context.Background()
+	if st := e.step("container"); st.State != Todo || st.Action != "install" {
+		t.Fatalf("%+v", st)
+	}
+	if err := e.s.Run(ctx, StepContainer, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	e.wait()
+	if st := e.step("container"); st.State != Done || f.calls != 1 {
+		t.Fatalf("calls %d, %+v", f.calls, st)
+	}
+	if len(e.cmd.calls) != 0 {
+		t.Errorf("the wizard ran commands of its own: %v", e.cmd.calls)
+	}
+	if err := e.s.Run(ctx, StepContainer, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	e.wait()
+	if f.calls != 1 {
+		t.Errorf("installed again: %d calls", f.calls)
+	}
+}
+
+// A failed install fails the step with its reason; an install that says it worked but left the step undone fails too.
+func TestToolStepReportsAFailedInstall(t *testing.T) {
+	e, f := installingEnv(t)
+	ctx := context.Background()
+	f.err = errors.New("the checksum of the kernel archive doesn't match")
+	_ = e.s.Run(ctx, StepContainer, "", "", "")
+	e.wait()
+	if st := e.step("container"); st.State != Failed || !strings.Contains(st.Reason, "checksum of the kernel archive") {
+		t.Fatalf("%+v", st)
+	}
+	f.err, f.marks = nil, false
+	_ = e.s.Run(ctx, StepContainer, "", "", "")
+	e.wait()
+	if st := e.step("container"); st.State != Failed || !strings.Contains(st.Reason, "still isn't done") {
+		t.Fatalf("%+v", st)
+	}
+}
+
+// Cancelling the install stops it, and the step is left to do.
+func TestToolStepInstallCanBeCancelled(t *testing.T) {
+	e, f := installingEnv(t)
+	f.block = make(chan struct{})
+	if err := e.s.Run(context.Background(), StepContainer, "", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		f.mu.Lock()
+		n := f.calls
+		f.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		runtime.Gosched()
+	}
+	if !e.s.Cancel() {
+		t.Fatal("nothing to cancel")
+	}
+	e.wait()
+	if st := e.step("container"); st.State != Todo || f.installed {
+		t.Fatalf("installed %v, %+v", f.installed, st)
 	}
 }

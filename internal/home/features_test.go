@@ -58,7 +58,8 @@ var (
 	windowsTools = []string{`C:\Windows\System32\rundll32.exe`, `C:\Windows\System32\reg.exe`}
 )
 
-// backendOf is the backend a system has: Apple's on a Mac, none (with its reason) elsewhere, as agent.PlatformBackend gives.
+// backendOf is the backend a system has: Apple's on a Mac, none (with its reason) elsewhere; for Linux, a computer the
+// microvm backend can't run on.
 func backendOf(goos string) agent.VMBackend {
 	switch goos {
 	case "darwin":
@@ -186,10 +187,13 @@ func TestFeaturesOfThisSystem(t *testing.T) {
 			t.Errorf("%s on %s: %+v", n, runtime.GOOS, got[n])
 		}
 	}
-	for _, n := range []string{FeatureAgent, FeatureT3} {
-		if got[n].Available != silicon {
-			t.Errorf("%s on %s (Apple silicon %v): %+v", n, runtime.GOOS, silicon, got[n])
-		}
+	// on Linux the microvm backend says (KVM and Landlock), and T3 has no session host there yet
+	agents, t3 := silicon, silicon
+	if runtime.GOOS == "linux" {
+		agents, t3 = agent.PlatformBackend(agent.BackendConfig{}).Available(context.Background()).OK, false
+	}
+	if got[FeatureAgent].Available != agents || got[FeatureT3].Available != t3 {
+		t.Errorf("on %s (Apple silicon %v): agent %+v, t3 %+v", runtime.GOOS, silicon, got[FeatureAgent], got[FeatureT3])
 	}
 	if got[FeatureClaudeStart].Available != mac {
 		t.Errorf("claude-start with no desktop on %s: %+v", runtime.GOOS, got[FeatureClaudeStart])
