@@ -215,8 +215,12 @@ func (l Launcher) Start(spec Spec) (_ *VM, err error) {
 }
 
 // withFileServers adds what the file servers said to an error of QEMU's start: QEMU failing to connect to one is often
-// the file server's doing.
+// the file server's doing. The failed start ends them anyway; they are ended here first, because their output is copied
+// in the background until they have ended (exec.Cmd.Wait): only then is all of it there to read.
 func (vm *VM) withFileServers(err error) error {
+	for _, c := range vm.fsds {
+		c.end(time.Second)
+	}
 	for _, c := range vm.fsds {
 		if out := c.out.String(); out != "" {
 			err = fmt.Errorf("%w\n%s said: %s", err, c.name, out)

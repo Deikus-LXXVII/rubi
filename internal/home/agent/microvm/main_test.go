@@ -68,7 +68,8 @@ func argAfter(args []string, flag string) string {
 }
 
 // fakeVirtiofsd serves its socket until its QEMU goes. A file ".fake" in the shared folder changes what it does: "fail"
-// (a flag it doesn't take), "die-later", "escape" (it tries to write beside its folder and says so if it can).
+// (a flag it doesn't take), "die-later", "escape" (it tries to write beside its folder and says so if it can), "chatty"
+// (a warning when it is ended), "slow-listen".
 func fakeVirtiofsd(args []string) {
 	sock, dir := argAfter(args, "--socket-path"), argAfter(args, "--shared-dir")
 	mode, _ := os.ReadFile(filepath.Join(dir, ".fake"))
@@ -85,8 +86,15 @@ func fakeVirtiofsd(args []string) {
 	case "die-later":
 		go func() { time.Sleep(300 * time.Millisecond); fmt.Fprintln(os.Stderr, "died"); os.Exit(1) }()
 	case "chatty":
-		fmt.Fprintln(os.Stderr, "WARN virtiofsd: something about the shared folder")
-		time.Sleep(100 * time.Millisecond) // the launcher reads output as it arrives: let it arrive before the socket
+		// it stays up after its QEMU has gone and says it as it is ended: the line is there only if the launcher ends
+		// the file servers and reads their output after that (when all of it has been copied)
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM)
+		go func() {
+			<-sig
+			fmt.Fprintln(os.Stderr, "WARN virtiofsd: something about the shared folder")
+			os.Exit(0)
+		}()
 	}
 	var l net.Listener
 	if strings.TrimSpace(string(mode)) == "slow-listen" {
@@ -103,6 +111,9 @@ func fakeVirtiofsd(args []string) {
 		os.Exit(1)
 	}
 	_, _ = io.Copy(io.Discard, c) // QEMU gone: virtiofsd ends
+	for strings.TrimSpace(string(mode)) == "chatty" {
+		time.Sleep(time.Second) // until it is ended (its warning then)
+	}
 	os.Exit(0)
 }
 
