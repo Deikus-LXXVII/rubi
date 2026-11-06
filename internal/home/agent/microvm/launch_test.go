@@ -183,6 +183,17 @@ func TestLaunchFileServersEndingFirstOnACleanExit(t *testing.T) {
 	}
 }
 
+// A QEMU that fails to start says so with what the file servers said: its failing to connect to one is often theirs.
+func TestLaunchQEMUFailureCarriesTheFileServers(t *testing.T) {
+	r := newLaunchRig(t)
+	r.qemuMode(t, "die-after-bind")
+	_ = os.WriteFile(filepath.Join(r.spec.Shares[0].Source, ".fake"), []byte("chatty"), 0o600)
+	_, err := r.start(t)
+	if err == nil || !strings.Contains(err.Error(), "something about the shared folder") {
+		t.Fatalf("error %v", err)
+	}
+}
+
 // A file server that won't start fails the start with what it said; nothing is left running and the folder is cleared.
 func TestLaunchFileServerFailsTheStart(t *testing.T) {
 	r := newLaunchRig(t)

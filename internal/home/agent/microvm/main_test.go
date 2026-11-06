@@ -84,11 +84,18 @@ func fakeVirtiofsd(args []string) {
 		}
 	case "die-later":
 		go func() { time.Sleep(300 * time.Millisecond); fmt.Fprintln(os.Stderr, "died"); os.Exit(1) }()
+	case "chatty":
+		fmt.Fprintln(os.Stderr, "WARN virtiofsd: something about the shared folder")
 	}
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	var l net.Listener
+	if strings.TrimSpace(string(mode)) == "slow-listen" {
+		l = bindThenListen(sock, 300*time.Millisecond) // as some virtiofsd versions: the file well before the listen
+	} else {
+		var err error
+		if l, err = net.Listen("unix", sock); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 	c, err := l.Accept()
 	if err != nil {

@@ -99,9 +99,21 @@ func (c *child) failure() error {
 
 // waitSocket waits until path is a socket, the process ends, or the time is up.
 func waitSocket(c *child, path string, d time.Duration) error {
+	return waitFor(c, path, d, func() bool {
+		fi, err := os.Stat(path)
+		return err == nil && fi.Mode()&os.ModeSocket != 0
+	})
+}
+
+// waitListening waits until a socket listens at path (listening), the process ends, or the time is up.
+func waitListening(c *child, path string, d time.Duration) error {
+	return waitFor(c, path, d, func() bool { return listening(path) })
+}
+
+func waitFor(c *child, path string, d time.Duration, ready func() bool) error {
 	deadline := time.Now().Add(d)
 	for {
-		if fi, err := os.Stat(path); err == nil && fi.Mode()&os.ModeSocket != 0 {
+		if ready() {
 			return nil
 		}
 		if !c.running() {
@@ -177,7 +189,7 @@ func (l Launcher) Start(spec Spec) (_ *VM, err error) {
 		if err := writePid(filepath.Join(spec.Dir, sharePidFile(i)), c.cmd.Process.Pid); err != nil {
 			return nil, err
 		}
-		if err := waitSocket(c, filepath.Join(spec.Dir, ShareSocket(i)), wait); err != nil {
+		if err := waitListening(c, filepath.Join(spec.Dir, ShareSocket(i)), wait); err != nil {
 			return nil, err
 		}
 	}
@@ -187,11 +199,11 @@ func (l Launcher) Start(spec Spec) (_ *VM, err error) {
 	}
 	vm.qemu = q
 	if err := waitSocket(q, filepath.Join(spec.Dir, ConsoleSocket), wait); err != nil {
-		return nil, err
+		return nil, vm.withFileServers(err)
 	}
 	conn, err := dialSocket(q, filepath.Join(spec.Dir, ConsoleSocket), wait)
 	if err != nil {
-		return nil, err
+		return nil, vm.withFileServers(err)
 	}
 	if err := waitSocket(q, filepath.Join(spec.Dir, ControlSocket), wait); err != nil {
 		conn.Close()
@@ -200,6 +212,17 @@ func (l Launcher) Start(spec Spec) (_ *VM, err error) {
 	go func() { _, _ = vm.console.drain(conn); conn.Close() }()
 	go vm.watch()
 	return vm, nil
+}
+
+// withFileServers adds what the file servers said to an error of QEMU's start: QEMU failing to connect to one is often
+// the file server's doing.
+func (vm *VM) withFileServers(err error) error {
+	for _, c := range vm.fsds {
+		if out := c.out.String(); out != "" {
+			err = fmt.Errorf("%w\n%s said: %s", err, c.name, out)
+		}
+	}
+	return err
 }
 
 // watch ends the VM as a whole: when QEMU ends, the file servers go too; when a file server ends first, its share is
