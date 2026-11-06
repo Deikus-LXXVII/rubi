@@ -30,6 +30,14 @@ func TestMain(m *testing.M) {
 	if os.Getpid() == 1 {
 		probe()
 	}
+	if len(os.Args) > 1 && os.Args[1] == "-name" { // QEMU through TestLiveLauncher's wrapper
+		qemuWrapper(os.Args[1:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "-live-confine" { // the launcher's confining helper (Home's vm-confine)
+		err := microvm.ConfineMain(os.Args[2:], os.Getenv(microvm.ConfineEnv))
+		fmt.Fprintln(os.Stderr, "vm-confine:", err)
+		os.Exit(2)
+	}
 	os.Exit(m.Run())
 }
 
@@ -461,5 +469,106 @@ func writeInitrd(t *testing.T, path string) {
 func pad(b *bytes.Buffer) {
 	for b.Len()%4 != 0 {
 		b.WriteByte(0)
+	}
+}
+
+// qemuWrapper is the QEMU the launcher starts in TestLiveLauncher: the real one, with the probe's initramfs added (the
+// backend's VMs boot from their root disk and have none). Both are named in files beside the VM's folder, since the
+// launcher gives QEMU an empty environment.
+func qemuWrapper(args []string) {
+	var dir string
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-pidfile" {
+			dir = filepath.Dir(filepath.Dir(args[i+1]))
+		}
+	}
+	real, err := os.ReadFile(filepath.Join(dir, "qemu-path"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "wrapper:", err)
+		os.Exit(1)
+	}
+	q := strings.TrimSpace(string(real))
+	err = unix.Exec(q, append(append([]string{q}, args...), "-initrd", filepath.Join(dir, "initrd.cpio")), os.Environ())
+	fmt.Fprintln(os.Stderr, "wrapper:", err)
+	os.Exit(1)
+}
+
+// TestLiveLauncher boots the same VM through microvm.Launcher, as the backend will: each virtiofsd confined by Landlock
+// to its share (through the confining helper), pid files, the console kept by the launcher, and the folder cleared at
+// the end. The library folders of a distribution's virtiofsd are allowed (the kernel's exec checks its loader too).
+func TestLiveLauncher(t *testing.T) {
+	if _, err := microvm.LandlockABI(); err != nil {
+		t.Fatalf("Landlock: %v", err)
+	}
+	var u unix.Utsname
+	_ = unix.Uname(&u)
+	kernel := env("RUBI_LIVE_KERNEL", "/boot/vmlinuz-"+unix.ByteSliceToString(u.Release[:]))
+	if isBzImage(t, kernel) {
+		t.Fatalf("%s is a bzImage: give the ELF vmlinux with a PVH entry", kernel)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp("", "rubi-live-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	rw, ro := filepath.Join(dir, "rw"), filepath.Join(dir, "ro")
+	for _, d := range []string{rw, ro} {
+		if err := os.Mkdir(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootfs := filepath.Join(dir, "rootfs.img")
+	if err := os.WriteFile(rootfs, make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initrd := filepath.Join(dir, "initrd.cpio")
+	writeInitrd(t, initrd)
+	var libs []string
+	for _, l := range []string{"/lib", "/lib64", "/usr/lib", "/usr/lib64"} {
+		if fi, err := os.Stat(l); err == nil && fi.IsDir() {
+			libs = append(libs, l)
+		}
+	}
+	l := microvm.Launcher{
+		Virtiofsd:  env("RUBI_LIVE_VIRTIOFSD", "/usr/libexec/virtiofsd"),
+		Libs:       libs,
+		Confine:    []string{self, "-live-confine"},
+		IDs:        microvm.HostIDs{UID: os.Getuid(), GID: os.Getgid()},
+		SocketWait: 10 * time.Second,
+	}
+	if err := os.WriteFile(filepath.Join(dir, "qemu-path"), []byte(env("RUBI_LIVE_QEMU", "/usr/bin/qemu-system-x86_64")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spec := microvm.Spec{QEMU: self, Arch: microvm.X86_64, Name: "rubi-live",
+		Firmware: env("RUBI_LIVE_BIOS", "/usr/share/qemu/qboot.rom"), Kernel: kernel, Rootfs: rootfs,
+		CPUs: "1", Memory: "256M", Dir: filepath.Join(dir, "vm"),
+		Shares: []microvm.Share{{Source: rw, Target: "/work"}, {Source: ro, Target: "/ref", ReadOnly: true}}}
+	t.Logf("libraries allowed to virtiofsd: %q", libs)
+	began := time.Now()
+	vm, err := l.Start(spec)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	select {
+	case <-vm.Done():
+	case <-time.After(60 * time.Second):
+		vm.Stop(0)
+		t.Errorf("the VM still ran after 60 s")
+	}
+	t.Logf("ended after %v: %v", time.Since(began).Round(time.Millisecond), vm.Err())
+	t.Logf("console (lines from the probe):\n%s", probeLines(vm.Console()))
+	if err := vm.Err(); err != nil {
+		t.Errorf("ended with %v; console tail:\n%s", err, tail(vm.Console(), 3000))
+	}
+	if !strings.Contains(vm.Console(), markReboot) {
+		t.Errorf("the probe never got to restart; console tail:\n%s", tail(vm.Console(), 3000))
+	}
+	ents, _ := os.ReadDir(spec.Dir)
+	for _, e := range ents {
+		t.Errorf("left in the VM folder: %s", e.Name())
 	}
 }

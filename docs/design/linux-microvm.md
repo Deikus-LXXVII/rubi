@@ -200,6 +200,35 @@ The runner's user and group inside the VM are 10001 (`microvm.GuestUID`, `GuestG
 the runner's Dockerfile pins only the user, so the CI build of the root file system checks that the group is 10001 and
 stops otherwise (pinning it in the Dockerfile would change the runner image macOS users build).
 
+## The launcher
+
+`microvm.Launcher.Start` runs one VM as the user:
+
+1. `PrepareDir` makes the VM's folder 0700, or checks that an existing one is a real folder of the user's own (not a
+   link, a file or another user's), closes it to 0700 and clears what an earlier run left.
+2. Each share's virtiofsd starts through Home's own `vm-confine` command (`ConfineMain`): it applies the share's Landlock
+   rule set (`VirtiofsdRules`: the share, read-only for a read-only share; the VM's folder for the socket and the lock
+   file virtiofsd makes beside it; virtiofsd itself and its library folders; `/proc`, which virtiofsd reopens files
+   through), sets `no_new_privs` and becomes virtiofsd with an empty environment. Every file system right the kernel's
+   Landlock version knows is handled. On a kernel without Landlock nothing runs (`ErrNoLandlock`). The launcher writes
+   its pid file (`fsN.pid`) and waits for its socket.
+3. QEMU starts with an empty environment; the launcher waits for the console and control sockets and keeps the last
+   64 KiB of the console in memory.
+
+A failed start ends what it started and clears the folder. The VM ends as a whole: when QEMU ends the file servers go
+with it, and a file server that dies ends QEMU, since its share is gone. `Stop` waits for the guest's own end (the
+caller asks the guest agent to power off), then SIGTERM, then SIGKILL.
+
+`Sweeper` ends what a Home that stopped without ending its VMs left: for each `*.pid` in a VM folder it kills the pid
+only while that process's command line (`/proc/<pid>/cmdline`) still names the folder, so a reused pid is never killed.
+
+Found while testing it: the kernel's exec of a confined program also needs execute permission on its dynamic loader,
+so a dynamically linked virtiofsd (a distribution's) needs its library folders in `Launcher.Libs`. Debian's virtiofsd
+1.13.2 starts and serves its socket under the rule set as an ordinary user, for a writable and a read-only share.
+
+A Landlock rule set does not cover connecting to a Unix socket by path; virtiofsd could reach the VM's own control
+socket in the same folder. That gives it nothing it didn't have: it already serves the guest's file system.
+
 ## libkrun
 
 libkrun (Apache-2.0) is a VMM library with virtio-fs, vsock and KVM (and HVF on macOS) built in, used rootless by
@@ -213,7 +242,7 @@ not confined either. It is worth a second look once its API is stable.
 In order; each step has its tests:
 
 1. The guest agent (`/sbin/rubi-guest`): done (above); tested over a pipe, its init only in a live VM.
-2. The launcher: Landlock for virtiofsd, the VM folder (0700), starting virtiofsd and QEMU, the pid file, the sweep.
+2. The launcher: done (`microvm.Launcher`, `PrepareDir`, `Sweeper`, `ExecConfined`, Home's `vm-confine`; below).
 3. CI builds: kernel, root file system, QEMU, virtiofsd per CPU, into `SHA256SUMS`; the QEMU source archive.
 4. The backend (`VMBackend` on Linux: `Available` from `CheckKVM`, `New`, `Sweep`, `Provision` with the download steps),
    chosen in `platformBackend` for Linux.
