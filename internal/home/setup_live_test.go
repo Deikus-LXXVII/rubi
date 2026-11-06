@@ -585,10 +585,10 @@ func syscallKill(pid int) error {
 }
 
 // liveNewVM makes the live runs' VMs: Apple's container tool on a Mac, the microvm backend on Linux
-// (liveMicroVMBackend, which installs its files first).
+// (liveMicroVMNewVM, which installs its files first).
 func liveNewVM(t *testing.T, h *Helper) func(agent.Project) agent.VM {
-	if be := liveMicroVMBackend(t, h); be != nil {
-		return be.New
+	if newVM := liveMicroVMNewVM(t, h); newVM != nil {
+		return newVM
 	}
 	cfg := h.Fresh()
 	return func(agent.Project) agent.VM {

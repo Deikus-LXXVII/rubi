@@ -8,5 +8,5 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
 
-// liveMicroVMBackend: off Linux the live runs use Apple's container tool.
-func liveMicroVMBackend(*testing.T, *Helper) agent.VMBackend { return nil }
+// liveMicroVMNewVM: off Linux the live runs use Apple's container tool.
+func liveMicroVMNewVM(*testing.T, *Helper) func(agent.Project) agent.VM { return nil }

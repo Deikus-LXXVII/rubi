@@ -27,6 +27,11 @@ func run() {
 		log.Print(err)
 		powerOff()
 	}
+	// the runner's forwarder listens on 127.0.0.1: without loopback the pipe to Home can't work
+	if err := guest.LoopbackUp(); err != nil {
+		log.Print(err)
+		powerOff()
+	}
 	cmd := exec.Command("/proc/self/exe", "serve")
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}

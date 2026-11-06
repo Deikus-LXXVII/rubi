@@ -27,14 +27,14 @@ import (
 // throwaway key and a local server (integrity's RUBI_TEST_RELEASE_KEY_FILE and RUBI_DOWNLOAD_BASE).
 const liveMicroVMVersion = "v0.0.0-test"
 
-// liveMicroVMBackend is the microvm backend for the live tests on a Linux computer with KVM, or nil where they run on
+// liveMicroVMNewVM makes the live tests' VMs with the microvm backend on a Linux computer with KVM, or nil where they run on
 // Apple's. It needs RUBI_LIVE_VM_ARCHIVES, a folder with this CPU's four VM archives (rubi-vm-<any
 // version>-linux-<arch>-{kernel,rootfs,qemu,virtiofsd}.tar.gz, as the microvm workflow makes them), and
 // RUBI_LIVE_HOME_BIN, a rubi-home binary for its vm-confine command. The files are installed the way a user's are: the
 // setup wizard's tool step downloads them from a release whose SHA256SUMS is signed (here by a key made for the run and
 // served from this process). Each VM gets RUBI_LIVE_VM_MEMORY (256M by default). After the test no QEMU or file server
 // of the run may be left.
-func liveMicroVMBackend(t *testing.T, h *Helper) agent.VMBackend {
+func liveMicroVMNewVM(t *testing.T, h *Helper) func(agent.Project) agent.VM {
 	dir, bin := os.Getenv("RUBI_LIVE_VM_ARCHIVES"), os.Getenv("RUBI_LIVE_HOME_BIN")
 	if dir == "" || bin == "" {
 		t.Fatal("on Linux the live runs need RUBI_LIVE_VM_ARCHIVES and RUBI_LIVE_HOME_BIN")
@@ -110,6 +110,9 @@ func liveMicroVMBackend(t *testing.T, h *Helper) agent.VMBackend {
 		time.Sleep(500 * time.Millisecond)
 	}
 	t.Logf("the VM files installed through the setup wizard in %s", time.Since(start).Round(100*time.Millisecond))
+	// on the test machine /dev/kvm's access list can be reset after a VM run and is put back by a watcher within about
+	// 30 s: wait for the KVM step as the launcher's live tests wait for /dev/kvm
+	liveWaitKVM(t, h)
 	for _, st := range h.Setup.Status(ctx).Steps {
 		switch st.ID {
 		case setup.StepContainer, setup.StepService, setup.StepImage:
@@ -124,7 +127,23 @@ func liveMicroVMBackend(t *testing.T, h *Helper) agent.VMBackend {
 			t.Errorf("processes of the run are left: %v", left)
 		}
 	})
-	return be
+	return func(p agent.Project) agent.VM {
+		liveWaitKVM(t, h)
+		return be.New(p)
+	}
+}
+
+// liveWaitKVM waits up to 60 s for the setup's KVM step to be done.
+func liveWaitKVM(t *testing.T, h *Helper) {
+	t.Helper()
+	for deadline := time.Now().Add(60 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		for _, st := range h.Setup.Status(context.Background()).Steps {
+			if st.ID == setup.StepService && st.State == setup.Done {
+				return
+			}
+		}
+	}
+	t.Log("KVM still not usable after 60 s")
 }
 
 // liveProcessesNaming lists the processes whose command line names dir (QEMU and virtiofsd name their VM's folder).

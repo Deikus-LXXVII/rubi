@@ -33,6 +33,29 @@ func InitMounts() error {
 	return nil
 }
 
+// LoopbackUp brings up the VM's loopback interface, its only one. The kernel leaves it down; a container runtime brings
+// it up, the guest's init has to. Up, it gets 127.0.0.1 and ::1, where the runner's forwarder (rubi-netpipe) listens
+// for the proxy and the other services Home offers through the pipe.
+func LoopbackUp() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return fmt.Errorf("the loopback interface: %w", err)
+	}
+	defer unix.Close(fd)
+	ifr, err := unix.NewIfreq("lo")
+	if err != nil {
+		return fmt.Errorf("the loopback interface: %w", err)
+	}
+	if err := unix.IoctlIfreq(fd, unix.SIOCGIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("the loopback interface: %w", err)
+	}
+	ifr.SetUint16(ifr.Uint16() | unix.IFF_UP)
+	if err := unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr); err != nil {
+		return fmt.Errorf("bringing up the loopback interface: %w", err)
+	}
+	return nil
+}
+
 // MountShare mounts one virtio-fs share; never with set-user-id programs or device files.
 func MountShare(m Mount) error {
 	if err := os.MkdirAll(m.Target, 0o755); err != nil {
