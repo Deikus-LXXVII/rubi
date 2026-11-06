@@ -81,6 +81,9 @@ jobs:
           set -euo pipefail
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -buildid=" -o out/rubi-guest ./cmd/rubi-guest
           docker build -t rubi-runner -f runner/container/Dockerfile runner/
+          # the image's own environment (PATH, HOME, ...): a container exec inherits it, a guest exec gets it from Home
+          docker image inspect rubi-runner --format '{{range .Config.Env}}{{println .}}{{end}}' > out/rootfs.env
+          grep -q '^PATH=' out/rootfs.env
           cid=$(docker create rubi-runner)
           docker export "$cid" > out/runner.tar
           docker rm "$cid"
@@ -113,7 +116,7 @@ jobs:
           tarit() { tar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name -C out -czf "dist/rubi-vm-$VERSION-linux-$ARCH-$1.tar.gz" "${@:2}"; }
           case $ARCH in x86_64) kernel=vmlinux-x86_64 ;; aarch64) kernel=Image-aarch64 ;; esac
           tarit kernel "$kernel" "config-$ARCH"
-          tarit rootfs rootfs.img
+          tarit rootfs rootfs.img rootfs.env
           tarit qemu "qemu-$ARCH"
           tarit virtiofsd "virtiofsd-$ARCH"
           ls -l dist

@@ -36,6 +36,8 @@ type MicroVM struct {
 	StateDir     string
 	CPUs, Memory string
 
+	// ready says whether the VM can start now (the backend: its files installed, KVM usable); nil: always.
+	ready func() error
 	// launch starts the VM; a seam for tests (nil: Launcher.Start).
 	launch func(microvm.Spec) (microVMProcess, error)
 
@@ -113,6 +115,11 @@ func (m *MicroVM) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 	}
 	if spec.Pipe == nil {
 		return fail(errors.New("a VM without a network needs its pipe"))
+	}
+	if m.ready != nil {
+		if err := m.ready(); err != nil {
+			return fail(err)
+		}
 	}
 	if err := m.boot(ctx, p); err != nil {
 		return fail(err)

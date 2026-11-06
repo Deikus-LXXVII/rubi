@@ -152,16 +152,16 @@ func fakeQEMU(args []string) {
 		}
 		conns = append(conns, c)
 	}
-	cl, err := net.Listen("unix", control)
-	if err != nil {
-		os.Exit(1)
-	}
-	defer cl.Close()
 	if m == "die-after-bind" {
 		_ = bindThenListen(console, 0)
 		fmt.Fprintln(os.Stderr, "qemu-system-x86_64: cannot create memory backend")
 		os.Exit(1)
 	}
+	cl, err := net.Listen("unix", control)
+	if err != nil {
+		os.Exit(1)
+	}
+	defer cl.Close()
 	var ln net.Listener
 	if m == "slow-listen" {
 		ln = bindThenListen(console, 300*time.Millisecond) // as QEMU does, with a gap between the two
