@@ -69,7 +69,7 @@ func argAfter(args []string, flag string) string {
 
 // fakeVirtiofsd serves its socket until its QEMU goes. A file ".fake" in the shared folder changes what it does: "fail"
 // (a flag it doesn't take), "die-later", "escape" (it tries to write beside its folder and says so if it can), "chatty"
-// (a warning when it is ended), "slow-listen".
+// (a warning as it starts; it stays up until it is ended), "slow-listen".
 func fakeVirtiofsd(args []string) {
 	sock, dir := argAfter(args, "--socket-path"), argAfter(args, "--shared-dir")
 	mode, _ := os.ReadFile(filepath.Join(dir, ".fake"))
@@ -86,15 +86,8 @@ func fakeVirtiofsd(args []string) {
 	case "die-later":
 		go func() { time.Sleep(300 * time.Millisecond); fmt.Fprintln(os.Stderr, "died"); os.Exit(1) }()
 	case "chatty":
-		// it stays up after its QEMU has gone and says it as it is ended: the line is there only if the launcher ends
-		// the file servers and reads their output after that (when all of it has been copied)
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGTERM)
-		go func() {
-			<-sig
-			fmt.Fprintln(os.Stderr, "WARN virtiofsd: something about the shared folder")
-			os.Exit(0)
-		}()
+		// it says something as it starts, as virtiofsd does, and stays up after its QEMU has gone
+		fmt.Fprintln(os.Stderr, "WARN virtiofsd: something about the shared folder")
 	}
 	var l net.Listener
 	if strings.TrimSpace(string(mode)) == "slow-listen" {
@@ -112,7 +105,7 @@ func fakeVirtiofsd(args []string) {
 	}
 	_, _ = io.Copy(io.Discard, c) // QEMU gone: virtiofsd ends
 	for strings.TrimSpace(string(mode)) == "chatty" {
-		time.Sleep(time.Second) // until it is ended (its warning then)
+		time.Sleep(time.Second) // until it is ended
 	}
 	os.Exit(0)
 }
@@ -163,6 +156,17 @@ func fakeQEMU(args []string) {
 			os.Exit(1)
 		}
 		conns = append(conns, c)
+	}
+	if m == "die-after-console" { // the console is served (Home connects to it), then QEMU fails before its control port
+		cln, err := net.Listen("unix", console)
+		if err != nil {
+			os.Exit(1)
+		}
+		if c, err := cln.Accept(); err == nil {
+			defer c.Close()
+		}
+		fmt.Fprintln(os.Stderr, "qemu-system-x86_64: cannot create memory backend")
+		os.Exit(1)
 	}
 	if m == "die-after-bind" {
 		_ = bindThenListen(console, 0)

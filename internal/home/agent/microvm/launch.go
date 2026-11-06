@@ -207,7 +207,7 @@ func (l Launcher) Start(spec Spec) (_ *VM, err error) {
 	}
 	if err := waitSocket(q, filepath.Join(spec.Dir, ControlSocket), wait); err != nil {
 		conn.Close()
-		return nil, err
+		return nil, vm.withFileServers(err)
 	}
 	go func() { _, _ = vm.console.drain(conn); conn.Close() }()
 	go vm.watch()

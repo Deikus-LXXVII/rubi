@@ -183,14 +183,20 @@ func TestLaunchFileServersEndingFirstOnACleanExit(t *testing.T) {
 	}
 }
 
-// A QEMU that fails to start says so with what the file servers said: its failing to connect to one is often theirs.
+// A QEMU that fails to start says so with what the file servers said: its failing to connect to one is often theirs. It
+// may fail before its console can be reached, or after Home has connected to the console but before its control port
+// (which one depended on timing, and the second once lost the file servers' words in CI): both carry them.
 func TestLaunchQEMUFailureCarriesTheFileServers(t *testing.T) {
-	r := newLaunchRig(t)
-	r.qemuMode(t, "die-after-bind")
-	_ = os.WriteFile(filepath.Join(r.spec.Shares[0].Source, ".fake"), []byte("chatty"), 0o600)
-	_, err := r.start(t)
-	if err == nil || !strings.Contains(err.Error(), "something about the shared folder") {
-		t.Fatalf("error %v", err)
+	for _, mode := range []string{"die-after-bind", "die-after-console"} {
+		t.Run(mode, func(t *testing.T) {
+			r := newLaunchRig(t)
+			r.qemuMode(t, mode)
+			_ = os.WriteFile(filepath.Join(r.spec.Shares[0].Source, ".fake"), []byte("chatty"), 0o600)
+			_, err := r.start(t)
+			if err == nil || !strings.Contains(err.Error(), "something about the shared folder") {
+				t.Fatalf("error %v", err)
+			}
+		})
 	}
 }
 
@@ -313,5 +319,29 @@ func TestConfineMainRefuses(t *testing.T) {
 		if err := ConfineMain(c.args, c.rules); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// withFileServers reads a file server's output only after it has ended, when all of it has been copied: a line the
+// process writes as it is ended is there. (The child is a plain shell that writes on SIGTERM, so nothing depends on how
+// fast a test binary exits.)
+func TestWithFileServersReadsAfterTheEnd(t *testing.T) {
+	c, err := startChild("the file server", []string{"/bin/sh", "-c", `trap 'echo said on its way out; exit 0' TERM; echo ready; while :; do sleep 0.05; done`}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.end(time.Second) })
+	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(c.out.String(), "ready"); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the shell never set its trap")
+		}
+	}
+	vm := &VM{fsds: []*child{c}}
+	err = vm.withFileServers(errors.New("QEMU ended"))
+	if !strings.Contains(err.Error(), "said on its way out") {
+		t.Fatalf("error %q", err)
+	}
+	if c.running() {
+		t.Error("the file server still runs")
 	}
 }
