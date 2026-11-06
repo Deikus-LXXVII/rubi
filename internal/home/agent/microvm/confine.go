@@ -1,6 +1,7 @@
 package microvm
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -87,4 +88,21 @@ func checkRules(rules []FSRule) error {
 		}
 	}
 	return nil
+}
+
+// ConfineEnv carries the Landlock rule set (JSON) to the confining helper (ConfineMain).
+const ConfineEnv = "RUBI_VM_CONFINE"
+
+// ConfineMain is the confining helper, Home's own "vm-confine" command: args is "--" and the program's command line, and
+// rulesJSON the rule set. It confines itself and becomes the program, with an empty environment; it returns only on an
+// error (ErrNoLandlock when the kernel can't confine: nothing then runs).
+func ConfineMain(args []string, rulesJSON string) error {
+	if len(args) < 2 || args[0] != "--" {
+		return errors.New("vm-confine: usage: vm-confine -- program [args]")
+	}
+	var rules []FSRule
+	if err := json.Unmarshal([]byte(rulesJSON), &rules); err != nil || len(rules) == 0 {
+		return fmt.Errorf("vm-confine: no rule set in %s", ConfineEnv)
+	}
+	return ExecConfined(rules, args[1:], []string{})
 }

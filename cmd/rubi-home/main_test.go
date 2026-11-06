@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,44 @@ func TestAgentVMSubcommandFailsPlainlyWithoutHome(t *testing.T) {
 	}
 	if code, msg := run("agent-vm", "--", "--verbose"); code != 2 || !strings.Contains(msg, "usage") {
 		t.Errorf("no role: exit %d, %q", code, msg)
+	}
+}
+
+// `rubi-home vm-confine` runs nothing it can't confine: without a rule set it explains, and where the kernel has no
+// Landlock (every system but Linux) it says so and doesn't run the program.
+func TestVMConfineRunsNothingUnconfined(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "rubi-home")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	d := t.TempDir()
+	marker := filepath.Join(d, "ran")
+	run := func(rules string, args ...string) (int, string) {
+		cmd := exec.Command(bin, append([]string{"vm-confine"}, args...)...)
+		cmd.Env = []string{"RUBI_VM_CONFINE=" + rules}
+		out, err := cmd.CombinedOutput()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee.ExitCode(), string(out)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		return 0, string(out)
+	}
+	if code, msg := run("", "--", "/usr/bin/touch", marker); code != 2 || !strings.Contains(msg, "RUBI_VM_CONFINE") {
+		t.Errorf("no rules: exit %d, %q", code, msg)
+	}
+	if code, msg := run(`[{"Path":"`+d+`","Access":3}]`, "/usr/bin/touch", marker); code != 2 || !strings.Contains(msg, "usage") {
+		t.Errorf("no --: exit %d, %q", code, msg)
+	}
+	if runtime.GOOS != "linux" {
+		if code, msg := run(`[{"Path":"`+d+`","Access":3}]`, "--", "/usr/bin/touch", marker); code != 3 || !strings.Contains(msg, "Landlock") {
+			t.Errorf("no Landlock: exit %d, %q", code, msg)
+		}
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("the program ran")
 	}
 }
 

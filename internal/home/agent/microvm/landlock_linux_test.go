@@ -5,36 +5,12 @@ package microvm
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-const confinedHelper = "RUBI_TEST_CONFINED"
-
-// The test binary doubles as the confining helper: with confinedHelper set it confines itself and becomes the program.
-func TestMain(m *testing.M) {
-	if v := os.Getenv(confinedHelper); v != "" {
-		var job struct {
-			Rules []FSRule
-			Argv  []string
-		}
-		if err := json.Unmarshal([]byte(v), &job); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(2)
-		}
-		err := ExecConfined(job.Rules, job.Argv, []string{"PATH=/usr/bin:/bin"})
-		fmt.Fprintln(os.Stderr, "confined:", err)
-		if errors.Is(err, ErrNoLandlock) {
-			os.Exit(3)
-		}
-		os.Exit(2)
-	}
-	os.Exit(m.Run())
-}
 
 // A confined program reaches what its rules allow and nothing else: it reads the read-only folder but can't write
 // there, writes and removes in the writable one, and can't read or even list anything outside them.

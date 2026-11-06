@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/microvm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
@@ -107,6 +108,13 @@ func main() {
 			os.Exit(2)
 		}
 		os.Exit(t3vm.Run(home.AgentVMSocketPath(mustDir()), role, argv, os.Stdout, os.Stderr, t3vm.ClientOptions{}))
+	case "vm-confine": // internal, run by the Linux VM launcher: confines itself to a rule set and becomes the file server
+		err := microvm.ConfineMain(os.Args[2:], os.Getenv(microvm.ConfineEnv))
+		fmt.Fprintf(os.Stderr, "rubi-home vm-confine: %v\n", err)
+		if errors.Is(err, microvm.ErrNoLandlock) {
+			os.Exit(3)
+		}
+		os.Exit(2)
 	case "version": // reads and creates nothing: the installer and status run it on any copy
 		fmt.Println(version.Version)
 		return
