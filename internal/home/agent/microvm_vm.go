@@ -215,14 +215,18 @@ func (m *MicroVM) exec(ctx context.Context, env map[string]string, argv []string
 
 func (m *MicroVM) execLogged(ctx context.Context, env map[string]string, argv []string, logStderr bool) (Conn, error) {
 	m.mu.Lock()
-	c := m.client
+	c, role := m.client, m.proj.Role
 	m.mu.Unlock()
 	if c == nil || len(argv) == 0 {
 		return nil, errors.New("the VM isn't running")
 	}
-	all := make(map[string]string, len(m.ImageEnv)+len(env))
+	// what Apple's container gives every exec from its own environment: the image's, and a role VM's role folders
+	all := make(map[string]string, len(m.ImageEnv)+len(env)+2)
 	for k, v := range m.ImageEnv {
 		all[k] = v
+	}
+	if role != "" {
+		all = withRoleEnv(all)
 	}
 	for k, v := range env {
 		all[k] = v

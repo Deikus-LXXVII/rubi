@@ -183,6 +183,18 @@ func TestMicroVMStartMountsPipesAndRunsTheRunner(t *testing.T) {
 		env["RUBI_ROLE_DIR"] != RoleMountDir || env["RUBI_CLAUDE_DIR"] != RoleClaudeDir || !strings.Contains(env["PATH"], ":/usr/bin") {
 		t.Errorf("runner env %v", env)
 	}
+	// any other exec in a role VM (a sandbox's command) gets the role's places too, as Apple's container gives every exec
+	if c, err := r.m.Exec(context.Background(), []string{"true"}, nil); err != nil {
+		t.Fatal(err)
+	} else {
+		<-c.Done()
+	}
+	r.fake.mu.Lock()
+	last := r.fake.execs[len(r.fake.execs)-1]
+	r.fake.mu.Unlock()
+	if last.Env["RUBI_ROLE_DIR"] != RoleMountDir || last.Env["RUBI_CLAUDE_DIR"] != RoleClaudeDir || last.Env["HOME"] != "/tmp" {
+		t.Errorf("a role VM's exec env %v", last.Env)
+	}
 	// the runner's stdio is the Conn
 	if _, err := conn.Write([]byte("ping\n")); err != nil {
 		t.Fatal(err)

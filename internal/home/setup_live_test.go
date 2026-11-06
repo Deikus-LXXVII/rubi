@@ -537,7 +537,7 @@ const connect = (host, withAuth) => new Promise(res => { const s = net.connect({
 			t.Fatalf("expected one rubi-netpipe process in the VM, found %q", old)
 		}
 		killed = old
-		run("kill", "-9", old)
+		run("sh", "-c", "kill -9 "+old) // the shell's own kill: the runner image has no kill program
 	} else {
 		pids := liveNetpipePIDs(t)
 		if len(pids) != 1 {
