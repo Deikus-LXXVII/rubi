@@ -106,13 +106,17 @@ type Core struct {
 	hookHit   map[string][]time.Time // recent deliveries per hook, for rate limiting
 	tested    map[string]string      // test event id -> outcome of its first delivery ("" = delivered)
 
-	agentAuth agentAuth    // codes that prove which Bot is calling (agentauth.go)
-	started   time.Time    // when this process started (Rubi is locked since then after a restart)
-	hookRoute string       // the hook route, kept while locked so hook requests still arrive (backlog.go)
-	access    accessGrants // access codes for plugin accounts (access.go)
-	botReqs   botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
-	devs      deviceClients
-	libPins   libraryPins
+	agentAuth agentAuth // codes that prove which Bot is calling (agentauth.go)
+	started   time.Time // when this process started (Rubi is locked since then after a restart)
+	// eventsMu orders the saves of the unreported events; eventsKept is set once the lock kept them, so a save that
+	// runs while Rubi is still locking (after the event list was cleared) can't overwrite what was kept.
+	eventsMu   sync.Mutex
+	eventsKept bool
+	hookRoute  string       // the hook route, kept while locked so hook requests still arrive (backlog.go)
+	access     accessGrants // access codes for plugin accounts (access.go)
+	botReqs    botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
+	devs       deviceClients
+	libPins    libraryPins
 }
 
 // SetIntegrity records the result of the binary self-check.
