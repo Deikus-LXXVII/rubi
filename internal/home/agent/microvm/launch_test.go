@@ -168,6 +168,21 @@ func TestLaunchSaysWhyQEMUDied(t *testing.T) {
 	}
 }
 
+// On the guest's restart QEMU closes its file servers' connections before it exits, so they end first: the VM's end is
+// still QEMU's clean exit, not a lost share.
+func TestLaunchFileServersEndingFirstOnACleanExit(t *testing.T) {
+	r := newLaunchRig(t)
+	r.qemuMode(t, "exit0-fs-first")
+	vm, err := r.start(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitDone(t, vm, 10*time.Second)
+	if err := vm.Err(); err != nil {
+		t.Errorf("ended with %v", err)
+	}
+}
+
 // A file server that won't start fails the start with what it said; nothing is left running and the folder is cleared.
 func TestLaunchFileServerFailsTheStart(t *testing.T) {
 	r := newLaunchRig(t)

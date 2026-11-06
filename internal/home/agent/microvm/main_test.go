@@ -166,6 +166,13 @@ func fakeQEMU(args []string) {
 		os.Exit(1)
 	}
 	fmt.Fprintln(c, "booted")
+	if m == "exit0-fs-first" { // as QEMU on its way out: the file servers' connections close first
+		for _, fc := range conns {
+			fc.Close()
+		}
+		time.Sleep(300 * time.Millisecond)
+		os.Exit(0)
+	}
 	if m == "exit0" {
 		time.Sleep(100 * time.Millisecond)
 		os.Exit(0)

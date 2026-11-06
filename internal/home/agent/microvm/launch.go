@@ -30,8 +30,12 @@ type Launcher struct {
 // consoleKeep is how much of the console's output a VM keeps: the last bytes, for the log when it fails.
 const consoleKeep = 64 << 10
 
-// fsGrace is how long a virtiofsd may take to end after its QEMU did.
-const fsGrace = 2 * time.Second
+// fsGrace is how long a virtiofsd may take to end after its QEMU did, and qemuExitGrace how long QEMU may take to end
+// after one of its file servers did (QEMU closes their connections on its way out).
+const (
+	fsGrace       = 2 * time.Second
+	qemuExitGrace = time.Second
+)
 
 // VM is a started VM.
 type VM struct {
@@ -212,8 +216,17 @@ func (vm *VM) watch() {
 			err = vm.qemu.failure()
 		}
 	case c := <-fsEnded:
-		err = c.failure()
-		vm.qemu.end(fsGrace)
+		// QEMU closes its connections while it exits, so a file server can end a moment before QEMU does: give QEMU
+		// that moment, and only a QEMU still running after it lost its share
+		select {
+		case <-vm.qemu.done:
+			if vm.qemu.err != nil {
+				err = vm.qemu.failure()
+			}
+		case <-time.After(qemuExitGrace):
+			err = c.failure()
+			vm.qemu.end(fsGrace)
+		}
 	}
 	for _, c := range vm.fsds {
 		select {

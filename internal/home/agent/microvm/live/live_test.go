@@ -206,6 +206,23 @@ func whereIsTheCPU(qmp string) string {
 	return out.String()
 }
 
+// waitKVM waits until /dev/kvm opens for reading and writing: on a shared test machine its access is sometimes
+// withdrawn for a while between runs.
+func waitKVM(t *testing.T) {
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
+		if err == nil {
+			f.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("/dev/kvm: %v", err)
+		}
+		time.Sleep(time.Second)
+	}
+}
+
 func isBzImage(t *testing.T, kernel string) bool {
 	f, err := os.Open(kernel)
 	if err != nil {
@@ -220,6 +237,7 @@ func isBzImage(t *testing.T, kernel string) bool {
 }
 
 func boot(t *testing.T, qemu, virtiofsd, kernel string, v variant) {
+	waitKVM(t)
 	dir, err := os.MkdirTemp("", "rubi-live-")
 	if err != nil {
 		t.Fatal(err)
@@ -548,6 +566,7 @@ func TestLiveLauncher(t *testing.T) {
 		CPUs: "1", Memory: "256M", Dir: filepath.Join(dir, "vm"),
 		Shares: []microvm.Share{{Source: rw, Target: "/work"}, {Source: ro, Target: "/ref", ReadOnly: true}}}
 	t.Logf("libraries allowed to virtiofsd: %q", libs)
+	waitKVM(t)
 	began := time.Now()
 	vm, err := l.Start(spec)
 	if err != nil {
