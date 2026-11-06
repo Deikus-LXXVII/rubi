@@ -84,6 +84,9 @@ setup wizard shows its size before it starts. Boot: under QEMU's emulator (no KV
 the VM has ended again in under a second. With KVM on the test machine (Debian's QEMU 10.0.13, Rubi's kernel 6.18.60):
 the whole run through the launcher, from starting virtiofsd to QEMU's end after the guest's restart, took 0.40 s; the
 probe mounted the share served by the confined virtiofsd, and the file it wrote is the user's (uid 1000) on the host.
+With everything Rubi's own (kernel 6.18.60, QEMU 11.1.3, virtiofsd 1.14.0 under the rule set): 0.31 s, the same
+checks. arm64 (Rubi's kernel, built in 93 s; QEMU 27 MB; virtiofsd 2.3 MB) passes under QEMU's emulator in Docker on an
+arm64 Mac; with KVM it waits for an arm64 test machine.
 
 ### 7. Memory
 
@@ -234,12 +237,24 @@ stops otherwise (pinning it in the Dockerfile would change the runner image macO
   Ubuntu 22.04 and 24.04 and Debian 12 and 13 without any development package.
 - **virtiofsd** (`build-virtiofsd.sh`, `virtiofsd.pin`: 1.14.0 by crates.io's checksum): built with its own
   `Cargo.lock` (`--locked`), the same folder layout (libseccomp, libcap-ng in `lib/`): 2.6 MB. Version 1.14 takes every
-  flag `VirtiofsdArgs` passes. Its Landlock rule set allows its folder and the system's library folders (glibc and
+  flag `VirtiofsdArgs` passes. 1.14 made `--inode-file-handles=prefer` its default, which reopens the share's mount point
+  (say `/`) for reading: the rule set refuses that, and file handles need `CAP_DAC_READ_SEARCH`, which an unprivileged
+  virtiofsd never has, so `VirtiofsdArgs` says `--inode-file-handles=never`. Its Landlock rule set allows its folder and the system's library folders (glibc and
   the loader stay the system's).
 - **Licences.** QEMU is GPL-2.0-or-later: the release attaches the pinned tarball and the build script. The bundled
   glib, libseccomp and libcap-ng are LGPL-2.1: their exact source (the Ubuntu 22.04 source packages of the versions
   bundled) must be offered too; the release job is to attach them. virtiofsd's Apache-2.0 and BSD-3-Clause texts go in
   its folder.
+
+## The workflow
+
+`.github/workflows/microvm.yml` builds all of it per CPU on native runners (Ubuntu 22.04, x86-64 and arm64): the
+kernel, QEMU, virtiofsd, and the root file system from the runner image; checks that QEMU has the command line's machine
+and devices and virtiofsd takes its flags; and makes reproducible archives `rubi-vm-<version>-linux-<arch>-{kernel,
+rootfs,qemu,virtiofsd}.tar.gz`. A sources job archives the QEMU tarball with the build scripts and the exact Ubuntu
+source packages of the bundled LGPL libraries (the versions installed, recorded in `VERSIONS`). It runs on changes to
+what goes into the VM, on demand, and as a reusable workflow. **Not yet wired into the release** (the release would then
+publish the VM files to everyone): that is the owner's decision.
 
 ## The launcher
 

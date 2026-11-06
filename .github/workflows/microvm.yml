@@ -1,0 +1,160 @@
+name: microvm
+
+# The Linux VM backend's guest and helpers (docs/design/linux-microvm.md): per CPU, the guest kernel, the root file system
+# (the runner image and the guest agent), QEMU and virtiofsd, each from a pinned source in runner/microvm, and the source
+# archive their licences ask for. It runs on changes to what goes into them, on demand, and from a release
+# (workflow_call), which then lists the archives in its signed SHA256SUMS.
+
+on:
+  pull_request:
+    paths:
+      - "runner/microvm/**"
+      - "runner/container/**"
+      - "cmd/rubi-guest/**"
+      - "internal/home/agent/guest/**"
+      - ".github/workflows/microvm.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: "The name the archives carry (a release tag)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            goarch: amd64
+            runner: ubuntu-22.04
+          - arch: aarch64
+            goarch: arm64
+            runner: ubuntu-22.04-arm
+    # Ubuntu 22.04: QEMU and virtiofsd are linked against its glibc (2.35), the oldest the release supports.
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ inputs.version || format('dev-{0}', github.sha) }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build tools
+        run: |
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            build-essential flex bison bc libelf-dev xz-utils perl e2fsprogs \
+            python3 python3-venv python3-tomli ninja-build pkg-config libglib2.0-dev libseccomp-dev libattr1-dev libfdt-dev bzip2 \
+            libcap-ng-dev
+
+      - name: Sources
+        # Each build script checks its source against the SHA-256 in its pin before it unpacks a byte.
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          pin() { grep -v '^#' "runner/microvm/$1.pin" | cut -d' ' -f1; }
+          k=$(pin kernel); q=$(pin qemu); v=$(pin virtiofsd)
+          curl -fsSL -o "src/linux-$k.tar.xz" "https://cdn.kernel.org/pub/linux/kernel/v${k%%.*}.x/linux-$k.tar.xz"
+          curl -fsSL -o "src/qemu-$q.tar.xz" "https://download.qemu.org/qemu-$q.tar.xz"
+          curl -fsSL -o "src/virtiofsd-$v.crate" "https://static.crates.io/crates/virtiofsd/virtiofsd-$v.crate"
+          echo "KERNEL=$k" >> "$GITHUB_ENV"; echo "QEMU=$q" >> "$GITHUB_ENV"; echo "VIRTIOFSD=$v" >> "$GITHUB_ENV"
+
+      - name: Kernel
+        run: sh runner/microvm/build-kernel.sh "$ARCH" "src/linux-$KERNEL.tar.xz" out
+
+      - name: QEMU
+        run: sh runner/microvm/build-qemu.sh "$ARCH" "src/qemu-$QEMU.tar.xz" out
+
+      - name: virtiofsd
+        run: sh runner/microvm/build-virtiofsd.sh "src/virtiofsd-$VIRTIOFSD.crate" out
+
+      - name: Root file system
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -trimpath -ldflags "-s -w -buildid=" -o out/rubi-guest ./cmd/rubi-guest
+          docker build -t rubi-runner -f runner/container/Dockerfile runner/
+          cid=$(docker create rubi-runner)
+          docker export "$cid" > out/runner.tar
+          docker rm "$cid"
+          sudo sh runner/microvm/build-rootfs.sh out/runner.tar out/rubi-guest out/rootfs.img
+          sudo chown "$(id -u):$(id -g)" out/rootfs.img
+          rm out/runner.tar
+
+      - name: Check
+        # What the command line needs is in what was built (the kernel's configuration is checked by its script).
+        run: |
+          set -euo pipefail
+          q="out/qemu-$ARCH/bin/qemu-system-$ARCH"
+          "$q" -version
+          case $ARCH in
+          x86_64) bus=device; "$q" -machine help | grep -q '^microvm '; test -f "out/qemu-$ARCH/share/qemu/qboot.rom" ;;
+          aarch64) bus=pci; "$q" -machine help | grep -q '^virt ' ;;
+          esac
+          for d in virtio-blk-$bus virtio-serial-$bus virtserialport vhost-user-fs-$bus; do
+            "$q" -device help | grep -q "name \"$d\"" || { echo "QEMU has no $d"; exit 1; }
+          done
+          "out/virtiofsd-$ARCH/bin/virtiofsd" --version
+          for f in --socket-path --shared-dir --sandbox --translate-uid --translate-gid --cache --readonly --inode-file-handles; do
+            "out/virtiofsd-$ARCH/bin/virtiofsd" --help | grep -q -- "$f" || { echo "virtiofsd takes no $f"; exit 1; }
+          done
+
+      - name: Archives
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tarit() { tar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name -C out -czf "dist/rubi-vm-$VERSION-linux-$ARCH-$1.tar.gz" "${@:2}"; }
+          case $ARCH in x86_64) kernel=vmlinux-x86_64 ;; aarch64) kernel=Image-aarch64 ;; esac
+          tarit kernel "$kernel" "config-$ARCH"
+          tarit rootfs rootfs.img
+          tarit qemu "qemu-$ARCH"
+          tarit virtiofsd "virtiofsd-$ARCH"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microvm-${{ matrix.arch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # The corresponding source: QEMU (GPL-2.0-or-later) with the scripts it was built with, and the exact source packages of
+  # the LGPL libraries bundled beside QEMU and virtiofsd (glib, libseccomp, libcap-ng), from Ubuntu 22.04.
+  sources:
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ inputs.version || format('dev-{0}', github.sha) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source archive
+        run: |
+          set -euo pipefail
+          q=$(grep -v '^#' runner/microvm/qemu.pin | cut -d' ' -f1)
+          mkdir -p sources/qemu sources/libraries dist
+          curl -fsSL -o "sources/qemu/qemu-$q.tar.xz" "https://download.qemu.org/qemu-$q.tar.xz"
+          sum=$(grep -v '^#' runner/microvm/qemu.pin | cut -d' ' -f2)
+          echo "$sum  sources/qemu/qemu-$q.tar.xz" | sha256sum -c -
+          cp -r runner/microvm sources/build-scripts
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+          sudo sed -i 's/^# deb-src/deb-src/' /etc/apt/sources.list
+          sudo apt-get update -q
+          # the versions the build job bundles: the same packages, installed the same way, and their exact source
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libglib2.0-dev libseccomp-dev libcap-ng-dev dpkg-dev
+          cd sources/libraries
+          for pkg in libglib2.0-0 libseccomp2 libcap-ng0; do
+            dpkg-query -W -f '${source:Package}=${source:Version}\n' "$pkg"
+          done | tee VERSIONS | xargs apt-get source --download-only
+          cd ../..
+          tar --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name -czf "dist/rubi-vm-$VERSION-sources.tar.gz" sources
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: microvm-sources
+          path: dist/*.tar.gz
+          if-no-files-found: error
