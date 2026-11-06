@@ -566,14 +566,16 @@ func TestLiveLauncher(t *testing.T) {
 	}
 	initrd := filepath.Join(dir, "initrd.cpio")
 	writeInitrd(t, initrd)
+	virtiofsd := env("RUBI_LIVE_VIRTIOFSD", "/usr/libexec/virtiofsd")
 	var libs []string
-	for _, l := range []string{"/lib", "/lib64", "/usr/lib", "/usr/lib64"} {
-		if fi, err := os.Stat(l); err == nil && fi.IsDir() {
+	// a pinned build's own libraries (bin/virtiofsd beside lib/), then the system's (glibc and its loader)
+	for _, l := range []string{filepath.Join(filepath.Dir(filepath.Dir(virtiofsd)), "lib"), "/lib", "/lib64", "/usr/lib", "/usr/lib64"} {
+		if fi, err := os.Stat(l); err == nil && fi.IsDir() && !slices.Contains(libs, l) {
 			libs = append(libs, l)
 		}
 	}
 	l := microvm.Launcher{
-		Virtiofsd:  env("RUBI_LIVE_VIRTIOFSD", "/usr/libexec/virtiofsd"),
+		Virtiofsd:  virtiofsd,
 		Libs:       libs,
 		Confine:    []string{self, "-live-confine"},
 		IDs:        microvm.HostIDs{UID: os.Getuid(), GID: os.Getgid()},

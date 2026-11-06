@@ -222,6 +222,25 @@ stops otherwise (pinning it in the Dockerfile would change the runner image macO
   without a journal, with the mount points outside `/work` made in it (`rootfs-dirs.txt`; the root is read-only). It
   stops when the runner's user and group aren't 10001.
 
+## QEMU and virtiofsd builds
+
+- **QEMU** (`build-qemu.sh`, `qemu.pin`: 11.1.3, its `.sig` checked against the release key qemu.org lists): only the
+  target CPU, KVM without the emulator, seccomp, vhost-user and libfdt; no display, network back ends, tools or docs.
+  Built on Ubuntu 22.04 (glibc 2.35, so it runs on Ubuntu 22.04 and later and Debian 12 and later) as a relocatable
+  folder: `bin/qemu-system-<arch>`, the libraries it loads that aren't glibc's in `lib/` (glib, pcre, libseccomp,
+  libfdt, zlib), found through an RPATH of `$ORIGIN/../lib` (an RPATH, not a RUNPATH: it also serves the libraries'
+  own dependencies, such as glib's libpcre), and `share/qemu/qboot.rom`. The script stops when a library resolves
+  outside the folder. x86-64: 28 MB, in about five minutes; checked to run with all the command line's devices on
+  Ubuntu 22.04 and 24.04 and Debian 12 and 13 without any development package.
+- **virtiofsd** (`build-virtiofsd.sh`, `virtiofsd.pin`: 1.14.0 by crates.io's checksum): built with its own
+  `Cargo.lock` (`--locked`), the same folder layout (libseccomp, libcap-ng in `lib/`): 2.6 MB. Version 1.14 takes every
+  flag `VirtiofsdArgs` passes. Its Landlock rule set allows its folder and the system's library folders (glibc and
+  the loader stay the system's).
+- **Licences.** QEMU is GPL-2.0-or-later: the release attaches the pinned tarball and the build script. The bundled
+  glib, libseccomp and libcap-ng are LGPL-2.1: their exact source (the Ubuntu 22.04 source packages of the versions
+  bundled) must be offered too; the release job is to attach them. virtiofsd's Apache-2.0 and BSD-3-Clause texts go in
+  its folder.
+
 ## The launcher
 
 `microvm.Launcher.Start` runs one VM as the user:
