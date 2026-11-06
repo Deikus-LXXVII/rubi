@@ -1,0 +1,6 @@
+# Texts that still tell the user to use a terminal or run a command (project rule 2, docs/project-rules.md).
+# One line each:  file || a fragment of the text || T-nn: what replaces it
+# The test fails on a new violation and on a line here that matches nothing any more, so this list only shrinks.
+# The T-nn tasks are listed in docs/project-rules.md ("Known gaps", rule 2).
+
+# (empty: no text tells the user to type a command. The Linux script line left with the panel's Bot-first install, T-01L.)

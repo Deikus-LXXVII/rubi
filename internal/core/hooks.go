@@ -26,7 +26,7 @@ const (
 	hooksPerPlugin = 20 // so one plugin can't take every address
 )
 
-var errNoHooks = errors.New("hook addresses need Rubi Gateway or Tailscale as Rubi's transport (see `rubi transport`)")
+var errNoHooks = errors.New("hook addresses need Rubi Gateway or Tailscale as Rubi's connection: the user chooses one in the panel (Settings, Security, Connection)")
 
 func randomID() string {
 	b := make([]byte, 16)

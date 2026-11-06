@@ -1,0 +1,437 @@
+package core
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/Deikus-LXXVII/rubi/internal/approvals"
+	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/plugins"
+)
+
+// Core vouches for the approvals Rubi Home relies on.
+//
+// Rubi Home checks no approval itself: a role.put names an approval id for what it widens, and ssh.register is
+// "approved" only because the plugin says so. Home can't tell a plugin from core (both arrive through the same
+// relay), so core checks at the relay, the only way a plugin reaches Home (the same reasoning as library.key in
+// library.go). Before it forwards claude-agent.role.put or claude-agent.ssh.register it requires that
+//
+//   - every approval id in a role.put is a real approval of this very plugin, of a kind that may widen a role
+//     (roleApprovalKinds), that the user is deciding on or has decided (executing or executed). A made-up, foreign,
+//     denied, expired or wrong-kind id is refused. Spending an id once is Home's job (roles/used.json);
+//   - an ssh.register matches the payload of an approval of kind claude-code.ssh_target that is being executed for
+//     this plugin right now (host, port, user, name and the host key fingerprint the user confirmed);
+//   - an agent-setup.project.add that names a folder (dir) matches the payload of an approval of kind
+//     claude-code.setup.project that is being executed for this plugin right now. Without dir, Home shows the Mac's
+//     folder chooser and the user picks the folder there.
+//
+// The capability itself is reserved for the official plugin (plugins.ReservedHomeCapability), so these gates are
+// what stands between the official plugin's bugs and Home, and the reserved list is what keeps others out.
+
+const (
+	kindSSHTarget   = "claude-code.ssh_target"
+	kindSetupFolder = "claude-code.setup.project"
+	kindSkillAccept = "claude-code.role_skill_accept"
+
+	// attestedKindsField is the role.put argument core owns: id -> approval kind of every id it attested.
+	attestedKindsField = "attested_kinds"
+
+	opRolePut     = "claude-agent.role.put"
+	opSSHRegister = "claude-agent.ssh.register"
+	// opHueForget drops a bridge's pinned certificate. Only the user does that, in the panel (ForgetHueBridge).
+	opHueForget  = "hue.forget"
+	opProjectAdd = "agent-setup.project.add"
+	// opFsList is the folder browser's listing. Only the panel asks for it (ListDeviceFolders); no capability gives a
+	// plugin the "fs" prefix, and this refusal holds even if one ever did.
+	opFsList = "fs.list"
+)
+
+// roleApprovalKinds are the approval kinds whose ids a role.put may name.
+var roleApprovalKinds = roleKinds(claudeNS)
+
+// The T3 Agents plugin has the same ops under other names (t3-agent.*, t3-setup.*) and the same approval kinds under
+// its own namespace (t3agents.role_widen...). One set of rules serves both: homeOp turns a T3 op into the claude one
+// it mirrors, and the kind names are built from the plugin's namespace. What Home is told is always the claude-code
+// spelling of a kind (see canonKind), so Home's rules need no second set of names.
+const claudeNS = "claude-code"
+
+var roleKindSuffixes = []string{"role_widen", "role_foreign", "role_skill_accept"}
+
+func roleKinds(ns string) map[string]bool {
+	m := map[string]bool{}
+	for _, s := range roleKindSuffixes {
+		m[ns+"."+s] = true
+	}
+	return m
+}
+
+// kindNS is the namespace of the approval kinds a plugin raises for the agent ops.
+func kindNS(plugin string) string {
+	if plugin == plugins.OfficialT3PluginID {
+		return plugin
+	}
+	return claudeNS
+}
+
+// canonKind is an approval kind in the claude-code namespace (Home's names).
+func canonKind(plugin, kind string) string {
+	if ns := kindNS(plugin); ns != claudeNS && strings.HasPrefix(kind, ns+".") {
+		return claudeNS + kind[len(ns):]
+	}
+	return kind
+}
+
+// homeOp is the claude-agent / agent-setup op that an op of the T3 families mirrors (any other op is itself).
+func homeOp(op string) string {
+	if rest, ok := strings.CutPrefix(op, "t3-agent."); ok {
+		return "claude-agent." + rest
+	}
+	if rest, ok := strings.CutPrefix(op, "t3-setup."); ok {
+		return "agent-setup." + rest
+	}
+	return op
+}
+
+// execGrant is an approval of a plugin whose execute is running: the user has decided it.
+type execGrant struct {
+	kind    string
+	payload json.RawMessage
+}
+
+// beginExec records that plugin's execute for an approval of kind is running with payload; the returned func ends it.
+func (c *Core) beginExec(plugin, kind string, payload json.RawMessage) func() {
+	g := &execGrant{kind: kind, payload: payload}
+	c.execMu.Lock()
+	if c.execs == nil {
+		c.execs = map[string][]*execGrant{}
+	}
+	c.execs[plugin] = append(c.execs[plugin], g)
+	c.execMu.Unlock()
+	return func() {
+		c.execMu.Lock()
+		defer c.execMu.Unlock()
+		list := c.execs[plugin]
+		for i, x := range list {
+			if x == g {
+				c.execs[plugin] = append(list[:i:i], list[i+1:]...)
+				break
+			}
+		}
+		if len(c.execs[plugin]) == 0 {
+			delete(c.execs, plugin)
+		}
+	}
+}
+
+// attestHomeCall refuses a Home call that carries approvals core can't vouch for.
+//
+// For a role.put it also returns the arguments to forward: any `attested_kinds` the plugin sent is dropped and
+// replaced by core's own map from each attested id to its approval kind, which Home uses to keep an id from covering
+// more than its kind allows (roles/approvals.go).
+func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.RawMessage, error) {
+	ns := kindNS(plugin)
+	switch homeOp(op) {
+	case opFsList:
+		// The listing shows the names of the user's folders; a plugin that could ask would learn them.
+		return nil, errors.New("Rubi refused: the folder browser is for the user, in the Rubi panel")
+	case opHueForget:
+		// A plugin that could forget the pin could then pair a look-alike device: the pin is what stops it.
+		return nil, errors.New("Rubi refused: forgetting a Hue Bridge's certificate is done by the user, in the Rubi panel")
+	case opRolePut:
+		// encoding/json matches keys ignoring case (Unicode folding too: the Kelvin sign is a k), and which of two
+		// such keys wins depends on their order. Core checks one reading and forwards the original, so two keys that
+		// fold together anywhere would let core and Home read different specs or kinds.
+		if err := noFoldedDuplicates(args); err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		var in struct {
+			Spec struct {
+				MCP []struct {
+					Approval string `json:"approval"`
+				} `json:"mcp"`
+				Plugins []struct {
+					Approval string `json:"approval"`
+				} `json:"plugins"`
+			} `json:"spec"`
+			Change *struct {
+				Approval string `json:"approval"`
+			} `json:"change"`
+		}
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		var ids []string
+		for _, m := range in.Spec.MCP {
+			ids = append(ids, m.Approval)
+		}
+		for _, p := range in.Spec.Plugins {
+			ids = append(ids, p.Approval)
+		}
+		if in.Change != nil {
+			ids = append(ids, in.Change.Approval)
+		}
+		kinds := map[string]string{}
+		for _, id := range ids {
+			if id == "" {
+				continue
+			}
+			kind, err := c.checkApprovalID(plugin, id, roleKinds(ns))
+			if err != nil {
+				return nil, err
+			}
+			kinds[id] = canonKind(plugin, kind)
+		}
+		var top map[string]json.RawMessage
+		if err := json.Unmarshal(args, &top); err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		raw, err := json.Marshal(kinds)
+		if err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		for k := range top {
+			if strings.EqualFold(k, attestedKindsField) {
+				delete(top, k) // the plugin's own, in any spelling
+			}
+		}
+		top[attestedKindsField] = raw
+		out, err := json.Marshal(top)
+		if err != nil {
+			return nil, errors.New("Rubi Home refused: bad role.put arguments")
+		}
+		return out, nil
+	case opSSHRegister:
+		if err := noFoldedDuplicates(args); err != nil {
+			return nil, errors.New("Rubi Home refused: bad ssh.register arguments")
+		}
+		return args, c.attestSSHRegister(plugin, args)
+	case opProjectAdd:
+		if err := noFoldedDuplicates(args); err != nil {
+			return nil, errors.New("Rubi Home refused: bad project.add arguments")
+		}
+		return args, c.attestProjectAdd(plugin, args)
+	}
+	return args, nil
+}
+
+// attestProjectAdd lets a project.add with a folder through only while the user's approval of exactly that folder
+// is being executed. Home decodes the arguments with encoding/json too, so both read the same dir.
+func (c *Core) attestProjectAdd(plugin string, args json.RawMessage) error {
+	var want struct {
+		Dir string `json:"dir"`
+	}
+	if len(args) > 0 && string(args) != "null" && json.Unmarshal(args, &want) != nil {
+		return errors.New("Rubi Home refused: bad project.add arguments")
+	}
+	if want.Dir == "" {
+		return nil // the folder chooser on the Mac: the user picks the folder there
+	}
+	c.execMu.Lock()
+	defer c.execMu.Unlock()
+	for _, g := range c.execs[plugin] {
+		if canonKind(plugin, g.kind) != kindSetupFolder {
+			continue
+		}
+		var got struct {
+			Dir string `json:"dir"`
+		}
+		if json.Unmarshal(g.payload, &got) == nil && got.Dir == want.Dir {
+			return nil
+		}
+	}
+	return errors.New("Rubi refused: no approval from the user is being executed for adding this folder")
+}
+
+// checkProjectResolves asks Rubi Home what a project.add for dir would add (its project.resolve: the real path, after the
+// same checks), and lets the call through only when that is dir itself. The approval the user decided shows a path;
+// a folder that is a link, or whose path a listing passed on in another form, would be added as the folder it leads to,
+// which is not the one the user saw. The plugin gets the answer, and asks again with the path Home resolves it to.
+func (c *Core) checkProjectResolves(ctx context.Context, cl *homeproto.Client, op string, args json.RawMessage) error {
+	var in struct {
+		Dir string `json:"dir"`
+	}
+	if len(args) == 0 || string(args) == "null" || json.Unmarshal(args, &in) != nil || in.Dir == "" {
+		return nil // no folder: Home refuses it itself
+	}
+	var res struct {
+		Dir string `json:"dir"`
+	}
+	resolve := strings.TrimSuffix(op, "project.add") + "project.resolve"
+	if err := cl.Call(ctx, resolve, map[string]any{"dir": in.Dir}, &res); err != nil {
+		return err
+	}
+	if res.Dir != in.Dir {
+		return fmt.Errorf("Rubi refused: the folder in the approval is %q, but Rubi Home would add %q; ask for the approval again with the folder as Rubi Home resolves it (agent-setup.project.resolve)",
+			clipRunes(in.Dir, 200), clipRunes(res.Dir, 200))
+	}
+	return nil
+}
+
+// checkApprovalID accepts an id that is (a) a core approval of this plugin, of a role kind, that is executing or
+// executed, or (b) the approval_id of a role_skill_accept approval of this plugin that is executing right now (the
+// plugin makes that id itself; it is not a core approval id).
+//
+// Executing or Executed is reached only through the approving button: a decline ends in Denied, and every role kind
+// has one option, the approving one (apply, accept). So any option that gets here is an approval. The id is not
+// bound to the content of the change (the plugin's ticket holds the role's fields and core does not parse them);
+// Home spends an id once, and the plugin's own pending record ties an id to one change.
+//
+// It returns the kind the id was attested as.
+func (c *Core) checkApprovalID(plugin, id string, kinds map[string]bool) (string, error) {
+	if s, err := c.Approvals.Get(id); err == nil && s.Integration == plugin && kinds[s.Kind] &&
+		(s.State == approvals.Executing || s.State == approvals.Executed) {
+		return s.Kind, nil
+	}
+	c.execMu.Lock()
+	defer c.execMu.Unlock()
+	for _, g := range c.execs[plugin] {
+		var p struct {
+			ApprovalID string `json:"approval_id"`
+		}
+		if g.kind == kindNSSkill(plugin) && kinds[g.kind] && json.Unmarshal(g.payload, &p) == nil && p.ApprovalID != "" && p.ApprovalID == id {
+			return g.kind, nil
+		}
+	}
+	return "", fmt.Errorf("Rubi refused: approval %q is not an approval the user gave this plugin for a role change", clip(id, 40))
+}
+
+// sshTarget is every field Home's ssh.register takes (sshtarget.RegisterArgs) and the plugin's approval payload
+// carries (same JSON names). The gate decodes the arguments strictly into it and compares all of it, so a field
+// Home learns later is refused until the gate knows it.
+type sshTarget struct {
+	Name            string   `json:"name"`
+	Host            string   `json:"host"`
+	Port            int      `json:"port"`
+	User            string   `json:"user"`
+	Fingerprint     string   `json:"fingerprint"`
+	AllowedCommands []string `json:"allowed_commands"`
+	AskEachTime     bool     `json:"ask_each_time"`
+	Reuse           bool     `json:"reuse"`
+}
+
+func (a sshTarget) same(b sshTarget) bool {
+	if a.Name != b.Name || a.Host != b.Host || a.Port != b.Port || a.User != b.User || a.Fingerprint != b.Fingerprint ||
+		a.AskEachTime != b.AskEachTime || a.Reuse != b.Reuse {
+		return false
+	}
+	// A set: order and repeats don't matter, a missing list equals an empty one.
+	set := func(l []string) map[string]bool {
+		m := map[string]bool{}
+		for _, x := range l {
+			m[x] = true
+		}
+		return m
+	}
+	x, y := set(a.AllowedCommands), set(b.AllowedCommands)
+	if len(x) != len(y) {
+		return false
+	}
+	for k := range x {
+		if !y[k] {
+			return false
+		}
+	}
+	return true
+}
+
+func kindNSSkill(plugin string) string { return kindNS(plugin) + ".role_skill_accept" }
+
+func (c *Core) attestSSHRegister(plugin string, args json.RawMessage) error {
+	var want sshTarget
+	dec := json.NewDecoder(bytes.NewReader(args))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&want); err != nil || dec.More() {
+		return errors.New("Rubi Home refused: bad ssh.register arguments")
+	}
+	c.execMu.Lock()
+	defer c.execMu.Unlock()
+	for _, g := range c.execs[plugin] {
+		if g.kind != kindNS(plugin)+".ssh_target" {
+			continue
+		}
+		var got sshTarget // the payload has more fields (device, key_type); they are not Home's
+		if json.Unmarshal(g.payload, &got) == nil && got.same(want) && want.Name != "" && want.Fingerprint != "" {
+			return nil
+		}
+	}
+	return errors.New("Rubi refused: no approval from the user is being executed for registering this SSH target")
+}
+
+func clip(s string, n int) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 32 {
+			return ' '
+		}
+		return r
+	}, s)
+	if len(s) > n {
+		return s[:n]
+	}
+	return s
+}
+
+// noFoldedDuplicates refuses JSON with an object, at any depth, holding two keys that are equal ignoring case the way
+// encoding/json compares them (strings.EqualFold: Unicode simple folding).
+func noFoldedDuplicates(raw json.RawMessage) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := foldCheckValue(dec, 0); err != nil {
+		return err
+	}
+	if dec.More() {
+		return errors.New("trailing data")
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("trailing data")
+	}
+	return nil
+}
+
+func foldCheckValue(dec *json.Decoder, depth int) error {
+	if depth > 64 {
+		return errors.New("too deep")
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('{'):
+		var keys []string
+		for dec.More() {
+			kt, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			k, ok := kt.(string)
+			if !ok {
+				return errors.New("bad key")
+			}
+			for _, prev := range keys {
+				if strings.EqualFold(prev, k) {
+					return fmt.Errorf("duplicate key %q", clip(k, 40))
+				}
+			}
+			keys = append(keys, k)
+			if err := foldCheckValue(dec, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // }
+		return err
+	case json.Delim('['):
+		for dec.More() {
+			if err := foldCheckValue(dec, depth+1); err != nil {
+				return err
+			}
+		}
+		_, err = dec.Token() // ]
+		return err
+	}
+	return nil
+}

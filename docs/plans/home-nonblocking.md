@@ -1,7 +1,7 @@
 # B1: Non-blocking session registry and socket (Rubi Home)
 
-Task from Цитри (audit). Goal: a hung disk or a slow file read never blocks Claude Code hooks or Bash
-approvals. Branch `citri/home-nonblocking`, not pushed.
+Task from the reviewer (audit). Goal: a hung disk or a slow file read never blocks Claude Code hooks or Bash
+approvals. Branch `feature/home-nonblocking`, not pushed.
 
 ## Findings (internal/home, internal/homeproto)
 - `sessionRegistry.list` scans (readDesktopStore, readTranscripts, git waits up to 2 s) while holding
@@ -62,7 +62,7 @@ approvals. Branch `citri/home-nonblocking`, not pushed.
   cap were removed: the keys are fixed.)
 - gitInfo waits on a read already in flight.
 
-## B1-fix (Цитри's review of 2d7998d)
+## B1-fix (the reviewer's review of 2d7998d)
 - [x] CHANGELOG (Unreleased) and docs/design/rubi-home.md
 - [x] Reading-cap overflow: a denial with the reason (events read it as an empty reply)
 - [x] Desktop store and transcripts read in separate bounded goroutines, merged; stuck read reused

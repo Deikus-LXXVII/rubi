@@ -427,6 +427,7 @@ button.more { align-self: flex-start; width: auto; min-height: 0; padding: 0; co
 .switch-row:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: color-mix(in srgb, var(--accent) 8%, transparent); }
 
 .choices { display: flex; flex-direction: column; gap: 8px; }
+.choice-q { margin: 0 0 8px; font-weight: 600; overflow-wrap: anywhere; }
 .choice { display: flex; gap: 12px; align-items: flex-start; border: 1px solid var(--line-2); border-radius: var(--r-md); padding: 14px; cursor: pointer;
   transition: border-color var(--t-base) var(--ease-out), background-color var(--t-base) var(--ease-out); }
 .choice:has(input:checked) { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); background: color-mix(in srgb, var(--accent) 7%, transparent); }
@@ -440,6 +441,7 @@ button.more { align-self: flex-start; width: auto; min-height: 0; padding: 0; co
 .batch-item:not(:has(input:checked)) { opacity: 0.7; }
 .batch-item input { margin-top: 2px; }
 .batch-item .fields { margin-top: 8px; }
+.batch-item > div { min-width: 0; flex: 1; overflow-wrap: anywhere; } /* a long item (a plugin's permissions) wraps inside a 375px card */
 
 .pw-box input { text-align: center; }
 .actionbar {
@@ -663,6 +665,11 @@ button.small .icon { margin-right: 6px; vertical-align: -3px; }
 .acct-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--card); }
 .acct-list li { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border-top: 1px solid var(--line); min-height: 52px; }
 .acct-list li:first-child { border-top: 0; }
+/* A Home computer's row: the Claude Code hook lines take a full-width line below the name and buttons. */
+.acct-list li.device-row { flex-wrap: wrap; }
+.device-hook { flex-basis: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding-left: 38px; }
+.device-hook:empty { display: none; }
+.device-hue { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .acct-name { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow-wrap: anywhere; font-size: 0.94rem; }
 .acct-name small { width: 100%; }
 .avatar-dot.small { width: 28px; height: 28px; font-size: 0.8rem; }
@@ -718,6 +725,9 @@ button.back:hover .icon { translate: -3px 0; }
 .stile-text .small .icon { vertical-align: -2px; }
 .stile-action { grid-column: 2; display: flex; justify-content: flex-start; }
 .tag .icon { stroke-width: 2.4; }
+/* Add a home computer: the download of the Mac app */
+.home-dl { margin: 12px 0 8px; }
+.home-download { width: 100%; }
 .sideload summary { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; }
 .sideload[open] { display: flex; flex-direction: column; gap: 10px; }
 
@@ -1154,6 +1164,14 @@ button.copy { box-shadow: none; }
 .ask-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, 0.55); }
 .ask-box { display: grid; gap: 12px; width: min(420px, 100%); padding: 18px; border-radius: 14px; background: var(--card); border: 1px solid var(--line-2); }
 .ask-box h2 { margin: 0; font-size: 1rem; overflow-wrap: anywhere; }
+.folder-box { max-height: 100%; grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto; }
+.folder-box h2, .folder-box p { margin: 0; }
+.folder-places { display: flex; flex-wrap: wrap; gap: 8px; }
+.folder-where { font-size: 0.85rem; overflow-wrap: anywhere; color: var(--muted, inherit); }
+.folder-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; overflow-y: auto; min-height: 0; max-height: 40vh; }
+.folder-row { display: grid; gap: 2px; justify-items: start; text-align: left; width: 100%; min-height: 44px; padding: 10px 12px;
+  border-radius: 10px; background: var(--card); border: 1px solid var(--line-2); color: inherit; font: inherit; }
+.folder-name { overflow-wrap: anywhere; font-weight: 600; }
 .ask-box label { display: grid; gap: 6px; overflow-wrap: anywhere; }
 
 /* ============================================================ skill library */

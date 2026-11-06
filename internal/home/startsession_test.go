@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -221,13 +222,18 @@ func TestCreateRefusesASymlinkedPath(t *testing.T) {
 
 func TestDefaultSystemDirsAndVolumes(t *testing.T) {
 	c := &Claude{HomeDir: t.TempDir()}
-	for _, p := range []string{"/var/folders/x", "/private/var/tmp", "/Applications/Foo", "/opt/x", "/Volumes", "/etc/ssh"} {
+	// each system's own folders (hostpaths): a Mac's system folders and /Volumes, Linux's and /mnt
+	refused, onDisk := []string{"/var/folders/x", "/private/var/tmp", "/Applications/Foo", "/opt/x", "/Volumes", "/etc/ssh"}, "/Volumes/External/Projects"
+	if runtime.GOOS == "linux" {
+		refused, onDisk = []string{"/etc/ssh", "/usr/local/x", "/proc/1", "/var/tmp", "/opt/x", "/mnt", "/media"}, "/mnt/external/projects"
+	}
+	for _, p := range refused {
 		if c.refusedStartDir(p) == "" {
 			t.Errorf("%s allowed", p)
 		}
 	}
-	if c.refusedStartDir("/Volumes/Crucial/Projects") != "" {
-		t.Error("a project on a volume was refused")
+	if c.refusedStartDir(onDisk) != "" {
+		t.Error("a project on a mounted disk was refused")
 	}
 }
 
@@ -508,24 +514,23 @@ func TestDesktopURLEncoding(t *testing.T) {
 	}
 }
 
-func TestDesktopLauncherOpensTheURL(t *testing.T) {
-	var name string
-	var args []string
-	l := desktopLauncher{goos: "darwin", run: func(_ context.Context, n string, a ...string) error { name, args = n, a; return nil }}
+func TestDesktopLauncherOpensTheURLThroughTheOpener(t *testing.T) {
+	var links []string
+	op := openerFunc(func(_ context.Context, link string) error { links = append(links, link); return nil })
+	l := desktopLauncher{opener: op}
 	if err := l.Launch(context.Background(), "/p", "hi there"); err != nil {
 		t.Fatal(err)
 	}
-	if name != "/usr/bin/open" || len(args) != 1 || args[0] != "claude://code/new?folder=%2Fp&q=hi%20there" {
-		t.Fatalf("%s %q", name, args)
+	if len(links) != 1 || links[0] != "claude://code/new?folder=%2Fp&q=hi%20there" {
+		t.Fatalf("%q", links)
 	}
-	l.run = func(context.Context, string, ...string) error { return os.ErrNotExist }
+	l = desktopLauncher{opener: openerFunc(func(context.Context, string) error { return os.ErrNotExist })}
 	if err := l.Launch(context.Background(), "/p", "x"); err == nil || !strings.Contains(err.Error(), "installed") {
 		t.Fatalf("open failure: %v", err)
 	}
-	called := false
-	l = desktopLauncher{goos: "linux", run: func(context.Context, string, ...string) error { called = true; return nil }}
-	if err := l.Launch(context.Background(), "/p", "x"); err == nil || called {
-		t.Fatalf("linux: %v called=%v", err, called)
+	// a computer with no way to open a link says so
+	if err := (desktopLauncher{opener: nil, noSystem: true}).Launch(context.Background(), "/p", "x"); err == nil {
+		t.Fatal("no opener, no error")
 	}
 }
 

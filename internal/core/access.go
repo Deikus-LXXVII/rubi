@@ -233,6 +233,43 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 		}
 		return map[string]any{"status": "sent", "message": "The code is on its way to your webhook. The run it starts continues with your task; tell the user it's underway."}, nil
 	}
+	// One card, one passkey: while a request of this Bot for its webhook or for permanent accounts waits (or, the
+	// other way round, when it makes one while this ask waits), the two are one approval with an item for each, and
+	// each keeps its own meaning (botrequest.go). Here the ask joins a request that already waits.
+	once := &onceAsk{task: task, d: d, granted: granted}
+	for _, r := range ask {
+		once.items = append(once.items, c.onceItem(hook.Name, task, r))
+	}
+	if c.canJoinBotRequest(hook.Name, once) {
+		return c.proposeBot(ctx, BotRequest{Agent: hook.Name}, once)
+	}
+	return c.submitOnceAlone(ctx, *hook, once)
+}
+
+// submitOnceAloneFor is submitOnceAlone for the Bot with this name.
+func (c *Core) submitOnceAloneFor(ctx context.Context, agent string, once *onceAsk) (map[string]any, error) {
+	var hook *vault.Agent
+	_ = c.Vault.View(func(d *vault.Data) error {
+		if a := findAgent(d, agent); a != nil {
+			cp := *a
+			hook = &cp
+		}
+		return nil
+	})
+	if hook == nil {
+		return nil, fmt.Errorf("no agent %q (agents: %s)", agent, c.agentNames())
+	}
+	return c.submitOnceAlone(ctx, *hook, once)
+}
+
+// submitOnceAlone asks the user for a one-off access in an approval of its own (kind rubi.access): the duration is
+// the user's to pick, for the accounts they tick.
+func (c *Core) submitOnceAlone(ctx context.Context, hookAgent vault.Agent, once *onceAsk) (map[string]any, error) {
+	hook, task, d, granted := &hookAgent, once.task, once.d, once.granted
+	var ask []resolved
+	for _, it := range once.items {
+		ask = append(ask, it.res)
+	}
 	preview := map[string]any{"bot": hook.Name, "task": task, "asks_for": humanDuration(d),
 		"note": hook.Name + " isn't assigned to these accounts. Choose how long to let it in, and (when there are several) which accounts."}
 	if len(granted) > 0 {
@@ -246,49 +283,20 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 	// the Bot assigned to those accounts for that long (later requests are granted without asking).
 	req := approvals.Request{Integration: "rubi", Kind: "rubi.access", Preview: preview,
 		Question: "How long may " + hook.Name + " use them?",
-		Options: []approvals.Option{
-			{Key: "allow", Label: "Allow for this task", Meaning: humanDuration(d)},
-			{Key: "day", Label: "Allow for a day", Meaning: "it won't need to ask again until tomorrow"},
-			{Key: "week", Label: "Allow for a week"},
-			{Key: "always", Label: "Always allow", Meaning: "assigns it to these accounts; you can undo it in Settings"},
-		},
+		Options:  accessOptions(d),
 		Execute: func(_ context.Context, option string) (any, error) {
 			key, items := approvals.SplitOption(option)
 			chosen := map[string]bool{}
 			for _, k := range items {
 				chosen[k] = true
 			}
-			all := append([]resolved{}, granted...)
 			var allowed []resolved
 			for _, r := range ask {
 				if chosen[r.key()] || items == nil {
-					all = append(all, r)
 					allowed = append(allowed, r)
 				}
 			}
-			if err := c.rememberAccess(hook.Name, allowed, key); err != nil {
-				return nil, err
-			}
-			// The code lasts as long as the user allowed, not just the Bot's task. (Codes live in memory:
-			// after a restart the Bot asks again, and an assigned Bot gets a new one at once.)
-			codeFor := map[string]time.Duration{"day": 24 * time.Hour, "week": 7 * 24 * time.Hour, "always": 30 * 24 * time.Hour}[key]
-			if codeFor < d {
-				codeFor = d
-			}
-			if err := c.issueAccess(*hook, all, task, codeFor); err != nil {
-				return nil, err
-			}
-			// What the user allowed, in their words, for the receipt (not the duration the Bot asked for).
-			var names []string
-			for _, r := range allowed {
-				names = append(names, r.title())
-			}
-			how := map[string]string{"day": "for a day", "week": "for a week", "always": "from now on"}[key]
-			if how == "" {
-				how = "for " + humanDuration(d)
-			}
-			return map[string]any{"granted": len(all), "for": d.String(), "kept": key,
-				"receipt": hook.Name + " may use " + strings.Join(names, ", ") + " " + how + "."}, nil
+			return c.grantOnce(*hook, granted, allowed, task, d, key)
 		}}
 	if len(ask) == 1 {
 		req.Summary = fmt.Sprintf("Let %s use %s", hook.Name, ask[0].title())
@@ -298,7 +306,89 @@ func (c *Core) RequestAccess(ctx context.Context, agent string, want []AccessRes
 			req.Items = append(req.Items, approvals.Item{Key: r.key(), Label: r.title()})
 		}
 	}
-	return c.Approvals.Submit(ctx, req)
+	out, err := c.Approvals.Submit(ctx, req)
+	if err == nil {
+		c.rememberPendingOnce(hook.Name, out, once)
+	}
+	return out, err
+}
+
+// grantOnce is what approving a one-off access does, in the access approval and in the combined Bot card alike:
+// the Bot gets one code for the accounts it is already assigned to (granted) and the ones the user allowed now
+// (allowed), lasting as long as the user chose with key (this task, a day, a week, always). A day or a week assigns
+// the Bot to the allowed accounts for that long and "always" for good (rememberAccess); "allow" keeps nothing past
+// the code. Nothing here ever makes an access longer than the user's choice.
+func (c *Core) grantOnce(hook vault.Agent, granted, allowed []resolved, task string, d time.Duration, key string) (map[string]any, error) {
+	// The accounts the Bot was assigned to when it asked may have been taken away since (the approval waits for
+	// minutes): only those it is still assigned to get the code.
+	granted = c.stillAssigned(hook.Name, granted)
+	all := append(append([]resolved{}, granted...), allowed...)
+	if len(all) == 0 {
+		return nil, errors.New("nothing was allowed")
+	}
+	if err := c.rememberAccess(hook.Name, allowed, key); err != nil {
+		return nil, err
+	}
+	// The code lasts as long as the user allowed, not just the Bot's task. (Codes live in memory:
+	// after a restart the Bot asks again, and an assigned Bot gets a new one at once.)
+	codeFor := map[string]time.Duration{"day": 24 * time.Hour, "week": 7 * 24 * time.Hour, "always": 30 * 24 * time.Hour}[key]
+	if codeFor < d {
+		codeFor = d
+	}
+	if err := c.issueAccess(hook, all, task, codeFor); err != nil {
+		return nil, err
+	}
+	// What the user allowed, in their words, for the receipt (not the duration the Bot asked for).
+	var names []string
+	for _, r := range allowed {
+		names = append(names, r.title())
+	}
+	how := map[string]string{"day": "for a day", "week": "for a week", "always": "from now on"}[key]
+	if how == "" {
+		how = "for " + humanDuration(d)
+	}
+	receipt := hook.Name + " may use " + strings.Join(names, ", ") + " " + how + "."
+	if len(allowed) == 0 {
+		receipt = hook.Name + " got the code for the accounts it already has, for " + humanDuration(d) + "; nothing new was allowed."
+	}
+	return map[string]any{"granted": len(all), "for": d.String(), "kept": key, "receipt": receipt}, nil
+}
+
+// stillAssigned keeps the accounts the Bot is assigned to now: named for it, let in for a while and not over, or
+// (with nobody named) the administrator's.
+func (c *Core) stillAssigned(agent string, rs []resolved) []resolved {
+	var out []resolved
+	_ = c.Vault.View(func(d *vault.Data) error {
+		a := findAgent(d, agent)
+		if a == nil {
+			return nil
+		}
+		for _, r := range rs {
+			acc, err := accountOf(d, r.plugin, r.account)
+			if err != nil {
+				continue
+			}
+			ok := acc.AgentAllowed(a.Name, time.Now())
+			if len(acc.Agents) == 0 {
+				ok = ok || a == defaultAgent(d)
+			}
+			if ok {
+				out = append(out, r)
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+// accessOptions are the durations the user can give a one-off access.
+func accessOptions(d time.Duration) []approvals.Option {
+	return []approvals.Option{
+		{Key: "allow", Label: "Allow for this task", Meaning: humanDuration(d)},
+		{Key: "day", Label: "Allow for a day", Meaning: "it won't need to ask again until tomorrow"},
+		{Key: "week", Label: "Allow for a week"},
+		{Key: "always", Label: "Always allow", Meaning: "assigns it to these accounts; you can undo it in Settings"},
+	}
 }
 
 // rememberAccess keeps a longer permission: "day" and "week" assign the Bot to the accounts for that

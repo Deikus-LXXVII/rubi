@@ -385,6 +385,14 @@ func (r *sessionRegistry) scanFiles(desktop, transcripts string, now time.Time) 
 	partial = !okStore || !okTx
 	// A store that returned as many sessions as its cap allows may have had more.
 	capped = len(stores) >= maxStoreFiles || len(txs) >= maxTranscripts
+	// Start the git reads of all the directories before waiting for any: one that hangs and is waited for
+	// until gitBy mustn't leave the others no time to answer.
+	for _, s := range stores {
+		r.prefetchGit(s.ProjectRoot, s.Cwd)
+	}
+	for _, s := range txs {
+		r.prefetchGit(s.Cwd, s.Cwd)
+	}
 	for _, s := range stores {
 		r.fillProject(&s, s.ProjectRoot, gitBy)
 		if s.SessionID != "" {
@@ -491,46 +499,10 @@ func (r *sessionRegistry) fillProject(s *ClaudeSession, dir string, gitBy time.T
 // caches, never while waiting.
 func (r *sessionRegistry) gitInfo(dir string, by time.Time) gitInfo {
 	fallback := gitInfo{project: dir, key: "local:" + dir}
-	r.mu.Lock()
-	if g, ok := r.git[dir]; ok {
-		r.mu.Unlock()
+	g, rd := r.startGitRead(dir)
+	if rd == nil {
 		return g
 	}
-	if r.reading == nil {
-		r.reading = map[string]*gitRead{}
-	}
-	rd := r.reading[dir]
-	if rd == nil {
-		if len(r.reading) >= maxGitReads {
-			r.mu.Unlock()
-			return fallback
-		}
-		rd = &gitRead{done: make(chan struct{})}
-		r.reading[dir] = rd
-		read := r.readGit
-		if read == nil {
-			read = readGitInfo
-		}
-		go func() {
-			g, ok := fallback, false
-			defer func() {
-				if p := recover(); p != nil {
-					log.Printf("claude-sessions: reading git info of %s panicked: %v", dir, p)
-				}
-				r.mu.Lock()
-				delete(r.reading, dir)
-				if ok {
-					r.storeGitLocked(dir, g)
-				}
-				r.mu.Unlock()
-				rd.g = g
-				close(rd.done)
-			}()
-			g = read(dir)
-			ok = true
-		}()
-	}
-	r.mu.Unlock()
 	wait := time.Until(by)
 	if wait <= 0 {
 		wait = time.Millisecond // past the budget: only what is answered at once
@@ -543,6 +515,65 @@ func (r *sessionRegistry) gitInfo(dir string, by time.Time) gitInfo {
 	case <-t.C:
 		log.Printf("claude-sessions: git info of %s didn't come in time (is its disk responding?); listed without it", dir)
 		return fallback
+	}
+}
+
+// startGitRead returns dir's cached git info, or the read in progress for it (started now when there is
+// none and a slot is free), without waiting. With no read to wait for, rd is nil and g is the answer (the
+// cached info, or the fallback when all slots are taken).
+func (r *sessionRegistry) startGitRead(dir string) (g gitInfo, rd *gitRead) {
+	fallback := gitInfo{project: dir, key: "local:" + dir}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if g, ok := r.git[dir]; ok {
+		return g, nil
+	}
+	if r.reading == nil {
+		r.reading = map[string]*gitRead{}
+	}
+	if rd := r.reading[dir]; rd != nil {
+		return fallback, rd
+	}
+	if len(r.reading) >= maxGitReads {
+		return fallback, nil
+	}
+	rd = &gitRead{done: make(chan struct{})}
+	r.reading[dir] = rd
+	read := r.readGit
+	if read == nil {
+		read = readGitInfo
+	}
+	go func() {
+		g, ok := fallback, false
+		defer func() {
+			if p := recover(); p != nil {
+				log.Printf("claude-sessions: reading git info of %s panicked: %v", dir, p)
+			}
+			r.mu.Lock()
+			delete(r.reading, dir)
+			if ok {
+				r.storeGitLocked(dir, g)
+			}
+			r.mu.Unlock()
+			rd.g = g
+			close(rd.done)
+		}()
+		g = read(dir)
+		ok = true
+	}()
+	return fallback, rd
+}
+
+// prefetchGit starts the git reads fillProject will ask for (dir, or cwd when dir is empty, and cwd).
+func (r *sessionRegistry) prefetchGit(dir, cwd string) {
+	if dir == "" {
+		dir = cwd
+	}
+	if dir != "" {
+		r.startGitRead(dir)
+	}
+	if cwd != "" && cwd != dir {
+		r.startGitRead(cwd)
 	}
 }
 

@@ -54,12 +54,14 @@ type Manifest struct {
 	// keeps; the panel calls the plugin's OnPanel (the user's own requests, never the agent's). "notes" is
 	// the notes page. "view" is a page the plugin describes itself: OnPanel answers op "view" with
 	// {title, note, refresh (seconds, 0 for none), sections: [{title, note, empty, items: [{title, detail,
-	// actions: [{label, op, args, danger, confirm, prompt}]}]}]}; a button calls its op with its args, then the page
+	// actions: [{label, op, args, danger, confirm, prompt, folder}]}]}]}; a button calls its op with its args, then the page
 	// reloads. Requires Rubi v0.10.0. An action may carry prompt {arg, label, value}: the panel first asks the
 	// user for text in a box titled with the plugin's name (label shown as text, cut at 200 characters, refused if it
 	// mentions a password, passkey, PIN or Rubi; value prefilled, cut at 200; cancel does nothing) and adds the answer, possibly empty, to args
 	// under arg. A panel that predates prompt sends the call without it, so an op that takes text must
-	// refuse a call where the key is missing.
+	// refuse a call where the key is missing. An action may instead carry folder {arg, device, label}: the panel opens
+	// its own folder browser on the Rubi Home computer with that id, and adds the path of the folder the user chose to
+	// args under arg (a user choice only; the plugin sees no other folder name). Cancel does nothing.
 	Panel string `json:"panel,omitempty"`
 	// Config are settings only the user can change, in the Rubi panel and with their approval (for example
 	// a privacy filter). The agent can't read or change them through Rubi; the plugin reads them.
@@ -72,7 +74,11 @@ type Manifest struct {
 	// "claude-sessions" (v0.12.0: its Claude Code sessions and messages to and from them:
 	// claude-sessions.list, .send, .next, .bound; it can't approve anything) and
 	// "claude-start" (claude-start.create: starts a new Claude Code session with a first message; in sessions that
-	// skip permission prompts, Claude can run any command there). It may only call those operations.
+	// skip permission prompts, Claude can run any command there) and
+	// "claude-agent" (the claude-agent.* operations: Claude agents (Agent SDK) in a VM on that computer: projects,
+	// sessions, start, send, next, decide, status; it decides each tool call and git push) and
+	// "agent-setup" (the agent-setup.* operations: the first-time setup of the agent path on that computer: status,
+	// run a step, sign-in link and code, project folders). It may only call those operations.
 	// Shown to the user before install.
 	Home []string `json:"home,omitempty"`
 }

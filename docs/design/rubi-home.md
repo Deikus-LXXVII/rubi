@@ -1,5 +1,10 @@
 # Rubi Home
 
+> **Note (T3 Agents, S5).** The auth gateway, the stored subscription token (`agent-auth`) and `setup-token` sign-in this
+> document mentions are gone; the user signs in with the unmodified Claude Code CLI and Rubi never stores, reads or proxies
+> the credential. See docs/design/agent-runner.md and docs/plans/t3-integration.md.
+
+
 Rubi runs on the agent's machine, far from the user's home. Some things can only be reached from the home
 network: a Philips Hue Bridge, or Apple Home, which Apple opens only to apps on the user's own devices.
 Rubi Home is a small helper for a computer at home (a Mac that stays on, or a Linux box) that does those
@@ -17,18 +22,167 @@ things on Rubi's request.
 
 ## Pairing
 
-1. On the home computer: `curl -fsSL https://rubi-panel.com/install-home.sh | sh`. The installer verifies
-   the release signature, starts the helper at login (LaunchAgent / systemd user service) and prints a
-   pairing code: the helper's routing key, public identity and relays, plus a one-time secret valid for
-   15 minutes. `rubi-home pair` prints a new one.
-2. The user pastes the code into the panel (Settings > Rubi Home > Add a home computer).
+1. On the home computer, the user's Grok Bot installs Rubi Home: the user sends it the message the panel's "Add a
+   home computer" screen gives ("Install Rubi Home on this computer by following https://rubi-panel.com/install.md"),
+   and the Bot runs `install-home.sh` itself (on Windows `install-home.ps1`, which opens the window itself), then `~/.rubi-home/bin/rubi-home open` (the section "Install Rubi Home on
+   the user's computer" of the Bot skill, which is install.md). The user types nothing and only confirms what the
+   system asks. This is the main path, on macOS, Linux and Windows (Windows has Home, pairing, Hue, the hook and the sister tools; agents, T3 and Shortcuts are not available there yet). A Mac user with no Bot
+   downloads `Rubi Home.app` (a zip) from the same screen, opens the zip and opens Rubi Home (see "The Mac app"
+   below); Linux without a Bot has no path, because the user would have to type the script line (rule 2). Either
+   way the helper starts at login (LaunchAgent / systemd user service). The script verifies the release signature
+   (on Windows with an Ed25519 check inside `install-home.ps1`, no OpenSSL and no Git) and prints a pairing code: the helper's routing key, public identity and relays, plus a one-time secret valid
+   for 15 minutes. Opening Rubi Home makes a new one (`rubi-home pair` still prints one, a maintainer tool).
+2. Opening Rubi Home (`rubi-home open`) shows a window on macOS with the computer's name and fingerprint.
+   A code is made only when the user presses **Open the Rubi panel** or **Copy the code**; a pending code that
+   is still good (a minute left, not worn out) is reused, so Close leaves nothing live.
+   - **Open the Rubi panel** opens `https://rubi-panel.com/#home-code=<code>`. That code holds the relay key, the
+     public identity, the relays and the name, **no secret**: a URL reaches history, sync and other apps. The next
+     dialog shows an 8-character PIN (`XXXX-XXXX`, an alphabet with no 0/O/1/I/L), and the user types it in the
+     panel. The PIN is the pairing secret of this route.
+   - **Copy the code** puts the full code (with its random secret) on the clipboard through the stdin of
+     `pbcopy`, never argv; pasting it needs no PIN.
+   - If Home is paired already, the window shows the Rubi's label, the date and the fingerprint, and **Pair
+     again** goes to the above. Off macOS the command prints the link, the PIN and the full code.
+   - Every text is an argument of the `osascript` run handler, never spliced into the script.
+   - The pending secret, its PIN, its expiry and a count of wrong tries are written to the config under a file
+     lock (`config.json.lock`, flock); a running helper reloads it. `pair` accepts the full secret or the PIN;
+     five wrong secrets void the pending code, so a short PIN can't be guessed (31^8 values, five tries).
+   The panel reads `#home-code=`, removes it from the address bar at once and keeps the (secret-free) code in
+   local storage for 15 minutes; it never stores a code that has a secret. It decodes the code on the client and
+   shows "name · fingerprint" (the same hash of the bundle text that the approval shows and Rubi Home's window
+   shows) for the user to compare. Settings > Rubi Home then offers "Pair the waiting Rubi Home" with the code
+   filled in and a field for the PIN. The code is deleted when used, expired or the box is cleared. The user
+   can also paste the full code (Settings > Rubi Home > Add a home computer).
 3. Rubi calls `pair` with the secret and a new token, then asks the user to approve adding the computer
    (passkey or password). Removing it later also tells the helper to forget the token.
 
 A new pairing replaces every earlier one on that computer: codes are made there by its owner, so a pairing
-someone obtained from an older code ends at the next `rubi-home pair`. `rubi-home status` lists the
+someone obtained from an older code ends when the next pairing is made. `rubi-home status` lists the
 pairing with its time. The helper introduces itself by its model ("MacBook Pro"), not by a hostname that
 often carries its owner's name.
+
+## The Mac app
+
+`scripts/build-home-app.sh VERSION ARCH BINARY OUTDIR` (POSIX sh) makes `rubi-home-VERSION-macos-ARCH.zip` holding
+`Rubi Home.app/Contents/{Info.plist, MacOS/rubi-home}`. ARCH is `universal` for the release and `arm64` or `amd64`
+for a local build. The release builds the app in its own job on a macOS runner (`mac-app` in `release.yml`): it
+builds `rubi-home` for both CPUs with the same flags as the tar.gz files, joins them with `lipo -create` into one
+universal binary, and seals the bundle ad hoc (`RUBI_APP_SIGN=adhoc`). One universal app means one download for
+every Mac: the panel shows a single link. The binary inside is the same program as in the tar.gz files, for both
+CPUs in one file. `Info.plist`: bundle id `com.rubi-project.home`, name "Rubi Home", `LSUIElement` (no Dock icon),
+`LSMinimumSystemVersion` 13.0, the version without its `v`. The zip is reproducible (fixed times, sorted entries,
+`zip -X -D`, written under a temporary name and moved into place; a test builds it twice under another zone and
+umask) and is listed in the signed `SHA256SUMS`. The per-CPU tar.gz files stay for the script installer and Linux.
+
+**The download link and the feed.** The panel links to
+`https://github.com/<repo>/releases/download/<tag>/rubi-home-<tag>-macos-universal.zip`. It learns `<tag>` from
+`rubi-panel.com/releases/latest.json`, which `pages.yml` makes with `deploy/pages/latest.jq` from GitHub's list of
+releases. The feed has a `mac_app` field with the zip's name only when that release has the asset, so the panel
+never links to a file that is not there; when the field is missing (an older feed, a release without the app, the
+feed unreachable) the button goes to the releases page and says so.
+
+**Trust model.** The app path trusts two things: the HTTPS download from the GitHub release, and macOS Gatekeeper
+(an ad-hoc signature, no Developer ID). The signed `SHA256SUMS` lists the zip, but nothing on the Mac checks it.
+The script path (`install-home.sh`, run by the Bot) does check it, against the release key; this is why the Bot is the
+main path and the app the fallback. On Linux the PIN is printed in the output of the command the Bot runs, so the
+Bot sees it (on macOS it is only in the window); the Bot cannot approve the pairing, which needs the user's passkey. The panel does not show a hash
+either: the feed carries no asset hashes, and a hash from the same HTTPS origin as the link would prove nothing a
+download of the file does not. A person who wants the check can compare the zip with `SHA256SUMS` and
+`SHA256SUMS.sig`, which are on the release page. Verifying the signed sums inside the app is possible later (the app
+holds the release key); until then this is the weaker of the two paths, and it is stated here on purpose.
+
+Finder runs `Contents/MacOS/rubi-home` with no arguments (very old macOS adds `-psn_*`). With no arguments (or only
+`-psn_*`) from a `*.app/Contents/MacOS/` folder whose `Contents/Info.plist` has `CFBundleIdentifier`
+`com.rubi-project.home`, `rubi-home` runs the app flow (`internal/home/appinstall.go`); elsewhere it still prints
+its usage. The home folder comes from the account database (`user.Current`), else `$HOME`, and must be absolute.
+
+1. Check `~/.rubi-home` (0700), `bin/` and `logs/` (0755): each must be a real folder (Lstat, never a symlink) owned by
+   the user, and has no group or other write after the chmod; otherwise the app stops with "Rubi Home's folder isn't
+   safe to install into".
+2. Copy the running binary to `~/.rubi-home/bin/rubi-home` (a temporary file in that folder, fsync, mode 0755,
+   rename). Not copied when:
+   - the SHA-256 is equal (a symlink in the place is never "equal": it is replaced by a file, and never run);
+   - the installed version, read with `<installed> version` (3 s limit), is newer than this app's, by the semver
+     rules of `hookver.go`: a dialog says "A newer Rubi Home (vX) is already installed; this app is vY. Keep the
+     newer one." and the flow goes on with the installed helper. A development build is replaced only by another
+     development build, or when the installed version can't be read; an unreadable, older or equal version is
+     replaced (the update).
+3. Write `~/Library/LaunchAgents/com.rubi-project.home.plist`: the text of `install-home.sh`'s heredoc (a Go template
+   with the paths escaped for XML; a test extracts the heredoc and compares). A symlink in its place is replaced by
+   a regular file and logged.
+4. Load it with the `launchctl` runner (each call limited to 20 s): a new install (or a changed file, or an agent that
+   is not loaded) is booted out (an error is ignored) and bootstrapped into `gui/<uid>`; when bootstrap fails the
+   agent is `enable`d (the user may have switched it off in Login Items) and bootstrap is tried once more; an
+   unchanged, loaded agent whose binary changed gets `kickstart -k`; nothing else is touched.
+5. Wait up to 10 s for the helper to accept a connection on its local socket (`claude.sock` in its folder). A
+   file that is left over from a crash does not count: the connection is made. If the agent was loaded before and
+   nothing answers, it gets one `kickstart -k` and the wait runs again; a dead helper after that is an error. The
+   program on the other end of the socket is read from the kernel (macOS: `LOCAL_PEERPID`, then the
+   `kern.procargs2` sysctl; no cgo); if it is not the installed binary, or can't be told, a line goes to the log (a
+   warning, not a refusal). After a `kickstart -k`, a connection could still reach the old process for a moment before
+   it exits; the window then opens a little early, and the config it writes is read by the new process.
+6. `RunOpen` (the pairing window), at the user's pace but for at most 10 minutes (then the app ends quietly). The
+   helper's configuration is opened only now, so the running helper made the identity first and two processes never
+   create it at once.
+7. A failure is logged to `~/.rubi-home/logs/rubi-home-app.log` (private, with the detail) and shown in a dialog
+   with a fixed sentence: no command, no path of the system, no raw error. The dialog points to the log only when
+   the log could be opened. Dialogs give up after 2 minutes.
+
+Opening a newer app later replaces the binary and restarts the helper: this is the update. After an update the panel
+shows **Update the hook** (the root-owned hook copy is separate).
+
+### Forgetting a Hue Bridge
+
+Rubi Home records each Hue Bridge's certificate when it is paired and refuses a different one later. After a bridge is
+replaced or reset, Settings, Rubi Home lists the bridges (`hello.hue_bridges`, after Check) with **Forget this
+bridge**. That is `device.hue.forget`: a `rubi.settings` approval naming the computer and the bridge, whose execute step
+calls `hue.forget {id}` on Home (only that pin; the next pairing records the new certificate). Core refuses `hue.forget`
+in a plugin's `home.call` (`homegate.go`), so a plugin cannot drop the pin; `hue.pair` itself stays plugin-callable
+because it only records a pin and never replaces one (a changed certificate is refused until the user forgets it).
+
+### Opening an unsigned app (Gatekeeper and codesign)
+
+Checked on macOS (Darwin 27, arm64) with the release's build flags, `codesign` reading files in a temporary folder:
+
+- **The Go linker signs.** A `darwin/arm64` binary comes out ad hoc signed by the linker:
+  `CodeDirectory v=20400 ... flags=0x20002(adhoc,linker-signed)`, `Signature=adhoc`, `Info.plist=not bound`,
+  `TeamIdentifier=not set`; `codesign --verify --strict` says "valid on disk". arm64 refuses unsigned code, so this
+  is what lets the binary run at all. The same holds when the release cross-builds it on Linux.
+- **A plain copy needs nothing.** The signature is inside the Mach-O file, page hashes and no path, so the copy at
+  `~/.rubi-home/bin/rubi-home` verifies the same ("valid on disk"). The copy is written by Rubi Home's own process,
+  which sets no `com.apple.quarantine` (the zip's quarantine is on the downloaded files, not on what the app
+  writes); the only extended attribute seen on it was `com.apple.provenance`. The LaunchAgent runs it with no
+  Gatekeeper prompt.
+- **The bundle must be sealed.** Without it, `codesign --verify --strict "Rubi Home.app"` fails with
+  "code has no resources but signature indicates they must be present": the linker signature does not bind
+  `Info.plist`, and macOS may then call a downloaded app damaged, which only a terminal command gets past. So the
+  release builds the app on a macOS runner (job `mac-app` in `release.yml`) and seals it ad hoc:
+  `RUBI_APP_SIGN=adhoc scripts/build-home-app.sh ...` runs `codesign --sign - --force --timestamp=none` and then
+  `codesign --verify --strict`. The sealed zip is still reproducible (two builds give the same bytes), it verifies
+  after unzipping, and `codesign -dv` reads `Identifier=com.rubi-project.home`, `Info.plist entries=10`. A binary
+  copied out of the sealed bundle still runs (`rubi-home version` from a temporary folder).
+  `TestHomeAppSealedBuildVerifies` and `TestHomeAppUniversalBuildBundlesAndVerifies` check this on macOS.
+- **What the user sees.** A zip from a browser is quarantined, and an ad-hoc signature is not a Developer ID nor
+  notarized, so Gatekeeper refuses the first open: "macOS can't check it for malware", and Privacy & Security then
+  offers **Open Anyway** (the panel's step 3). This is not tested here: the app was not run. The H4 check on a
+  test account confirms it.
+- **No Developer ID.** The app is signed ad hoc; the project does not plan a Developer ID signature. The Mac app is
+  the fallback for users without a Bot; the Bot installs Home without it. The panel tells the user the Open Anyway
+  step is expected.
+
+## The release-version rule
+
+Every installer and updater follows one rule, so that nobody who can change `https://rubi-panel.com/releases/latest.json` (or the response) can make a computer install an older release. An older release is genuinely signed, so a signature on the release alone does not stop a rollback.
+
+1. **The version comes from signed data.** With no version given, the installer downloads `latest.json` and `latest.json.sig` (a raw Ed25519 signature over the exact bytes of `latest.json`, made by the release key when the site is deployed, `pages.yml`), verifies it with the release key it carries, and takes the version only from the verified bytes. A missing or bad signature stops it with "the release feed is not signed with the Rubi release key".
+2. **The signed list binds the version.** Whether the version came from the feed or was given (`$1`, `-Version`), the signed `SHA256SUMS` must name the archive for exactly that version, and every versioned asset in it (`rubi-<v>-...`, `rubi-home-<v>-...`) must carry that same version. Names without a version, such as `bin/rubi-linux-amd64`, are ignored, and so are the Linux VM files (`rubi-vm-<v>-...`): Rubi Home's setup looks them up by their exact name, version included, in the signed list of its own release. A genuine list of another release is refused.
+3. **No downgrade.** If a copy is installed, its version can be read and it is a release version, an older release is refused; the same version is a reinstall. The shell installers run the installed copy only if it is a plain file owned by the user and they are not running as root, and give it 5 seconds (the PowerShell installer too). The order is the one of `update.Newer` in `internal/update/update.go`: the numbers x.y.z, then a release over its pre-release, then pre-release names compared as text. If the installed version can't be read, or it is a development build, the installer goes on and says so in one line. There is no flag to override it.
+
+Where it is done: `panel/install-home.sh`, `panel/install.sh` and `panel/install-home.ps1` (the installed copy is asked with `version`); the core updater (`update.Latest` verifies `<feed>.sig`, `update.Checksums` binds the version, `update.Download` refuses a version that is not newer than the running one; dev and `-test` builds are exempt, as in their callers); Rubi Home's Mac app (it never replaces a newer Rubi Home, `keepInstalled`); and the Claude Code hook (`InstallHook` refuses with the code `downgrade` when the installed hook, believed only if it passes the trust check, is newer than this Rubi Home). The panel (`panel/js/homecode.js`) reads `latest.json` only to show the Mac app's download link; the browser side is a pointer, and what is installed is checked by the rule above.
+
+What the rule does not stop: the signed feed has no expiry, so whoever can serve the site can replay an older, genuinely signed `latest.json` with its signature. A computer with a release installed then still only moves forward (it may stay on a release that is not the newest); a fresh install, or one over a development build or an unreadable copy, may get the older release. The feed is left without an expiry on purpose (owner's decision): whoever can serve the site can also serve a changed install script, which no signature inside that script can stop, so an expiry would not close the fresh-install case; and installed computers already never move back. Check the install script you run (it comes over HTTPS from the project's site; its source is in `panel/` in the repository). Right after a deploy, an installer may briefly see the new `latest.json` with the old signature and stop with "not signed"; running it again a little later works.
+
+Tests: `internal/update/feed_test.go`; `internal/repocheck/installrelease_test.go` (the two shell installers run for real with a fake `curl`, a throwaway key and fake releases); `internal/repocheck/installhomeps1_test.go`, `scripts/test-install-home-ed25519.ps1` and the CI job `home-windows-install`; `internal/home/hookdowngrade_test.go`; `TestKeepInstalledRules`.
 
 ## Watching Rubi
 
@@ -195,7 +349,7 @@ The helper does only what it was built for, whatever Rubi asks:
   the managed settings (see `examples/managed-settings.json` of the plugin); without it a message to an idle
   session waits for the next prompt, and `claude-send` says so. The old way, a script writing an undocumented
   `{"type":"user",...}` line into the `messagingSocketPath` of `~/.claude/sessions/<pid>.json`
-  (`~/.citri/tell-rubi.py`), may break with any Claude Code update; nothing in Rubi or its plugins writes to that
+  (`~/.feature/tell-rubi.py`), may break with any Claude Code update; nothing in Rubi or its plugins writes to that
   socket, and it remains only as the caller's own fallback. A short example is
   `docs/examples/tell-session.sh`.
 
@@ -229,7 +383,7 @@ The helper does only what it was built for, whatever Rubi asks:
   `tool_input` and its digest are untouched; the fields never reach what Rubi shows. The helper reads them
   before anything else. No protocol: a legacy hook (v0.12), served and marked stale. A protocol outside the
   supported range: refused. PermissionRequest is denied with "the Claude Code hook binary speaks protocol N,
-  Rubi Home speaks M: run `~/.rubi-home/bin/rubi-home install-hook`; denied."; events and `RubiWait` get
+  Rubi Home speaks M: update the hook in the Rubi panel (Settings, Home); denied."; events and `RubiWait` get
   `{}`. Stale means the hook's version is older than the helper's (numeric semver; `dev` or unparseable is
   never stale). The last hook seen (`version`, `path`, `protocol`, `at`) lives under its own small lock, never
   held with the others and with no I/O under it; a mismatch or stale hook is logged once per distinct
@@ -238,7 +392,7 @@ The helper does only what it was built for, whatever Rubi asks:
   so it runs `<hook> version` (default `/usr/local/bin/rubi-home`, `--hook PATH` or `RUBI_HOOK_BINARY`; 3 s,
   the process group is killed) and prints version, sha256, whether the file is root-owned, not a symlink and
   not group/world-writable, and "stale". The helper does the same check once at start (it has no
-  self-updater: upgrades are an `install-home.sh` run, which restarts it) and logs a warning; the installer
+  self-updater: upgrades are opening a newer Rubi Home app, or an `install-home.sh` run, which restart it) and logs a warning; the installer
   warns too.
 
   The hook identity is advisory: the hook reports it itself, so a process that can reach the socket can claim
@@ -248,19 +402,21 @@ The helper does only what it was built for, whatever Rubi asks:
   status` hashes only a regular file of at most 256 MiB, so a FIFO or device can't hang it, and runs the hook
   with a minimal environment.
 
-  `rubi-home install-hook [--dry-run] [--to PATH] [--sudo]` plans a copy of the running binary (symlinks
+  The panel's "Install the Claude Code hook" button (`device.hook.install`: a `rubi.settings` approval, then Home's
+  `hook.plan` op for the approval's preview and a `hook.install` op that only starts the install in the background, 5 minutes at most, on its own context; `hello` reports `hook: {state, version, plugin, installing, last, why, fixable}`; the target is always `/usr/local/bin/rubi-home`, a new install is refused for 2 minutes after a cancelled or timed-out dialog and when nothing changes, and errors are a code and a fixed sentence) and the maintainer command
+  `rubi-home install-hook [--dry-run] [--to PATH]` plan a copy of the running binary (symlinks
   resolved) to the hook path. The privileged part is one script run by `/usr/bin/osascript` ("do shell script
   ... with administrator privileges", the script passed as an argument so no AppleScript quoting is involved)
-  or, with `--sudo` in a terminal, `/usr/bin/sudo /bin/sh -c`, both with `PATH` reduced to the system
-  directories and every tool in the script an absolute path. The script, as root: checks that the target
-  directory and every ancestor are root-owned and not group/world-writable; reads the source once into a temp
+  (there is no sudo path), with `PATH` reduced to the system directories and every tool in the script an absolute path. The script, as root: checks that the target
+  directory (or, when it is missing, its nearest existing ancestor, and then creates it with `mkdir -p`) and every
+  ancestor are root-owned and not group/world-writable; reads the source once into a temp
   file in the target directory; checks that file's sha256 against the hash the user was shown (computed
   earlier from the same path); only then `chown root:wheel` (`root:root` off macOS), `chmod 0755` and an atomic
   `mv -f` over the target; the temp file is removed on any failure. So a source swapped after the hash was
   shown is not installed. The hash is of the file at the source path: it shows what will be installed, not that
   it is genuine; the output says to compare it with the release's `SHA256SUMS`. The target must be a
-  plain file or absent (a symlink is refused), its directory must exist and have root-owned, closed
-  ancestors (otherwise install-hook refuses and says how to create the directory; it creates nothing). Paths
+  plain file or absent (a symlink is refused), its directory has root-owned, closed
+  ancestors (otherwise the install is refused; a missing directory is created by the root script). Paths
   with quotes, backslashes, backticks, `$`, control, format or line-separator characters, invalid UTF-8, or
   relative paths are refused instead of escaped. Afterwards it re-checks, as confirmation only, the target's
   sha256, that `DST version` prints the same version, and that the target and its ancestors are secure, and exits
@@ -387,3 +543,187 @@ The helper does only what it was built for, whatever Rubi asks:
 
 Plugins reach the helper through Rubi (`home.call`), limited to the capabilities their manifest declares;
 the install screen shows them.
+
+## Agents in a VM (`claude-agent`)
+
+Contract: `docs/design/agent-runner.md`. Code: `internal/home/agent`. Capability `claude-agent`, operations
+`claude-agent.projects | sessions | messages | start | send | rename | fork | interrupt | close | mode | next |
+decide | status | role.list | role.get | role.history | role.diff | role.put`; a plugin that declares
+`claude-agent` can call only those.
+
+- **Projects** are the directories in config `agent_projects` (absolute, existing, each its own project, id from
+  the directory name). A directory that is `/`, that holds the helper's own directory (its keys) or that is the
+  user's home is skipped. Encrypted per-project volumes (design section 9a) are a later milestone.
+- **VM.** `VM` is an interface; `AppleContainer` shells out to Apple's `container` CLI (1.6.x): `build` of the
+  image from `runner/container/Dockerfile` (the runner's sources are embedded in the binary, tagged by their hash,
+  and built from `<helper dir>/runner-build/<hash>` unless `agent_runner_dir` names a directory), `run -d --network none` (no network at all) with the
+  project bind-mounted at `/work`, a non-root user, `--cap-drop ALL`, a read-only root, then
+  a long-lived `exec -i` of `rubi-netpipe` (the VM's only way out, see agent-runner.md) and `exec -i --env-file` for the runner. The run token and proxy settings go in an environment file (0600) that
+  is deleted once the handshake succeeded, never on a command line. `Fake` plays a runner in-process for tests.
+- **Handshake.** Per start Home makes a random `run_token`; the runner's first line must be `hello` with it
+  (constant-time compare), else stdin is closed and the process killed; no hello in 10 s ends it too.
+- **Slots.** A slot is one running top-level session (subagents and forks inside it don't count against the slot
+  limits; the subagent cap below handles them). Three limits apply to a new session: its role (a profile of a project; the project's legacy role is one, and a project is one directory in `agent_projects`) has
+  `agent_max_sessions_per_profile` (default 1, at least 1; see "VM per role" below), optionally its project has
+  `agent_max_sessions_per_project` (an extra cap on the project's roles together; unset or 0 = none), the Bot that started it has its mode's session limit, and the computer has
+  `agent_max_sessions` (default 4, 0 = no cap, so the machine stays bounded whatever the modes say; a Bot on maximum is bounded only by it). Events decide
+  each slot: `status busy` takes one, `status idle` frees it
+  only when no background subagent is left (`background {agent_id}` adds one; `background {agent_id,
+  done:true}` or a `result` with that `agent_id` removes it), `status closed`, the end of the project's runner
+  and `close` free it. A `send` to a session that holds a slot goes straight to the runner; a start, or a send
+  to a session without a slot, when a limit is reached goes to the disk queue
+  (`<helper dir>/agent-queue.json`, 0600, atomic, 24 h, 64 items, 64 KiB each) and is delivered when a slot
+  frees, also after a restart (`rubi-home run` resumes it). Delivery is at most once. The queue is first in,
+  first out, except that an item waiting on a full project, a Bot at its limit, doesn't hold up the items behind
+  it: the first item that can run now goes, so a project with a free slot is never stuck behind another project's
+  waiting item. Items of one project and Bot keep their order (they wait on the same limits; items of different Bots in one project can pass each other when one Bot is at its limit), and when only the computer's cap is reached nothing runs, so
+  the oldest waiting item takes the next slot freed. A new item doesn't jump ahead of a queued one that could run.
+  Items of one role and Bot keep their order. Each queued item says why it waits in plain words (`reason`: "waiting: role visual-design (my-project) already has 1
+  session" (the legacy role is "default"), "waiting: project my-project already has 2 sessions" (the optional project cap), "waiting: bot bot-a already has 1 session, the limit of its light mode", "waiting: the computer's
+  session limit is reached"). The plugin sees `queue` items (`queued` with the reason, `delivered`,
+  `failed`, `expired`) in `next`. `status` has `slots: [{project, role, role_name, session, bot, busy, background, subagents}]`,
+  `limits: {per_profile, per_project, total}` (`per_project` 0 = no cap; total = the computer's cap), `queue` rows with `role` and `role_name`, `sessions_running`, `usage` (below); `slot` (the first
+  busy slot, or an empty one) stays for older plugins; `projects` rows have `role`, `role_name`, `slot_busy` (the role's slots are
+  full) and `sessions_running`. A `role` is the role's id; the legacy role's id is its project id and its name `default`.
+- **VM per role (agent roles R4).** `start`, `send`, `sessions`, `messages`, `rename`, `fork`, `interrupt`, `close` and
+  `mode` take an optional `role` (a role id from `role.list`; missing, or the project's id, is the legacy role, so older
+  plugins keep working). Each isolated role has its own VM (container `rubi-agent-<role name>-<hash of dir|role id>`):
+  the project at `/work` (rw), `<helper dir>/agent-roles/<id>/content` at `/rubi-role` (read-only; the runner follows
+  `current` per query), `<helper dir>/agent-roles/<id>/claude` at `/rubi-claude` (rw, the config directory and sessions),
+  `RUBI_ROLE_DIR=/rubi-role` and `RUBI_CLAUDE_DIR=/rubi-claude`, no sign-in mount, never `--ssh`. Home never reads or
+  deletes inside `claude/` (the VM writes there). The legacy role's VM, mounts and environment are unchanged. A role's
+  proxy list is the common list plus that role's `hosts`, and its `net.ask` approvals are kept per role in
+  `agent-net.json` (`roles` section; the legacy role keeps its per-directory `projects` section), so a role never gets
+  another role's hosts; both apply when the role's VM starts. While a role's VM runs, every role version it may read
+  (the one current at its start and each one put since) is pinned in the store so GC keeps it. A role VM with no slot
+  and no queued item for `agent_role_vm_idle_minutes` (default 15) is stopped and starts again on the next use; the
+  legacy VM isn't. An archived role refuses `start` (also a queued one at delivery). `projects` rows: one for the
+  legacy role of each project, then one for each isolated role that has a VM, a session or a queued item (same `id`,
+  own `role`).
+- **Session limits, `claude-agent.limits`.** `agent_max_sessions_per_profile` (default 1) is the rule counted per role;
+  `agent_max_sessions_per_project` (optional extra cap on one project's roles together) and `agent_max_sessions`
+  (the computer, default 4) are as before. Someone who raised `agent_max_sessions_per_project` before must now also set
+  `agent_max_sessions_per_profile`. `claude-agent.limits` with any of `per_profile` (1..256), `per_project` (0..256, 0 = no
+  cap) and `total` (0..256, 0 = no cap) saves them and returns the new status; a value not given stays. Like
+  `usage_mode` it is for the plugin's panel only (raising a cap is the user's decision), never a Bot tool. The setup
+  self-test holds its whole project (all roles) while it runs.
+- **Usage modes, per Bot.** Each Bot has a mode that says how much it may run at once; its limits apply to the
+  sessions it started and their subagents only, so a Bot on light never caps another on medium. `maximum`: no cap on
+  sessions or subagents. `medium` (the default, "Recommended"): 4 sessions, 4 subagents per session. `light`: 1
+  session, 2 subagents per session. The per-project limit is separate (1 by default, for every mode) and so is
+  the computer's cap. Config: `agent_default_mode` (default `medium`: the mode of a Bot met for the first time and
+  of the sessions the user starts from the panel, which count as one extra owner under the default mode),
+  `agent_bot_modes` (`{botID: mode}`), and the raw overrides `agent_max_sessions_per_project`, `agent_max_sessions`
+  and `agent_max_subagents_per_session` (0 = no cap; it overrides every Bot's mode, and `status` then marks the
+  rows `custom`). **Identity:** the plugin knows which Bot sent a message and passes a stable id (letters, digits,
+  `_ . : @ -`, up to 64) as `bot` with `start` and `send`; Home keeps the mode table in its config (simpler and safer
+  than trusting limits sent per start: a Bot can't pick its own id or its own limits, and the table is one file the
+  user owns). A Bot met for the first time is recorded with the default mode (up to 256), so the panel lists it.
+  Slots and queue items keep the Bot id. `status.usage` is `{default, modes, bots: [{id, mode, custom,
+  sessions_running, sessions_limit, subagents_per_session}]}` (the user's own sessions are the row with id `""`).
+  The runner gets the Bot's subagent cap with every `session.start` and `session.send` (`agent-runner.md`).
+  **Only the user changes modes:** `claude-agent.usage_mode` with `mode` and exactly one of `bot` (one Bot),
+  `default` (the default), `all` (every known Bot and the default; Bots can be changed one by one again after)
+  returns the new status. The operation exists for the plugin's panel; Home cannot tell a panel from a Bot tool
+  because both arrive through the paired plugin, so the plugin must expose it only as a panel button, never as a
+  Bot tool, and a Bot has no way to reach it. A change applies to new starts only: nothing running is killed;
+  when a mode is lowered the excess finishes and new work queues; when raised, waiting work goes at once.
+- **Roles (`role.*`).** Design: `agent-roles.md`. Code: `internal/home/agent/roles`. Home keeps agent roles per
+  device in `<helper dir>/agent-roles/<id>/` (0700; ids `r_` + 8 of `[a-z0-9]`, made by Home). The VM per role and
+  its mounts (R4) and the slots per role (R5) are not built yet; this is the store and its operations.
+  - **On disk.** `versions/<n>.json` (0600, never rewritten; the commit point), `index.json` (a cache, rebuilt from
+    `versions/`), `blobs/<sha256>` (ad-hoc skill text, named by the hash Home computed; read back, it must match its
+    name), `content/v<n>/` (`role.json`, `plugin/.claude-plugin/plugin.json` named `role`,
+    `plugin/skills/<name>/SKILL.md` normalized by `sdk/skillscan`, `plugin/agents/<name>.md` rebuilt from fields),
+    `content/current` (relative symlink `v<n>`) and `claude/` (empty; the future `/rubi-claude`).
+  - **Operations.** `role.list {project?}` returns `{roles: [{id, project, name, description, status, version,
+    changed_by, changed_at, legacy?}]}`; every project also has an implicit legacy role `default` (id = the project
+    id, `legacy: true`, not stored, cannot be put). `role.get {id, version?}` returns the stored version record
+    (the current one when `version` is 0), including each skill's scan result. `role.history {id, limit}` returns
+    `{id, current, versions: [{version, parent, changed_by, changed_at, name, status, change}]}`, newest first (limit
+    default 20, at most 100). `role.diff {id, from, to}` returns `{changes: [{field, key?, kind: added|removed|changed,
+    from?, to?}], skill_text: [{name, from_sha256, to_sha256, diff, clipped?}]}`; the diffs are unified, 3 lines of
+    context, clipped to 200 lines and 16 KiB. `role.put {id?, base_version, spec, blobs, by?, change?}` returns `{id,
+    version, skills: [{name, state, verdict}]}`; `spec` is the role record of section 2.1 (fields Home sets are
+    ignored), `blobs` maps sha256 to skill text, `by` is the Bot or user the plugin acts for and `change` is
+    `{op, tier, approval, summary}`, kept in the version. Arguments are strict (an unknown key is refused). Archive,
+    rename and revert are puts; a revert sends an old version's record as the spec.
+  - **Concurrency and conflicts.** One writer per role. A put whose `base_version` is not the current version is
+    refused (`the role changed: base_version 1, current version 2`) and writes nothing; a new role has
+    `base_version` 0. Names are unique per project among active roles (`default` is reserved), at most
+    `role_max_total` (50) roles exist, at most 1000 versions per role.
+  - **Validation (all reasons are returned).** Name, description (300), instructions (8 KiB), status, default mode
+    (not `dontAsk`); tools from the known list (`roles.KnownTools`, which must match the runner's list); at most 64
+    deny rules; MCP servers only with an `approval` id, https URL without credentials or a stdio command; Claude
+    plugins only with an `approval` id; hosts and SSH target names by pattern; subagents with `tools` cut to the
+    role's tools (a subagent whose tools are all outside the role's is refused) and `model` in inherit, sonnet, haiku,
+    opus; at most 20 skills, 10 of them ad-hoc, names `[a-z0-9-]` so none can name a path. A blob is hashed again
+    by Home and must be the sha256 it is sent under and be used by a skill. A library skill is accepted only if the
+    configured `Verifier` says its signature is valid; until the library exists (R8) the stub refuses every one.
+  - **Scan.** Every skill goes through `sdk/skillscan`. Reject: the put is refused with the rule ids and lines.
+    Flag: the skill is stored with `state: held`, is not in `role.json` and is not materialized, until a put carries
+    every flagged rule id in the skill's `accepted` list (the plugin sets it after the user taps accept); a flagged
+    library skill is active (the curator acknowledged its flags). Pass: `active`. The frontmatter keys other than
+    `name` and `description` are removed and listed in the stored scan (`stripped`).
+  - **Crash safety.** A put writes the blobs, builds `content/v<n>` aside and renames it, links `versions/<n>.json`
+    into place (the commit point, which can't replace a file), renames a new symlink over `current`, and writes
+    `index.json`, syncing each file and directory. Opening the store and every put reconcile the role from its
+    highest version file (rebuild a missing `content/v<n>`, fix `current` and `index.json`, drop temp files and
+    content above the committed version). `current` never names a directory that is not complete.
+  - **GC.** After each put Home removes `content/v<n>` except the newest 5, the current one and any version marked
+    in use with `Store.Pin(id, version)` (in memory), and blobs that no version record names. Version records and
+    the blobs they name stay, so history, diffs and reverts keep working.
+- **Asks.** `perm.ask` from the runner and `cred.ask` from the git helper become `next` items with Home's own
+  `ask_id` and wait for `decide`. No decision in 280 s (`claude_wait_seconds` does not apply here), no `next`
+  poll for 15 s, a cancelled runner or more than 16 pending: deny. Home never decides itself.
+- **Proxy.** One per running project, HTTP CONNECT to port 443 only, host names from the list, TLS not
+  decrypted. Allowed: `api.anthropic.com`, `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, the login
+  candidates `claude.ai`, `console.anthropic.com`, `platform.claude.com` (TO CONFIRM with a real login), the
+  hosts in `agent_git_hosts`, the owner's `agent_allowed_hosts`, the forges `github.com`, `gitlab.com`,
+  `bitbucket.org` (unless `agent_no_default_forges`), and hosts the owner approved for that project.
+  **Nothing is derived from the project's files**: `/work` is written by the agent, so a `Package.resolved`,
+  `.gitmodules` or `.git/config` there must not widen the list. A host that is not listed is asked about: the
+  proxy holds the CONNECT and raises a `net.ask {host}` item; the plugin answers with `decide`; an allow is
+  recorded per project in `<helper dir>/agent-net.json` (0600, 100 hosts per project), a denial is
+  remembered for 5 minutes, and with Rubi locked the answer is deny. Datadog and `downloads.claude.ai` are
+  refused even if listed, and are never asked about. The proxy resolves names itself and refuses to connect to
+  an address that is loopback, private (RFC 1918), link-local, ULA, CGNAT (100.64/10), 0.0.0.0/8, multicast,
+  reserved, or an IPv4-mapped/NAT64/6to4 form of those: one such address in the answer refuses the host, and
+  the socket's own address is checked again when it connects. Only `agent_git_hosts` may resolve to private
+  addresses (an owner's own git server). It requires
+  `Proxy-Authorization: Basic` with a per-start token (put into `HTTPS_PROXY` as `http://rubi:<token>@127.0.0.1:3128`;
+  not the run token), and ends tunnels idle for 10 minutes. It listens on no socket: a VM has no network, so the proxy
+  and the auth gateway serve the streams of the VM's `rubi-netpipe` (agent-runner.md, "No network: rubi-netpipe"), which
+  the VM reaches on its own loopback. `agent_network`, `agent_proxy_listen` and `agent_proxy_vm_host` are obsolete: they
+  still parse and are ignored (the proxy still refuses a wildcard listen address when it is given a socket, as the tests do).
+- **No network.** Every VM is started with `--network none`. There is no host-only network to create or to verify, no
+  address of the Mac the VM could reach, and no listener opened for it. The setup wizard's network step stays (same id) and
+  reads "done: not needed". The self-test asserts the absence of any route or interface besides `lo`, `ENETUNREACH` for
+  direct connections, failing DNS, a working proxy path and a refused unlisted host.
+- **Git credentials.** The helper in the VM (`runner/container/git-credential-rubi`) hands `git credential
+  get|store|erase` to the runner, which sends `git.credential {op, input, purpose}` to Home (the runner side
+  of the relay is part of the runner, not yet in M1). Hosts must be in `agent_git_hosts` and https. `get` for a
+  read is served from the source (file `agent-git-credentials.json`, 0600: `{"git.example.com": {"read":
+  {...}, "push": {...}}}`); `purpose: "push"` raises a `cred.ask {host, path}` (path cleaned and cut at 200)
+  **every time**, so each distinct repository path is asked about again, and gets the separate push credential
+  only on an allow (the mandate check is the plugin's). `store` and `erase` are accepted and ignored. The read
+  credential must be a read-only token. The push credential must be scoped to the repositories the agent
+  may push to and short-lived: once the VM has it, nothing stops it using it until it expires, and the VM can
+  keep it. Home never logs the credential helper's input or output (tested).
+- **Slot watchdog.** A session that holds a slot with no event and no pending ask for 30 minutes
+  (`SlotIdleTTL`) is interrupted and its slot freed (logged, and the plugin sees a `status closed` event); each
+  slot has its own clock.
+- **Modes.** `agent_allow_bypass` (default `true`) allows `start` and `mode` with `bypassPermissions` or
+  `dontAsk`; set it `false` to refuse them. The plugin still decides every tool call and approves loosening a
+  mode with a passkey.
+- **Projects and `/work`.** A project directory is refused if it is `/`, the home, a parent of the home
+  (`/Users`), a parent of the helper's directory, `~/.ssh`, `~/Library`, `~/.gnupg`, `~/.aws`, `~/.config`,
+  `~/.kube` or inside them, or has a `,` or control character in its path (it would break the `--mount`
+  option). `/work` is the same directory the user sees on the Mac: what the agent writes there (git hooks,
+  `.vscode/tasks.json`, build scripts, `.envrc`) runs with the user's rights the next time they use an editor or
+  git there, so review it like code from a stranger. On the first start Home creates `/work/.rubi/` and a
+  `.gitignore` containing `*` in it (never through a symlink; an existing file is left alone), because the
+  runner's sessions and config live there. Home reads nothing else from `/work` and makes no decision from it.
+- **Resource limits.** The runner serves at most 64 requests at once; more are answered with an error.
+- **Not in M2.** The plugin (M4), encrypted volumes, a cap on running VMs, the `git.credential` relay inside
+  the runner.

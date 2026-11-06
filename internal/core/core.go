@@ -19,6 +19,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/events"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
 	"github.com/Deikus-LXXVII/rubi/internal/integrity"
+	"github.com/Deikus-LXXVII/rubi/internal/library"
 	"github.com/Deikus-LXXVII/rubi/internal/paths"
 	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
@@ -47,14 +48,16 @@ var ErrNoTransport = errors.New("the panel connection is not available yet (Rubi
 	"try again in a few seconds")
 
 type Core struct {
-	Layout      paths.Layout
-	ID          *identity.Identity
-	Vault       *vault.Store
-	Approvals   *approvals.Engine
-	Events      *events.Store
-	Audit       *audit.Log
-	Store       *plugins.Store
-	Runner      *plugins.Runner
+	Layout    paths.Layout
+	ID        *identity.Identity
+	Vault     *vault.Store
+	Approvals *approvals.Engine
+	Events    *events.Store
+	Audit     *audit.Log
+	Store     *plugins.Store
+	Runner    *plugins.Runner
+	// Library is the shared skill library (library.go).
+	Library     *library.Library
 	PanelOrigin string
 	// HookBase is the public base URL of hook addresses ("" = none on this transport), and
 	// OnHookRoute applies a new hook route to the transport. Both are set by the daemon.
@@ -64,6 +67,13 @@ type Core struct {
 	// on that approval screen). nil, as in the daemon: Grok Bot routine webhooks only. Tests point it at
 	// their local receiver.
 	BotWebhookOK func(rawURL string) bool
+	// InstallRelease swaps the verified release of Rubi in for the running binary and returns the binary to
+	// restart into. nil, as in the daemon: download it, check it against the signed checksums and replace the
+	// executable. Tests replace it, so that an update does not touch the test binary.
+	InstallRelease func(ctx context.Context, target string) (exe string, err error)
+
+	execMu sync.Mutex
+	execs  map[string][]*execGrant // approvals whose execute is running, by plugin (homegate.go)
 
 	mu             sync.Mutex
 	paired         bool
@@ -73,10 +83,12 @@ type Core struct {
 	relays         []string
 	relayUp        int // relays currently connected
 	// transport is the user's chosen transport (gateway, relays, tailscale).
-	transport string
-	transErr  string // why there is no endpoint, if the transport can't start
-	pairCode  string
-	pairExp   time.Time
+	transport       string
+	startedBySwitch bool   // this process was started by the restart of a panel connection change
+	transportFB     string // set while the chosen transport failed and another one carries the panel
+	transErr        string // why there is no endpoint, if the transport can't start
+	pairCode        string
+	pairExp         time.Time
 	// tickets are short-lived random tokens embedded in panel links. The panel API serves anything
 	// beyond a bare hello only to holders of a valid ticket, so a stranger who finds the tunnel URL
 	// can't even fetch the wrapped keys.
@@ -88,17 +100,23 @@ type Core struct {
 	announced map[string]bool
 	toolCalls map[string]int
 	upd       updateState
+	tr        TransportHooks // guarded by upd.mu
 	mkt       marketState
 	integ     integrity.Result
 	hookHit   map[string][]time.Time // recent deliveries per hook, for rate limiting
 	tested    map[string]string      // test event id -> outcome of its first delivery ("" = delivered)
 
-	agentAuth agentAuth    // codes that prove which Bot is calling (agentauth.go)
-	started   time.Time    // when this process started (Rubi is locked since then after a restart)
-	hookRoute string       // the hook route, kept while locked so hook requests still arrive (backlog.go)
-	access    accessGrants // access codes for plugin accounts (access.go)
-	botReqs   botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
-	devs      deviceClients
+	agentAuth agentAuth // codes that prove which Bot is calling (agentauth.go)
+	started   time.Time // when this process started (Rubi is locked since then after a restart)
+	// eventsMu orders the saves of the unreported events; eventsKept is set once the lock kept them, so a save that
+	// runs while Rubi is still locking (after the event list was cleared) can't overwrite what was kept.
+	eventsMu   sync.Mutex
+	eventsKept bool
+	hookRoute  string       // the hook route, kept while locked so hook requests still arrive (backlog.go)
+	access     accessGrants // access codes for plugin accounts (access.go)
+	botReqs    botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
+	devs       deviceClients
+	libPins    libraryPins
 }
 
 // SetIntegrity records the result of the binary self-check.
@@ -148,6 +166,7 @@ func Open(layout paths.Layout) (*Core, error) {
 		plans:       map[string]pendingPlan{},
 		seen:        map[string]bool{},
 	}
+	c.Library = library.Open(library.Options{Dir: layout.Library(), Instance: id.InstanceID, DEK: c.Vault.Key, Signer: c.libraryKey, Logf: log.Printf})
 	c.Runner = &plugins.Runner{Store: store, LogDir: layout.Logs(), RubiVersion: version.Version, Hooks: plugins.Hooks{
 		Handler: c.pluginHandler, Launched: c.pluginLaunched, Crashed: c.pluginCrashed, Logf: log.Printf}}
 	_, keysErr := os.Stat(layout.Keys())
@@ -169,8 +188,11 @@ func Open(layout paths.Layout) (*Core, error) {
 			if !s.Level.InPanel() || c.State() != Unlocked {
 				return
 			}
-			if s.Kind == "rubi.update" && s.State == approvals.Executed {
+			if restartsForUpdate(s) {
 				return // Rubi restarts; the new process reports update.completed instead
+			}
+			if restartingSettings(s) {
+				return // a connection change that restarts Rubi: the new process reports transport.changed instead
 			}
 			time.Sleep(seenGrace)
 			if c.takeSeen(s.ID) {
@@ -230,6 +252,20 @@ func (c *Core) SetTransportName(t string) {
 	c.mu.Unlock()
 }
 
+// SetTransportFallback records that the chosen transport failed to start and Rubi is reachable through another one
+// ("" = none).
+func (c *Core) SetTransportFallback(t string) {
+	c.mu.Lock()
+	c.transportFB = t
+	c.mu.Unlock()
+}
+
+func (c *Core) transportFallback() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.transportFB
+}
+
 // TransportInfo describes how the panel is reached right now.
 func (c *Core) TransportInfo() map[string]any {
 	c.mu.Lock()
@@ -237,6 +273,9 @@ func (c *Core) TransportInfo() map[string]any {
 	info := map[string]any{"transport": c.transport, "relays_connected": c.relayUp, "relays": len(c.relays)}
 	if c.endpoint != "" {
 		info["https"] = true
+	}
+	if c.transportFB != "" {
+		info["fallback"] = c.transportFB
 	}
 	if c.transErr != "" && c.endpoint == "" && c.relayUp == 0 {
 		info["problem"] = c.transErr

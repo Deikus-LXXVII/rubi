@@ -78,7 +78,7 @@ type Request struct {
 	Preview     any    // full details shown to the user, rendered by the panel or the agent
 	Options     []Option
 	// Items make this a batch: the user approves any subset in one go. Execute then receives
-	// "items:<key>,<key>…" with the chosen keys (all of them for an option key or level none).
+	// "items:<key>,<key>…" with the chosen keys (all of them, but those marked DefaultOff, for an option key or level none).
 	Items   []Item
 	Execute Executor
 	// Inputs are values the user types on the approval screen (e.g. a webhook address and key the agent
@@ -152,6 +152,10 @@ type Item struct {
 	Key     string `json:"key"`
 	Label   string `json:"label"`
 	Preview any    `json:"preview,omitempty"`
+	// DefaultOff: the item starts unticked. An option key that stands for "all" (and a chat button) leaves it
+	// out; it is part of a decision only when its key is named in "items:...", which the panel does when the
+	// user ticks it on purpose.
+	DefaultOff bool `json:"default_off,omitempty"`
 }
 
 // ItemsPrefix starts the option of a batch approval: "items:a,b".
@@ -186,7 +190,9 @@ func (r *Request) normalize(option string) (string, error) {
 	chosen := map[string]bool{}
 	if isOption {
 		for _, it := range r.Items {
-			chosen[it.Key] = true
+			if !it.DefaultOff {
+				chosen[it.Key] = true
+			}
 		}
 	} else if rest, ok := strings.CutPrefix(option, ItemsPrefix); ok {
 		for _, k := range strings.Split(rest, ",") {
@@ -326,10 +332,15 @@ func New(cfg Config, hooks Hooks) *Engine {
 	if hooks.Audit == nil {
 		hooks.Audit = func(string, map[string]any) {}
 	}
-	return &Engine{cfg: cfg, hooks: hooks, now: time.Now, items: map[string]*approval{}}
+	return &Engine{cfg: cfg, hooks: hooks, now: wallNow, items: map[string]*approval{}}
 }
 
 // SetClock replaces the engine's clock (tests: expiry without waiting).
+// wallNow is the current time without Go's monotonic reading. An approval's expiry is wall-clock time (the user
+// sees it, the panel shows it): a time.Now() with its monotonic reading compares by the monotonic clock, which stops
+// while the machine sleeps or hibernates, so after a nap an approval stayed pending long past its expiry.
+func wallNow() time.Time { return time.Now().Round(0) }
+
 func (e *Engine) SetClock(now func() time.Time) {
 	e.mu.Lock()
 	e.now = now

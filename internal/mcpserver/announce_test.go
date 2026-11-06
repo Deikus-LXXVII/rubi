@@ -116,7 +116,7 @@ func TestPluginApprovalAnnounced(t *testing.T) {
 		}
 		return did != ""
 	})
-	time.Sleep(4 * time.Second) // past Rubi's grace period
+	time.Sleep(pastGrace) // past Rubi's grace period
 	if announced(tid) != nil || announced(did) != nil {
 		t.Fatalf("announced although an agent has the link: %v", r.webhooks("rubi.approval.requested"))
 	}

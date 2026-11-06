@@ -1,6 +1,6 @@
 # B4: Hook binary versioning and install-hook
 
-Branches: core `citri/hook-version` (from `citri/idle-wake`), plugin `citri/hook-version`. Not pushed.
+Branches: core `feature/hook-version` (from `feature/idle-wake`), plugin `feature/hook-version`. Not pushed.
 
 ## Problem
 Claude Code's managed hooks run `/usr/local/bin/rubi-home`, root-owned on purpose (a user-writable path would

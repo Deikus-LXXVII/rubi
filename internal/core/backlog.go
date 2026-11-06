@@ -39,9 +39,16 @@ const (
 
 var backlogMu sync.Mutex // serializes writes of the waiting-hooks file
 
-// saveEvents keeps the unreported events in the vault.
+// saveEvents keeps the unreported events in the vault. Saves run one at a time, and none once the lock has kept them:
+// a delivery's save that runs while Rubi is locking would otherwise write the cleared list over them.
 func (c *Core) saveEvents() {
-	if c.State() != Unlocked {
+	c.eventsMu.Lock()
+	defer c.eventsMu.Unlock()
+	c.saveEventsLocked()
+}
+
+func (c *Core) saveEventsLocked() {
+	if c.eventsKept || c.State() != Unlocked {
 		return
 	}
 	list := c.Events.List(false)
@@ -59,7 +66,10 @@ func (c *Core) beforeLock(reason string) {
 	if c.State() != Unlocked {
 		return
 	}
-	c.saveEvents()
+	c.eventsMu.Lock()
+	c.saveEventsLocked()
+	c.eventsKept = true // until the next unlock
+	c.eventsMu.Unlock()
 	_ = c.Vault.Update(func(d *vault.Data) error {
 		d.LockedAt, d.LockReason = time.Now().UTC(), reason
 		return nil
@@ -76,6 +86,9 @@ func (c *Core) afterUnlock() {
 		return nil
 	})
 	c.Events.Restore(saved)
+	c.eventsMu.Lock()
+	c.eventsKept = false
+	c.eventsMu.Unlock()
 	c.ensureLockbox()
 	if lockedAt.IsZero() || c.started.After(lockedAt) {
 		lockedAt, reason = c.started, "Rubi restarted" // locked since this process started

@@ -1,0 +1,3 @@
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"method":"hello","params":{"run_token":"not-the-token","version":"test"}}}
+{"from":"home","action":"close_stdin"}
+{"from":"runner","action":"exit:3"}

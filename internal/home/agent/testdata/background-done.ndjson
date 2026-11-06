@@ -1,0 +1,1 @@
+{"jsonrpc":"2.0","method":"event","params":{"session_id":"<uuid-1>","kind":"background","tasks":[]}}

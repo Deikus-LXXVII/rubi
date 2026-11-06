@@ -283,8 +283,8 @@ Review checks this, because the user approves what the preview shows.
 | Tool | Purpose |
 |---|---|
 | `rubi_store(query?)` | Catalog plugins, with installed version and available updates |
-| `rubi_plugin_install(id or source)` | Verifies the package and returns an approval link |
-| `rubi_plugin_update(id \| ids \| all)` / `rubi_plugin_remove(id)` | Same, for update (several plugins in one batch approval) and remove |
+| `rubi_plugin_install(id or source, or plugins: [...])` | Verifies the package(s) and returns an approval link (one approval, an item per plugin, for a list) |
+| `rubi_plugin_update(id \| ids \| all)` / `rubi_plugin_remove(id \| ids)` | Same, for update and remove (several plugins in one batch approval) |
 | `rubi_call(tool, arguments)` | Calls a plugin tool by name, for agents that don't refresh their tool list after an install |
 
 Plugin tools are added to the MCP server when a plugin is installed. The server sends
@@ -296,9 +296,28 @@ shows a box it draws itself, titled "<plugin name> asks:", with `label` as plain
 a text field prefilled with `value` (cut at 200, the answer is at most 200 too); Cancel, Escape or a click outside
 sends nothing. The panel refuses a `label` that mentions a password, passkey, PIN or Rubi (case-insensitive), so
 a plugin can't dress its question as an unlock or approval prompt. The answer, possibly empty, is passed as
-`args[arg]`. A panel that predates `prompt` sends the call without that key, so a plugin op that takes text must
+`args[arg]`. A button may instead carry `folder: {arg, device, label}`: the panel opens its own folder browser on the
+Rubi Home computer with id `device` (folder names only, from `device.fs.list`, which only a full settings link may
+call, and never inside the system's or the user's private folders), in a box titled "<plugin name> asks:" with
+`label` as plain text, checked like a prompt's. The user taps folders to open them and chooses the open one; the
+path goes to the op as `args[arg]`, and the plugin sees nothing else of the user's folders. The op still has to
+raise its approval and call `agent-setup.project.add {dir}`, whose checks decide again. Rubi Home shows no native
+folder chooser on any system. A panel that predates `prompt` sends the call without that key, so a plugin op that takes text must
 refuse a call where the key is missing instead of reading it as empty. The page is the user's own request: it
 needs a settings link, and what a button does needs no approval unless the plugin asks for one.
+
+**Drill-down pages and chats.** The page's `view` call carries args: `{}` for the first page, and whatever an
+action's `open: {..}` holds after that. An action with `open` calls no op: the panel asks the plugin for `view`
+with those args and shows the answer; the answer's `up: {label, open}` is the page's back button. A section may
+have its own `actions` (buttons above its items), and an item `warn: true` gets a yellow edge (a notice, nothing
+is blocked). A section with `kind: "chat"` is a message list: `items` oldest first, each `{role, author, text,
+untrusted, time}` with `role` one of `user`, `assistant`, `tool`, `sister` (other roles are drawn as
+`assistant`); a `sister` message or one with `untrusted: true` carries a visible "untrusted text" label and a
+dashed outline. `input: {op, args, arg, label, send}` adds a text box: the text goes to `op` as `args[arg]` (the
+user's own message, at most 4000 characters). Every string is drawn as text (no HTML, no links), clipped
+(message 4000 characters, item detail 600, title 200, at most 300 messages); the panel keeps what the user
+typed in a chat box when the page refreshes itself. The panel marks a line untrusted itself when the item has `role: "sister"`, `untrusted`, or a `from`/`sister`/`sender` field, whatever the plugin's flag says (a plugin can't draw another sender's line as the user's); an author that mentions a password, passkey, PIN, Rubi, or reads like the user or an administrator is shown as "Bot". Lists tolerate null and non-list data; non-chat pages show at most 20 sections, 100 items per section and 12 buttons per item or section; a reload keeps the chat's scroll position when the user has scrolled up. A page answer with `refresh: <seconds>` (at least 2) reloads itself; a reload of the same page keeps the page's scroll position and waits while a chat box holds a draft or a prompt box is open. Panels that predate these keys show the sections as plain
+lists, so a plugin should keep every chat message and action usable that way or say so in the page note.
 
 **Panel.** A **Store** screen lists the catalog: install, update, open setup. Settings lists installed
 plugins with their version, review status, Update and Remove. Approval screens render the permission

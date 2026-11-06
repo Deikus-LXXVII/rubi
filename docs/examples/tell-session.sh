@@ -11,4 +11,4 @@
 set -euo pipefail
 name=${1:?usage: tell-session.sh SESSION_TITLE TEXT}
 text=${2:?usage: tell-session.sh SESSION_TITLE TEXT}
-printf '%s' "$text" | "${RUBI_HOME_BIN:-$HOME/.rubi-home/bin/rubi-home}" claude-send --name "$name" --from Citri --wait-reply 300
+printf '%s' "$text" | "${RUBI_HOME_BIN:-$HOME/.rubi-home/bin/rubi-home}" claude-send --name "$name" --from bot-a --wait-reply 300

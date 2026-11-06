@@ -254,7 +254,8 @@ func TestPluginScriptRefusesACorruptFile(t *testing.T) {
 		t.Fatalf("temporary entries left: %v", m)
 	}
 	// A target that is a plain file or a symlink is refused by the script as well.
-	f := filepath.Join(base, "afile")
+	os.MkdirAll(filepath.Join(base, "af"), 0o755)
+	f := filepath.Join(base, "af", "claude-plugin")
 	_ = os.WriteFile(f, []byte("x"), 0o644)
 	if out, err := runScript(t, pluginScript(tools, f, files, false)); err == nil || !strings.Contains(out, "not a plain directory") {
 		t.Fatalf("%v %s", err, out)
@@ -263,7 +264,7 @@ func TestPluginScriptRefusesACorruptFile(t *testing.T) {
 
 func TestInstallHookWithPluginDryRun(t *testing.T) {
 	src, dst := installFixture(t)
-	pdst := filepath.Join(filepath.Dir(dst), "plugin-dir")
+	pdst := filepath.Join(filepath.Dir(dst), "claude-plugin")
 	called := false
 	var out bytes.Buffer
 	err := InstallHook(context.Background(), &out, InstallOptions{Src: src, Dst: dst, DryRun: true, WithPlugin: true, PluginDst: pdst,
@@ -361,12 +362,14 @@ func TestPlanClaudePluginRefusals(t *testing.T) {
 		}
 	}
 	base := t.TempDir()
-	f := filepath.Join(base, "file")
+	os.MkdirAll(filepath.Join(base, "f"), 0o755)
+	f := filepath.Join(base, "f", "claude-plugin")
 	_ = os.WriteFile(f, []byte("x"), 0o644)
 	if _, err := PlanClaudePlugin(f, false); err == nil || !strings.Contains(err.Error(), "plain directory") {
 		t.Errorf("a file: %v", err)
 	}
-	link := filepath.Join(base, "link")
+	os.MkdirAll(filepath.Join(base, "l"), 0o755)
+	link := filepath.Join(base, "l", "claude-plugin")
 	_ = os.Symlink(base, link)
 	if _, err := PlanClaudePlugin(link, false); err == nil || !strings.Contains(err.Error(), "plain directory") {
 		t.Errorf("a symlink: %v", err)
@@ -377,11 +380,11 @@ func TestPlanClaudePluginRefusals(t *testing.T) {
 		}
 	}
 	// A name that can't be quoted safely is refused (a test file system stands in for the embed).
-	_, err := planClaudePlugin(fstest.MapFS{"a b.txt": {Data: []byte("x")}}, filepath.Join(base, "p"), false, defaultTools())
+	_, err := planClaudePlugin(fstest.MapFS{"a b.txt": {Data: []byte("x")}}, filepath.Join(base, "claude-plugin"), false, defaultTools())
 	if err == nil || !strings.Contains(err.Error(), "quoted safely") {
 		t.Errorf("odd name: %v", err)
 	}
-	_, err = planClaudePlugin(fstest.MapFS{"a.txt": {Data: bytes.Repeat([]byte("x"), 400<<10)}}, filepath.Join(base, "p"), false, defaultTools())
+	_, err = planClaudePlugin(fstest.MapFS{"a.txt": {Data: bytes.Repeat([]byte("x"), 400<<10)}}, filepath.Join(base, "claude-plugin"), false, defaultTools())
 	if err == nil || !strings.Contains(err.Error(), "too large") {
 		t.Errorf("large: %v", err)
 	}

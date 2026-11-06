@@ -6,9 +6,11 @@ import {
   fingerprint, approveKey, b64u, hmacSha256, newPasswordKdf, passwordKek, prfKek, rand, supportsX25519, unwrapDek, wrapDek,
 } from "./crypto.js";
 import { DEMO_HELLO, DEMO_SCREENS, DemoClient } from "./demo.js";
+import { clearHomeCode, decodeHomeCode, HOME_FEED, HOME_RELEASES, homeFeedVersion, homeFingerprint, homeMacAppURL, keepHomeCode, waitingHomeCode } from "./homecode.js";
 import { icon } from "./icons.js";
 import { celebrate, lookAt, mascot, react, setMood, shy } from "./mascot.js";
 import { createPasskey, evalPrf, passkeysAvailable, signChallenge } from "./passkey.js";
+import { createRefresher, unchanged } from "./viewrefresh.js";
 import { isRoutineURL, missingHint, parseWebhook } from "./webhook.js";
 
 const root = document.getElementById("app");
@@ -47,7 +49,7 @@ function screen(...children) {
     hero.style.viewTransitionName = "rubi";
     hero.dataset.vt = "rubi";
   }
-  const viaVT = !!(document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden);
+  const viaVT = !opts.quiet && !!(document.startViewTransition && root.firstChild && !reducedMotion() && !document.hidden);
   const morph = !!(hero && before && viaVT);
   // During a view transition the browser fades the card in itself, and Rubi's flight ends where it stood
   // when the transition began: nothing around Rubi may still be moving then, or it would jump on landing.
@@ -55,6 +57,12 @@ function screen(...children) {
   const swap = () => {
     root.replaceChildren(main);
     window.scrollTo({ top: opts.keepScroll || 0 });
+    if (opts.quiet) {
+      // A redraw of the page on screen (its refresh): no entrance, and the control that had the focus keeps it.
+      const again = opts.refocus && controlByKey(main, opts.refocus);
+      if (again) again.focus({ preventScroll: true });
+      return;
+    }
     animateIn(main, morph ? hero : null);
     for (const svg of main.querySelectorAll(".mascot")) svg.enter?.(morph && svg === hero);
     // Focus the first field; otherwise the title, so screen readers announce the new screen.
@@ -74,6 +82,20 @@ function screen(...children) {
   } else {
     swap();
   }
+}
+
+// controlKey names a button or field on screen by its kind, text and place among its namesakes, so a redraw can find
+// the same one again; controlByKey finds it.
+function controlKey(el) {
+  if (!el || el === document.body || !root.contains(el) || !el.matches?.("button, input, textarea, select, a")) return null;
+  const name = el.tagName + "|" + (el.textContent || el.getAttribute("aria-label") || el.name || "").trim();
+  const same = [...root.querySelectorAll(el.tagName)].filter((x) => x.tagName + "|" + (x.textContent || x.getAttribute("aria-label") || x.name || "").trim() === name);
+  return { name, i: same.indexOf(el) };
+}
+function controlByKey(main, key) {
+  const [tag] = key.name.split("|");
+  const same = [...main.querySelectorAll(tag)].filter((x) => x.tagName + "|" + (x.textContent || x.getAttribute("aria-label") || x.name || "").trim() === key.name);
+  return same[key.i] || null;
 }
 
 const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -239,13 +261,20 @@ async function updatesScreen(ctx) {
       confirmChange(ctx, await ctx.client.call("updates.plugin", { ids: pluginIds }), again, "Back to updates");
     }).catch((x) => showError(err, x));
   } }, icon("download", 16), `Update all ${pluginIds.length} plugins`) : null;
+  // Rubi and plugins both have updates: one approval for all (Rubi is one item, each plugin another).
+  const rubiNew = items.some((it) => it.id === "rubi" && it.available);
+  const updateEverything = rubiNew && pluginIds.length > 0 ? h("button", { class: "primary small", onclick: async (e) => {
+    await busy(e.currentTarget, async () => {
+      confirmChange(ctx, await ctx.client.call("updates.all"), again, "Back to updates");
+    }).catch((x) => showError(err, x));
+  } }, icon("download", 16), `Update everything (Rubi and ${pluginIds.length === 1 ? "1 plugin" : pluginIds.length > 20 ? "the first 20 plugins" : pluginIds.length + " plugins"})`) : null;
   screen(
     { cls: "wide", focus: false },
     header(ctx.hello),
     backBar("Settings", () => openSettings(ctx)),
     h("h1", {}, "Updates"),
     h("p", {}, n ? `${n === 1 ? "1 update is" : n + " updates are"} available.` : "Everything is up to date."),
-    updateAll ? h("div", { class: "top-actions" }, updateAll) : null,
+    updateEverything || updateAll ? h("div", { class: "top-actions" }, updateEverything || updateAll) : null,
     err,
     h("div", { class: "ulist" }, rows),
     h("p", { class: "muted small" }, "Rubi learns about new versions within seconds. Turn off “Tell agent” for anything you'd rather update from here, without your agent bringing it up. Every update still needs your passkey or password."),
@@ -346,6 +375,23 @@ function savePin(instance, k, version) {
   }
 }
 
+// ---------- a pairing code from Rubi Home (it opens the panel with #home-code=...) ----------
+
+// Rubi Home's window opened the panel with its code (no secret: the PIN in its window is typed later). Take it
+// out of the address bar at once, keep it, and say what to do next; the panel can't be used without the user's own
+// link, which holds the Rubi's key.
+function homeCodeArrived(hash) {
+  const code = (new URLSearchParams(hash.replace(/^#/, "")).get("home-code") || "").trim();
+  history.replaceState(null, "", location.pathname + location.search);
+  const kept = keepHomeCode(code);
+  screen(face("happy", 76), h("h1", {}, kept ? "Rubi Home is ready to pair" : "Copy the code instead"),
+    h("p", {}, kept
+      ? "Rubi Home's pairing code is ready. Open Rubi from your usual link (the one your Bot sent you, or your bookmark) and go to Settings, Rubi Home. The code is filled in for you; you type the PIN shown in Rubi Home's window."
+      : "Copy the code from Rubi Home's window and paste it in Settings, Rubi Home."),
+    h("p", { class: "muted small" }, kept ? "The code is kept here for 15 minutes. " : "",
+      "Pair only if you just opened Rubi Home on your own computer; a code from anyone else's link would connect their computer instead."));
+}
+
 // ---------- landing: the live mascot and the approval story ----------
 
 let landingDone = false;
@@ -425,8 +471,10 @@ function startStory(story) {
 // ---------- entry ----------
 
 async function main() {
+  waitingHomeCode(); // an expired pairing code is deleted whatever page this is
   if (location.hash.startsWith("#demo")) return demoMain(location.hash.slice(5).replace(/^=/, ""));
   if (!window.isSecureContext) return fatal("This page must be opened over HTTPS.");
+  if (location.hash.startsWith("#home-code=")) return homeCodeArrived(location.hash);
   const link = parseLink(location.hash);
   // Keep the one-time codes out of the address bar and history.
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
@@ -505,7 +553,7 @@ function demoScreen(ctx, which) {
       ctx.hello = { ...DEMO_HELLO, state: "locked" };
       return unlockFlow(ctx, "Unlock Rubi", "Rubi restarted and locked itself. Unlock it to let your agent continue.",
         () => { ctx.hello = { ...DEMO_HELLO }; statusScreen(ctx, "Unlocked. You can go back to your agent."); });
-    case "send": case "install": case "reveal": case "door": case "botpaste": case "curator":
+    case "send": case "install": case "botaccess": case "updateall": case "withdrawmany": case "installmany": case "removemany": case "rollbackmany": case "reveal": case "door": case "botpaste": case "curator":
       return approveScreen(ctx, which, { onDone: back, doneLabel: "Back to the demo" });
     case "settings":
       return settingsScreen(ctx, "plugins");
@@ -531,6 +579,14 @@ function demoScreen(ctx, which) {
       return updatesScreen(ctx);
     case "notes":
       return notesScreen(ctx, "notes", back);
+    // the pages of the T3 Agents plugin (demo.js answers for the plugin id t3agents)
+    case "t3trust": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, {});
+    case "t3setup": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "setup", device: "dev_mac" });
+    case "t3sessions": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "agent", device: "dev_mac" });
+    case "t3chat": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "chat", device: "dev_mac", project: "web-app", session_id: "s1" });
+    case "t3roles": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "roles", device: "dev_mac" });
+    case "t3ssh": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "ssh", device: "dev_mac" });
+    case "t3usage": return pluginViewScreen(ctx, "t3agents", "T3 Agents", back, { page: "usage", device: "dev_mac" });
     case "status":
       return statusScreen(ctx, "Unlocked. You can go back to your agent.");
     case "sent": case "declined": case "failed": {
@@ -1076,11 +1132,12 @@ async function approveScreen(ctx, id, opts = {}) {
   let choiceUI = null;
   if (a.options.length === 2 && a.question) {
     const sw = h("input", { type: "checkbox", role: "switch", class: "switch", onchange: () => {
-      chosen = sw.checked ? a.options[1].key : a.options[0].key;
+      chosen = optKey = sw.checked ? a.options[1].key : a.options[0].key;
+      syncItems?.(); // in a batch the choice travels with the ticked items
     } });
     if (a.kind === "rubi.plugin.install") { // update notifications are on unless the user turns them off
       sw.checked = true;
-      chosen = a.options[1].key;
+      chosen = optKey = a.options[1].key;
     }
     const all = [...splitAddresses(a.preview?.to), ...splitAddresses(a.preview?.cc)];
     const label = !a.kind.endsWith(".send") || !all.length ? a.question.replace(/\?$/, "")
@@ -1093,10 +1150,12 @@ async function approveScreen(ctx, id, opts = {}) {
     });
     choiceUI = h("label", { class: "switch-row" }, h("span", {}, label), sw);
   } else if (a.options.length > 1) {
-    choiceUI = h("div", { class: "choices", role: "radiogroup" }, a.options.map((o, i) => {
+    const group = h("div", { class: "choices", role: "radiogroup", "aria-label": a.question || "Choose" }, a.options.map((o, i) => {
       const r = h("input", { type: "radio", name: "opt", value: o.key, checked: i === 0, onchange: () => { chosen = optKey = o.key; syncItems?.(); } });
       return h("label", { class: "choice" }, r, h("span", {}, o.label, o.meaning ? h("small", {}, o.meaning) : null));
     }));
+    // The question says what the choice is about (in a combined Bot card: only the items marked for a while).
+    choiceUI = a.question ? h("div", {}, h("p", { class: "choice-q" }, a.question), group) : group;
   }
 
   // A batch: every item has its own checkbox; the passkey signs exactly the chosen set.
@@ -1112,7 +1171,7 @@ async function approveScreen(ctx, id, opts = {}) {
     };
     const count = h("p", { class: "muted small" });
     itemsUI = h("div", { class: "batch" }, count, a.items.map((it) => {
-      const b = h("input", { type: "checkbox", checked: true, onchange: () => sync() });
+      const b = h("input", { type: "checkbox", checked: !it.default_off, onchange: () => sync() }); // default_off: ticked on purpose
       itemBoxes.push({ b, key: it.key });
       return h("label", { class: "batch-item" }, b, h("div", {}, h("strong", {}, it.label),
         it.preview && typeof it.preview === "object" ? fieldList(it.preview) : null));
@@ -1283,7 +1342,8 @@ async function approveScreen(ctx, id, opts = {}) {
 // resultScreen shows how an approval ended. extra (optional) carries the preview and chosen option.
 function resultScreen(ctx, a, onDone, extra = {}) {
   const executedTitle = a.kind?.endsWith(".send") ? "Sent" : a.kind === "rubi.settings" ? "Saved"
-    : a.kind === "rubi.update" ? "Updating…" : a.kind === "rubi.plugin.install" ? "Installed"
+    : a.kind === "rubi.update" || (a.kind === "rubi.update.all" && a.result?.restarting) ? "Updating…"
+    : a.kind === "rubi.update.all" ? "Updated" : a.kind === "rubi.plugin.install" ? "Installed"
     : a.kind === "rubi.plugin.update" ? "Updated" : a.kind === "rubi.plugin.remove" ? "Removed"
     : a.kind === "rubi.plugin.rollback" ? "Rolled back" : a.kind?.endsWith(".private") ? "Shown to your agent"
     : a.kind?.endsWith(".folder") || a.kind?.endsWith(".chat_access") || a.kind === "rubi.access" || a.kind === "rubi.bot.request" ? "Allowed" : a.kind?.endsWith(".draft") ? "Draft saved" : "Done";
@@ -1309,7 +1369,7 @@ function resultScreen(ctx, a, onDone, extra = {}) {
   // A receipt of what happened, and what the agent knows.
   const rows = [h("div", { class: "receipt-row" }, icon(ok ? "check" : sad ? "close" : "warn", 18), h("span", {}, line))];
   if (tracking) rows.push(h("div", { class: "receipt-row" }, icon("bell", 18), h("span", {}, "Rubi will tell your agent when a reply arrives.")));
-  if (ok && a.kind === "rubi.update") rows.push(h("div", { class: "receipt-row" }, icon("download", 18), h("span", {}, "Rubi restarts into the new version in a few seconds and stays unlocked.")));
+  if (ok && (a.kind === "rubi.update" || (a.kind === "rubi.update.all" && a.result?.restarting))) rows.push(h("div", { class: "receipt-row" }, icon("download", 18), h("span", {}, "Rubi restarts into the new version in a few seconds and stays unlocked.")));
   if (ok && a.result?.next_step && !onDone) rows.push(h("div", { class: "receipt-row" }, icon("link", 18), h("span", {}, "Your agent will send you a link to set it up.")));
   if (!onDone) {
     rows.push(h("div", { class: "receipt-row muted" }, icon("bot", 18), h("span", {}, ok
@@ -1626,13 +1686,14 @@ async function settingsScreen(ctx, tab) {
   ctx.settingsTab = tab;
   currentView = () => settingsScreen(ctx);
   const err = errorBox();
-  let store, policy, hook, st, devices, waitingList;
+  let store, policy, hook, st, devices, waitingList, transport;
   try {
-    [store, policy, hook, st, devices, waitingList] = await Promise.all([
+    [store, policy, hook, st, devices, waitingList, transport] = await Promise.all([
       ctx.client.call("store.list"), ctx.client.call("policy.get"),
       ctx.client.call("agents.get").catch(() => ctx.client.call("webhook.get")), ctx.client.call("status"),
       ctx.client.call("devices.get").catch(() => null), // older Rubi: no Rubi Home
       ctx.client.call("approval.list").catch(() => null), // older Rubi, or a view-only link
+      ctx.client.call("transport.get").catch(() => null), // older Rubi: no choice of connection
     ]);
   } catch (e) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
@@ -1641,6 +1702,12 @@ async function settingsScreen(ctx, tab) {
   const change = (op, args) => async (e) => {
     const target = e.target.closest("button") || e.target;
     await busy(target, async () => confirmChange(ctx, await ctx.client.call(op, args()), back)).catch((x) => showError(err, x));
+  };
+  // After the approval the install only starts; the next screen watches it until macOS is done asking.
+  const installHook = (d) => async (e) => {
+    const target = e.target.closest("button") || e.target;
+    await busy(target, async () => confirmChange(ctx, await ctx.client.call("device.hook.install", { id: d.id }),
+      () => hookProgressScreen(ctx, d, back), "Continue", { autoContinue: true })).catch((x) => showError(err, x));
   };
 
   // ----- requests waiting for the user: one a plugin asked for on its own may have reached no one.
@@ -1745,17 +1812,22 @@ async function settingsScreen(ctx, tab) {
       h("p", { class: "muted" }, "A helper on a computer at home (a Mac that stays on) lets plugins control Philips Hue and run your Shortcuts."),
       devices?.devices?.length ? h("ul", { class: "acct-list" }, devices.devices.map((d) => {
         const state = h("span", { class: "status-dot", title: "Not checked" });
-        return h("li", {}, h("span", { class: "avatar-dot small" }, icon("home", 14)), h("span", { class: "acct-name" }, d.name, state),
+        const hookBox = h("div", { class: "device-hook" });
+        return h("li", { class: "device-row" }, h("span", { class: "avatar-dot small" }, icon("home", 14)), h("span", { class: "acct-name" }, d.name, state),
           h("button", { class: "ghost small", onclick: async (e) => {
             await busy(e.target, async () => {
               const r = await ctx.client.call("device.check", { id: d.id });
               state.className = "status-dot " + (r.online ? "on" : "off");
               state.title = r.online ? `Online · ${r.version || ""}` : "Not answering";
               state.textContent = r.online ? "Online" : "Not answering";
+              hookBox.replaceChildren(...(r.online ? [...hookLines(r.hook, installHook(d)), ...hueLines(r.hue_bridges, (b) => change("device.hue.forget", () => ({ id: d.id, bridge: b }))), ...folderLines(r.fs_list_calls), ...featureLines(r.features)] : []));
             }).catch((x) => showError(err, x));
           } }, "Check"),
-          menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]));
+          menu(`More for ${d.name}`, [h("button", { type: "button", class: "danger-item", onclick: change("device.remove", () => ({ id: d.id })) }, icon("trash", 16), "Remove")]),
+          hookBox);
       })) : null,
+      waitingHomeCode() ? h("button", { class: "primary", onclick: () => homeDeviceScreen(ctx, back) }, icon("plus", 16), "Pair the waiting Rubi Home") : null,
+      waitingHomeCode() ? homeWhoLine(waitingHomeCode(), "A pairing code from Rubi Home is waiting. Pair only if you just opened Rubi Home on your own computer.") : null,
       h("button", { class: "secondary", onclick: () => homeDeviceScreen(ctx, back) }, icon("plus", 16), "Add a home computer"),
     ],
     approvals: () => [
@@ -1771,6 +1843,7 @@ async function settingsScreen(ctx, tab) {
       receipts.length ? h("ul", { class: "acct-list" }, receipts.map((r) => h("li", {}, h("span", { class: "avatar-dot small" }, icon(r.method === "passkey" ? "passkey" : "key", 14)),
         h("span", { class: "acct-name" }, `${r.event} with ${r.method}`, h("small", { class: "muted" }, fmtTime(r.at)))))) : null,
       h("p", { class: "muted small" }, "Don't recognize one of these? Lock Rubi and tell your agent."),
+      ...connectionBlock(transport, (choice) => change("transport.set", () => ({ choice }))),
       h("button", { class: "danger", onclick: async (e) => {
         await busy(e.target, () => ctx.client.call("lock"));
         statusScreen(ctx, "Rubi is locked.");
@@ -1786,7 +1859,7 @@ async function settingsScreen(ctx, tab) {
     ctx.settingsTab = id;
     for (const b of nav.querySelectorAll("button")) b.setAttribute("aria-current", String(b.dataset.tab === id));
     requestAnimationFrame(() => nav.querySelector("[aria-current=true]")?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" }));
-    body.replaceChildren(...sections[id]());
+    body.replaceChildren(...sections[id]().filter((n) => n != null && n !== false)); // append(null) would write "null"
     body.querySelectorAll(":scope > *").forEach((el, i) => {
       el.classList.remove("rise");
       void el.offsetWidth;
@@ -1824,33 +1897,229 @@ async function settingsScreen(ctx, tab) {
   show(tab);
 }
 
-const HOME_INSTALL = "curl -fsSL https://rubi-panel.com/install-home.sh | sh";
+const HOOK_WORDS = { current: "up to date", dev: "a development build", stale: "older than Rubi Home", missing: "not installed", insecure: "not secure" };
 
-// homeDeviceScreen pairs a Rubi Home helper: install it on the computer at home, paste its code.
+// What is wrong with a hook Rubi can't fix from the panel, in plain words (no command).
+function hookProblem(hook) {
+  if (hook.state === "insecure" && hook.why === "symlink") return "The hook on that computer is a link, not a file, so Rubi can't replace it. Remove it on that computer first.";
+  if (hook.state === "insecure" && hook.why === "dir") return "A folder above the hook on that computer can be changed by other users, so Rubi won't install the hook there.";
+  return "Rubi can't fix this from here. Rubi Home's log on that computer says why.";
+}
+
+// hookLines say, after a check, how the Claude Code hook on a Home computer stands, and offer the button
+// that installs or updates it (macOS asks for the administrator password on that computer).
+function hookLines(hook, install) {
+  if (!hook) return [];
+  const lines = [h("small", { class: "muted" }, `Claude Code hook: ${HOOK_WORDS[hook.state] || "unknown"}`)];
+  if (hook.installing) {
+    lines.push(h("small", { class: "muted" }, "macOS is asking for the administrator password on that computer."));
+    return lines;
+  }
+  if (hook.last && hook.last.result !== "ok") lines.push(h("small", { class: "muted" }, hook.last.message));
+  if (hook.state === "missing" || hook.state === "stale" || hook.state === "insecure") {
+    if (hook.fixable === true) {
+      lines.push(
+        h("button", { class: "secondary small", type: "button", onclick: install }, hook.state === "missing" ? "Install the Claude Code hook" : "Update the hook"),
+        h("small", { class: "muted" }, "macOS asks for the administrator password on that computer."));
+    } else {
+      lines.push(h("small", { class: "muted" }, hookProblem(hook)));
+    }
+  }
+  return lines;
+}
+
+// featureLines say, after a check, what that computer can not do (Shortcuts on a Linux or Windows computer, agents where there
+// is no virtual machine yet). It is a fact about the computer, not a failure: one calm, muted line per reason, no red, no
+// button. Rubi Home sends the reason as plain text; it is shown as text and cut short.
+const FEATURE_NAMES = { shortcuts: "Shortcuts", apple_home: "Apple Home", "claude-start": "Starting Claude Code from the Claude app", agent: "Agents", t3: "T3 Agents" };
+function featureLines(features) {
+  if (!features || typeof features !== "object") return [];
+  const byReason = new Map();
+  for (const [key, name] of Object.entries(FEATURE_NAMES)) {
+    const f = features[key];
+    if (!f || f.available !== false) continue;
+    const why = typeof f.reason === "string" ? f.reason.slice(0, 120) : "";
+    byReason.set(why, [...(byReason.get(why) || []), name]);
+  }
+  return [...byReason].map(([why, names]) => h("p", { class: "muted small" }, `${names.join(" and ")}: not available on this computer${why ? ` (${why})` : ""}.`));
+}
+// hueLines list the Hue Bridges whose certificate Rubi Home recorded, each with the button that forgets it
+// (after a bridge was replaced or reset). `forget(bridge)` makes the click handler.
+// folderLines says how often the folder browser was asked on that computer in the last hour (Rubi Home counts every call).
+// You use it a handful of times when you pick a folder; a number that grows when you are not looking means something
+// is listing your folders.
+function folderLines(n) {
+  if (!Number.isFinite(n) || n <= 0) return [];
+  return [h("p", { class: "muted small" }, `Folder browser: asked ${Math.floor(n)} ${n === 1 ? "time" : "times"} in the last hour. Picking a folder takes a few; if this grows while you are not choosing one, tell your agent.`)];
+}
+function hueLines(bridges, forget) {
+  if (!Array.isArray(bridges) || !bridges.length) return [];
+  return bridges.map((b) => h("div", { class: "device-hue" },
+    h("small", { class: "muted" }, `Hue Bridge ${b}`),
+    h("button", { class: "ghost small", type: "button", onclick: forget(b) }, "Forget this bridge"),
+    h("small", { class: "muted" }, "Only if you replaced or reset it: Rubi then trusts the bridge again the next time you set Hue up.")));
+}
+
+// connectionBlock shows how the panel reaches Rubi (gateway, public relays or Tailscale) and offers the others;
+// `choose(key)` makes the click handler, which asks for the passkey first.
+function connectionBlock(t, choose) {
+  if (!t || !Array.isArray(t.options)) return [];
+  return [
+    h("h3", {}, "Connection"),
+    h("p", { class: "muted small" }, "How this panel reaches Rubi. Changing it restarts Rubi; you approve it with your passkey, and the approval says which link to use next."),
+    t.notice ? h("p", { class: "error" }, t.notice) : null,
+    h("ul", { class: "acct-list" }, t.options.map((o) => h("li", { class: "device-row" },
+      h("span", { class: "acct-name" }, o.label, h("small", { class: "muted" }, o.help || "")),
+      o.key === t.current ? h("span", { class: "tag" }, "In use")
+        : o.available === false ? null
+          : h("button", { class: "secondary small", type: "button", onclick: choose(o.key) }, "Use this")))),
+  ];
+}
+
+// hookProgressScreen follows an installation that was just approved: macOS asks for the administrator
+// password on the Home computer, which can take a while. It looks every 2 seconds and gives up after 6 minutes.
+async function hookProgressScreen(ctx, d, back) {
+  const status = h("p", { role: "status" }, `macOS is asking for the administrator password on ${d.name}. Answer it there.`);
+  screen(header(ctx.hello), h("h1", {}, "Claude Code hook"), status, h("button", { class: "primary", type: "button", onclick: back }, "Back to settings"));
+  const until = Date.now() + 6 * 60e3;
+  // screen() may put the page in place a moment later (a view transition), so wait before asking whether
+  // the user has left it.
+  while (Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (!status.isConnected) return;
+    const r = await ctx.client.call("device.check", { id: d.id }).catch(() => null); // a missed answer is tried again
+    const hook = r?.online ? r.hook : null;
+    if (hook && !hook.installing) {
+      status.textContent = [hook.last?.message, `Claude Code hook: ${HOOK_WORDS[hook.state] || "unknown"}.`].filter(Boolean).join(" ");
+      return;
+    }
+  }
+  if (status.isConnected) status.textContent = "Rubi didn't hear back from that computer. Check it there, or try again.";
+}
+
+// The message the user sends their Bot to put Rubi Home on a computer. The Bot reads the same page the install
+// message of Rubi itself names (rubi-panel.com/install.md, the Bot skill), section "Install Rubi Home on the user's
+// computer". A Bot, not the user, runs the installer (project rule 2). It is the same message for a Mac, Linux and
+// Windows: the Bot works out which installer to run.
+const HOME_BOT_MESSAGE = "Install Rubi Home on this computer by following https://rubi-panel.com/install.md";
+
+// homeWhoLine says which computer a code belongs to ("Mac mini · pX3k-9QaL"), worked out here from the code;
+// the user compares it with Rubi Home's window. The text starts with `lead` and is filled in when the hash is done.
+function homeWhoLine(code, lead) {
+  const line = h("p", { class: "muted small" }, lead);
+  const d = decodeHomeCode(code);
+  if (d) {
+    homeFingerprint(d.bundle).then((fp) => {
+      line.textContent = `${lead} ${d.name || "A computer"} · ${fp}. It must match Rubi Home's window.`;
+    }).catch(() => {});
+  }
+  return line;
+}
+
+// homeInstallSteps is how to get Rubi Home onto a computer. The main way is the user's Bot: it installs Rubi Home on
+// the computer it runs on and opens the pairing window, and the user only confirms what the system asks. For a Mac
+// with no Bot there is the app: download it, open it, press a button in its window. The link points at the newest
+// release's file when the site's release feed says the release has it; until then, or when it does not, it goes to
+// the releases page. One app serves both kinds of Mac. Linux has the Bot way only; the user is never shown a command.
+function homeInstallSteps(ctx) {
+  const note = h("p", { class: "muted small" });
+  const dl = h("a", { class: "btn primary home-download", href: HOME_RELEASES, target: "_blank", rel: "noopener noreferrer" }, icon("download", 18), "Download Rubi Home for Mac");
+  const notReady = () => { note.textContent = "The download link is not ready yet. This opens the page of Rubi's releases."; };
+  if (ctx.demo) {
+    notReady(); // the demo makes no request
+  } else {
+    const stop = new AbortController();
+    const timer = setTimeout(() => stop.abort(), 8000);
+    fetch(HOME_FEED, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer", signal: stop.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((feed) => {
+        const url = homeMacAppURL(feed);
+        if (!url) return notReady(); // the newest release has no Mac app (yet): never link to a file that may not be there
+        dl.href = url;
+        dl.removeAttribute("target"); // a file: the browser downloads it
+        note.textContent = `Version ${homeFeedVersion(feed)}, for Apple silicon and Intel Macs.`;
+      })
+      .catch(notReady)
+      .finally(() => clearTimeout(timer));
+  }
+  return [
+    h("p", { class: "install-label" }, "On the computer you are adding, tell your Grok Bot:"),
+    h("div", { class: "prompt" }, HOME_BOT_MESSAGE),
+    copyButton(HOME_BOT_MESSAGE, "Copy the message"),
+    h("p", { class: "muted" }, "Your Bot installs Rubi Home and checks its signature. Your computer may ask you to confirm, or for your password or Touch ID in its own window; that is all you do. On a Mac or a Windows computer a Rubi Home window then opens: press Open the Rubi panel there. On Linux your Bot sends you a link to open and a PIN to type."),
+    h("p", { class: "muted small" }, "On Windows nothing needs to be installed first: the installer checks the download's signature itself. Later, installing the Claude Code hook there asks you to allow the change; choose Yes."),
+    h("p", { class: "muted small" }, "Rubi Home works on a Mac, Linux and Windows. Agents run only on a Mac with Apple silicon for now, and Shortcuts need a Mac: on the other computers they show as not available."),
+    h("p", { class: "muted small" }, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run."),
+    h("details", { class: "sideload" },
+      h("summary", {}, "No Bot on that Mac? Download the app"),
+      h("div", { class: "home-dl" }, dl, note),
+      h("ol", { class: "steps-list" },
+        h("li", {}, "Open the file you downloaded. Your Mac unzips it into Rubi Home."),
+        h("li", {}, "Open Rubi Home. It installs itself and starts whenever you log in."),
+        h("li", {}, "macOS will say it can't check Rubi Home. That is expected: open System Settings, then Privacy & Security, scroll down and press Open Anyway, then open Rubi Home again."),
+        h("li", {}, "In Rubi Home's window press Open the Rubi panel. Open Rubi from your own link, and type the PIN the window shows here."))),
+  ];
+}
+
+// homeDeviceScreen pairs a Rubi Home helper: install it on the computer at home, paste its code or use the one Rubi Home sent (then type the PIN).
 function homeDeviceScreen(ctx, back) {
   const err = errorBox();
   const code = h("textarea", { rows: "4", placeholder: "rubi-home:…", autocapitalize: "none", spellcheck: "false" });
-  const copy = copyButton(HOME_INSTALL);
+  const pin = h("input", { type: "text", autocapitalize: "characters", autocomplete: "off", spellcheck: "false", maxlength: "9", placeholder: "XXXX-XXXX" });
+  const pinField = h("label", { class: "field", hidden: true }, h("span", {}, "PIN shown in Rubi Home's window"), pin);
+  const filled = h("div", {});
+  let stamp = 0;
+  const refresh = () => { // what the box holds decides whether the PIN is asked for and who the code belongs to
+    const mine = ++stamp;
+    const v = code.value.trim();
+    const d = decodeHomeCode(v);
+    pinField.hidden = !d || d.hasSecret;
+    if (!d) return filled.replaceChildren();
+    homeFingerprint(d.bundle).then((fp) => {
+      if (mine !== stamp) return;
+      filled.replaceChildren(h("p", { class: "muted small" },
+        (v === waitingHomeCode() ? "A pairing code from Rubi Home is filled in. " : "") +
+        `${d.name || "A computer"} · ${fp}. It must match Rubi Home's window. Pair only if you just opened Rubi Home on your own computer.`));
+    }).catch(() => {});
+  };
+  code.value = waitingHomeCode();
+  code.addEventListener("input", () => {
+    if (code.value.trim() === "") clearHomeCode(); // the user cleared the box: forget the waiting code
+    refresh();
+  });
+  refresh();
   const pair = h("button", { class: "primary", onclick: async (e) => {
     await busy(e.target, async () => {
       e.target.textContent = "Reaching Rubi Home…";
-      const res = await ctx.client.call("device.pair", { code: code.value.trim() });
+      const d = decodeHomeCode(code.value);
+      if (d && !d.hasSecret && !pin.value.trim()) throw new UserError("Type the PIN shown in Rubi Home's window.");
+      const res = await ctx.client.call("device.pair", { code: code.value.trim(), pin: pin.value.trim() });
+      clearHomeCode(); // Rubi Home took the code; it works once
       confirmChange(ctx, res, back);
     }).catch((x) => showError(err, x));
   } }, "Pair");
+  const waiting = waitingHomeCode() !== "";
+  const pairBlock = [
+    h("label", { class: "field" }, h("span", {}, "Pairing code"), code),
+    filled,
+    pinField,
+    err,
+    pair,
+  ];
+  const install = homeInstallSteps(ctx);
   screen(
     header(ctx.hello),
     backBar("Settings", back),
     h("h1", {}, "Add a home computer"),
     h("p", {}, "Rubi runs on your agent's machine and can't reach your home network. Rubi Home, a small helper on a computer at home, can: it talks to your Hue Bridge and runs the shortcuts you put in its folder."),
-    h("ol", { class: "steps-list" },
-      h("li", {}, "On a Mac at home that stays on (or a Linux box), open Terminal and run:",
-        h("div", { class: "cmd" }, h("code", {}, HOME_INSTALL), copy)),
-      h("li", {}, "It prints a pairing code starting with rubi-home:. Paste it here. (Later: rubi-home pair makes a new one.)"),
-      h("li", {}, "For Apple Home, make a folder named Rubi in the Shortcuts app and put there only the shortcuts Rubi may run.")),
-    h("label", { class: "field" }, h("span", {}, "Pairing code"), code),
-    err,
-    pair,
+    // A code is waiting: Rubi Home is installed, so pairing comes first and the install steps fold away.
+    ...(waiting
+      ? [
+        h("p", {}, "Rubi Home sent a pairing code. Check that the name and fingerprint below are the ones in its window, type the PIN it shows, then press Pair."),
+        ...pairBlock,
+        h("details", { class: "sideload" }, h("summary", {}, "Not installed yet?"), ...install),
+      ]
+      : [...install, ...pairBlock]),
   );
 }
 
@@ -2032,12 +2301,77 @@ function askText(title, label, value) {
   });
 }
 
+// askFolder shows the panel's folder browser in a box it draws itself, titled "<plugin name> asks:", and resolves the
+// folder the user chose (its path, as Rubi Home on that computer lists it), or null on Cancel / Escape / a click outside.
+// The listing comes from Rubi Home through Rubi (device.fs.list, full settings links only); it holds folder names and
+// nothing else, and is drawn as text. The plugin learns only the path of the folder the user chose. The user taps a
+// folder to open it, and chooses the folder that is open.
+function askFolder(client, title, label, device) {
+  return new Promise((resolve) => {
+    const note = h("p", { class: "muted small folder-note" });
+    const where = h("p", { class: "folder-where" });
+    const places = h("div", { class: "folder-places" });
+    const list = h("ul", { class: "folder-list" });
+    const choose = h("button", { type: "button", class: "primary", disabled: true }, "Choose this folder");
+    const up = h("button", { type: "button", class: "secondary small", disabled: true }, "Up");
+    let current = null;
+    let latest = 0; // the number of the newest load: an answer to an older one is dropped
+    const done = (v) => { overlay.remove(); document.removeEventListener("keydown", onKey, true); resolve(v); };
+    const onKey = (e) => { if (e.key === "Escape") { e.preventDefault(); done(null); } };
+    const strs = (v, n) => clip(v, n);
+    const load = async (path) => {
+      const mine = ++latest;
+      note.textContent = "Loading\u2026";
+      choose.disabled = up.disabled = true;
+      try {
+        const r = await client.call("device.fs.list", { id: device, path });
+        if (mine !== latest) return;
+        if (!r || typeof r !== "object" || typeof r.path !== "string") throw new UserError("Rubi Home sent a folder list the panel can't read.");
+        current = r;
+        where.textContent = strs(r.path, 300);
+        places.replaceChildren(...objs(r.places, 8).map((p) => h("button", { type: "button", class: "secondary small", onclick: () => load(String(p.path || "")) }, strs(p.name, 40))));
+        const rows = objs(r.folders, 500);
+        list.replaceChildren(...(rows.length ? rows.map((f) => h("li", {},
+          h("button", { type: "button", class: "folder-row", onclick: () => load(String(f.path || "")) },
+            h("span", { class: "folder-name" }, strs(f.name, 200)),
+            f.can_choose ? null : h("span", { class: "muted small" }, strs(f.reason, 200)))))
+          : [h("li", { class: "muted small" }, "No folders in here.")]));
+        // Projects are for agents: a computer that does not run them yet says so before you pick, not as an error after
+        const noAgents = r.agents === false;
+        note.textContent = noAgents ? "Projects are for agents, which this computer doesn't run yet."
+          : r.deep ? "The folders below this one aren't shown. You can choose this folder."
+          : r.truncated ? "Only the first folders are shown." : (r.can_choose ? "" : strs(r.reason, 300));
+        choose.disabled = !r.can_choose || noAgents;
+        up.disabled = !r.parent;
+      } catch (e) {
+        if (mine !== latest) return;
+        note.textContent = e instanceof UserError ? e.message : friendly(e);
+        up.disabled = !(current && current.parent);
+      }
+    };
+    choose.onclick = () => { if (current && current.can_choose) done(current.path); };
+    up.onclick = () => { if (current && current.parent) load(current.parent); };
+    const box = h("div", { class: "ask-box folder-box", role: "dialog", "aria-modal": "true" },
+      h("h2", {}, title),
+      h("p", { class: "muted small" }, label),
+      places, where, list, note,
+      h("div", { class: "view-actions" }, up,
+        h("button", { type: "button", class: "secondary small", onclick: () => done(null) }, "Cancel"), choose));
+    const overlay = h("div", { class: "ask-overlay", onclick: (e) => { if (e.target === overlay) done(null); } }, box);
+    document.addEventListener("keydown", onKey, true);
+    document.body.append(overlay);
+    load("");
+  });
+}
+
 // pluginViewScreen shows a plugin's own page, described by the plugin: sections of items, each with
 // buttons. The plugin answers op "view" (with the page's args: {} for the first page); a button calls its op with its
 // args (the user's own request), then the page reloads. An action with prompt {arg, label, value} first asks the user for text in a box titled
 // "<plugin name> asks:" (label shown as plain text, at most 200 characters; value prefilled, at most 200; a label
 // that mentions a password, passkey, PIN or Rubi is refused, so a plugin can't pose as Rubi's own prompts; cancel
-// does nothing) and adds the answer to args under arg. An action with open {..} calls nothing: it shows the page the
+// does nothing) and adds the answer to args under arg. An action with folder {arg, device, label} opens the panel's folder
+// browser (askFolder) on the Rubi Home computer with id device, in a box titled the same way, and adds the path of the
+// folder the user chose to args under arg (label is checked like a prompt's; Cancel does nothing). An action with open {..} calls nothing: it shows the page the
 // plugin returns for "view" with those args (a drill-down), and the page's up {label, open} is the way back.
 // A section of kind "chat" is a message list with an input (see chatSection). Pages with refresh reload themselves
 // (e.g. a countdown to sending), but not while a box on the page holds text the user typed or a prompt box is open,
@@ -2054,9 +2388,10 @@ const objs = (v, max) => (Array.isArray(v) ? v : []).filter((x) => x && typeof x
 // chatAuthor is the name a chat line shows. The panel says "you" for the user's own lines itself; a name a plugin
 // gives to anyone else can't pose as the user or as Rubi, or mention a password, passkey or PIN: it becomes "Bot".
 const chatAuthor = (v) => { const t = clip(v, 60).trim(); return !t || PROMPT_FORBIDDEN.test(t) || /\b(you|your|me|user|admin|administrator)\b/i.test(t) ? "Bot" : t; };
-async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
+async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = false) {
   const mine = () => pluginViewScreen(ctx, id, name, back, viewArgs);
   currentView = mine;
+  if (!byRefresh) viewRefresh.cancel(); // a click or another page: the waiting refresh of the page before is moot
   const err = errorBox();
   const call = (op, args) => ctx.client.call("plugin.panel", { id, op, args });
   let data;
@@ -2068,8 +2403,28 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
   }
   if (currentView !== mine) return; // another page was opened while this one loaded
   if (!data || typeof data !== "object" || Array.isArray(data)) data = {};
-  // The chat's scroll position survives a reload of the same page: the user who scrolled up to read isn't pulled down.
   const key = JSON.stringify([id, viewArgs]);
+  const json = JSON.stringify(data);
+  const refresh = Number(data.refresh) || 0;
+  const tick = () => {
+    if (currentView !== mine) return; // another page has been opened
+    // Not while the user is in the middle of something on the page: typing, a question box, a field in focus.
+    if ([...document.querySelectorAll("textarea.chat-input")].some((t) => t.value) || document.querySelector(".ask-overlay") ||
+      root.contains(document.activeElement) && document.activeElement.matches?.("input, textarea, select")) {
+      return viewRefresh.arm(2, tick);
+    }
+    pluginViewScreen(ctx, id, name, back, viewArgs, true);
+  };
+  // A refresh that brings nothing new draws nothing: the page, its focus and its error message stay as they are.
+  if (byRefresh && unchanged(chatKey, viewJSON, key, json)) {
+    if (refresh > 0) viewRefresh.arm(refresh, tick);
+    return;
+  }
+  const same = chatKey === key;
+  const refocus = same ? controlKey(document.activeElement) : null;
+  const oldErr = same && byRefresh ? root.querySelector("main > p.error:not([hidden])")?.textContent : "";
+  viewJSON = json;
+  // The chat's scroll position survives a reload of the same page: the user who scrolled up to read isn't pulled down.
   const oldLog = document.querySelector(".chat-log");
   const keep = oldLog && chatKey === key ? { top: oldLog.scrollTop, bottom: oldLog.scrollHeight - oldLog.scrollTop - oldLog.clientHeight < 24 } : null;
   // A reload of the same page (its own refresh, or after a button) keeps the page where the user scrolled it.
@@ -2092,6 +2447,15 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
       const v = await askText(`${name} asks:`, label, clip(pr.value, 200));
       if (v === null || currentView !== mine) return;
       args = { ...args, [String(pr.arg)]: v };
+    }
+    const fo = a.folder && typeof a.folder === "object" ? a.folder : null;
+    if (fo && fo.arg && typeof fo.device === "string" && fo.device.length <= 100) {
+      // The plugin wants a folder of the user's computer: the user picks it in the panel's own browser.
+      const label = clip(fo.label, 200);
+      if (PROMPT_FORBIDDEN.test(label)) { showError(err, new UserError("This plugin asked for a folder in a way the panel won't show.")); return; }
+      const v = await askFolder(ctx.client, `${name} asks:`, label, fo.device);
+      if (v === null || currentView !== mine) return;
+      args = { ...args, [String(fo.arg)]: v };
     }
     btn.disabled = true;
     try {
@@ -2157,8 +2521,9 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
         : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here."));
   });
   const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
+  if (oldErr) { err.textContent = oldErr; err.hidden = false; } // an error the user hasn't read yet stays
   screen(
-    { cls: "wide", focus: false, keepScroll: pageTop },
+    { cls: "wide", focus: false, keepScroll: pageTop, quiet: same && byRefresh, refocus },
     header(ctx.hello),
     up ? backBar(clip(up.label, 40) || "Back", () => go(up.open)) : backBar("Settings", back),
     h("div", { class: "section-head" }, h("h1", {}, clip(data.title, 120) || name)),
@@ -2166,18 +2531,12 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}) {
     err,
     ...sections,
   );
-  const refresh = Number(data.refresh) || 0;
-  if (refresh > 0) {
-    const tick = () => {
-      if (currentView !== mine) return; // another page has been opened
-      if ([...document.querySelectorAll("textarea.chat-input")].some((t) => t.value)) return setTimeout(tick, 2000); // keep the draft
-      if (document.querySelector(".ask-overlay")) return setTimeout(tick, 2000); // a reload would drop the answer being typed
-      again();
-    };
-    setTimeout(tick, Math.max(refresh, 2) * 1000);
-  }
+  if (refresh > 0) viewRefresh.arm(refresh, tick);
+  else viewRefresh.cancel();
 }
 let chatKey = ""; // which plugin page the chat on screen belongs to
+let viewJSON = ""; // what that page showed, as the plugin sent it
+const viewRefresh = createRefresher(); // the one refresh to come of the plugin page on screen
 
 function noteEditor(ctx, id, n, done) {
   const err = errorBox();
@@ -2456,11 +2815,27 @@ async function libraryScreen(ctx, back, f = {}) {
     ...tags.map((t) => h("button", { type: "button", class: "pill-filter", "aria-pressed": String(t === tag), onclick: () => again({ tag: t }) }, "#" + t)),
   ]);
 
+  // Several skills can be withdrawn with one approval: tick them here, then confirm once.
+  const picked = new Set();
+  const pullSome = h("button", { class: "danger small", type: "button", hidden: true, onclick: async (e) => {
+    await busy(e.currentTarget, async () => confirmChange(ctx,
+      await ctx.client.call("library.withdraw", { skills: [...picked].map((id) => ({ id })) }), mine, "Back to the library"))
+      .catch((x) => showError(err, x));
+  } });
+  const pickChanged = () => {
+    pullSome.hidden = picked.size === 0;
+    pullSome.textContent = `Withdraw ${picked.size} selected ${picked.size === 1 ? "skill" : "skills"}`;
+  };
   const row = (s) => {
     const id = clip(s.id, 48);
     const vs = objs(s.versions, LIB_VERSIONS_MAX);
     const latest = libNum(s.latest_admitted);
+    const pick = h("input", { type: "checkbox", "aria-label": `Select ${id} to withdraw`, onchange: () => {
+      if (pick.checked) picked.add(id); else picked.delete(id);
+      pickChanged();
+    } });
     return h("li", {},
+      h("label", { class: "check", title: "Select to withdraw" }, pick),
       h("span", { class: "acct-name" }, id,
         h("small", { class: "muted" }, libText(s.description)),
         h("small", { class: "muted" }, latest ? `Latest admitted: v${latest}` : "Nothing admitted yet", " · ", `${vs.length} ${vs.length === 1 ? "version" : "versions"}`,
@@ -2492,6 +2867,7 @@ async function libraryScreen(ctx, back, f = {}) {
     h("div", { class: "section-head" }, h("h2", {}, "Skills")),
     searchForm,
     tags.length ? pills : null,
+    skills.length ? h("div", { class: "top-actions" }, pullSome) : null,
     skills.length ? h("ul", { class: "acct-list" }, skills.map(row)) : h("div", { class: "empty" }, face("idle", 64), h("p", {}, query || tag ? "No skill matches." : "The library is empty.")),
   );
 }

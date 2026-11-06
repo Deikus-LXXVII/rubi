@@ -11,7 +11,122 @@ permissions:
   actions: write
 
 jobs:
+  # The Mac app is sealed with an ad-hoc signature, which needs codesign, so it is built on macOS. The
+  # binary inside is built with the same flags as below; the zips join the release's signed sums.
+  mac-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the Mac app
+        # One universal binary (Apple silicon and Intel) in one app, so the user has one download to choose.
+        run: |
+          set -euo pipefail
+          mkdir -p app work/home-darwin-universal
+          for arch in arm64 amd64; do
+            out="work/home-darwin-$arch"
+            mkdir -p "$out"
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -buildid= -X github.com/Deikus-LXXVII/rubi/internal/version.Version=${GITHUB_REF_NAME}" \
+              -o "$out/rubi-home" ./cmd/rubi-home
+          done
+          lipo -create -output work/home-darwin-universal/rubi-home work/home-darwin-arm64/rubi-home work/home-darwin-amd64/rubi-home
+          lipo -archs work/home-darwin-universal/rubi-home
+          RUBI_APP_SIGN=adhoc sh scripts/build-home-app.sh "$GITHUB_REF_NAME" universal work/home-darwin-universal/rubi-home app
+          # The app is signed ad hoc only: the project does not plan a Developer ID signature, so macOS asks for
+          # "Open Anyway" on the first open. The Mac app is the fallback for users without a Bot; the Bot installs
+          # Rubi Home without it. See docs/design/rubi-home.md ("The Mac app")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: app/*.zip
+          if-no-files-found: error
+
+  # Rubi Home for Windows: rubi-home.exe, not Authenticode-signed (the project does not plan a code-signing certificate), in a
+  # zip that the signed SHA256SUMS lists. The Bot's installer (panel/install-home.ps1) checks that signature and the zip's
+  # hash before it unpacks a byte. Built here, tested on a Windows runner next, then joined to the release.
+  windows-home:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build the Windows zips
+        run: |
+          set -euo pipefail
+          mkdir -p windows
+          for arch in amd64 arm64; do
+            out="work/home-windows-$arch"
+            mkdir -p "$out"
+            CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -buildid= -X github.com/Deikus-LXXVII/rubi/internal/version.Version=${GITHUB_REF_NAME}" \
+              -o "$out/rubi-home.exe" ./cmd/rubi-home
+            touch -d @0 "$out/rubi-home.exe"
+            (cd "$out" && zip -X -q -9 "$GITHUB_WORKSPACE/windows/rubi-home-${GITHUB_REF_NAME}-windows-$arch.zip" rubi-home.exe)
+          done
+          ls -l windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-home
+          path: windows/*.zip
+          if-no-files-found: error
+
+  # The zip that will be released is unpacked and run on Windows before anything is published.
+  windows-check:
+    needs: windows-home
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-home
+          path: windows
+      - name: The program starts and is this release
+        shell: pwsh
+        run: |
+          $zip = Join-Path $PWD "windows/rubi-home-$env:GITHUB_REF_NAME-windows-amd64.zip"
+          Expand-Archive -LiteralPath $zip -DestinationPath exe
+          $out = (& ./exe/rubi-home.exe version | Out-String).Trim()
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch [regex]::Escape($env:GITHUB_REF_NAME)) { throw "rubi-home.exe version said: $out" }
+      - name: Each zip holds the one program, for its CPU
+        # The installer takes the entry named rubi-home.exe and nothing else. The arm64 program cannot run on this runner, so it is
+        # looked at: one entry with that name, and a Windows program for the ARM64 machine type (0xAA64; amd64 is 0x8664).
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($case in @(@('amd64', 0x8664), @('arm64', 0xAA64))) {
+            $zip = Join-Path $PWD "windows/rubi-home-$env:GITHUB_REF_NAME-windows-$($case[0]).zip"
+            $za = [System.IO.Compression.ZipFile]::OpenRead($zip)
+            try {
+              $names = @($za.Entries | ForEach-Object { $_.FullName })
+              if ($names.Count -ne 1 -or $names[0] -cne 'rubi-home.exe') { throw "$zip holds: $($names -join ', ')" }
+              $in = $za.Entries[0].Open()
+              $head = New-Object byte[] 4096
+              [void]$in.Read($head, 0, $head.Length)
+              $in.Dispose()
+            } finally { $za.Dispose() }
+            if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { throw "$zip is not a Windows program" }
+            $machine = [BitConverter]::ToUInt16($head, [BitConverter]::ToInt32($head, 0x3C) + 4)
+            if ($machine -ne $case[1]) { throw ("{0}: machine type {1:X} is not {2:X}" -f $zip, $machine, $case[1]) }
+          }
+
+  # The Linux VM backend's files (docs/design/linux-microvm.md): per CPU the guest kernel, the root file system, QEMU and
+  # virtiofsd, and the source archive their licences ask for, named by this tag. They go into the signed SHA256SUMS,
+  # which is what Rubi Home's setup checks them against before it installs them.
+  microvm:
+    uses: ./.github/workflows/microvm.yml
+    with:
+      version: ${{ github.ref_name }}
+
   release:
+    needs: [mac-app, windows-check, microvm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +137,32 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: mac-app
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-home
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: microvm-*
+          path: dist
+          merge-multiple: true
+
       - name: Build
         run: |
           set -euo pipefail
+          # the VM files of both CPUs (four archives each) and their source archive, from the microvm job
+          for arch in x86_64 aarch64; do
+            for part in kernel rootfs qemu virtiofsd; do
+              ls "dist/rubi-vm-${GITHUB_REF_NAME}-linux-$arch-$part.tar.gz"
+            done
+          done
+          ls "dist/rubi-vm-${GITHUB_REF_NAME}-sources.tar.gz"
           mkdir -p dist/bin
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             os=${target%/*}; arch=${target#*/}
@@ -46,9 +184,12 @@ jobs:
               -o "$out/rubi-home" ./cmd/rubi-home
             tar --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$out" -czf "dist/rubi-home-${GITHUB_REF_NAME}-$os-$arch.tar.gz" rubi-home
           done
+          # The Mac app zips came from the mac-app job (above, in dist/), the Windows zips from the windows-home job; the
+          # tar.gz files stay for the script installer and Linux.
+          ls dist/rubi-home-*-macos-universal.zip dist/rubi-home-"${GITHUB_REF_NAME}"-windows-amd64.zip dist/rubi-home-"${GITHUB_REF_NAME}"-windows-arm64.zip
           cd dist
-          # Archives for the installer, plus the bare binaries for Rubi's self-check.
-          sha256sum rubi-*.tar.gz bin/rubi-* > SHA256SUMS
+          # Archives and Mac app zips for the installers, plus the bare binaries for Rubi's self-check.
+          sha256sum rubi-*.tar.gz rubi-*.zip bin/rubi-* > SHA256SUMS
           cat SHA256SUMS
 
       - name: Sign checksums
@@ -63,11 +204,14 @@ jobs:
           rm -f "$RUNNER_TEMP/key.pem"
           # The signature must verify with the public key that install.sh and the binary embed.
           openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in dist/SHA256SUMS -sigfile dist/SHA256SUMS.sig
+          # The Windows installer checks the signature with its own code: run that code on this release's real files, so a
+          # release it would refuse is never published.
+          pwsh -NoProfile -File scripts/test-install-home-ed25519.ps1 -Sums dist/SHA256SUMS -Sig dist/SHA256SUMS.sig
 
       - name: Provenance attestation
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: "dist/rubi-*.tar.gz, dist/bin/rubi-*"
+          subject-path: "dist/rubi-*.tar.gz, dist/rubi-*.zip, dist/bin/rubi-*"
 
       - name: Publish release
         env:
@@ -75,7 +219,7 @@ jobs:
         run: |
           flags=""
           case "$GITHUB_REF_NAME" in v0.*|*-*) flags="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" dist/rubi-*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.sig \
+          gh release create "$GITHUB_REF_NAME" dist/rubi-*.tar.gz dist/rubi-*.zip dist/SHA256SUMS dist/SHA256SUMS.sig \
             --title "$GITHUB_REF_NAME" --generate-notes $flags
 
       - name: Refresh the release feed on rubi-panel.com

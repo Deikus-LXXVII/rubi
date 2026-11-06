@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -185,7 +184,7 @@ func TestProtocolMismatchIsRefused(t *testing.T) {
 		perm := stamp(`{"hook_event_name":"PermissionRequest","session_id":"s1","tool_name":"Bash","tool_input":{"command":"ls"}}`, proto)
 		var d ClaudeDecision
 		if err := json.Unmarshal([]byte(sendRaw(t, sock, perm)), &d); err != nil || d.Behavior != "deny" ||
-			!strings.Contains(d.Message, "speaks protocol") || !strings.Contains(d.Message, "install-hook") || !strings.HasSuffix(d.Message, "denied.") {
+			!strings.Contains(d.Message, "speaks protocol") || !strings.Contains(d.Message, "Rubi panel") || !strings.HasSuffix(d.Message, "denied.") {
 			t.Fatalf("proto %s: %+v %v", proto, d, err)
 		}
 		if got := sendRaw(t, sock, stamp(`{"hook_event_name":"Stop","session_id":"s1"}`, proto)); got != "{}" {
@@ -312,6 +311,8 @@ func TestVersionOlder(t *testing.T) {
 		{"v0.12.3", "v0.13.0", true}, {"v0.13.0", "v0.13.0", false}, {"v0.13.1", "v0.13.0", false},
 		{"0.9.0", "v0.10.0", true}, {"v1.0.0-rc1", "v1.0.0", true}, {"v1.0.0", "v1.0.0-rc1", false},
 		{"dev", "v1.0.0", false}, {"v1.0.0", "dev", false}, {"", "v1.0.0", false}, {"v1.0", "v1.0.1", false},
+		// two pre-releases are ordered as the installers and the core updater order them (update.Newer)
+		{"v1.0.0-rc.1", "v1.0.0-rc.2", true}, {"v1.0.0-rc.2", "v1.0.0-rc.1", false}, {"v0.14.0-rc.2", "v0.14.0-rc.2", false},
 	} {
 		if got := versionOlder(tc.a, tc.b); got != tc.want {
 			t.Errorf("versionOlder(%q, %q) = %v", tc.a, tc.b, got)
@@ -342,7 +343,7 @@ func TestInspectHookBinary(t *testing.T) {
 	}
 	var out bytes.Buffer
 	b.WritePlain(&out, "v0.13.0")
-	for _, want := range []string{p, "version: v0.12.0", "sha256: " + b.SHA256, "root-owned and not group/world-writable:", "stale: older than this binary (v0.13.0)", "install-hook"} {
+	for _, want := range []string{p, "version: v0.12.0", "sha256: " + b.SHA256, "root-owned and not group/world-writable:", "stale: older than this binary (v0.13.0)", "Rubi panel"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status output lacks %q:\n%s", want, out.String())
 		}
@@ -383,7 +384,7 @@ func TestWarnIfHookOlder(t *testing.T) {
 	WarnIfHookOlder(script(t, dir, "old", "echo v0.12.0"), "v0.13.0", logf)
 	WarnIfHookOlder(script(t, dir, "cur", "echo v0.13.0"), "v0.13.0", logf)
 	WarnIfHookOlder(filepath.Join(dir, "none"), "v0.13.0", logf)
-	if len(msgs) != 1 || !strings.Contains(msgs[0], "install-hook") {
+	if len(msgs) != 1 || !strings.Contains(msgs[0], "Rubi panel") {
 		t.Fatalf("%v", msgs)
 	}
 }
@@ -421,7 +422,7 @@ func TestInstallHookDryRun(t *testing.T) {
 	}
 	sum, _ := fileSHA256(src)
 	for _, want := range []string{"Source:  " + src, "sha256 " + sum, "version " + version.Version, "Target:  " + dst,
-		"src='" + src + "'", "dst='" + dst + "'", "SHA256SUMS", "not proof", "/usr/bin/osascript", "with administrator privileges", "Dry run: nothing was run"} {
+		"src='" + src + "'", "dst='" + dst + "'", "SHA256SUMS", "not proof", "Run via: " + NewElevator(ElevateEnv{}).Describe(), "Plan sha256 (the panel shows the same): ", "Dry run: nothing was run"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("dry run lacks %q:\n%s", want, out.String())
 		}
@@ -429,10 +430,8 @@ func TestInstallHookDryRun(t *testing.T) {
 	if _, err := os.Stat(dst); err == nil {
 		t.Fatal("dry run wrote the target")
 	}
-	out.Reset()
-	if err := InstallHook(context.Background(), &out, InstallOptions{Src: src, Dst: dst, DryRun: true, Sudo: true}); err != nil ||
-		!strings.Contains(out.String(), "Run via: /usr/bin/sudo") {
-		t.Fatalf("%v\n%s", err, out.String())
+	if strings.Contains(out.String(), "sudo") || strings.Contains(out.String(), "terminal") {
+		t.Fatalf("the dry run names a terminal path:\n%s", out.String())
 	}
 }
 
@@ -498,13 +497,111 @@ func TestInstallHookRefusesUnsafePaths(t *testing.T) {
 	if err := InstallHook(context.Background(), &bytes.Buffer{}, InstallOptions{Src: src, Dst: src}); err == nil {
 		t.Fatal("installing a binary over itself")
 	}
-	// A missing target directory is refused, with how to create it; nothing is created.
-	missing := filepath.Join(t.TempDir(), "newdir", "rubi-home")
-	if _, err := PlanInstallHook(src, missing, false); err == nil || !strings.Contains(err.Error(), "mkdir -p") {
+}
+
+// A missing target directory is no longer refused: the plan holds a script that creates it as root, and the
+// plan itself creates nothing. A target below a directory that is not root's is still refused when root is required.
+func TestPlanInstallAcceptsAMissingDirectoryAndTheScriptMakesIt(t *testing.T) {
+	src, _ := installFixture(t)
+	missing := filepath.Join(t.TempDir(), "newdir", "deeper", "rubi-home")
+	p, err := PlanInstallHook(src, missing, false)
+	if err != nil {
 		t.Fatalf("missing dir: %v", err)
 	}
+	if !strings.Contains(p.Script, "/mkdir -p \"$dir\"") {
+		t.Fatalf("the script doesn't create the directory:\n%s", p.Script)
+	}
 	if _, err := os.Stat(filepath.Dir(missing)); err == nil {
-		t.Fatal("created the directory")
+		t.Fatal("planning created the directory")
+	}
+	if os.Getuid() != 0 {
+		if _, err := PlanInstallHook(src, missing, true); err == nil || !strings.Contains(err.Error(), "not owned by root") {
+			t.Fatalf("a missing directory below a user's folder passed with root required: %v", err)
+		}
+	}
+	// As root the script checks the nearest existing ancestor before it creates anything.
+	rp, err := PlanInstallHook(src, "/usr/local/bin-not-there/rubi-home", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i, j := strings.Index(rp.Script, "chk \"$n\""), strings.Index(rp.Script, "mkdir -p"); i < 0 || j < 0 || i > j {
+		t.Fatalf("the ancestor check must come before mkdir -p:\n%s", rp.Script)
+	}
+}
+
+// Run for real: the script makes the missing directories (0755) and installs.
+func TestInstallScriptCreatesAMissingDirectory(t *testing.T) {
+	tools := hostTools(t)
+	src, _ := installFixture(t)
+	dst := filepath.Join(t.TempDir(), "a", "b", "rubi-home")
+	sum, _ := fileSHA256(src)
+	if out, err := runScript(t, installScript(tools, src, dst, sum, false)); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	fi, err := os.Stat(filepath.Dir(dst))
+	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("directory: %v %v", fi, err)
+	}
+	if got, _ := fileSHA256(dst); got != sum {
+		t.Fatal("not installed")
+	}
+}
+
+// stubRootTools is hostTools for the as-root script: stat reports root-owned 0755 for every path except the
+// ones named in badPaths (0775), and chown does nothing (the test user can't be root).
+func stubRootTools(t *testing.T, badPaths ...string) installTools {
+	t.Helper()
+	tools := hostTools(t)
+	if p, err := exec.LookPath("dirname"); err != nil {
+		t.Skip("no dirname on this host")
+	} else {
+		tools.Dirname = p
+	}
+	dir := t.TempDir()
+	cases := ""
+	for _, b := range badPaths {
+		cases += "'" + b + "') echo 0:775;; "
+	}
+	tools.Stat = script(t, dir, "stat", `case "$1" in `+cases+`*) echo 0:755;; esac`)
+	tools.Chown = script(t, dir, "chown", "exit 0")
+	return tools
+}
+
+// The as-root script, run for real with stubbed stat and chown: a missing nested directory below a root-owned,
+// closed ancestor is created, and the file is installed in it.
+func TestRootInstallScriptCreatesAMissingNestedDirectory(t *testing.T) {
+	tools := stubRootTools(t)
+	src, _ := installFixture(t)
+	dst := filepath.Join(t.TempDir(), "a", "b", "rubi-home")
+	sum, _ := fileSHA256(src)
+	if out, err := runScript(t, installScript(tools, src, dst, sum, true)); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	want, _ := os.ReadFile(src)
+	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("file: %q %v", got, err)
+	}
+	if fi, err := os.Stat(filepath.Dir(dst)); err != nil || !fi.IsDir() {
+		t.Fatalf("directory: %v %v", fi, err)
+	}
+}
+
+// The nearest existing ancestor is group-writable: nothing is created, not even the directory.
+func TestRootInstallScriptCreatesNothingBelowAWritableAncestor(t *testing.T) {
+	src, _ := installFixture(t)
+	base := t.TempDir()
+	tools := stubRootTools(t, base)
+	dst := filepath.Join(base, "a", "b", "rubi-home")
+	sum, _ := fileSHA256(src)
+	out, err := runScript(t, installScript(tools, src, dst, sum, true))
+	if err == nil || !strings.Contains(out, "writable by group or others") {
+		t.Fatalf("a writable ancestor was accepted: %v %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(base, "a")); err == nil {
+		t.Fatal("a directory was created below a group-writable ancestor")
+	}
+	if m, _ := filepath.Glob(filepath.Join(base, "*")); len(m) != 0 {
+		t.Fatalf("created: %v", m)
 	}
 }
 
@@ -525,7 +622,7 @@ func hostTools(t *testing.T) installTools {
 		sha = look("sha256sum")
 	}
 	return installTools{Cat: look("cat"), Sha: sha, Cut: look("cut"), Mktemp: look("mktemp"), Rm: look("rm"),
-		Chmod: look("chmod"), Mv: look("mv"), Group: "root"}
+		Chmod: look("chmod"), Mv: look("mv"), Group: "root", Mkdir: look("mkdir"), Find: look("find"), Rmdir: look("rmdir")}
 }
 
 func runScript(t *testing.T, script string) (string, error) {
@@ -539,13 +636,14 @@ func runScript(t *testing.T, script string) (string, error) {
 func TestInstallScriptShape(t *testing.T) {
 	sum := strings.Repeat("ab", 32)
 	for _, tools := range []installTools{defaultTools(), {Stat: "/usr/bin/stat -L -c '%u:%a'", Cat: "/bin/cat", Sha: "/usr/bin/sha256sum", Cut: "/usr/bin/cut",
-		Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm", Chown: "/bin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "root"}} {
+		Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm", Chown: "/bin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "root", Mkdir: "/bin/mkdir",
+		Find: "/usr/bin/find", Rmdir: "/bin/rmdir"}} {
 		sc := installScript(tools, "/home/u/rubi-home", "/usr/local/bin/rubi-home", sum, true)
 		if strings.Count(sc, `"$src"`) != 1 {
 			t.Errorf("the source must be read exactly once:\n%s", sc)
 		}
 		pos := func(sub string) int { return strings.Index(sc, sub) }
-		if !(pos("mktemp") < pos("trap ") && pos("trap ") < pos(`"$src" > "$tmp"`) && pos(`"$src" > "$tmp"`) < pos(`= "$want"`) &&
+		if !(pos("mkdir \"$lock\"") < pos("trap ") && pos("trap ") < pos("mktemp") && pos("mktemp") < pos(`"$src" > "$tmp"`) && pos(`"$src" > "$tmp"`) < pos(`= "$want"`) &&
 			pos(`= "$want"`) < pos("chown") && pos("chown") < pos("chmod") && pos("chmod") < pos("mv -f")) {
 			t.Errorf("order:\n%s", sc)
 		}
@@ -554,7 +652,7 @@ func TestInstallScriptShape(t *testing.T) {
 			t.Errorf("script:\n%s", sc)
 		}
 		for _, l := range strings.Split(sc, "\n") { // every command is an absolute path
-			for _, tool := range []string{"cat ", "shasum", "sha256sum", "cut ", "mktemp", "rm ", "chown", "chmod", "mv ", "stat ", "dirname"} {
+			for _, tool := range []string{"cat ", "shasum", "sha256sum", "cut ", "mktemp", "rm ", "chown", "chmod", "mv ", "stat ", "dirname", "mkdir", "find ", "rmdir"} {
 				if i := strings.Index(l, tool); i > 0 && !strings.Contains(l[:i], "/") && !strings.Contains(l, "echo") && !strings.HasPrefix(strings.TrimSpace(l), "src=") {
 					t.Errorf("relative tool %q in %q", tool, l)
 				}
@@ -666,7 +764,7 @@ func TestWrongTypedStampIsRefused(t *testing.T) {
 		`{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"Bash","tool_input":{"command":"ls"},"rubi_hook_protocol":{"a":1}}`,
 	} {
 		var d ClaudeDecision
-		if err := json.Unmarshal([]byte(sendRaw(t, sock, l)), &d); err != nil || d.Behavior != "deny" || !strings.Contains(d.Message, "install-hook") {
+		if err := json.Unmarshal([]byte(sendRaw(t, sock, l)), &d); err != nil || d.Behavior != "deny" || !strings.Contains(d.Message, "Rubi panel") {
 			t.Errorf("%s: %+v %v", l, d, err)
 		}
 		ev := strings.Replace(l, "PermissionRequest", "Stop", 1)
@@ -687,7 +785,7 @@ func TestWrongTypedStampIsRefused(t *testing.T) {
 func TestInspectRefusesFifoAndDevices(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(dir, "fifo")
-	if err := syscall.Mkfifo(fifo, 0o755); err != nil {
+	if err := mkfifo(fifo, 0o755); err != nil {
 		t.Skip(err)
 	}
 	start := time.Now()

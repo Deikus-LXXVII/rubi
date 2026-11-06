@@ -1,0 +1,2 @@
+# Mac-only code in the Home packages that still sits outside a _darwin.go file (docs/plans/home-platforms.md).
+# The test fails on a new finding and on a line here that matches nothing any more, so this list only shrinks.

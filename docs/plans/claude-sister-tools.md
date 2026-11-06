@@ -1,6 +1,6 @@
 # B3: Sister tools inside Claude Code, installed with zero setup
 
-Branches: core `citri/claude-sister-tools` (from `citri/hook-version`), plugin `citri/claude-sister-tools`.
+Branches: core `feature/claude-sister-tools` (from `feature/hook-version`), plugin `feature/claude-sister-tools`.
 Not pushed.
 
 ## Problem

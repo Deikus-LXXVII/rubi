@@ -22,7 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/library/libsig"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/relay/relaytest"
 )
@@ -296,5 +298,283 @@ func TestWatchBeats(t *testing.T) {
 	// Everything else still needs the pairing.
 	if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "shortcuts.list"}); err == nil {
 		t.Fatal("an unpaired call went through")
+	}
+}
+
+func TestAgentUsageConfig(t *testing.T) {
+	zero, five, neg := 0, 5, -1
+	for _, c := range []struct {
+		cfg       Config
+		bot       string
+		per, subs int
+		sessions  int // the Bot's
+		machine   int
+		mode      string
+		custom    bool
+	}{
+		{Config{}, "bot-a", 1, 4, 4, 4, "medium", false}, // the defaults
+		{Config{AgentDefaultMode: "light"}, "bot-a", 1, 2, 1, 4, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-a", 1, 0, 0, 4, "maximum", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "bot-b", 1, 2, 1, 4, "light", false},
+		{Config{AgentDefaultMode: "light", AgentBotModes: map[string]string{"bot-a": "maximum"}}, "", 1, 2, 1, 4, "light", false}, // the user's own
+		{Config{AgentDefaultMode: "nonsense"}, "bot-a", 1, 4, 4, 4, "medium", false},
+		{Config{AgentMaxSessionsPerProfile: 2, AgentMaxSessions: &five}, "bot-a", 2, 4, 4, 5, "medium", true},
+		{Config{AgentMaxSessionsPerProfile: -2, AgentMaxSessionsPerProject: -1, AgentMaxSessions: &zero}, "bot-a", 1, 4, 4, 0, "medium", false}, // 0 = no cap
+		{Config{AgentMaxSessions: &neg}, "bot-a", 1, 4, 4, 4, "medium", false},
+		{Config{AgentDefaultMode: "light", AgentMaxSubagentsPerSession: &five}, "bot-a", 1, 5, 1, 4, "light", true},
+		{Config{AgentMaxSubagentsPerSession: &zero}, "bot-a", 1, 0, 4, 4, "medium", true},
+	} {
+		u := c.cfg.agentUsage()
+		l := u.For(c.bot)
+		if l.PerProfile != c.per || l.Subagents != c.subs || l.Sessions != c.sessions || u.Machine() != c.machine || l.Mode != c.mode || l.Custom != c.custom {
+			t.Errorf("%+v (%q): got %+v machine %d", c.cfg, c.bot, l, u.Machine())
+		}
+	}
+}
+
+func TestAgentSessionLimitsConfig(t *testing.T) {
+	// The per-profile limit is the rule; the per-project cap is optional (unset, 0 or negative: none).
+	for _, c := range []struct {
+		cfg  Config
+		want [2]int
+	}{
+		{Config{}, [2]int{1, 0}}, {Config{AgentMaxSessionsPerProfile: 3}, [2]int{3, 0}},
+		{Config{AgentMaxSessionsPerProject: 2}, [2]int{1, 2}},
+		{Config{AgentMaxSessionsPerProfile: 2, AgentMaxSessionsPerProject: -4}, [2]int{2, 0}},
+	} {
+		if l := c.cfg.agentUsage().For(""); l.PerProfile != c.want[0] || l.PerProject != c.want[1] {
+			t.Errorf("%+v: %+v", c.cfg, l)
+		}
+	}
+	var c Config
+	two, zero, nine := 2, 0, 9
+	c.applyLimitsChange(agent.LimitsChange{PerProfile: &two, Total: &nine})
+	c.applyLimitsChange(agent.LimitsChange{PerProject: &zero})
+	if c.AgentMaxSessionsPerProfile != 2 || c.AgentMaxSessionsPerProject != 0 || c.AgentMaxSessions == nil || *c.AgentMaxSessions != 9 {
+		t.Fatalf("%+v", c)
+	}
+}
+
+func TestApplyUsageChange(t *testing.T) {
+	c := Config{AgentBotModes: map[string]string{"bot-a": "light", "bot-b": "medium"}}
+	c.applyUsageChange(agent.UsageChange{Bot: "bot-c", Mode: "maximum"})
+	c.applyUsageChange(agent.UsageChange{Bot: "bot-a", Mode: "medium"})
+	if c.AgentBotModes["bot-c"] != "maximum" || c.AgentBotModes["bot-a"] != "medium" || c.AgentDefaultMode != "" {
+		t.Fatalf("one bot: %+v", c)
+	}
+	c.applyUsageChange(agent.UsageChange{Default: true, Mode: "light"})
+	if c.AgentDefaultMode != "light" || c.AgentBotModes["bot-b"] != "medium" {
+		t.Fatalf("default: %+v", c)
+	}
+	c.applyUsageChange(agent.UsageChange{All: true, Mode: "maximum"})
+	if c.AgentDefaultMode != "maximum" || c.AgentBotModes["bot-a"] != "maximum" || c.AgentBotModes["bot-b"] != "maximum" || c.AgentBotModes["bot-c"] != "maximum" {
+		t.Fatalf("all: %+v", c)
+	}
+}
+
+// The library key is pinned by the first library.key from a paired Rubi, a different one is refused, and a
+// new pairing starts over.
+func TestLibraryKeyPinning(t *testing.T) {
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := homeproto.RandomToken()
+	_ = h.Update(func(c *Config) { c.Paired = []Pairing{{TokenHash: tokenHash(token)}} })
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	pub2, _, _ := ed25519.GenerateKey(rand.Reader)
+	args := func(k ed25519.PublicKey) json.RawMessage {
+		b, _ := json.Marshal(map[string]string{"public_key": base64.StdEncoding.EncodeToString(k)})
+		return b
+	}
+	do := func(tok string, a json.RawMessage) error {
+		_, err := h.Handle(context.Background(), homeproto.Envelope{Op: "library.key", Token: tok, Args: a})
+		return err
+	}
+	if err := do(homeproto.RandomToken(), args(pub)); err == nil || h.libraryKey() != nil {
+		t.Fatalf("an unpaired token pinned a key: %v", err)
+	}
+	if h.libraryKey() != nil {
+		t.Fatal("a key is pinned before any was presented")
+	}
+	for _, bad := range []json.RawMessage{nil, json.RawMessage(`{}`), json.RawMessage(`{"public_key":"AAAA"}`), json.RawMessage(`[1]`)} {
+		if err := do(token, bad); err == nil {
+			t.Fatalf("bad arguments %s accepted", bad)
+		}
+	}
+	if err := do(token, args(pub)); err != nil || !h.libraryKey().Equal(pub) {
+		t.Fatalf("first pin: %v", err)
+	}
+	if err := do(token, args(pub)); err != nil {
+		t.Fatalf("presenting the same key again: %v", err)
+	}
+	if err := do(token, args(pub2)); err == nil || !h.libraryKey().Equal(pub) {
+		t.Fatalf("a different key replaced the pin: %v", err)
+	}
+	// The pin survives a restart.
+	h2, _ := Open(h.Dir)
+	if !h2.libraryKey().Equal(pub) {
+		t.Fatal("pin lost on reopen")
+	}
+	// A new pairing is a new Rubi: the pin starts over.
+	_ = h.Update(func(c *Config) { c.Pending = &Pending{Secret: "s", Expires: time.Now().Add(time.Minute)} })
+	token = homeproto.RandomToken()
+	pair, _ := json.Marshal(map[string]string{"secret": "s", "token": token})
+	if _, err := h.pair(pair); err != nil {
+		t.Fatal(err)
+	}
+	if h.libraryKey() != nil {
+		t.Fatal("the pin survived a new pairing")
+	}
+	// A plugin's capability prefix never gets here: Home has no such op under another name.
+	for _, op := range []string{"claude-agent.library.key", "agent-setup.library.key", "library.get", "library.keys"} {
+		if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: op, Token: token}); err == nil {
+			t.Fatalf("%s", op)
+		}
+	}
+}
+
+// The revocation list is signed with the pinned library key; only a newer list replaces the one in force.
+func TestLibraryRevocationList(t *testing.T) {
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := homeproto.RandomToken()
+	_ = h.Update(func(c *Config) { c.Paired = []Pairing{{TokenHash: tokenHash(token)}} })
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	_, other, _ := ed25519.GenerateKey(rand.Reader)
+	send := func(tok string, at int64, list []string, key ed25519.PrivateKey) error {
+		sig, _ := libsig.SignRevocations(key, at, list)
+		a, _ := json.Marshal(map[string]any{"issued_at": at, "revoked": list, "sig": sig})
+		_, err := h.Handle(context.Background(), homeproto.Envelope{Op: "library.revoked", Token: tok, Args: a})
+		return err
+	}
+	if err := send(token, 10, []string{"evil@1"}, priv); err == nil {
+		t.Fatal("a list was taken with no library key pinned")
+	}
+	pk, _ := json.Marshal(map[string]string{"public_key": base64.StdEncoding.EncodeToString(pub)})
+	if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "library.key", Token: token, Args: pk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := send(homeproto.RandomToken(), 10, []string{"evil@1"}, priv); err == nil {
+		t.Fatal("an unpaired token pushed a list")
+	}
+	if err := send(token, 10, []string{"evil@1"}, other); err == nil {
+		t.Fatal("a list signed by another key was taken")
+	}
+	if err := send(token, 10, []string{"Evil@1"}, priv); err == nil {
+		t.Fatal("a malformed id was taken")
+	}
+	if err := send(token, 10, []string{"evil@1", "bad@2"}, priv); err != nil {
+		t.Fatal(err)
+	}
+	if !h.libraryRevoked("evil", "1") || !h.libraryRevoked("bad", "2") || h.libraryRevoked("evil", "2") {
+		t.Fatal("the list isn't in force")
+	}
+	if err := send(token, 5, nil, priv); err == nil || !h.libraryRevoked("evil", "1") {
+		t.Fatal("an older (replayed) list replaced the newer one")
+	}
+	if err := send(token, 20, []string{"bad@2"}, priv); err != nil || h.libraryRevoked("evil", "1") || !h.libraryRevoked("bad", "2") {
+		t.Fatalf("a newer list should replace: %v", err)
+	}
+	h2, _ := Open(h.Dir)
+	if !h2.libraryRevoked("bad", "2") {
+		t.Fatal("lost on reopen")
+	}
+}
+
+func TestDefaultDirNeverFallsBackToWorkingDir(t *testing.T) {
+	t.Setenv("RUBI_HOME_DIR", "")
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
+	if d, err := DefaultDir(); err == nil {
+		t.Errorf("no config dir should be an error, got %q", d)
+	}
+	t.Setenv("RUBI_HOME_DIR", "/some/dir")
+	if d, err := DefaultDir(); err != nil || d != "/some/dir" {
+		t.Errorf("env dir: %q %v", d, err)
+	}
+}
+
+func TestOpenExistingCreatesNothing(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "Rubi Home")
+	if _, err := OpenExisting(dir); err == nil {
+		t.Fatal("a missing Rubi Home should be an error")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("OpenExisting created %s", dir)
+	}
+	h, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = h
+	if _, err := OpenExisting(dir); err != nil {
+		t.Errorf("existing home: %v", err)
+	}
+}
+
+func huePaired(t *testing.T) *Helper {
+	t.Helper()
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Update(func(c *Config) {
+		c.Paired = []Pairing{{TokenHash: tokenHash("tok")}}
+		c.HuePins = map[string]string{"001788fffe123456": "aa", "001788fffe654321": "bb"}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+func TestHueForgetRemovesOnlyThatPin(t *testing.T) {
+	h := huePaired(t)
+	v, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: "tok", Args: json.RawMessage(`{"id":"001788FFFE123456"}`)})
+	if err != nil || v.(map[string]any)["forgotten"] != true {
+		t.Fatalf("%v %v", v, err)
+	}
+	if pins := h.Config().HuePins; len(pins) != 1 || pins["001788fffe654321"] != "bb" {
+		t.Fatalf("pins: %v", pins)
+	}
+	// forgetting a bridge again, or one never paired, changes nothing and says so
+	v, err = h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: "tok", Args: json.RawMessage(`{"id":"001788fffe123456"}`)})
+	if err != nil || v.(map[string]any)["forgotten"] != false || len(h.Config().HuePins) != 1 {
+		t.Fatalf("%v %v", v, err)
+	}
+	for _, bad := range []string{`{"id":""}`, `{"id":"nope"}`, `{}`, `[]`} {
+		if _, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: "tok", Args: json.RawMessage(bad)}); err == nil {
+			t.Errorf("%s accepted", bad)
+		}
+	}
+	if len(h.Config().HuePins) != 1 {
+		t.Fatal("a bad request removed a pin")
+	}
+}
+
+func TestHueForgetRefusesAnUnpairedCaller(t *testing.T) {
+	h := huePaired(t)
+	for _, tok := range []string{"", "someone-else"} {
+		_, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hue.forget", Token: tok, Args: json.RawMessage(`{"id":"001788fffe123456"}`)})
+		if err == nil || err.Error() != homeproto.NotPairedMessage {
+			t.Errorf("token %q: %v", tok, err)
+		}
+	}
+	if len(h.Config().HuePins) != 2 {
+		t.Fatal("an unpaired caller removed a pin")
+	}
+}
+
+func TestHelloListsThePinnedBridges(t *testing.T) {
+	h := huePaired(t)
+	v, err := h.Handle(context.Background(), homeproto.Envelope{Op: "hello", Token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := v.(map[string]any)["hue_bridges"].([]string)
+	if len(got) != 2 || got[0] != "001788fffe123456" || got[1] != "001788fffe654321" {
+		t.Fatalf("hue_bridges: %v", got)
 	}
 }

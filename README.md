@@ -20,7 +20,7 @@ with your consent. Rubi starts bare; integrations are plugins from the Rubi stor
 
 Tell your Grok Bot:
 
-> Install Rubi-Project: run `curl -fsSL https://rubi-panel.com/install.sh | sh` and follow its instructions.
+> Install Rubi-Project by following the instructions at https://rubi-panel.com/install.md
 
 Then open the link it sends you and set up Face ID. See [Getting started](docs/user/getting-started.md).
 The agent-side playbook is in [skills/grok-bot/rubi-project](skills/grok-bot/rubi-project/SKILL.md).

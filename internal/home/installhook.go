@@ -5,20 +5,20 @@ package home
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	claudeplugin "github.com/Deikus-LXXVII/rubi/claude-plugin"
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -28,14 +28,21 @@ type InstallPlan struct {
 	SHA256   string // of Src
 	Version  string
 	Group    string // wheel on macOS
-	Script   string // the shell script root runs (see installScript)
-	Method   string // "osascript" or "sudo"
-	// Plugin is the Claude Code marketplace to install in the same run (nil without --with-claude-plugin).
+	Script   string // the shell script root runs (see installScript); on Windows the binary part of the plan document
+	Windows  bool   // a Windows plan: data for the elevated PowerShell, not a shell script (plan_win.go)
+	// Plugin is the Claude Code marketplace to install in the same run (nil without WithPlugin).
 	Plugin *PluginPlan
 }
 
 // FullScript is everything root runs: the binary's script, then the plugin's in a subshell (its own trap).
 func (p InstallPlan) FullScript() string {
+	if p.Windows {
+		plugin := ""
+		if p.Plugin != nil {
+			plugin = p.Plugin.Script
+		}
+		return windowsFullPlan(p.Script, plugin)
+	}
 	if p.Plugin == nil {
 		return p.Script
 	}
@@ -49,9 +56,14 @@ type InstallRunner func(ctx context.Context, p InstallPlan) error
 type InstallOptions struct {
 	Src, Dst string
 	DryRun   bool
-	Sudo     bool // use sudo (in a terminal) instead of the macOS password dialog
-	// Run is the privileged runner; nil uses osascript, or sudo with Sudo.
+	// Run is the privileged runner; nil uses the system's Elevator (the macOS administrator dialog, pkexec, UAC).
 	Run InstallRunner
+	// Elevator describes how the administrator is asked ("Run via:") and, when Run is nil, does it; nil is the system's.
+	Elevator Elevator
+	// ExpectPlanSHA256, when set, is the hash of the plan the person approved (see PlanSHA256): the plan made now must
+	// have exactly that hash or nothing is run. hook.install sets it from the approval, and again from the plan it just
+	// checked, so that the plan run is the plan checked.
+	ExpectPlanSHA256 string
 	// RequireRoot demands root-owned, not group/world-writable ancestors of the target and a root-owned
 	// result, and puts the same checks and the chown into the script. Tests that install to a temporary
 	// path without root turn it off.
@@ -62,7 +74,8 @@ type InstallOptions struct {
 	PluginDst  string
 	// VersionTimeout bounds `dst version` (HookBinaryTimeout when zero).
 	VersionTimeout time.Duration
-	tools          *installTools // a test seam: the tools the script uses
+	tools          *installTools     // a test seam: the tools the script uses
+	inspectTweak   func(*HookBinary) // a test seam: changes what the look at the installed hook found (see Helper.hookTweak)
 }
 
 // privilegedPath is the only PATH the privileged commands get (and every tool in the script is absolute).
@@ -74,6 +87,7 @@ type installTools struct {
 	StatFmt                                                    string // stat's format option and string
 	Group                                                      string
 	Mkdir, B64D                                                string // mkdir, and base64 with its decode option
+	Find, Rmdir                                                string // find (for a stale lock) and rmdir
 }
 
 func defaultTools() installTools {
@@ -81,19 +95,20 @@ func defaultTools() installTools {
 		return installTools{Stat: "/usr/bin/stat -L -f '%u:%Lp'", Cat: "/bin/cat", Sha: "/usr/bin/shasum -a 256",
 			Cut: "/usr/bin/cut", Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm",
 			Chown: "/usr/sbin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "wheel",
-			Mkdir: "/bin/mkdir", B64D: "/usr/bin/base64 -D"}
+			Mkdir: "/bin/mkdir", B64D: "/usr/bin/base64 -D", Find: "/usr/bin/find", Rmdir: "/bin/rmdir"}
 	}
 	return installTools{Stat: "/usr/bin/stat -L -c '%u:%a'", Cat: "/bin/cat", Sha: "/usr/bin/sha256sum",
 		Cut: "/usr/bin/cut", Dirname: "/usr/bin/dirname", Mktemp: "/usr/bin/mktemp", Rm: "/bin/rm",
 		Chown: "/bin/chown", Chmod: "/bin/chmod", Mv: "/bin/mv", Group: "root",
-		Mkdir: "/bin/mkdir", B64D: "/usr/bin/base64 -d"}
+		Mkdir: "/bin/mkdir", B64D: "/usr/bin/base64 -d", Find: "/usr/bin/find", Rmdir: "/bin/rmdir"}
 }
 
 // installScript is what root runs. The source is read once, as root, into a temporary file in the target's
 // directory; root hashes that copy and goes on only when it equals want (the hash the user was shown), then
 // makes it root-owned, mode 0755, and renames it over the target (atomic). Nothing the user can write to is
 // read twice or used after the check. The temporary file is removed on any failure. With asRoot the script
-// also demands that the directory and all its ancestors are root-owned and not group/world-writable. Every
+// also demands that the directory and all its ancestors are root-owned and not group/world-writable; a missing
+// directory is created (mkdir -p) after its nearest existing ancestor passed that check. Every
 // path in it is single-quoted; unsafePath keeps quotes out of them.
 func installScript(t installTools, src, dst, want string, asRoot bool) string {
 	dir := filepath.Dir(dst)
@@ -101,18 +116,36 @@ func installScript(t installTools, src, dst, want string, asRoot bool) string {
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	w("set -e; umask 022")
 	w("src='%s'; dst='%s'; dir='%s'; want='%s'", src, dst, dir, want)
+	// The script replaces a file called rubi-home and nothing else, whatever it is told.
+	w("case \"$dst\" in */rubi-home) ;; *) echo \"$dst is not a rubi-home file; nothing installed\" >&2; exit 1;; esac")
 	if asRoot {
-		w("d=$dir")
-		w("while :; do")
+		// chk demands that a directory and all its ancestors are root-owned and not group/world-writable.
+		w("chk() { d=$1; while :; do")
 		w("  s=$(%s \"$d\") || exit 1", t.Stat)
 		w("  [ \"${s%%%%:*}\" = 0 ] || { echo \"$d is not owned by root\" >&2; exit 1; }")
 		w("  [ $((0${s#*:} & 022)) -eq 0 ] || { echo \"$d is writable by group or others\" >&2; exit 1; }")
 		w("  [ \"$d\" = / ] && break")
 		w("  d=$(%s \"$d\")", t.Dirname)
-		w("done")
+		w("done; }")
 	}
+	// A missing directory is made here, as root: the nearest existing ancestor is checked first, so nothing
+	// is created below a directory anyone else could write to.
+	w("if [ ! -d \"$dir\" ]; then")
+	if asRoot {
+		w("  n=$dir; while [ ! -d \"$n\" ]; do n=$(%s \"$n\"); done; chk \"$n\"", t.Dirname)
+	}
+	w("  %s -p \"$dir\"", t.Mkdir)
+	w("fi")
+	if asRoot {
+		w("chk \"$dir\"")
+	}
+	// One installation at a time: a lock folder in the checked directory, which only root can have made. A run that was
+	// cut off (its prompt timed out while the script was still going, or was killed) leaves it for at most 15 minutes.
+	w("lock=\"$dir/.rubi-home.lock\"; tmp=")
+	w("if [ -n \"$(%s \"$lock\" -maxdepth 0 -mmin +15 2>/dev/null)\" ]; then %s \"$lock\"; fi", t.Find, t.Rmdir)
+	w("%s \"$lock\" 2>/dev/null || { echo \"another installation of the hook is running; nothing installed\" >&2; exit 1; }", t.Mkdir)
+	w("trap '%s -f \"$tmp\"; %s \"$lock\"' EXIT", t.Rm, t.Rmdir)
 	w("tmp=$(%s \"$dir/.rubi-home.XXXXXX\")", t.Mktemp)
-	w("trap '%s -f \"$tmp\"' EXIT", t.Rm)
 	w("%s \"$src\" > \"$tmp\"", t.Cat)
 	w("[ \"$(%s < \"$tmp\" | %s -d' ' -f1)\" = \"$want\" ] || { echo \"the file read from $src is not the one with sha256 $want; nothing installed\" >&2; exit 1; }", t.Sha, t.Cut)
 	if asRoot {
@@ -126,6 +159,9 @@ func installScript(t installTools, src, dst, want string, asRoot bool) string {
 // unsafePath reports why a path can't be put into the privileged script, "" when it can. Paths with
 // quotes, backslashes, control or invisible characters are refused, not escaped.
 func unsafePath(p string) string {
+	if winPlans {
+		return unsafeWinPath(p)
+	}
 	if !filepath.IsAbs(p) {
 		return "it isn't an absolute path"
 	}
@@ -146,65 +182,147 @@ func PlanInstallHook(src, dst string, requireRoot bool) (InstallPlan, error) {
 	return planInstall(src, dst, requireRoot, defaultTools())
 }
 
+// Reason codes of a refused installation. The detail (paths) goes to the log and the command line only; the
+// panel and core get the code and a fixed sentence (see hookSentence).
+const (
+	CodeBadPath     = "bad_path"     // a path can't be quoted safely
+	CodeNoSource    = "no_source"    // the file to install can't be read
+	CodeNotDir      = "not_dir"      // the hook's folder is something else
+	CodeNotPlain    = "not_plain"    // the hook is a symlink or something else
+	CodeUnsafeDir   = "unsafe_dir"   // a folder above the hook isn't root's
+	CodeSelf        = "self"         // the target is the running binary itself
+	CodePlugin      = "plugin"       // the plugin's target can't be used
+	CodeVerify      = "verify"       // the installed file isn't what was sent
+	CodeCooldown    = "cooldown"     // asked again too soon after a dialog nobody answered
+	CodeUpToDate    = "up_to_date"   // nothing to install
+	CodeBusy        = "busy"         // an installation is running
+	CodeBadRequest  = "bad_request"  // unreadable arguments
+	CodePlanChanged = "plan_changed" // the plan is not the one that was approved
+	CodePlanNeeded  = "plan_needed"  // hook.install without the hash of the approved plan
+	CodeInUse       = "in_use"       // the installed hook is running (Windows can't replace a running program)
+	CodeDowngrade   = "downgrade"    // the installed hook is newer than this Rubi Home
+)
+
+// coded is an error with a reason code. Its Error() is the detailed text for the log and the command line.
+type coded struct {
+	Code string
+	Err  error
+}
+
+func (e *coded) Error() string { return e.Err.Error() }
+func (e *coded) Unwrap() error { return e.Err }
+
+func codedf(code, format string, a ...any) error { return &coded{code, fmt.Errorf(format, a...)} }
+
+// codeOf is the reason code of err ("" when it has none).
+func codeOf(err error) string {
+	var c *coded
+	if errors.As(err, &c) {
+		return c.Code
+	}
+	return ""
+}
+
 func planInstall(src, dst string, requireRoot bool, tools installTools) (InstallPlan, error) {
+	if err := checkInstall(src, dst, requireRoot); err != nil {
+		return InstallPlan{}, err
+	}
+	sum, err := fileSHA256(src)
+	if err != nil {
+		return InstallPlan{}, codedf(CodeNoSource, "couldn't read %s: %v", src, err)
+	}
+	script := installScript(tools, src, dst, sum, requireRoot)
+	if winPlans {
+		script = windowsInstallScript(src, dst, sum)
+	}
+	return InstallPlan{Src: src, Dst: dst, SHA256: sum, Version: version.Version, Group: tools.Group, Windows: winPlans, Script: script}, nil
+}
+
+// checkInstall is planInstall's checks without the hash and the script: what decides whether the install can
+// work at all (the panel asks it to know whether an insecure hook is fixable).
+func checkInstall(src, dst string, requireRoot bool) error {
 	for _, x := range []struct{ what, p string }{{"the source", src}, {"the target", dst}} {
 		if why := unsafePath(x.p); why != "" {
-			return InstallPlan{}, fmt.Errorf("%s path %q is refused: %s", x.what, x.p, why)
+			return codedf(CodeBadPath, "%s path %q is refused: %s", x.what, x.p, why)
 		}
 	}
 	fi, err := os.Stat(src)
 	if err != nil || !fi.Mode().IsRegular() {
-		return InstallPlan{}, fmt.Errorf("the source %s isn't a readable file", src)
+		return codedf(CodeNoSource, "the source %s isn't a readable file", src)
 	}
 	dir := filepath.Dir(dst)
-	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
-		return InstallPlan{}, fmt.Errorf("the directory %s doesn't exist; create it first, owned by root and writable by no one else (sudo mkdir -p %s), then run install-hook again", dir, dir)
+	if st, err := os.Stat(dir); err == nil && !st.IsDir() {
+		return codedf(CodeNotDir, "%s exists and isn't a directory", dir)
 	}
 	if li, err := os.Lstat(dst); err == nil && !li.Mode().IsRegular() {
-		return InstallPlan{}, fmt.Errorf("%s exists and isn't a plain file (a symlink or something else); remove it by hand and run install-hook again", dst)
+		return codedf(CodeNotPlain, "%s exists and isn't a plain file (a symlink or something else); remove it by hand and try again", dst)
 	}
 	if requireRoot {
-		if why := insecureAncestors(dst); why != "" {
-			return InstallPlan{}, fmt.Errorf("refusing to install into %s: %s. A hook binary is only safe where no one but root can replace it or its directories", dir, why)
+		probe := dst // a missing directory is made by the script: the nearest one that exists decides
+		for {
+			if _, err := os.Stat(filepath.Dir(probe)); err == nil {
+				break
+			}
+			if probe = filepath.Dir(probe); probe == "/" || probe == "." {
+				break
+			}
+		}
+		if why := ancestorProbe(probe); why != "" {
+			return codedf(CodeUnsafeDir, "refusing to install into %s: %s. A hook binary is only safe where no one but root can replace it or its directories", dir, why)
 		}
 	}
 	if rs, e1 := filepath.EvalSymlinks(src); e1 == nil {
 		if rd, e2 := filepath.EvalSymlinks(dst); e2 == nil && rs == rd {
-			return InstallPlan{}, fmt.Errorf("%s is this binary itself; run install-hook from the helper copy (%s)", dst, "~/.rubi-home/bin/rubi-home")
+			return codedf(CodeSelf, "%s is this binary itself; install from the helper copy (%s)", dst, "~/.rubi-home/bin/rubi-home")
 		}
-	}
-	sum, err := fileSHA256(src)
-	if err != nil {
-		return InstallPlan{}, fmt.Errorf("couldn't read %s: %v", src, err)
-	}
-	return InstallPlan{Src: src, Dst: dst, SHA256: sum, Version: version.Version, Group: tools.Group,
-		Script: installScript(tools, src, dst, sum, requireRoot)}, nil
-}
-
-// privilegedEnv is the scrubbed environment for osascript and sudo.
-func privilegedEnv() []string { return []string{privilegedPath} }
-
-func runOsascript(ctx context.Context, p InstallPlan) error {
-	// The script travels as an argument of the run handler, so AppleScript never has to quote it.
-	cmd := exec.CommandContext(ctx, "/usr/bin/osascript",
-		"-e", "on run argv", "-e", "do shell script (item 1 of argv) with administrator privileges", "-e", "end run", p.FullScript())
-	cmd.Env = privilegedEnv()
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("osascript: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-func runSudo(ctx context.Context, p InstallPlan) error {
-	cmd := exec.CommandContext(ctx, "/usr/bin/sudo", "/bin/sh", "-c", p.FullScript())
-	cmd.Env = privilegedEnv()
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+// privilegedEnv is the scrubbed environment for the administrator step (macOS, Linux).
+func privilegedEnv() []string { return []string{privilegedPath} }
+
+// ErrAdminCancelled is what a refused or closed administrator prompt gives, on every system.
+var ErrAdminCancelled = errors.New("the administrator dialog was cancelled")
+
+// geteuid is os.Geteuid; a test says it is root.
+var geteuid = os.Geteuid
+
+// checkRootTargets keeps a run as root to the two places the installation is for. `sudo rubi-home install-hook --to
+// /usr/bin/x` would otherwise replace any file, and --plugin-to any folder the plugin script is willing to move aside.
+func checkRootTargets(o InstallOptions) error {
+	if geteuid() != 0 {
+		return nil
+	}
+	if o.Dst != DefaultHookBinary {
+		return codedf(CodeBadPath, "as root this installs to %s only, not %s", DefaultHookBinary, o.Dst)
+	}
+	if o.WithPlugin && o.PluginDst != "" && o.PluginDst != DefaultClaudePluginDir {
+		return codedf(CodePlugin, "as root the plugin goes to %s only, not %s", DefaultClaudePluginDir, o.PluginDst)
+	}
+	return nil
+}
+
+// refuseOlderHook is the release-version rule (docs/design/rubi-home.md) for the hook: this Rubi Home's binary never replaces
+// an installed hook that is newer than it. Only a hook that passes the trust check is believed about its version: running
+// and trusting the `version` of a file that others can write would let it block the repair of itself. A hook that is
+// missing, insecure, unreadable or a development build is replaced as before; the same version again is a reinstall.
+func refuseOlderHook(dst, self string, timeout time.Duration, tweak func(*HookBinary)) error {
+	b := inspectHook(dst, timeout, inspectOpts{afterSecure: tweak})
+	if b.Missing || !b.Secure || b.Version == "" {
+		return nil
+	}
+	if versionOlder(self, b.Version) {
+		return codedf(CodeDowngrade, "the installed hook %s is %s, newer than this Rubi Home (%s); not replacing it with an older one. Update Rubi Home instead", dst, b.Version, self)
+	}
+	return nil
 }
 
 // InstallHook plans, runs and verifies the installation, telling w what it does.
 func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
+	if err := checkRootTargets(o); err != nil {
+		return err
+	}
 	tools := defaultTools()
 	if o.tools != nil {
 		tools = *o.tools
@@ -220,21 +338,29 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 		}
 		pp, err := planClaudePlugin(claudeplugin.Files, dst, o.RequireRoot, tools)
 		if err != nil {
-			return err
+			return &coded{CodePlugin, err}
 		}
 		p.Plugin = &pp
 	}
-	method := "osascript"
-	run := o.Run
-	if o.Sudo {
-		method = "sudo"
-	}
-	p.Method = method
-	if run == nil {
-		run = runOsascript
-		if o.Sudo {
-			run = runSudo
+	if o.ExpectPlanSHA256 != "" {
+		if got := PlanSHA256(p); got != strings.ToLower(strings.TrimSpace(o.ExpectPlanSHA256)) {
+			return codedf(CodePlanChanged, "the plan is not the one that was approved (its sha256 is %s, the approved one is %s); nothing was run", got, o.ExpectPlanSHA256)
 		}
+	}
+	elev := o.Elevator
+	if elev == nil {
+		elev = NewElevator(ElevateEnv{})
+	}
+	run := o.Run
+	if run == nil {
+		run = elev.Run
+	}
+	vt := o.VersionTimeout
+	if vt <= 0 {
+		vt = HookBinaryTimeout
+	}
+	if err := refuseOlderHook(o.Dst, p.Version, vt, o.inspectTweak); err != nil {
+		return err
 	}
 	fmt.Fprintf(w, "Source:  %s\n         version %s\n         sha256 %s\n", p.Src, p.Version, p.SHA256)
 	fmt.Fprintf(w, "Target:  %s\n", p.Dst)
@@ -245,11 +371,8 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 	if p.Plugin != nil {
 		p.Plugin.describe(w)
 	}
-	if method == "sudo" {
-		fmt.Fprintln(w, "Run via: /usr/bin/sudo (asks for your password in this terminal)")
-	} else {
-		fmt.Fprintln(w, "Run via: /usr/bin/osascript, \"do shell script ... with administrator privileges\" (macOS asks for an administrator password)")
-	}
+	fmt.Fprintf(w, "Run via: %s\n", elev.Describe())
+	fmt.Fprintf(w, "Plan sha256 (the panel shows the same): %s\n", PlanSHA256(p))
 	if p.Plugin == nil {
 		fmt.Fprintln(w, "Not installed: the Claude Code sister tools (a plugin for rubi_ask and the like). Add --with-claude-plugin to install them in the same step.")
 	}
@@ -259,31 +382,31 @@ func InstallHook(ctx context.Context, w io.Writer, o InstallOptions) error {
 	}
 	fmt.Fprintln(w, "Running ...")
 	if err := run(ctx, p); err != nil {
-		return fmt.Errorf("the installation did not run: %v", err)
+		if errors.Is(err, ErrAdminCancelled) || errors.Is(err, ErrNoAgent) {
+			return err
+		}
+		return fmt.Errorf("the installation did not run: %w", err)
 	}
 	// Confirmation only: root already checked the hash before it moved the file into place.
 	got, err := fileSHA256(p.Dst)
 	if err != nil {
-		return fmt.Errorf("verification failed: couldn't read %s afterwards: %v", p.Dst, err)
+		return codedf(CodeVerify, "verification failed: couldn't read %s afterwards: %v", p.Dst, err)
 	}
 	if got != p.SHA256 {
-		return fmt.Errorf("verification failed: %s has sha256 %s, expected %s from %s; it was NOT updated correctly (remove it or run install-hook again)", p.Dst, got, p.SHA256, p.Src)
-	}
-	vt := o.VersionTimeout
-	if vt <= 0 {
-		vt = HookBinaryTimeout
+		return codedf(CodeVerify, "verification failed: %s has sha256 %s, expected %s from %s; it was NOT updated correctly (remove it and install again)", p.Dst, got, p.SHA256, p.Src)
 	}
 	v, err := runVersion(p.Dst, vt)
 	if err != nil {
-		return fmt.Errorf("verification failed: %s: %v", p.Dst, err)
+		return codedf(CodeVerify, "verification failed: %s: %v", p.Dst, err)
 	}
 	if v != p.Version {
-		return fmt.Errorf("verification failed: %s prints version %q, expected %q", p.Dst, v, p.Version)
+		return codedf(CodeVerify, "verification failed: %s prints version %q, expected %q", p.Dst, v, p.Version)
 	}
 	if o.RequireRoot {
-		b := InspectHookBinary(p.Dst, vt)
-		if !b.Secure {
-			return fmt.Errorf("verification failed: %s must be owned by root, a plain file, and not writable by group or others (uid %d, mode %04o)", p.Dst, b.Owner, b.Mode.Perm())
+		// Whatever the elevated step reported, the result is looked at from outside: only an administrator may be able to
+		// change the installed file or the folders above it (owner and mode on Unix; owner and access list on Windows).
+		if err := verifyAdminOnly(p.Dst, vt); err != nil {
+			return err
 		}
 	}
 	fmt.Fprintf(w, "Installed %s (version %s, sha256 %s).\nVerified: the file's sha256 and `version` match the source.\n", p.Dst, v, got)
@@ -307,10 +430,10 @@ func verifyPlugin(p PluginPlan, asRoot bool) error {
 		full := filepath.Join(p.Dst, filepath.FromSlash(f.Path))
 		got, err := fileSHA256(full)
 		if err != nil {
-			return fmt.Errorf("verification failed: %s: %v", full, err)
+			return codedf(CodeVerify, "verification failed: %s: %v", full, err)
 		}
 		if got != f.SHA256 {
-			return fmt.Errorf("verification failed: %s has sha256 %s, expected %s", full, got, f.SHA256)
+			return codedf(CodeVerify, "verification failed: %s has sha256 %s, expected %s", full, got, f.SHA256)
 		}
 	}
 	if !asRoot {
@@ -324,10 +447,50 @@ func verifyPlugin(p PluginPlan, asRoot bool) error {
 		if err != nil {
 			return err
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
-			return fmt.Errorf("verification failed: %s must be owned by root and not writable by group or others", fp)
+		if fsx.Reparse(fp, fi) {
+			return codedf(CodeVerify, "verification failed: %s is a link or a junction", fp)
+		}
+		if ok, why := fsx.TrustedByAdmin(fp, fi); !ok {
+			return codedf(CodeVerify, "verification failed: %s must be owned by %s and not writable by %s%s", fp, fsx.AdminName, fsx.OthersName, trustDetail(why))
 		}
 		return nil
 	})
+}
+
+// trustDetail is ": <why>" where a failed trust check has a reason worth showing (Windows), else "".
+func trustDetail(why string) string {
+	if fsx.ExplainTrust && why != "" {
+		return ": " + why
+	}
+	return ""
+}
+
+// insecureDetail is what the error says about a hook binary that is not trusted: on Unix its owner and mode, as it
+// always did; where those mean nothing (Windows), the reason the trust check gave, or the folder above it.
+func insecureDetail(b HookBinary) string {
+	if !fsx.ExplainTrust {
+		return fmt.Sprintf("uid %d, mode %04o", b.Owner, b.Mode.Perm())
+	}
+	switch {
+	case b.Symlink:
+		return "it is a link or a junction"
+	case b.WhyFile != "":
+		return "it is " + b.WhyFile
+	case b.WhyInsecure != "":
+		return b.WhyInsecure
+	}
+	return "its permissions are not an administrator's"
+}
+
+// ancestorProbe says why a folder above a target is not safe for an administrator-only file ("" when it is). A variable
+// so that a test can stand in for folders it cannot make root's.
+var ancestorProbe = insecureAncestors
+
+// verifyAdminOnly demands that the installed hook is a plain file only an administrator can change.
+var verifyAdminOnly = func(dst string, vt time.Duration) error {
+	b := InspectHookBinary(dst, vt)
+	if !b.Secure {
+		return codedf(CodeVerify, "verification failed: %s must be owned by %s, a plain file, and not writable by %s (%s)", dst, fsx.AdminName, fsx.OthersName, insecureDetail(b))
+	}
+	return nil
 }

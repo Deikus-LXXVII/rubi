@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdh"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"github.com/Deikus-LXXVII/rubi/internal/core"
 	"github.com/Deikus-LXXVII/rubi/internal/gateway"
@@ -18,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -63,7 +65,7 @@ func waitHit(t *testing.T, ch chan hookHit, typ string) hookHit {
 
 func noHit(t *testing.T, ch chan hookHit, typ string) {
 	t.Helper()
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(pastGrace)
 	for {
 		select {
 		case h := <-ch:
@@ -209,8 +211,12 @@ func TestSeveralAgents(t *testing.T) {
 	if h := waitHit(t, mainCh, "rubi.agent.suspicious"); h.data["agent"] != "Main" {
 		t.Fatalf("warning: %v", h)
 	}
-	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": mainCode}); e["tool_error"] == nil {
-		t.Fatalf("a blocked name still reads: %v", e)
+	// Strangers' wrong codes must not lock the real Bot out: its own code still works, wrong ones stay refused.
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": mainCode}); e["tool_error"] != nil {
+		t.Fatalf("a stranger's wrong codes locked the real Bot out: %v", e)
+	}
+	if e := r.ag.call("rubi_events", map[string]any{"agent": "Main", "code": "guess3"}); e["tool_error"] == nil {
+		t.Fatalf("a wrong code was accepted while blocked: %v", e)
 	}
 
 	// The mail Bot subscribes itself to the plugin's events (no approval needed: it only routes among
@@ -299,7 +305,7 @@ func TestPluginConfigAndTargets(t *testing.T) {
 		t.Fatal("a locked level was lowered")
 	}
 
-	time.Sleep(time.Second) // earlier pings went to the default Bot; drop them
+	time.Sleep(250 * time.Millisecond) // earlier pings went to the default Bot; drop them
 	for len(mainCh) > 0 {
 		<-mainCh
 	}
@@ -661,9 +667,19 @@ func TestRubiHome(t *testing.T) {
 	if len(devs.Devices) != 1 {
 		t.Fatalf("devices: %v", devs)
 	}
+	// Rubi presents its library key to a newly paired Rubi Home (core-only op library.key).
+	pub, err := r.c.LibraryPublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.waitFor("library key pinned", func() bool { return h.Config().LibraryKey == base64.StdEncoding.EncodeToString(pub) })
 	out := r.ag.call("demo_home", map[string]any{"op": "shortcuts.list"})
-	if !strings.Contains(toString(out["out"]), "Lights off") {
-		t.Fatalf("shortcuts.list: %v", out)
+	if runtime.GOOS == "darwin" {
+		if !strings.Contains(toString(out["out"]), "Lights off") {
+			t.Fatalf("shortcuts.list: %v", out)
+		}
+	} else if out["code"] != float64(rubiplugin.CodeHomeNotAvailable) { // Shortcuts need macOS: paired, but not available here
+		t.Fatalf("shortcuts.list off macOS: %v", out)
 	}
 	if out := r.ag.call("demo_home", map[string]any{"op": "hue.discover"}); !strings.Contains(toString(out["error"]), "doesn't allow") {
 		t.Fatalf("an undeclared capability: %v", out)

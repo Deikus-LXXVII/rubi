@@ -1,8 +1,9 @@
 // Package update finds, downloads, verifies and installs new Rubi releases.
 //
 // Discovery reads https://rubi-panel.com/releases/latest.json, a static file the site publishes for every
-// release (no API rate limits, which matter on agent machines that share an egress IP). Installation trusts
-// nothing from that file: it downloads the release's SHA256SUMS and SHA256SUMS.sig, verifies the signature
+// release (no API rate limits, which matter on agent machines that share an egress IP). The file is signed
+// (latest.json.sig) and Latest takes the version only from verified bytes. Installation then trusts nothing
+// else from it: it downloads the release's SHA256SUMS and SHA256SUMS.sig, verifies the signature
 // with the embedded release key, checks the archive's checksum, smoke-tests the new binary, and only then
 // swaps it in, keeping the previous binary for rollback.
 package update
@@ -19,6 +20,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -46,11 +48,21 @@ func Feed(current string) string {
 	return DefaultFeed
 }
 
-// Latest reads the release feed.
+// errFeedUnsigned is the one answer to a feed that is missing its signature or has a bad one.
+var errFeedUnsigned = errors.New("the release feed is not signed with the Rubi release key")
+
+// Latest reads the release feed. The feed is signed (<feed>.sig, Ed25519 over the exact bytes of the feed, by
+// the release key): the version is taken only from verified bytes, so whoever can change the file or the
+// response cannot name another release. See "The release-version rule" in docs/design/rubi-home.md.
 func Latest(ctx context.Context, current string) (Release, error) {
-	b, err := integrity.Fetch(ctx, integrity.FreshURL(ctx, Feed(current)))
+	feed := Feed(current)
+	b, err := integrity.Fetch(ctx, integrity.FreshURL(ctx, feed))
 	if err != nil {
 		return Release{}, fmt.Errorf("release feed: %w", err)
+	}
+	sig, err := integrity.Fetch(ctx, integrity.FreshURL(ctx, feed+".sig"))
+	if err != nil || integrity.Verify(integrity.TrustedKey(current), b, sig) != nil {
+		return Release{}, errFeedUnsigned
 	}
 	var r Release
 	if err := json.Unmarshal(b, &r); err != nil || !validVersion(r.Version) {
@@ -145,12 +157,48 @@ func Checksums(ctx context.Context, current, version string) ([]byte, error) {
 	if err := integrity.Verify(integrity.TrustedKey(current), sums, sig); err != nil {
 		return nil, errors.New("the release is not signed with the Rubi release key; refusing to update")
 	}
+	if err := bindVersion(sums, version, fmt.Sprintf("rubi-%s-%s-%s.tar.gz", version, runtime.GOOS, runtime.GOARCH)); err != nil {
+		return nil, err
+	}
 	return sums, nil
+}
+
+// versionedAsset matches the release assets whose names carry a version: rubi-<v>-... and rubi-home-<v>-...
+// The platform word after the version keeps "v1.0.0-darwin" from reading as a pre-release.
+// Names such as bin/rubi-linux-amd64 carry none and are not matched.
+var versionedAsset = regexp.MustCompile(`^rubi-(?:home-)?(v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.]+)?)-(?:linux|darwin|macos|windows)-`)
+
+// bindVersion makes the signed list bind the version: it must name the archive for exactly this version,
+// and every versioned asset in it must carry this version. A genuine list of another release is refused.
+func bindVersion(sums []byte, version, archive string) error {
+	found := false
+	for _, line := range strings.Split(string(sums), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		name := strings.TrimPrefix(f[1], "*")
+		if m := versionedAsset.FindStringSubmatch(name); m != nil && m[1] != version {
+			return fmt.Errorf("the signed checksums are for %s, not %s; refusing to update", m[1], version)
+		}
+		if name == archive {
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Errorf("the signed checksums do not name %s; refusing to update", archive)
+	}
+	return nil
 }
 
 // Download fetches the release archive for this platform, verifies it against the signed checksums,
 // extracts the binary into dir, and checks that it runs and reports the expected version.
 func Download(ctx context.Context, current, version, dir string) (*Verified, error) {
+	// Never back to an older release: an old, genuinely signed version may have known bugs. Callers refuse
+	// this too; the guard keeps a future caller from downgrading. Dev and test builds may go anywhere.
+	if current != "dev" && !strings.HasSuffix(current, "-test") && !Newer(version, current) {
+		return nil, fmt.Errorf("%s is not newer than the installed %s; Rubi only updates forward", version, current)
+	}
 	sums, err := Checksums(ctx, current, version)
 	if err != nil {
 		return nil, err

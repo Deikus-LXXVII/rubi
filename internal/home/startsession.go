@@ -24,13 +24,13 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 const (
@@ -68,27 +68,24 @@ func desktopURL(cwd, prompt string) string {
 	return "claude://code/new?" + strings.ReplaceAll(q.Encode(), "+", "%20")
 }
 
-// desktopLauncher opens desktopURL with /usr/bin/open (macOS). run and goos are seams for tests.
+// desktopLauncher opens desktopURL through the system's Opener (the Claude desktop app owns the claude:// scheme).
+// Whether the app is there is decided before this runs: the claude-start operations belong to a feature that is available
+// only where a program is registered for the claude:// link (features.go), and answer not_available_here otherwise.
+// opener is a seam for tests.
 type desktopLauncher struct {
-	run  func(ctx context.Context, name string, args ...string) error
-	goos string
+	opener   Opener
+	noSystem bool // test seam: do not fall back to the system's Opener
 }
 
 func (d desktopLauncher) Launch(ctx context.Context, cwd, prompt string) error {
-	goos := d.goos
-	if goos == "" {
-		goos = runtime.GOOS
+	op := d.opener
+	if op == nil && !d.noSystem {
+		op = NewDesktop(DesktopEnv{}).Opener
 	}
-	if goos != "darwin" {
-		return errors.New("starting a session works through the Claude desktop app, which this Rubi Home can only open on a Mac")
+	if op == nil {
+		return errors.New("this computer has no way to open the Claude desktop app")
 	}
-	run := d.run
-	if run == nil {
-		run = func(ctx context.Context, name string, args ...string) error {
-			return exec.CommandContext(ctx, name, args...).Run()
-		}
-	}
-	if err := run(ctx, "/usr/bin/open", desktopURL(cwd, prompt)); err != nil {
+	if err := op.Open(ctx, desktopURL(cwd, prompt)); err != nil {
 		return fmt.Errorf("couldn't open the Claude desktop app (%v): is it installed?", err)
 	}
 	return nil
@@ -155,10 +152,9 @@ func checkTaskText(s string) error {
 // Names starting with .zsh (shell startup files) are refused as well. /Volumes itself is refused (a volume is
 // not a project) but not what is inside it.
 var (
-	sensitiveHomeDirs = []string{".claude", ".ssh", ".gnupg", ".aws", ".kube", ".config", ".docker", ".local", ".npm", ".oh-my-zsh", "Library"}
-	sensitiveSysDirs  = []string{"/etc", "/private/etc", "/System", "/Library", "/usr", "/bin", "/sbin", "/dev", "/proc", "/sys",
-		"/var", "/private/var", "/Applications", "/opt"}
-	exactOnlyDirs = []string{"/Volumes"}
+	sensitiveHomeDirs = hostpaths.SensitiveHomeDirs()
+	sensitiveSysDirs  = hostpaths.SensitiveSysDirs()
+	exactOnlyDirs     = hostpaths.ExactOnlyDirs()
 )
 
 func pathWithin(p, root string) bool {

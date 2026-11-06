@@ -106,7 +106,7 @@ func Run(ctx context.Context, layout paths.Layout) error {
 	if exe, ok := c.PendingHandoff(); ok {
 		err := handoff(c, layout, lock, tunnelDone, exe)
 		// Only reached if exec failed. The new binary is installed; the next start runs it, locked.
-		log.Printf("restart into the update failed: %v", err)
+		log.Printf("restart (%s) failed: %v", restartReasonText(c.HandoffReason()), err)
 	}
 	// Tell the administrator (and the watchers) before going: a stopped Rubi starts again locked.
 	c.Stopping("Rubi's process was stopped (its computer may be restarting or updating, or Rubi is being restarted)")
@@ -114,6 +114,17 @@ func Run(ctx context.Context, layout paths.Layout) error {
 	_ = os.Remove(layout.Socket())
 	log.Printf("rubi daemon stopped")
 	return nil
+}
+
+// restartReasonText names why Rubi tried to restart itself, for the log.
+func restartReasonText(reason string) string {
+	switch reason {
+	case "transport":
+		return "a changed transport"
+	case "transport,update":
+		return "an update and a changed transport"
+	}
+	return "an update"
 }
 
 // checkUpdates looks for new releases shortly after start and then every hour.
@@ -144,6 +155,7 @@ func checkUpdates(ctx context.Context, c *core.Core) {
 type handoffPayload struct {
 	DEK          string `json:"dek"`
 	VaultVersion uint64 `json:"vault_version"`
+	Why          string `json:"why,omitempty"` // "transport" when the restart applies a new connection; "" for an update
 }
 
 // handoff replaces this process with the freshly installed, verified binary and passes it the open vault
@@ -157,14 +169,9 @@ func handoff(c *core.Core, layout paths.Layout, lock *os.File, tunnelDone <-chan
 	if c.State() != core.Unlocked {
 		return syscall.Exec(exe, []string{exe, "daemon"}, withoutHandoffEnv())
 	}
-	dek, err := c.Vault.Key()
+	payload, err := handoffBytes(c)
 	if err != nil {
 		return err
-	}
-	ver, _ := c.Vault.Version()
-	payload, _ := json.Marshal(handoffPayload{DEK: base64.RawURLEncoding.EncodeToString(dek), VaultVersion: ver})
-	for i := range dek {
-		dek[i] = 0
 	}
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -182,6 +189,20 @@ func handoff(c *core.Core, layout paths.Layout, lock *os.File, tunnelDone <-chan
 	log.Printf("restarting into %s", exe)
 	env := append(withoutHandoffEnv(), "RUBI_HANDOFF_FD="+strconv.Itoa(int(r.Fd())))
 	return syscall.Exec(exe, []string{exe, "daemon"}, env)
+}
+
+// handoffBytes is what the next process receives: the open vault's key and version, and why Rubi restarts.
+func handoffBytes(c *core.Core) ([]byte, error) {
+	dek, err := c.Vault.Key()
+	if err != nil {
+		return nil, err
+	}
+	ver, _ := c.Vault.Version()
+	payload, _ := json.Marshal(handoffPayload{DEK: base64.RawURLEncoding.EncodeToString(dek), VaultVersion: ver, Why: c.HandoffReason()})
+	for i := range dek {
+		dek[i] = 0
+	}
+	return payload, nil
 }
 
 func withoutHandoffEnv() []string {
@@ -227,11 +248,26 @@ func receiveHandoff(c *core.Core) error {
 	if err := c.Unlock(dek, p.VaultVersion, "update", ""); err != nil {
 		return err
 	}
-	log.Printf("unlocked after update to %s", version.Version)
-	c.Events.Emit("rubi", "update.completed", map[string]any{"version": version.Version,
-		"message": "Rubi restarted into the new version and is unlocked."}, nil)
+	// Why lists what this restart applies; an older Rubi sent none, and that was an update.
+	if strings.Contains(p.Why, "transport") {
+		log.Printf("unlocked after changing the transport")
+		c.Events.Emit("rubi", "transport.changed", map[string]any{"transport": LoadTransport(c.Layout).Transport,
+			"message": "Rubi restarted with the connection the user chose in the panel and is unlocked. " +
+				"The link open in the user's browser may no longer work: give them a new one (rubi_link, purpose \"settings\")."}, nil)
+	}
+	if strings.Contains(p.Why, "transport") {
+		c.MarkStartedByTransportSwitch()
+	}
+	if p.Why == "" || strings.Contains(p.Why, "update") {
+		log.Printf("unlocked after update to %s", version.Version)
+		c.Events.Emit("rubi", "update.completed", map[string]any{"version": version.Version,
+			"message": "Rubi restarted into the new version and is unlocked."}, nil)
+	}
 	return nil
 }
+
+// serveTailscale is a seam for tests: it puts the panel API on the tailnet and returns its address.
+var serveTailscale = setupTailscale
 
 // startPanelTransport makes the panel API reachable from the user's browser:
 //   - public Nostr relays, always (the default; needs no inbound address and no account);
@@ -244,6 +280,11 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	api := panelapi.New(c)
 	cfg := LoadTransport(layout)
 	c.SetTransportName(cfg.Transport)
+	c.SetTransportHooks(core.TransportHooks{
+		Save:           func(t string) error { return SaveTransport(layout, t) },
+		Current:        func() string { return LoadTransport(layout).Transport },
+		TailscaleReady: tailscaleReady,
+	})
 	log.Printf("panel transport: %s", cfg.Transport)
 	relays := relaysFor(cfg.Transport)
 	if len(relays) > 0 {
@@ -288,11 +329,31 @@ func startPanelTransport(ctx context.Context, c *core.Core, layout paths.Layout)
 	}
 	if cfg.Transport == TransportTailscale {
 		_, port, _ := net.SplitHostPort(pln.Addr().String())
-		u, err := setupTailscale(ctx, port)
+		u, err := serveTailscale(ctx, port)
 		if err != nil {
-			c.SetTransportError("Panel over Tailscale isn't working: " + err.Error() +
-				". Fix Tailscale on this machine, or switch transport: ~/.rubi/bin/rubi transport gateway")
-			log.Printf("panel transport: %v", err)
+			msg := "Panel over Tailscale isn't working: " + err.Error()
+			if c.StartedByTransportSwitch() {
+				// The user has just switched to Tailscale in the panel and can't open the new link: don't leave
+				// them with no way in. Rubi Gateway with the public relays carries the panel until Tailscale works
+				// or they pick a connection in the panel (Settings, Security, Connection).
+				relays = relaysFor(TransportGateway)
+				startRelays(ctx, c, api, relays)
+				c.SetTransportFallback(TransportGateway)
+				msg += ". Rubi is reachable through Rubi Gateway or the public relays until Tailscale works or the user picks " +
+					"a connection again in the panel (Settings, Security, Connection)"
+				log.Printf("panel transport: %v; falling back to %s after the switch", err, TransportGateway)
+			} else {
+				// A later failure (a reboot, an outage) must not quietly open the public relays: the user chose
+				// a panel that opens only on their tailnet. The agent can switch with its command once Tailscale
+				// works or the user asks for it.
+				msg += ". Rubi stays closed to the public until Tailscale works; the user can then choose another connection " +
+					"in the panel, or the agent can switch it on this machine"
+				log.Printf("panel transport: %v; no public fallback", err)
+			}
+			c.SetTransportError(msg)
+			c.Events.Emit("rubi", "transport.failed", map[string]any{"chosen": TransportTailscale,
+				"fallback": c.TransportInfo()["fallback"] != nil,
+				"message":  msg + ". Tell the user, and send a new link (rubi_link) if they need one."}, nil)
 		} else {
 			c.SetEndpoint(u)
 			log.Printf("panel transport: Tailscale at %s", u)

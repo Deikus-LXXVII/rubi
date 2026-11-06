@@ -226,6 +226,9 @@ func (k PasswordKDF) derive(password string) ([]byte, error) {
 	if err != nil || len(salt) < 16 {
 		return nil, errors.New("bad KDF salt")
 	}
+	if memo := kdfMemo.Load(); memo != nil {
+		return memo.derive(password, salt, k)
+	}
 	return argon2.IDKey([]byte(password), salt, k.Time, k.MemoryKiB, k.Threads, 32), nil
 }
 
@@ -337,8 +340,10 @@ type ApprovalInfo struct {
 		Preview  json.RawMessage  `json:"preview"`
 		Options  []approvalOption `json:"options"`
 		Items    []struct {
-			Key   string `json:"key"`
-			Label string `json:"label"`
+			Key        string          `json:"key"`
+			Label      string          `json:"label"`
+			Preview    json.RawMessage `json:"preview"`
+			DefaultOff bool            `json:"default_off"`
 		} `json:"items"`
 		Inputs []struct {
 			Key    string `json:"key"`

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -33,6 +34,13 @@ type marketState struct {
 	// that may wait at a time, so the user gets one link for all updates, however the Bot asks.
 	updMu         sync.Mutex
 	pendingUpdate *pendingUpdate
+	pendingAll    *pendingAll // the "update everything" approval that waits (updateall.go); also guarded by updMu
+
+	// dlMu makes a download, from the cleaning of the staging folder to the moment the result is registered as
+	// waiting, one at a time: otherwise another request's cleaning deletes a download that is still under way.
+	dlMu sync.Mutex
+	// applyMu makes the check and the commit of an install or an update one step.
+	applyMu sync.Mutex
 }
 
 type pendingUpdate struct {
@@ -156,17 +164,81 @@ func (c *Core) describeInstalled(item map[string]any, id string, records map[str
 	}
 }
 
+// maxBatch is the most plugins one install, update, remove or rollback approval covers (a variable so that a test
+// can lower it).
+var maxBatch = 20
+
 // RequestPluginInstall downloads and verifies a plugin, then asks the user to approve installing it.
 // ref is a catalog id, or a source URL for sideloading.
 func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string]any, error) {
+	return c.RequestPluginInstalls(ctx, []string{ref})
+}
+
+// RequestPluginInstalls installs several plugins with one approval: the user sees each plugin with its
+// publisher key, whether it was reviewed and what it can do, and can leave any of them out. A list of one
+// is the ordinary install approval. A ref that can't be fetched or verified is reported under "failed"
+// and does not hold back the others.
+func (c *Core) RequestPluginInstalls(ctx context.Context, refs []string) (map[string]any, error) {
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked")
 	}
 	if !c.WebhookConfigured() {
 		return nil, ErrNoWebhook
 	}
-	ref = strings.TrimSpace(ref)
+	refs, err := cleanList(refs, "plugin")
+	if err != nil {
+		return nil, err
+	}
 	cat, catErr := c.Catalog(ctx)
+	var ready []*pluginInstall
+	failed := map[string]string{}
+	seen := map[string]string{} // plugin id -> the ref that brought it
+	for _, ref := range refs {
+		in, err := c.prepareInstall(ctx, ref, cat, catErr)
+		if err != nil {
+			if len(refs) == 1 {
+				return nil, err
+			}
+			failed[ref] = err.Error()
+			continue
+		}
+		if first, dup := seen[in.id]; dup {
+			c.unstage(in.cand.Dir)
+			failed[ref] = in.id + " is already in this request (" + first + ")"
+			continue
+		}
+		seen[in.id] = ref
+		ready = append(ready, in)
+	}
+	var res map[string]any
+	switch len(ready) {
+	case 0:
+		return map[string]any{"status": "nothing_to_install", "failed": failed}, nil
+	case 1:
+		res, err = ready[0].submitSingle(ctx)
+	default:
+		res, err = c.submitInstalls(ctx, ready)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(failed) > 0 {
+		res["failed"] = failed
+	}
+	return res, nil
+}
+
+// pluginInstall is a verified, staged release waiting for the user's approval to be installed.
+type pluginInstall struct {
+	core    *Core
+	id      string
+	cand    *plugins.Candidate
+	label   string
+	preview map[string]any
+}
+
+// prepareInstall downloads and verifies ref (a store id or a source URL); the result is staged.
+func (c *Core) prepareInstall(ctx context.Context, ref string, cat *plugins.Catalog, catErr error) (*pluginInstall, error) {
 	var cand *plugins.Candidate
 	var err error
 	if !strings.Contains(ref, "/") {
@@ -189,7 +261,7 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 		}
 		cand, err = c.fetchSideload(ctx, ref, "", cat)
 		if err == nil && c.record(cand.Manifest.ID) != nil {
-			os.RemoveAll(cand.Dir)
+			c.unstage(cand.Dir)
 			return nil, fmt.Errorf("plugin %s is already installed; remove it first to install it from another source", cand.Manifest.ID)
 		}
 	}
@@ -197,32 +269,157 @@ func (c *Core) RequestPluginInstall(ctx context.Context, ref string) (map[string
 		return nil, err
 	}
 	m := cand.Manifest
-	preview := permissions(m, cand.Reviewed, cand.Source)
-	return c.submitPluginChange(ctx, cand, "rubi.plugin.install", "Install "+m.Name+" "+m.Version, preview, func(option string) error {
-		if err := c.Store.Commit(cand, ""); err != nil {
-			return err
-		}
-		if err := c.Vault.Update(func(d *vault.Data) error {
-			d.Plugins[m.ID] = newRecord(cand)
-			return nil
-		}); err != nil {
-			_ = c.Store.Remove(m.ID)
-			return err
-		}
-		c.Audit.Record("plugin.installed", audit.Fields{"plugin": m.ID, "version": m.Version, "reviewed": cand.Reviewed,
-			"source": cand.Source})
-		_ = c.SetUpdateNotify(m.ID, option != "install_quiet") // chosen on the install screen
-		c.toolsChanged()
-		c.startInstalled(m.ID, m.Version, cand.Tree)
-		if len(m.Fields)+len(m.Secrets) == 0 {
-			go c.autoConnect(m) // nothing to enter: the install approval covers connecting it
-		}
+	label := m.Name + " " + m.Version
+	if !cand.Reviewed {
+		label += " (not reviewed)"
+	}
+	return &pluginInstall{core: c, id: m.ID, cand: cand, label: label, preview: permissions(m, cand.Reviewed, cand.Source)}, nil
+}
+
+// apply installs the approved plugin. quiet: the user turned update notifications off for it.
+func (in *pluginInstall) apply(quiet bool) error {
+	c, cand := in.core, in.cand
+	m := cand.Manifest
+	c.mkt.applyMu.Lock()
+	defer c.mkt.applyMu.Unlock()
+	// Another approval may have installed this plugin since the user was asked (two requests for it waited);
+	// installing over it would replace its files and record, and the user approved a first install.
+	if c.record(m.ID) != nil {
+		return fmt.Errorf("%s is already installed (changed since you were asked); nothing was done", m.Name)
+	}
+	if err := c.Store.Commit(cand, ""); err != nil {
+		return err
+	}
+	if err := c.Vault.Update(func(d *vault.Data) error {
+		d.Plugins[m.ID] = newRecord(cand)
 		return nil
-	}, func(res map[string]any) {
-		if len(m.Fields)+len(m.Secrets) > 0 {
-			res["next_step"] = "Installed. Now give the user the setup link: rubi_link(\"setup:" + m.ID + "\")."
+	}); err != nil {
+		_ = c.Store.Remove(m.ID)
+		return err
+	}
+	c.Audit.Record("plugin.installed", audit.Fields{"plugin": m.ID, "version": m.Version, "reviewed": cand.Reviewed,
+		"source": cand.Source})
+	_ = c.SetUpdateNotify(m.ID, !quiet) // chosen on the install screen
+	c.toolsChanged()
+	c.startInstalled(m.ID, m.Version, cand.Tree)
+	if len(m.Fields)+len(m.Secrets) == 0 {
+		go c.autoConnect(m) // nothing to enter: the install approval covers connecting it
+	}
+	return nil
+}
+
+// decorate adds the next step for a plugin that needs the user's setup.
+func (in *pluginInstall) decorate(res map[string]any) {
+	if m := in.cand.Manifest; len(m.Fields)+len(m.Secrets) > 0 {
+		res["next_step"] = "Installed. Now give the user the setup link: rubi_link(\"setup:" + m.ID + "\")."
+	}
+}
+
+func (in *pluginInstall) submitSingle(ctx context.Context) (map[string]any, error) {
+	m := in.cand.Manifest
+	return in.core.submitPluginChange(ctx, in.cand, "rubi.plugin.install", "Install "+m.Name+" "+m.Version, in.preview,
+		func(option string) error { return in.apply(option == "install_quiet") }, in.decorate)
+}
+
+// installOptions are the choices of an install approval: the user picks, and signs, whether the agent hears
+// about the plugin's updates.
+func installOptions() (question string, options []approvals.Option) {
+	return "Tell your agent when new versions come out?", []approvals.Option{
+		{Key: "install_quiet", Label: "Install", Meaning: "updates wait on the Updates page"},
+		{Key: "install", Label: "Install and notify about updates", Meaning: "your agent tells you about new versions"}}
+}
+
+// submitInstalls asks for one approval covering several plugins, an item each. Execute installs only the
+// ticked items and reports every item.
+func (c *Core) submitInstalls(ctx context.Context, ready []*pluginInstall) (map[string]any, error) {
+	items := make([]approvals.Item, len(ready))
+	byID := map[string]*pluginInstall{}
+	unreviewed := 0
+	for i, in := range ready {
+		// A plugin from outside the store starts unticked: installing it takes a tick of its own, so that one tap
+		// on the reviewed ones of an "install these" request can't carry it through.
+		items[i] = approvals.Item{Key: in.id, Label: in.label, Preview: in.preview, DefaultOff: !in.cand.Reviewed}
+		byID[in.id] = in
+		if !in.cand.Reviewed {
+			unreviewed++
 		}
-	})
+	}
+	preview := map[string]any{"plugins": len(ready),
+		"note": "Each plugin is verified against its signed release. Uncheck any you'd rather not install."}
+	if unreviewed > 0 {
+		preview["warning"] = fmt.Sprintf("Not from the Rubi store and not reviewed by Rubi-Project: %d of these plugins (marked below, and not ticked). Tick one only if you trust its publisher.", unreviewed)
+	}
+	unstageAll := func() {
+		for _, in := range ready {
+			c.unstage(in.cand.Dir)
+		}
+	}
+	question, options := installOptions()
+	res, err := c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: "rubi.plugin.install",
+		Summary: fmt.Sprintf("Install %d plugins", len(ready)), Question: question, Preview: preview, Options: options, Items: items,
+		Execute: func(_ context.Context, option string) (any, error) {
+			defer unstageAll()
+			key, chosen := approvals.SplitOption(option)
+			var installed []map[string]any
+			errs := map[string]string{}
+			for _, id := range chosen {
+				in := byID[id]
+				if in == nil {
+					continue
+				}
+				if err := in.apply(key == "install_quiet"); err != nil {
+					errs[id] = err.Error()
+					continue
+				}
+				item := map[string]any{"plugin": id, "version": in.cand.Manifest.Version}
+				in.decorate(item)
+				installed = append(installed, item)
+			}
+			result := map[string]any{"installed": installed}
+			if len(errs) > 0 {
+				result["failed"] = errs
+			}
+			if len(installed) == 0 {
+				return result, errors.New("no plugin could be installed")
+			}
+			return result, nil
+		}})
+	if err != nil {
+		unstageAll()
+		return nil, err
+	}
+	if id, ok := res["approval_id"].(string); ok {
+		go func() {
+			for _, in := range ready {
+				c.cleanupWhenDone(id, in.cand.Dir)
+			}
+		}()
+	}
+	got := make([]string, len(ready))
+	for i, in := range ready {
+		got[i] = in.id
+	}
+	res["plugins"] = got
+	return res, nil
+}
+
+// cleanList trims a list of ids or refs, drops blanks and repeats, and checks the size.
+func cleanList(in []string, what string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range in {
+		if s = strings.TrimSpace(s); s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("name at least one %s", what)
+	}
+	if len(out) > maxBatch {
+		return nil, fmt.Errorf("at most %d plugins at a time", maxBatch)
+	}
+	return out, nil
 }
 
 // RequestPluginUpdate verifies the newest release of an installed plugin and asks to install it.
@@ -273,6 +470,75 @@ type pluginUpdate struct {
 	cand           *plugins.Candidate
 	summary        string
 	preview        map[string]any
+	pinnedKey      string           // the publisher key recorded at install (sideloaded plugins)
+	old            plugins.Manifest // the installed release's manifest
+}
+
+// powerFields are the parts of a manifest that confer power or decide what the user is asked, so that a change to
+// any of them is a different decision from the one made at install (for a plugin from outside the store):
+//   - entry: the executable that runs;
+//   - fields, secrets: what the plugin asks the user to enter and keep (secrets: also internal and renewable ones);
+//   - actions: what it can do and at which approval level, including a lowered level and a lock removed;
+//   - events: what it can wake the agent about (and which fields are untrusted);
+//   - egress: the hosts it may reach;
+//   - tools: the tools it hands the agent;
+//   - panel: a page of its own in the panel, acting for the user;
+//   - config: the settings the user is shown, their defaults and per-account scope (a changed default changes
+//     what the plugin does with no one deciding);
+//   - hooks: private web addresses that reach it;
+//   - home: what it does through Rubi Home (for example claude-start).
+//
+// The rest (name, description, needs, version, source, min_rubi, the publisher's name and URL) confers none; the
+// publisher key is checked on its own.
+var powerFields = []struct {
+	name string
+	get  func(m plugins.Manifest) any
+}{
+	{"entry", func(m plugins.Manifest) any { return m.Entry }},
+	{"fields", func(m plugins.Manifest) any { return m.Fields }},
+	{"secrets", func(m plugins.Manifest) any { return m.Secrets }},
+	{"actions", func(m plugins.Manifest) any { return m.Actions }},
+	{"events", func(m plugins.Manifest) any { return m.Events }},
+	{"egress", func(m plugins.Manifest) any { return m.Egress }},
+	{"tools", func(m plugins.Manifest) any { return m.Tools }},
+	{"panel", func(m plugins.Manifest) any { return m.Panel }},
+	{"config", func(m plugins.Manifest) any { return m.Config }},
+	{"hooks", func(m plugins.Manifest) any { return m.Hooks }},
+	{"home", func(m plugins.Manifest) any { return m.Home }},
+}
+
+// changedPowerFields names the permission-bearing parts of the manifest that differ between two releases.
+func changedPowerFields(old, m plugins.Manifest) []string {
+	var changed []string
+	for _, f := range powerFields {
+		a, _ := json.Marshal(f.get(old))
+		b, _ := json.Marshal(f.get(m))
+		if string(a) != string(b) {
+			changed = append(changed, f.name)
+		}
+	}
+	return changed
+}
+
+// startsUnticked says whether this update must be ticked on purpose in "update everything", and why. A plugin
+// from the store is covered by the review. One from outside it is ticked by default only when the release is
+// signed by the key pinned at install and nothing in the manifest that confers power changed (powerFields):
+// anything else is a different trust decision than the one the user made when installing it.
+func (u *pluginUpdate) startsUnticked() (bool, string) {
+	if u.cand.Reviewed {
+		return false, ""
+	}
+	if u.pinnedKey == "" || strings.TrimSpace(u.cand.Manifest.Publisher.Key) != strings.TrimSpace(u.pinnedKey) {
+		return true, "publisher key changed"
+	}
+	changed := changedPowerFields(u.old, u.cand.Manifest)
+	if len(changed) == 0 {
+		return false, ""
+	}
+	if added := newPermissions(u.old, u.cand.Manifest); added != "" {
+		return true, "new permissions: " + added + " (changed: " + strings.Join(changed, ", ") + ")"
+	}
+	return true, "it changes what the plugin may do (changed: " + strings.Join(changed, ", ") + ")"
 }
 
 // preparePluginUpdate downloads and verifies the newest release of id. done is set (and u nil) when
@@ -314,11 +580,11 @@ func (c *Core) preparePluginUpdate(ctx context.Context, id string) (u *pluginUpd
 	}
 	m := cand.Manifest
 	if !update.Newer(m.Version, rec.Version) { // never an older (or the same) release as an "update"
-		os.RemoveAll(cand.Dir)
+		c.unstage(cand.Dir)
 		return nil, upToDate, nil
 	}
 	if m.ID != id {
-		os.RemoveAll(cand.Dir)
+		c.unstage(cand.Dir)
 		return nil, nil, errors.New("the source now publishes a different plugin; refusing to update")
 	}
 	preview := permissions(m, cand.Reviewed, cand.Source)
@@ -326,13 +592,22 @@ func (c *Core) preparePluginUpdate(ctx context.Context, id string) (u *pluginUpd
 	if added := newPermissions(old, m); added != "" {
 		preview["new_permissions"] = added
 	}
-	return &pluginUpdate{core: c, id: id, name: m.Name, from: rec.Version, cand: cand, preview: preview,
+	return &pluginUpdate{core: c, id: id, name: m.Name, from: rec.Version, cand: cand, preview: preview, pinnedKey: rec.PublisherKey, old: old,
 		summary: "Update " + m.Name + " to " + m.Version}, nil, nil
 }
 
 // apply installs the approved release, keeping the replaced version for rollback.
 func (c *Core) applyPluginUpdate(u *pluginUpdate) error {
 	id, m, cand := u.id, u.cand.Manifest, u.cand
+	c.mkt.applyMu.Lock()
+	defer c.mkt.applyMu.Unlock()
+	// The user approved going from u.from to this version. If the plugin is no longer at u.from (another
+	// approval, a rollback or a reinstall got there first), or this is not newer than what is installed, the
+	// approval is stale: applying it would install an older release over a newer one and make the rollback
+	// target wrong.
+	if rec := c.record(id); rec == nil || rec.Version != u.from || !update.Newer(m.Version, rec.Version) {
+		return fmt.Errorf("%s changed since you were asked; nothing was done", u.name)
+	}
 	c.Runner.Stop(id)
 	if err := c.Store.Commit(cand, u.from); err != nil { // keep the old version for rollback
 		return err
@@ -435,6 +710,9 @@ func (c *Core) requestUpdates(ctx context.Context, ids []string, explicit map[st
 		ids = kept
 	}
 	res, err := c.submitUpdates(ctx, ids)
+	if err == nil && res["approval_id"] != nil {
+		c.cancelPendingAll() // the plugin update asked for now replaces a waiting "update everything" (one slot)
+	}
 	if old == nil {
 		if err == nil {
 			c.rememberUpdate(res)
@@ -457,9 +735,9 @@ func (c *Core) requestUpdates(ctx context.Context, ids []string, explicit map[st
 	return res, nil
 }
 
-// submitUpdates prepares the updates of ids and submits one approval for those that have one.
-func (c *Core) submitUpdates(ctx context.Context, ids []string) (map[string]any, error) {
-	var ready []*pluginUpdate
+// prepareUpdates downloads and verifies the newest release of each of ids. The plugins with an update are
+// returned (staged); out reports the ones that are up to date or could not be checked.
+func (c *Core) prepareUpdates(ctx context.Context, ids []string) (ready []*pluginUpdate, out map[string]any) {
 	var upToDate []string
 	failed := map[string]string{}
 	seen := map[string]bool{}
@@ -478,13 +756,36 @@ func (c *Core) submitUpdates(ctx context.Context, ids []string) (map[string]any,
 			ready = append(ready, u)
 		}
 	}
-	out := map[string]any{}
+	out = map[string]any{}
 	if len(upToDate) > 0 {
 		out["up_to_date"] = upToDate
 	}
 	if len(failed) > 0 {
 		out["failed"] = failed
 	}
+	return ready, out
+}
+
+// runPluginUpdates applies the chosen plugin updates one by one; a failure of one does not stop the others.
+func runPluginUpdates(chosen []string, byID map[string]*pluginUpdate) (updated []map[string]any, errs map[string]string) {
+	errs = map[string]string{}
+	for _, id := range chosen {
+		u := byID[id]
+		if u == nil {
+			continue
+		}
+		if err := u.apply(); err != nil {
+			errs[id] = err.Error()
+			continue
+		}
+		updated = append(updated, map[string]any{"plugin": id, "version": u.cand.Manifest.Version})
+	}
+	return updated, errs
+}
+
+// submitUpdates prepares the updates of ids and submits one approval for those that have one.
+func (c *Core) submitUpdates(ctx context.Context, ids []string) (map[string]any, error) {
+	ready, out := c.prepareUpdates(ctx, ids)
 	switch len(ready) {
 	case 0:
 		out["status"] = "nothing_to_update"
@@ -528,20 +829,8 @@ func (c *Core) submitUpdates(ctx context.Context, ids []string) (map[string]any,
 		Options: []approvals.Option{{Key: "install", Label: "Update"}}, Items: items,
 		Execute: func(_ context.Context, option string) (any, error) {
 			defer unstageAll()
-			chosen := strings.Split(strings.TrimPrefix(option, approvals.ItemsPrefix), ",")
-			var updated []map[string]any
-			errs := map[string]string{}
-			for _, id := range chosen {
-				u := byID[id]
-				if u == nil {
-					continue
-				}
-				if err := u.apply(); err != nil {
-					errs[id] = err.Error()
-					continue
-				}
-				updated = append(updated, map[string]any{"plugin": id, "version": u.cand.Manifest.Version})
-			}
+			_, chosen := approvals.SplitOption(option)
+			updated, errs := runPluginUpdates(chosen, byID)
 			result := map[string]any{"updated": updated}
 			if len(errs) > 0 {
 				result["failed"] = errs
@@ -626,12 +915,126 @@ func (c *Core) updateAvailable(ctx context.Context, id string) (bool, error) {
 	return ok && update.Newer(v.Version, rec.Version), nil
 }
 
-// RequestPluginRollback asks to switch a plugin back to the version it replaced. Doing it again switches
-// forward again. Settings, secrets and state stay.
-func (c *Core) RequestPluginRollback(ctx context.Context, id string) (map[string]any, error) {
+// pluginOp is one plugin's part of a remove or rollback request: how it reads on the approval screen and
+// what approving it does.
+type pluginOp struct {
+	id      string
+	label   string         // the item's title in a batch
+	summary string         // the approval's title when this is the only one
+	preview map[string]any // what the user sees for it
+	run     func() (map[string]any, error)
+}
+
+// opRequest describes a kind of request that may cover several plugins.
+type opRequest struct {
+	kind     string
+	option   approvals.Option
+	prepare  func(id string) (*pluginOp, error)
+	doneKey  string // the list of what was done in a batch's result
+	nothing  string // status when no plugin can be handled
+	noneDone string // the error when every ticked plugin failed
+	note     string // the batch's own line on the approval screen
+}
+
+// requestOps asks for one approval for the plugins in ids: an ordinary approval for one, a batch with an
+// item per plugin for several (the user can untick any; a plugin that can't be handled is reported under
+// "failed" and does not hold back the others).
+func (c *Core) requestOps(ctx context.Context, ids []string, r opRequest) (map[string]any, error) {
 	if c.State() != Unlocked {
 		return nil, errors.New("Rubi is locked")
 	}
+	ids, err := cleanList(ids, "plugin")
+	if err != nil {
+		return nil, err
+	}
+	var ops []*pluginOp
+	failed := map[string]string{}
+	for _, id := range ids {
+		op, err := r.prepare(id)
+		if err != nil {
+			if len(ids) == 1 {
+				return nil, err
+			}
+			failed[id] = err.Error()
+			continue
+		}
+		ops = append(ops, op)
+	}
+	if len(ops) == 0 {
+		return map[string]any{"status": r.nothing, "failed": failed}, nil
+	}
+	var res map[string]any
+	if len(ops) == 1 {
+		op := ops[0]
+		res, err = c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: r.kind, Summary: op.summary,
+			Preview: op.preview, Options: []approvals.Option{r.option},
+			Execute: func(context.Context, string) (any, error) { return op.run() }})
+	} else {
+		items := make([]approvals.Item, len(ops))
+		byID := map[string]*pluginOp{}
+		for i, op := range ops {
+			items[i] = approvals.Item{Key: op.id, Label: op.label, Preview: op.preview}
+			byID[op.id] = op
+		}
+		res, err = c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: r.kind,
+			Summary: fmt.Sprintf("%s %d plugins", r.option.Label, len(ops)),
+			Preview: map[string]any{"plugins": len(ops), "note": r.note},
+			Options: []approvals.Option{r.option}, Items: items,
+			Execute: func(_ context.Context, option string) (any, error) {
+				_, chosen := approvals.SplitOption(option)
+				var done []map[string]any
+				errs := map[string]string{}
+				for _, id := range chosen {
+					op := byID[id]
+					if op == nil {
+						continue
+					}
+					out, err := op.run()
+					if err != nil {
+						errs[id] = err.Error()
+						continue
+					}
+					done = append(done, out)
+				}
+				result := map[string]any{r.doneKey: done}
+				if len(errs) > 0 {
+					result["failed"] = errs
+				}
+				if len(done) == 0 {
+					return result, errors.New(r.noneDone)
+				}
+				return result, nil
+			}})
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(failed) > 0 {
+		res["failed"] = failed
+	}
+	got := make([]string, len(ops))
+	for i, op := range ops {
+		got[i] = op.id
+	}
+	res["plugins"] = got
+	return res, nil
+}
+
+// RequestPluginRollback asks to switch a plugin back to the version it replaced. Doing it again switches
+// forward again. Settings, secrets and state stay.
+func (c *Core) RequestPluginRollback(ctx context.Context, id string) (map[string]any, error) {
+	return c.RequestPluginRollbacks(ctx, []string{id})
+}
+
+// RequestPluginRollbacks switches several plugins back with one approval (for example after one update of
+// everything broke more than one), an item each.
+func (c *Core) RequestPluginRollbacks(ctx context.Context, ids []string) (map[string]any, error) {
+	return c.requestOps(ctx, ids, opRequest{kind: "rubi.plugin.rollback", option: approvals.Option{Key: "rollback", Label: "Roll back"},
+		prepare: c.prepareRollback, doneKey: "rolled_back", nothing: "nothing_to_roll_back", noneDone: "no plugin could be rolled back",
+		note: "Settings, passwords and state stay. Uncheck any you'd rather keep as it is."})
+}
+
+func (c *Core) prepareRollback(id string) (*pluginOp, error) {
 	rec := c.record(id)
 	m, _ := c.Store.Get(id)
 	if rec == nil {
@@ -644,12 +1047,11 @@ func (c *Core) RequestPluginRollback(ctx context.Context, id string) (map[string
 	if err := c.Store.Verify(id, prev.Version, prev.Tree); err != nil {
 		return nil, fmt.Errorf("can't roll back: %w", err)
 	}
-	preview := map[string]any{"plugin": m.Name, "current": rec.Version, "back_to": prev.Version,
-		"effect": "Settings, passwords and state stay. You can switch forward again the same way."}
-	return c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: "rubi.plugin.rollback",
-		Summary: "Roll " + m.Name + " back to " + prev.Version, Preview: preview,
-		Options: []approvals.Option{{Key: "rollback", Label: "Roll back"}},
-		Execute: func(context.Context, string) (any, error) {
+	return &pluginOp{id: id, label: m.Name + " " + rec.Version + " → " + prev.Version,
+		summary: "Roll " + m.Name + " back to " + prev.Version,
+		preview: map[string]any{"plugin": m.Name, "current": rec.Version, "back_to": prev.Version,
+			"effect": "Settings, passwords and state stay. You can switch forward again the same way."},
+		run: func() (map[string]any, error) {
 			c.Runner.Stop(id)
 			if err := c.Store.Verify(id, prev.Version, prev.Tree); err != nil {
 				c.startInstalled(id, rec.Version, rec.Tree)
@@ -677,14 +1079,22 @@ func (c *Core) RequestPluginRollback(ctx context.Context, id string) (map[string
 			c.toolsChanged()
 			c.startInstalled(id, prev.Version, prev.Tree)
 			return map[string]any{"plugin": id, "version": prev.Version, "previous": rec.Version}, nil
-		}})
+		}}, nil
 }
 
 // RequestPluginRemove asks to uninstall a plugin and erase everything it stored.
 func (c *Core) RequestPluginRemove(ctx context.Context, id string) (map[string]any, error) {
-	if c.State() != Unlocked {
-		return nil, errors.New("Rubi is locked")
-	}
+	return c.RequestPluginRemoves(ctx, []string{id})
+}
+
+// RequestPluginRemoves uninstalls several plugins with one approval, an item each.
+func (c *Core) RequestPluginRemoves(ctx context.Context, ids []string) (map[string]any, error) {
+	return c.requestOps(ctx, ids, opRequest{kind: "rubi.plugin.remove", option: approvals.Option{Key: "remove", Label: "Remove"},
+		prepare: c.prepareRemove, doneKey: "removed", nothing: "nothing_to_remove", noneDone: "no plugin could be removed",
+		note: "Each is stopped and deleted, with its stored passwords, settings and state. Uncheck any you'd rather keep."})
+}
+
+func (c *Core) prepareRemove(id string) (*pluginOp, error) {
 	m, ok := c.Store.Get(id)
 	rec := c.record(id)
 	if !ok && rec == nil {
@@ -694,10 +1104,9 @@ func (c *Core) RequestPluginRemove(ctx context.Context, id string) (map[string]a
 	if name == "" {
 		name = id
 	}
-	preview := map[string]any{"plugin": name, "effect": "Stops it and deletes it, with its stored passwords, settings and state."}
-	return c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: "rubi.plugin.remove",
-		Summary: "Remove " + name, Preview: preview, Options: []approvals.Option{{Key: "remove", Label: "Remove"}},
-		Execute: func(context.Context, string) (any, error) {
+	return &pluginOp{id: id, label: name, summary: "Remove " + name,
+		preview: map[string]any{"plugin": name, "effect": "Stops it and deletes it, with its stored passwords, settings and state."},
+		run: func() (map[string]any, error) {
 			c.Runner.Stop(id)
 			if err := c.Vault.Update(func(d *vault.Data) error {
 				delete(d.Plugins, id)
@@ -719,7 +1128,7 @@ func (c *Core) RequestPluginRemove(ctx context.Context, id string) (map[string]a
 				return nil, err
 			}
 			return map[string]any{"removed": id}, nil
-		}})
+		}}, nil
 }
 
 // submitPluginChange wraps an install or update in a strong approval and cleans up if it isn't approved.
@@ -734,10 +1143,7 @@ func (c *Core) submitPluginChange(ctx context.Context, cand *plugins.Candidate, 
 	options := []approvals.Option{{Key: "install", Label: "Update"}}
 	question := ""
 	if kind == "rubi.plugin.install" {
-		// The user picks, and signs, whether the agent hears about this plugin's updates.
-		question = "Tell your agent when new versions come out?"
-		options = []approvals.Option{{Key: "install_quiet", Label: "Install", Meaning: "updates wait on the Updates page"},
-			{Key: "install", Label: "Install and notify about updates", Meaning: "your agent tells you about new versions"}}
+		question, options = installOptions()
 	}
 	res, err := c.Approvals.Submit(ctx, approvals.Request{Integration: "rubi", Kind: kind, Summary: summary,
 		Question: question, Preview: preview, Options: options,
@@ -769,6 +1175,17 @@ func (c *Core) startInstalled(id, ver, tree string) {
 	}
 }
 
+// stage marks a downloaded release as waiting, so that the next download's cleanup of old staging
+// directories (several plugins in one request) leaves it alone.
+func (c *Core) stage(dir string) {
+	c.mkt.mu.Lock()
+	if c.mkt.staged == nil {
+		c.mkt.staged = map[string]bool{}
+	}
+	c.mkt.staged[dir] = true
+	c.mkt.mu.Unlock()
+}
+
 func (c *Core) unstage(dir string) {
 	c.mkt.mu.Lock()
 	delete(c.mkt.staged, dir)
@@ -776,8 +1193,22 @@ func (c *Core) unstage(dir string) {
 	_ = os.RemoveAll(dir)
 }
 
+// stagingGrace is how long past its expiry a staged download is kept when its approval has not been seen to end.
+const stagingGrace = time.Hour
+
+// stagingDeadline is the latest a staged download is kept for an approval: its expiry plus a grace, so a download
+// lives at least as long as the approval can be pending (the 15 minutes of the engine, whatever it is set to).
+func stagingDeadline(s approvals.Snapshot) time.Time { return s.ExpiresAt.Add(stagingGrace) }
+
+// cleanupWhenDone deletes a staged download once its approval has ended (approved, denied, expired, cancelled).
+// It does not stop earlier on a clock of its own: an approval that is being executed keeps its files.
 func (c *Core) cleanupWhenDone(approvalID, dir string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	snap, err := c.Approvals.Get(approvalID)
+	if err != nil {
+		c.unstage(dir)
+		return
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), stagingDeadline(snap))
 	defer cancel()
 	for ctx.Err() == nil {
 		snap, err := c.Approvals.Wait(ctx, approvalID, 25*time.Second)
@@ -797,14 +1228,17 @@ func (c *Core) fetchReviewed(ctx context.Context, e *plugins.CatalogEntry) (*plu
 	if err != nil {
 		return nil, err
 	}
+	c.mkt.dlMu.Lock()
+	defer c.mkt.dlMu.Unlock()
 	c.cleanStaging()
 	cand, err := plugins.Download(ctx, base, c.Store.Staging(), plugins.Expect{ID: e.ID, PublisherKey: e.Publisher.Key,
 		SumsSHA256: v.SumsSHA256})
 	if err != nil {
 		return nil, err
 	}
+	c.stage(cand.Dir) // before anything else can clean the folder
 	if cand.Manifest.Version != v.Version {
-		os.RemoveAll(cand.Dir)
+		c.unstage(cand.Dir)
 		return nil, errors.New("the release doesn't match the reviewed version")
 	}
 	cand.Reviewed, cand.Source = true, plugins.NormalizeSource(e.Source)
@@ -832,13 +1266,16 @@ func (c *Core) fetchSideload(ctx context.Context, source, key string, cat *plugi
 	if err != nil {
 		return nil, err
 	}
+	c.mkt.dlMu.Lock()
+	defer c.mkt.dlMu.Unlock()
 	c.cleanStaging()
 	cand, err := plugins.Download(ctx, base, c.Store.Staging(), plugins.Expect{ID: m.ID, PublisherKey: key})
 	if err != nil {
 		return nil, err
 	}
+	c.stage(cand.Dir)                       // before anything else can clean the folder
 	if cand.Manifest.Version != m.Version { // the pinned release must be the version it said it was
-		os.RemoveAll(cand.Dir)
+		c.unstage(cand.Dir)
 		return nil, errors.New("the source served a different version than it announced; refusing to install")
 	}
 	cand.Reviewed, cand.Source = false, source
@@ -979,6 +1416,27 @@ func newPermissions(old, m plugins.Manifest) string {
 	for _, e := range m.Events {
 		if !has(oldEvents, e.Type) {
 			added = append(added, "can notify about "+e.Type)
+		}
+	}
+	for _, h := range m.Home {
+		if !has(old.Home, h) {
+			if n, ok := homeCapabilities[h]; ok {
+				added = append(added, "uses Rubi Home for "+n)
+			} else {
+				added = append(added, "uses Rubi Home for "+h)
+			}
+		}
+	}
+	if m.Hooks && !old.Hooks {
+		added = append(added, "can give private web addresses that reach it")
+	}
+	oldTools := map[string]bool{}
+	for _, t := range old.Tools {
+		oldTools[t.Name] = true
+	}
+	for _, t := range m.Tools {
+		if !oldTools[t.Name] {
+			added = append(added, "new tool "+t.Name)
 		}
 	}
 	if old.Publisher.Key != "" && old.Publisher.Key != m.Publisher.Key {

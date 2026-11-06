@@ -1,0 +1,66 @@
+name: t3-bump
+
+# Looks for a newer T3 Code nightly once a week (and when asked), moves the pin in t3/upstream.json to it, runs the contract
+# tests against an install of it, and opens a pull request with the report. It never merges anything: a person reads the
+# report (the input-schema changes of the tools Rubi uses, the contract result), runs the live tests on a computer with the
+# container tool, and merges or closes the pull request.
+#
+# A pull request opened with the workflow's token does not start the `ci` workflow by itself; push an empty commit to the
+# branch (or close and reopen the pull request) to run it before merging.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: t3-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Every platform t3bump keeps up (linux, macOS on Apple silicon, Windows) needs a T3 sum in t3/upstream.json and a Node sum
+      # there too (the bump moves T3 only), and Rubi Home has to know how to install it; the bump itself refuses to go on
+      # without the Node sums (t3bump.CheckNode). These tests fail first if a platform is added in one place only.
+      - name: Check that the pins cover every platform
+        run: go test ./internal/t3bump ./t3 && go test ./internal/home -run "T3PlatformsAndWhatTheyNeed|InstallOnWindows|UnpackZip"
+      - name: Find the newest nightly, install it, run the contract tests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: go run ./cmd/t3-bump -report "$RUNNER_TEMP/t3-bump-report.md"
+      - name: Open a pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet -- t3/upstream.json; then
+            echo "The pin is at the newest nightly; nothing to open."
+            exit 0
+          fi
+          version="$(sed -n 's/.*"tag": "\(.*\)".*/\1/p' t3/upstream.json | head -n 1)"
+          branch="t3-bump/${version}"
+          if gh pr list --head "$branch" --state open --json number --jq '.[0].number' | grep -q .; then
+            echo "A pull request for ${version} is already open."
+            exit 0
+          fi
+          git config user.name "rubi-t3-bump"
+          git config user.email "t3-bump@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add t3/upstream.json
+          git commit -m "chore(t3): move the T3 pin to ${version}"
+          git push origin "$branch"
+          gh pr create --base "${GITHUB_REF_NAME}" --head "$branch" \
+            --title "chore(t3): move the T3 pin to ${version}" --body-file "$RUNNER_TEMP/t3-bump-report.md"

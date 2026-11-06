@@ -460,6 +460,13 @@ func (h *Host) HomeCall(ctx context.Context, device, op string, args, out any) e
 	return json.Unmarshal(res.Result, out)
 }
 
+// LibraryGet reads an admitted version of a skill in Rubi's shared skill library (version 0 = the latest admitted
+// one): its content, signature, hash and metadata, decoded into out. Read-only; the manifest must declare the
+// claude-agent Rubi Home capability, and Rubi must be unlocked.
+func (h *Host) LibraryGet(ctx context.Context, id string, version int, out any) error {
+	return h.conn.Call(ctx, "library.get", map[string]any{"id": id, "version": version}, out)
+}
+
 // SetSecretFor replaces a Renewable secret of one account ("" = the default account), e.g. a login
 // session the service renewed. Secrets the user entered can't be changed this way.
 func (h *Host) SetSecretFor(account, key, value string) error {

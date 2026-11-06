@@ -31,11 +31,13 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p panel/releases
-          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=20" \
-            --jq '[.[] | select(.draft == false)] | sort_by(.published_at) | last
-                  | {version: .tag_name, published_at: .published_at, notes_url: .html_url}' \
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=20" | jq -f deploy/pages/latest.jq \
             > panel/releases/latest.json
           cat panel/releases/latest.json
+      - name: Instructions for the Bot
+        # The install message the user sends their Bot names rubi-panel.com/install.md, so the user never sees a
+        # shell line (project rule 2): the Bot reads how to install and use Rubi there. It is the Bot skill itself.
+        run: cp skills/grok-bot/rubi-project/SKILL.md panel/install.md
       - name: Plugin catalog
         # rubi-panel.com/marketplace/catalog.json lists the reviewed plugins. Rubi trusts it only with a valid
         # signature from the release key, so it is signed here, from the reviewed file in the repository.
@@ -48,12 +50,19 @@ jobs:
           mkdir -p panel/marketplace
           cp marketplace/catalog.json panel/marketplace/catalog.json
           umask 077
+          trap 'rm -f "$RUNNER_TEMP/key.pem"' EXIT
           printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/key.pem"
           openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in panel/marketplace/catalog.json \
             -out panel/marketplace/catalog.json.sig
+          # The release feed is signed too (raw Ed25519 over the exact bytes of latest.json): installers and
+          # updaters take the version only from verified bytes (the release-version rule, docs/design/rubi-home.md).
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in panel/releases/latest.json \
+            -out panel/releases/latest.json.sig
           rm -f "$RUNNER_TEMP/key.pem"
           openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in panel/marketplace/catalog.json \
             -sigfile panel/marketplace/catalog.json.sig
+          openssl pkeyutl -verify -pubin -inkey release-key.pub.pem -rawin -in panel/releases/latest.json \
+            -sigfile panel/releases/latest.json.sig
       - name: Version the panel's files
         # Browsers may keep rubi-panel.com files for hours; versioned URLs make a new release load at once.
         run: python3 deploy/pages/version-assets.py panel "${GITHUB_SHA::12}"

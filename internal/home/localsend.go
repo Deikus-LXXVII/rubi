@@ -14,7 +14,7 @@ package home
 // The socket line (JSON, stamped like every hook line) and the answer:
 //
 //	client -> helper   {"hook_event_name":"RubiSend","op":"send","target_session_id":"..." | "target_name":"...",
-//	                    "from":"Citri","text":"..."}
+//	                    "from":"bot-a","text":"..."}
 //	helper -> client   {"ok":true,"queued":true,"id":"cm_...","session_id":"...","session_state":"idle","waiter":true,"waiting":1}
 //	                   or {"error":"..."}                                  (an older helper answers {})
 //	client -> helper   {"hook_event_name":"RubiSend","op":"get_reply","message_id":"cm_...","wait_seconds":20}
@@ -42,6 +42,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 const (
@@ -62,7 +64,7 @@ var (
 )
 
 // errSendHelperTooOld is the client's error when the helper doesn't know the RubiSend line.
-var errSendHelperTooOld = errors.New("Rubi Home is too old for claude-send (or speaks another hook protocol): update it with the installer, restart it, and run `" + InstallHookCommand + "`")
+var errSendHelperTooOld = errors.New("Rubi Home is too old for claude-send (or speaks another hook protocol): update Rubi Home, and then " + UpdateHookHint)
 
 func isLocalSender(s string) bool {
 	return len(s) >= len(localPrefix) && strings.EqualFold(s[:len(localPrefix)], localPrefix)
@@ -328,7 +330,7 @@ func callSend(sock string, req map[string]any, timeout time.Duration) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	conn, err := fsx.DialLocal(sock, 2*time.Second)
 	if err != nil {
 		return nil, errors.New("Rubi Home isn't running on this computer (its socket doesn't answer)")
 	}

@@ -57,7 +57,7 @@ type Envelope struct {
 
 // sensitiveOps carry the vault key or service passwords; they must be sealed to this process's session
 // key too, so a leaked identity.json and recorded relay traffic can't reveal them later.
-var sensitiveOps = map[string]bool{"pair": true, "unlock": true, "integration.setup": true}
+var sensitiveOps = map[string]bool{"pair": true, "unlock": true, "integration.setup": true, "device.pair": true}
 
 // Sensitive reports whether op must be sealed with forward secrecy (see sensitiveOps).
 func Sensitive(op string) bool { return sensitiveOps[op] }
@@ -291,7 +291,7 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 			return nil, errViewOnly
 		}
 		return s.updates(ctx, env)
-	case "updates.list", "updates.rubi", "updates.plugin":
+	case "updates.list", "updates.rubi", "updates.plugin", "updates.all":
 		// The panel shows the Updates button on every screen, so any valid link may use it. Listing and
 		// notification switches are harmless; installing an update still needs a strong approval.
 		return s.updates(ctx, env)
@@ -327,8 +327,9 @@ func (s *Server) dispatch(ctx context.Context, env Envelope) (any, error) {
 		"store.list", "plugin.install", "plugin.update", "plugin.remove", "plugin.rollback",
 		"agents.get", "agent.add", "agent.remove", "agent.default", "agent.subscribe",
 		"plugin.config.get", "plugin.config.set",
-		"devices.get", "device.pair", "device.remove", "device.check", "account.agents", "watch.set", "plugin.panel",
-		"approval.list", "approval.open":
+		"devices.get", "device.fs.list", "device.pair", "device.remove", "device.check", "device.hook.install", "device.hue.forget", "transport.get", "transport.set", "account.agents", "watch.set", "plugin.panel",
+		"approval.list", "approval.open",
+		"library.list", "library.entry", "library.version", "library.queue", "library.curator.set", "library.withdraw":
 		return s.settings(ctx, purpose, env)
 	}
 	return nil, fmt.Errorf("unknown operation %q", env.Op)
@@ -699,6 +700,15 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	if (env.Op == "approval.list" || env.Op == "approval.open") && purpose != "settings" {
 		return nil, errViewOnly
 	}
+	// The library holds text Bots wrote; like a plugin's page it opens only from a settings link.
+	if strings.HasPrefix(env.Op, "library.") && purpose != "settings" {
+		return nil, errViewOnly
+	}
+	// The folder browser shows the names of the user's folders: only a full settings link, never a forwarded
+	// approval, setup or view-only link.
+	if env.Op == "device.fs.list" && purpose != "settings" {
+		return nil, errViewOnly
+	}
 	if purpose != "settings" && purpose != settingsView && !strings.HasPrefix(purpose, "setup:") && !strings.HasPrefix(purpose, "agent:") {
 		return nil, errors.New("this link can't change settings; ask your agent for a settings link")
 	}
@@ -707,6 +717,8 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	}
 	var args struct {
 		ID      string            `json:"id"`
+		IDs     []string          `json:"ids"`     // plugin.remove, plugin.rollback: several plugins, one approval
+		Plugins []string          `json:"plugins"` // plugin.install: several plugins, one approval
 		Plugin  string            `json:"plugin"`
 		Fields  map[string]string `json:"fields"`
 		Secrets map[string]string `json:"secrets"`
@@ -722,9 +734,19 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		Values  map[string]any    `json:"values"`
 		Account string            `json:"account"`
 		Code    string            `json:"code"`
+		Pin     string            `json:"pin"`
+		Bridge  string            `json:"bridge"`
+		Path    string            `json:"path"`
+		Choice  string            `json:"choice"`
 		// ApprovalID is for approval.open.
 		ApprovalID string `json:"approval_id"`
 		Wait       bool   `json:"wait"`
+		// Query, Tag and Version are for the library.* ops.
+		Query   string `json:"query"`
+		Tag     string `json:"tag"`
+		Version int    `json:"version"`
+		// Skills: library.withdraw for several skills, one approval.
+		Skills []core.LibraryRef `json:"skills"`
 	}
 	if len(env.Args) > 0 {
 		if err := json.Unmarshal(env.Args, &args); err != nil {
@@ -767,13 +789,13 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		var res map[string]any
 		switch env.Op {
 		case "plugin.install":
-			res, err = s.core.RequestPluginInstall(ctx, args.Plugin)
+			res, err = s.core.RequestPluginInstalls(ctx, append(append([]string{}, args.Plugins...), args.Plugin))
 		case "plugin.update":
 			res, err = s.core.RequestPluginUpdate(ctx, args.ID)
 		case "plugin.rollback":
-			res, err = s.core.RequestPluginRollback(ctx, args.ID)
+			res, err = s.core.RequestPluginRollbacks(ctx, append(append([]string{}, args.IDs...), args.ID))
 		default:
-			res, err = s.core.RequestPluginRemove(ctx, args.ID)
+			res, err = s.core.RequestPluginRemoves(ctx, append(append([]string{}, args.IDs...), args.ID))
 		}
 		if err != nil {
 			return nil, err
@@ -781,6 +803,38 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		id, ok := res["approval_id"].(string)
 		if !ok {
 			return res, nil // e.g. already up to date
+		}
+		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
+	case "library.list":
+		return s.core.LibraryPanelList(args.Query, args.Tag)
+	case "library.entry":
+		return s.core.LibraryPanelEntry(args.ID)
+	case "library.version":
+		return s.core.LibraryPanelVersion(args.ID, args.Version)
+	case "library.queue":
+		return s.core.LibraryPanelQueue()
+	case "library.withdraw":
+		refs := append([]core.LibraryRef{}, args.Skills...)
+		if args.ID != "" || len(refs) == 0 { // the single form of older panels
+			refs = append(refs, core.LibraryRef{ID: args.ID, Version: args.Version})
+		}
+		res, err := s.core.RequestLibraryWithdraws(ctx, refs)
+		if err != nil {
+			return nil, err
+		}
+		id, ok := res["approval_id"].(string)
+		if !ok {
+			return res, nil
+		}
+		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
+	case "library.curator.set":
+		res, err := s.core.RequestLibraryCurator(ctx, args.Name)
+		if err != nil {
+			return nil, err
+		}
+		id, ok := res["approval_id"].(string)
+		if !ok {
+			return res, nil
 		}
 		return map[string]any{"approval_id": id, "ticket": s.core.MintTicket("approve:" + id)}, nil
 	case "policy.get":
@@ -821,8 +875,18 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		return map[string]any{"devices": s.core.Devices()}, nil
 	case "device.check":
 		return s.core.CheckDevice(ctx, args.ID)
+	case "device.fs.list":
+		return s.core.ListDeviceFolders(ctx, args.ID, args.Path)
 	case "device.pair":
-		approvalID, err = s.core.PairDevice(ctx, args.Code)
+		approvalID, err = s.core.PairDevice(ctx, args.Code, args.Pin)
+	case "device.hook.install":
+		approvalID, err = s.core.InstallHookOnDevice(ctx, args.ID)
+	case "transport.get":
+		return s.core.TransportSettings(), nil
+	case "transport.set":
+		approvalID, err = s.core.ChooseTransport(ctx, args.Choice)
+	case "device.hue.forget":
+		approvalID, err = s.core.ForgetHueBridge(ctx, args.ID, args.Bridge)
 	case "device.remove":
 		approvalID, err = s.core.RemoveDevice(ctx, args.ID)
 	case "plugin.config.set":
@@ -923,6 +987,8 @@ func (s *Server) updates(ctx context.Context, env Envelope) (any, error) {
 		return map[string]any{"id": args.ID, "notify": args.Notify}, nil
 	case "updates.rubi":
 		res, err = s.core.RequestUpdate(ctx)
+	case "updates.all": // Rubi and the plugins, one approval
+		res, err = s.core.RequestUpdateAll(ctx)
 	default:
 		res, err = s.core.RequestPluginUpdate(ctx, args.ID)
 	}

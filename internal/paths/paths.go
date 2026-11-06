@@ -88,6 +88,9 @@ func (l Layout) Audit() string     { return filepath.Join(l.Home, "audit.log") }
 func (l Layout) Plugins() string   { return filepath.Join(l.Home, "plugins") }
 func (l Layout) Logs() string      { return filepath.Join(l.Home, "logs") }
 
+// Library holds the shared skill library, one sealed file per entry (internal/library).
+func (l Layout) Library() string { return filepath.Join(l.Home, "library") }
+
 // OpenLog opens a log file for appending (0600). Logs are plain text on disk, so they are kept small:
 // past maxLog the file is moved to <name>.1 (one old file is kept) and a new one begins.
 func OpenLog(path string) (*os.File, error) {

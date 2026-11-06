@@ -36,6 +36,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 )
 
 const (
@@ -334,7 +336,7 @@ func RunClaudeWait(in io.Reader, stderr io.Writer, sock string, limit time.Durat
 	if json.NewEncoder(&line).Encode(m) != nil {
 		return 0
 	}
-	conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+	conn, err := fsx.DialLocal(sock, 2*time.Second)
 	if err != nil {
 		return 0
 	}

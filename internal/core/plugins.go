@@ -429,6 +429,12 @@ func (c *Core) pluginHandler(id string) rubiplugin.Handler {
 				return nil, err
 			}
 			return map[string]any{"result": out}, nil
+		case "library.get":
+			out, err := c.libraryHostGet(ctx, m.Home, params)
+			if err != nil {
+				return nil, err
+			}
+			return out, nil
 		case "hook.url":
 			if !m.Hooks {
 				return nil, errors.New("the manifest doesn't declare hooks")
@@ -589,6 +595,7 @@ func (c *Core) pluginSubmit(ctx context.Context, m plugins.Manifest, params json
 	req := approvals.Request{Integration: id, Kind: kind, Summary: in.Summary, Question: in.Question,
 		Preview: preview, Options: options, Items: items,
 		Execute: func(ctx context.Context, option string) (any, error) {
+			defer c.beginExec(id, kind, payload)()
 			var raw json.RawMessage
 			err := c.Runner.Call(ctx, id, "execute", rubiplugin.ExecuteParams{Kind: kind, Option: option, Payload: payload}, &raw)
 			if err != nil {

@@ -9,13 +9,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
@@ -93,7 +93,7 @@ func RunClaudeMCP(ctx context.Context, sock string) error {
 }
 
 // ErrHelperTooOld is the tools' error for a helper that doesn't know RubiTool lines.
-var ErrHelperTooOld = errors.New("the Rubi Home running on this computer is too old (or newer than this plugin) for the sister tools: update it with the installer, restart it, and run `~/.rubi-home/bin/rubi-home install-hook`")
+var ErrHelperTooOld = errors.New("the Rubi Home running on this computer is too old (or newer than this plugin) for the sister tools: update Rubi Home and then the hook in the Rubi panel (Settings, Home)")
 
 // callTool sends one tool call to the helper and returns its result.
 func callTool(ctx context.Context, cfg ToolsConfig, tool string, args map[string]any) (map[string]any, error) {
@@ -119,8 +119,9 @@ func callTool(ctx context.Context, cfg ToolsConfig, tool string, args map[string
 	if wait <= 0 {
 		wait = claudeToolDeadline + 3*time.Second
 	}
-	d := net.Dialer{Timeout: 2 * time.Second}
-	conn, err := d.DialContext(ctx, "unix", cfg.Sock)
+	dctx, cancelDial := context.WithTimeout(ctx, 2*time.Second)
+	conn, err := fsx.DialLocalContext(dctx, cfg.Sock)
+	cancelDial()
 	if err != nil {
 		return nil, errors.New("Rubi Home isn't running on this computer, so the sister tools can't work")
 	}

@@ -1,0 +1,392 @@
+# Claude through the Agent SDK: runner, Rubi Home and plugin contract
+
+> **Superseded (T3 Agents, S5).** The runner path described here no longer starts or continues sessions: it needed a
+> long-lived subscription token that Rubi Home stored and an auth gateway that added it to requests, and both are gone.
+> Sessions run in T3 (the `t3agents` plugin, `t3-agent.*` ops), where **the user signs in with the unmodified Claude Code
+> CLI (`claude auth login`) and Rubi never stores, reads or proxies the subscription credential**: claude keeps it in its own
+> sign-in folder, Rubi Home only checks that the file is there. `claude-agent.start`, `send`, `fork` and `mode` answer a plain
+> message that points to the T3 Agents plugin; `projects`, `sessions`, `messages`, `status`, `next`, `decide`, `rename`,
+> `interrupt`, `close`, `role.*` and `ssh.*` still work. The gateway, `rubi-claude-token`, the token store and the runner's
+> OAuth-token variable are removed; service 2 of the netpipe is reserved and refused. The sections below are kept as the
+> record of the runner contract (roles and SSH are shared with T3); where they speak of the gateway or the token they are
+> history. See docs/plans/t3-integration.md (S5).
+
+
+Status: working contract for milestones M1-M6. Background and reasons: the Agent SDK design notes (v2) and
+the M0 spike (`spike/agent-sdk/README.md` on the M0 spike branch).
+Everything here runs only on the user's Mac; Rubi core never starts a runner and never talks to Anthropic.
+
+## Pieces
+
+```
+plugin claude-code v0.4 (in Rubi)  --Home ops (relay, E2E)-->  Rubi Home (Mac, user)  --stdio JSON-RPC-->  runner (TS, Agent SDK)
+  approvals, pt_/md_, sisters,                                  supervisor (VM iface),                     one query per session,
+  always-ask, modes, panel pages                                slot, disk queue, proxy,                   PreToolUse -> perm.ask
+                                                                git credential helper
+```
+
+- **runner/** (TypeScript, `@anthropic-ai/claude-agent-sdk`): one process per project VM. Talks newline-delimited
+  JSON-RPC 2.0 on stdin/stdout. No network at all (the VM runs with `--network none`): its only way out is the proxy and
+  the auth gateway on its own loopback, which are streams to Rubi Home ("No network: rubi-netpipe", below).
+- **internal/home/agent/** (Go): supervisor behind `VM` interface (`AppleContainer` real impl, `Fake` impl for
+  tests), runner client, session slots (per project and total), disk queue, allow-list proxy, git credential helper, `run_token`.
+- **plugin claude-code v0.4**: replaces `claude-hook` approvals with `perm.ask`; sisters use the new Home ops.
+
+## Runner protocol (stdio, JSON-RPC 2.0, one JSON object per line)
+
+Start: Rubi Home starts the runner with `RUBI_RUN_TOKEN=<random 32 bytes hex>` in its env (inside the VM:
+passed by the supervisor over the exec channel, never on argv). The runner's first line must be a request
+`hello {run_token, version}`; Home answers `{ok:true}` only if the token matches (constant-time compare), else
+closes stdin; the runner exits if `hello` fails or no answer arrives in 10 s. A runner started without
+`RUBI_RUN_TOKEN` exits at once.
+
+Home -> runner (requests):
+
+| Method | Params | Result |
+|---|---|---|
+| `session.list` | `{}` | `{sessions:[{id, name, created, last_activity, mode, busy}]}` (SDK `listSessions`, cwd `/work`) |
+| `session.messages` | `{id, limit?}` | `{messages:[...]}` (SDK `getSessionMessages`) |
+| `session.start` | `{prompt, name?, from?, mode, max_subagents?}` | `{id}`: runner picks the session id up front (uuid, `sessionId` option); `name` becomes the SDK `title` (no automatic title request) |
+| `session.send` | `{id, text, from?, steer?, max_subagents?}` | `{queued:true, delivered}`: into the live query's input queue; `steer:true` = `priority:"now"`, `delivered:true`; without `steer` while a turn runs the runner holds the message and hands it to the SDK at the turn's `result` (`delivered:false`; the SDK never answers a mid-turn message of default priority); a session the runner does not hold -> `resume` |
+| `session.rename` | `{id, name}` | `{ok}` (`renameSession`) |
+| `session.fork` | `{id, name?}` | `{id}` (`forkSession`, then idle until sent to) |
+| `session.interrupt` | `{id}` | `{ok}` |
+| `session.mode` | `{id, mode}` | `{ok}` (`setPermissionMode`; Home only forwards what the plugin approved) |
+| `session.close` | `{id}` | `{ok}` |
+| `usage.probe` | `{}` | `{logged_in, account?, plan?, limits?}` (zero-cost probe, no tokens spent) |
+
+Runner -> Home (requests the runner waits on):
+
+| Method | Params | Result |
+|---|---|---|
+| `perm.ask` | `{ask_id, session_id, agent_id?, agent_type?, tool, tool_use_id?, via, input, cwd, mode}` | `{behavior:"allow"\|"deny", message?, updated_input?}` |
+| `git.credential` | `{op:"get"\|"store"\|"erase", input, purpose:"read"\|"push"}` | `{output}` (git's text; empty for store/erase) |
+| `ssh.open` | `{target, command, session_id, tool_use_id?}` | `{stream}` (role mode only; see "SSH relay (R11)") |
+
+`perm.ask` is sent from the `PreToolUse` hook for **every** tool call in every mode (the hook is installed for
+the main session, subagents and forks; M0 showed deny works in bypass and inside subagents/forks). The hook's
+own timeout is 300 s; no answer -> the SDK blocks the call (M0 exp 5). The runner also installs `canUseTool`
+(for `AskUserQuestion` and modes stricter than bypass) and routes it through `perm.ask` with `tool` set.
+
+Additions in M1: `via` is `"hook"` or `"can_use_tool"`; `tool_use_id` correlates the asks of one call. If the hook
+already got a decision for a `tool_use_id`, `canUseTool` for the same call returns that decision without a second
+`perm.ask`. `AskUserQuestion` is not asked by the hook, only by `canUseTool` (the real SDK calls it even in bypass),
+after an `ask` event with the questions; `updated_input` carries the answers back. Anything but an explicit `allow`
+is a deny. The runner stops waiting after 295 s (Home denies at 280 s) and denies. A `message` is shown to the model.
+
+Runner -> Home (notifications, no reply): `event {session_id, kind, ...}` with `kind` one of
+`assistant` (text), `tool` (name + short input summary), `result` (`{usage, model_usage, total_cost_usd,
+num_turns, is_error}`), `ask` (`AskUserQuestion` payload), `rate_limit` (from `rate_limit_event` or
+`api_error_params.rate_limit_info`), `background`, `status`, `error`. Field names (M1): `status` is
+`{status:"busy"|"idle"|"closed"}` (busy while a turn runs or a background subagent lives; `closed` once, after
+`session.close`); `background` is `{agent_id, subagent_type?, description?}` when a subagent keeps running after the
+turn (its slot stays busy) and `{agent_id, done:true}` when it ends; `error` is `{message}` (also sent when held-back
+messages or events had to be dropped, with `dropped:n` for events). `session_id` is always the id `session.start` returned.
+
+Runner -> Home notification, not an event: `perm.cancel {ask_id, session_id}`, sent when the runner gives up on a
+`perm.ask` (its own timeout, the SDK hook timeout, `session.interrupt`, `session.close`); Home drops the pending
+item. The call is denied on the runner side. Not sent when Home is gone.
+
+Git credentials: the runner listens on a unix socket in the VM (`RUBI_CRED_SOCK`, default `/tmp/rubi-cred.sock`,
+mode 0600, removed on exit). `git-credential-rubi` (runner/container) writes the operation on the first line, then git's
+`key=value` text up to the blank line (at most 8 KiB); the runner relays it as `git.credential` and writes `output`
+back, then closes. On an error, a refusal or no answer within 295 s it closes with no output (git fails without
+prompting). `purpose` is `"push"` only for 120 s after Home approved a `perm.ask` for a Bash command that contains
+`git ... push`; otherwise `"read"`. Any process of the runner's VM user can connect to the socket; Home must treat the
+purpose as the runner's claim and keep separate read and push credentials. The runner neither stores nor logs them.
+
+Runner process: environment `RUBI_RUN_TOKEN` (required), `ANTHROPIC_BASE_URL` (the address of this start's auth gateway on the Mac, which holds the Claude token), `CLAUDE_CODE_OAUTH_TOKEN` (a per-start secret good only at that gateway; the VM never holds the real token, see home-setup-wizard.md, "Shared sign-in"), `NO_PROXY` (the gateway's host), `RUBI_WORK_DIR` (working directory, default `/work`;
+sessions and config under `<dir>/.rubi/claude`), `HTTPS_PROXY`. The runner sets `CLAUDE_CONFIG_DIR` for itself too,
+because `listSessions`/`forkSession` read the sessions of its own environment. `from` in `session.start`/`send` is
+written as a first line `[message from <from>]` in the text. A session the runner does not hold (after a restart or a
+close) is resumed in mode `default` until `session.mode` is sent; a fork inherits the mode of its source. Wire
+transcripts for client tests: `runner/testdata/*.ndjson`, format in `runner/README.md`.
+
+Runner options for every query: `cwd` (`/work`), `permissionMode` from Home, `allowDangerouslySkipPermissions:true`,
+`settingSources:["project"]` (CLAUDE.md and skills; `RUBI_SETTING_SOURCES=none` ignores the project's `.claude` entirely),
+and, so that a project cannot run code outside the `PreToolUse` gate (checked against the real SDK in M1):
+`settings:{disableAllHooks:true, apiKeyHelper:"", skipWebFetchPreflight:true, disableSkillShellExecution:true}` (a skill's
+inline ``!`cmd` `` and ```` ```! ```` blocks would run in the CLI outside the PreToolUse gate, checked against the real CLI; off
+in every mode); flag-layer settings beat the project's files: no hooks from
+`.claude/settings.json`, no project `apiKeyHelper`), `strictMcpConfig:true` with `mcpServers:{}` (no `.mcp.json` server),
+and `disallowedTools` `Edit(/work/.rubi/**)`, `Edit(/work/.claude/**)`, `Edit(/work/.mcp.json)`, `Read(/work/.rubi/**)`
+(`Edit(...)` covers Write and the other editing tools; a `Write(...)` rule does not block; deny rules run before hooks and a
+hook's allow cannot override them; Bash can still write there, that goes through `perm.ask`). Known gap: `env` in the
+project's `.claude/settings.json` still applies (it cannot be switched off key-wide); use `RUBI_SETTING_SOURCES=none` for
+untrusted repositories. The hook never returns a permission `allow`: it returns a deny, or `updatedInput` without a decision
+(the SDK applies it), or `{}`; the SDK's own rules and `canUseTool` still run afterwards. Exceptions in the hook or in
+`canUseTool` deny. Child `env`: `CLAUDE_CONFIG_DIR=/work/.rubi/claude`, `DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1`,
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `HTTPS_PROXY`/`https_proxy` copied from the runner's env (Home's CONNECT
+proxy; no `HTTP_PROXY` is set), plus `PATH HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL TERM NO_PROXY` and, for tests and API-key
+setups only, `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` if present in the runner's env; nothing else. One long-lived
+query per session fed by a queue (pattern from T3 Code, MIT, noted in the spike).
+
+## Role mode (agent roles, R1)
+
+Set `RUBI_ROLE_DIR` (e.g. `/rubi-role`, a read-only mount written by Rubi Home) to switch the runner into role mode;
+unset (or empty) is the legacy mode described above, unchanged. Design and reasons: `agent-roles.md` (sections 1 and 4).
+`RUBI_CLAUDE_DIR` (default `/rubi-claude`) is then the config dir (`CLAUDE_CONFIG_DIR`, for the runner process and its
+children): sessions, `session.list`, `.messages`, `.fork` and `.rename` use it, nothing is written under `/work/.rubi`.
+
+At the start of every query (`session.start`, a resume after `session.send` to a session the runner does not hold, a
+restart of a dead query) the runner resolves `<RUBI_ROLE_DIR>/current` with `realpath`, requires the result to be a
+directory strictly inside `RUBI_ROLE_DIR` (a `current` that points out via `../`, an absolute path or at the role dir
+itself is refused), and pins that version for the query. A new version applies at the next query start; a running query
+keeps its version. A missing or bad role refuses the call with error `-32603` ("role unusable, session not started: ...");
+the runner never falls back to legacy mode and registers no session.
+
+`<ver>/role.json` (written by Home; at most 64 KiB; `lstat`: a symlink or a non-regular file is refused; opened with
+`O_NOFOLLOW`; unknown keys ignored):
+
+| Key | Type | Rule |
+|---|---|---|
+| `role` | string | required, non-empty (the role id; logged) |
+| `version` | integer | required, >= 1 |
+| `tools` | string[] | required (may be empty); every name in the runner's known list (`Agent AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep ListAgents Monitor NotebookEdit Read ReportFindings ScheduleWakeup SendMessage Skill TaskStop TodoWrite ToolSearch WebFetch WebSearch Workflow Write`); the safe subset is Home's and the plugin's policy, not the runner's |
+| `skills` | string[] | default `[]`; names match `^[a-z0-9][a-z0-9-]{0,47}$`, at most 100 |
+| `deny` | string[] | default `[]`; permission rules appended to `disallowedTools`; non-empty, at most 256 characters, no control characters, at most 200 |
+| `mcp` | object | default `{}`; at most 32 servers named `[A-Za-z0-9_-]{1,48}`; `{type:"http"\|"sse", url (http/https), headers?}` or `{type:"stdio" (default), command, args?, env?}`; other keys of a server are dropped |
+| `instructions` | string | default `""`, at most 8 KiB |
+| `project_instructions` | boolean | default `false` |
+| `default_mode` | string | default `"default"`; one of the permission modes |
+
+`<ver>/plugin/` must be a plain directory (not a symlink): an SDK local plugin named `role`
+(`.claude-plugin/plugin.json`, `skills/<name>/SKILL.md`, `agents/<name>.md`).
+
+Query options in role mode: `settingSources:[]` (the repository's `.claude` is never loaded; its `env` no longer applies;
+`RUBI_SETTING_SOURCES` is ignored), `plugins:[{type:"local", path:"<ver>/plugin", skipMcpDiscovery:true}]`,
+`skills:["role:<name>",...]` (`[]` when none), `tools:` the role's list without `Skill` and the plan tools, plus `Skill`
+only when the role has skills, `AskUserQuestion` always, `EnterPlanMode`/`ExitPlanMode` when the session's mode is `plan`
+at query start; `disallowedTools`: the usual four rules, `Edit(<claude dir>/**)`, `Read(<claude dir>/**)`, then the
+role's `deny`; `strictMcpConfig:true` with `mcpServers` from `role.mcp`; `systemPrompt:{type:"preset",
+preset:"claude_code", append: <instructions block>}`. The instructions block is the role's `instructions`, then, when
+`project_instructions` is true, `/work/CLAUDE.md` and `/work/.claude/CLAUDE.md` under a heading that says the text was
+written in the repository (each read with `lstat`, a symlink or a non-regular file is left out, 64 KiB together; `@import`
+lines and CLAUDE.md files in subdirectories are not followed). Unchanged: `settings:{disableAllHooks:true, apiKeyHelper:"",
+skipWebFetchPreflight:true, disableSkillShellExecution:true}`, the `PreToolUse` gate and subagent gate, `canUseTool`, redaction, the child env
+(`ANTHROPIC_BASE_URL`, the `CLAUDE_CODE_OAUTH_TOKEN` placeholder, `NO_PROXY`, the proxy).
+
+Modes: the session mode Home passes in `session.start` always wins. In role mode `mode` is optional there; when Home gives
+none, the role's `default_mode` is used (also for a session the runner resumes without a mode). A mode set later with
+`session.mode` is not reflected in `tools`: the plan tools are decided when the query opens.
+
+Checked against the real SDK and `claude` by `runner/test/roles.integration.test.ts` (`npm run test:integration`).
+
+Behaviour of held-back messages: at most 50 per session (more: error `-32006` and an `error` event). If the query
+dies, the first held-back message goes into a resumed query (at most 3 restarts without a `result`), the rest follow
+turn by turn. A turn the SDK started itself (a background task woke the model) counts as active, so a message sent then
+is held back too. `session.interrupt` drops held-back messages. Session ids in params must be UUIDs. Slow reader: when
+Home reads slower than the runner writes and more than 8 MiB wait, the oldest `assistant` and `tool` events are dropped
+and one `error` event with `dropped:n` follows; requests, responses and other events are never dropped.
+
+The run token protects the handshake against a wrong peer, not against the VM's own user: any process of that user can
+read it from the runner's environment, and then could only talk to the runner it already shares a VM with. It is not a
+secret from the VM. Home's proxy and the exec channel, not the token, keep other VMs and hosts out.
+
+Build: `npm run build` writes `runner/dist/main.js` (the image's entry point, Node >= 22; an older Node, or a missing
+`node_modules`, ends with a plain message and exit 1). Tests compile to `dist-test/`.
+
+## Network and git
+
+- Allow-list proxy (CONNECT only, no TLS decryption), served by Rubi Home on a netpipe stream (no socket on the Mac), reached by the VM at `127.0.0.1:3128`:
+  Anthropic hosts from M0 (`api.anthropic.com`; login/refresh hosts to confirm with a real login:
+  `claude.ai`, `console.anthropic.com`, `platform.claude.com` are the candidates), the project's git host(s),
+  `registry.npmjs.org`, `pypi.org`, `files.pythonhosted.org`, SwiftPM package hosts from `Package.resolved`.
+  Everything else: refused and logged. Telemetry hosts (Datadog, downloads.claude.ai) are refused.
+### No network: rubi-netpipe (R13, option D of agent-roles.md section 10)
+
+Every project, role and sign-in VM is started with `container run --network none`: it has loopback and nothing else (no
+interface, no route, no DNS; a direct connect fails with `ENETUNREACH`). Nothing on the Mac, no wildcard listener of
+another app and no gateway address, is reachable from it. The runner's environment says where its two services are:
+`HTTPS_PROXY=http://rubi:<per-start token>@127.0.0.1:3128`, `ANTHROPIC_BASE_URL=http://127.0.0.1:3129`,
+`NO_PROXY=127.0.0.1` (the per-start secrets are unchanged).
+
+Behind those ports is **`rubi-netpipe`** (`runner/container/rubi-netpipe`, a node script in the image at
+`/usr/local/bin/rubi-netpipe`, embedded in the Rubi Home binary like the rest of the runner, so the image tag changes with
+it). Rubi Home runs it once per VM with a long-lived `container exec -i <name> /usr/local/bin/rubi-netpipe` (no
+environment, no secret on the command line) before the runner starts, and waits for its HELLO. The forwarder listens on
+127.0.0.1 only and turns every accepted TCP connection into a stream over its own stdin and stdout. Home hands each stream
+(a `net.Conn` with half close and deadlines, `internal/home/agent/netpipe`) to the CONNECT proxy or to the auth gateway
+through a `net.Listener` adapter: the same handlers, the same checks (proxy token, host list, port 443, address guard, asks;
+gateway secret, paths, header list, token injection), no TCP on the Mac.
+
+Frame: `type u8 | stream u32 | length u32` (big endian, 9 bytes), then the payload, length at most 32 KiB.
+
+| Type | Meaning |
+|---|---|
+| HELLO 1 (stream 0, payload `[version]`) | forwarder to Home, once, when both ports listen; a different version ends the channel |
+| OPEN 2 (payload `[service]`: 1 proxy, 2 gateway) | the forwarder accepted a connection (only the VM side opens) |
+| DATA 3 | bytes of the connection |
+| CLOSE 4 | the sender writes no more (a half close; closing a stream sends one) |
+| RESET 5 | the stream is dead both ways (refused, violation, closed stream that got data, a peer silent for 30 s after a close) |
+| ACK 6 (payload `u32`) | bytes the reader has handed on (to the socket in the VM, to the handler on the Mac) |
+
+Flow control: each direction of each stream starts with a window of 256 KiB; DATA spends it and ACK (sent at every 64 KiB
+consumed) returns it, so a reader that stops reading stops its sender and at most 256 KiB per stream and direction is
+ever buffered; the forwarder pauses the local socket at zero credit. At most 64 streams at once (the forwarder drops a
+65th connection, Home resets an OPEN over its limit). A frame that doesn't parse (unknown type, length over 32 KiB, a bad
+payload length, DATA without a stream, an OPEN twice) ends the channel (the forwarder exits 2, Home resets every stream);
+a frame for an unknown stream is ignored; data beyond the window or after CLOSE resets only that stream.
+
+If the exec process dies, every stream fails (the runner sees a connection error and retries as it would on a network
+error), and Home starts the forwarder again after 0.5 s, 1 s, 2 s; after three restarts in five minutes it stops the VM,
+which ends the runner and its sessions (the next send starts a fresh VM). `Stop` ends the forwarder first. A VM whose
+forwarder doesn't say HELLO within 20 s is not started. The sign-in container uses the same pipe, with the proxy service
+only (a stream to the gateway port is reset).
+
+Measured (R13a spike, Apple container 1.6.1, `--network none`, `container exec -i`, Node 20 on the Mac, Node 22 in the VM,
+100 MiB, sha-256 compared): the stdio channel is binary safe (all 256 byte values, end of input arrives as EOF) and moves
+222-263 MiB/s Mac to VM and 266-294 MiB/s VM to Mac as a raw byte pipe (8 MiB: 83-95 MiB/s, start-up bound); starting
+the exec to the first echoed byte takes 130 ms; a 1-byte round trip is 0.15 ms median, 0.7 ms at the 95th percentile.
+Through the multiplexer and the real forwarder (Go Mux on the Mac, node in the VM, 32 KiB frames) 100 MiB goes at about 230
+MiB/s VM to Mac (0.42-0.44 s) and 180-225 MiB/s Mac to VM (0.46-0.58 s). The API (a few MiB per turn) and npm traffic are
+far below that.
+
+- Git credential helper (`git-credential-rubi` in the VM, through the runner's credential socket and the `git.credential`
+  request, see above): `get` for read always; for a push
+  only while a matching mandate (`md_` with push scope) is live in the plugin (Home asks the plugin via
+  `claude-agent.next` item `cred.ask`, plugin answers through `claude-agent.decide`).
+
+## Plugin v0.4 (permissions)
+
+`perm.ask` decision order: always-ask list (push, remote ops, `--force`, sudo, network outside allow-list,
+paths outside `/work`, edits of `.rubi`/`.claude`, tags/releases) -> passkey approval; else in modes stricter
+than bypass the existing `pt_`/`md_`/`classify.go` rules; else in bypass -> allow. Mode changes: to a stricter
+mode no approval, to a looser one strong (passkey). Sisters: bind/send/replies as v0.3, delivery via
+`claude-agent.send`; `rubi_reply`/`rubi_ask` become runner-side in-process MCP tools that emit events.
+
+## Home-side additions (M2)
+
+Runner -> Home request `git.credential {op: get|store|erase, input, purpose?: "push"}` -> `{output}` (the runner relays
+the in-VM `git-credential-rubi`). Home -> plugin `next` items besides `perm.ask`: `cred.ask {host, path, op:"push"}` (a push
+credential), `net.ask {host}` (a host not on the proxy's list), `queue {action, queue_id}`; all answered with `decide`.
+Subagent cap. `max_subagents` (an integer, 0 or absent = no cap) is the most subagents one session may run at once
+(Home sends the cap of the Bot that owns the session). The runner counts a session's running subagents as its
+background tasks plus its `Agent`/`Task` calls that passed the gate and have not ended; a subagent started by a call
+(`task_started.tool_use_id`) is counted once, whether or not the SDK says it runs in the background. A change is
+reported with an event `subagents {count}`. The gate is its own `PreToolUse` hook, matcher `^(Agent|Task)$`, next to
+the hook that asks Home about every tool (no matcher, `hookTimeoutSec` = 300 s, unchanged: it asks about the subagent
+tools too, so a matcher that failed to match would lose the cap, never an ask; the integration test checks that every
+tool is still asked about). The gate hook **waits** (never denies) while the count is at the cap: it sends
+`waiting {reason, tool_use_id}` ("waiting: this session already has N subagents running, the limit"), repeats it every
+`waitKeepaliveMs` (5 min, with `still: true`; Home reads any event as a sign of life, so its 30-minute idle watchdog
+doesn't interrupt a session that waits on purpose), and when the call goes on sends `waiting {reason:"", done:true,
+tool_use_id}`. The gate has the long SDK timeout: `hookTimeoutSec` plus the longest wait, `subagentWaitSec` (default
+6 h). After the longest wait the call is denied with a reason the model sees (and an `error` event), never silently.
+A call is also denied ("Stopped while waiting...") when the session is interrupted or closed while it waits, and a wait
+stops when the call is denied by Home or ends some other way. The decision Home gave for such a call is remembered for
+as long as the call may wait, so the user is not asked twice.
+
+Places are released by the subagent's own end, not only by the tool result of its call: `task_notification` (which
+carries the call's `tool_use_id`) ends the call and the task. **Checked against the real SDK** (integration test,
+scripted API): the hooks of parallel `Agent` calls run together, the results of the calls stream one by one, a
+background subagent's call returns at once ("Async agent launched") while its task goes on, and a subagent can start
+subagents of its own (`spawn_depth` 2). **Rule for nested subagents:** a call made by a subagent is not held back by the
+places that subagent and its parents hold (it would wait for itself for ever), so a tree can run deeper than the cap by
+the depth of the chain; calls of other branches count in full. The count is approximate for a moment around a launch (the
+tool result and the task start are two messages). The cap is read at `session.start`; a `session.send` to a session with
+no turn, task or call running takes the cap it brings, a running one keeps its own. `session.fork` copies the cap of the
+source. Lowering a mode kills nothing: running subagents finish, new ones wait.
+Slot events (each session holds one slot; limits in `rubi-home.md`, "Slots"): `status {state}`, `background {tasks:[{task_id}]}` (the whole set), as the M1 runner sends them. See
+`docs/design/rubi-home.md` ("Agents in a VM").
+
+## SSH relay (R11, contract for the runner's `rubi-ssh` wrapper, R12)
+
+Rubi Home is the SSH client; the VM never connects to a target and never holds a key (design `agent-roles.md` section 9).
+The runner only relays what the in-VM wrapper (`ssh <target> [command...]`) says to Home. Home takes the role from the
+VM it is talking to; nothing in these messages names a role, a host, a user or a key, and Home ignores any such field.
+
+Runner -> Home request `ssh.open {target, command, session_id, tool_use_id?}` -> `{stream}`.
+
+- `target` is a registered target name (`^[a-z0-9][a-z0-9-]{0,31}$`); `command` is a non-empty string of at most 8192
+  bytes, run by the target's shell on an exec channel (no pty, no interactive shell in v1: an empty command is an
+  error). `session_id` and `tool_use_id` correlate the approval and the audit with the Bash call that ran `ssh`.
+- Errors (JSON-RPC error, code -32000, message for the model): `this SSH target isn't available to this role` (not
+  granted, unknown, or the default role: the three look the same), `this command isn't allowed on the target`,
+  `this role has 4 SSH streams open already`, `Rubi: ...` (the user denied the `ssh.ask`, or no answer in time), `host key
+  changed` (the target presented another host key than the pinned one; nothing was sent to it), `the target didn't
+  answer` or `login to the target failed`: fixed sentences, never an address (the detail is in Home's log). More than 30
+  `ssh.open` per minute per role are refused. The request can take as long as an approval (up to the ask timeout) plus the dial (15 s).
+- The answer is written before any notification about the stream, so the runner always knows the id first.
+
+Notifications, `stream` always the id from `ssh.open` (bytes are standard base64 in `b64`; `fd` 1 is stdout, 2 is stderr):
+
+| Direction | Method | Params | Meaning |
+|---|---|---|---|
+| Home -> runner | `ssh.data` | `{stream, fd: 1\|2, b64}` | output of the command (at most 32 KiB per notification) |
+| runner -> Home | `ssh.data` | `{stream, fd: 0, b64?, eof?: true}` | input for the command's stdin; `eof: true` closes stdin (may be sent with the last bytes, or alone) |
+| both | `ssh.ack` | `{stream, n}` | the sender consumed `n` bytes of the data it received (flow control, below) |
+| runner -> Home | `ssh.close` | `{stream}` | abort: Home hangs up and answers with `ssh.exit` (`reason: "closed by the runner"`) |
+| Home -> runner | `ssh.exit` | `{stream, code, reason?}` | the stream is over; always the last message about it, after all its output was sent |
+
+- `code` is the command's exit status. When the stream did not end by the command exiting (`reason` is present), `code` is
+  -1 and `reason` says why: `revoked` (grant removed, role archived, target removed), `idle timeout`, `time limit`,
+  `closed by the runner`, `input buffer overrun`, `Rubi Home stopped`, `signal NAME`, or `the connection ended without an
+  exit status`. The runner reports 255 to the caller for -1.
+- **Flow control**: at most 8 MiB (`8388608`) bytes may be unacknowledged in each direction. Home stops reading the
+  command's output while 8 MiB of it is unacknowledged by the runner (the runner sends `ssh.ack {stream, n}` as it hands
+  output to the wrapper). The runner must not have more than 8 MiB of input unacknowledged by Home (Home sends
+  `ssh.ack {stream, n}` after it wrote the bytes to the command's stdin); a runner that sends more is cut with
+  `input buffer overrun`. `n` counts decoded bytes, over all fds of that direction.
+- **Limits** (Home): 4 open streams per role, 2 hours per stream, 10 minutes without data in either direction. Acks do not
+  count as activity.
+- A stream is addressed only by the runner of the role that opened it; a stream id from another role is ignored.
+- The runner ending, Home stopping, a `role.put` that removes the grant (or archives the role) and `ssh.remove` cut the
+  streams; the runner gets `ssh.exit` when it is still there.
+- `ssh.ask` is a plugin item (`next`), not a runner message: `{type:"ssh.ask", ask_id, project, role, session_id,
+  tool_use_id, host, op:"ssh", input:{target, host, port, user, command}}` (the command exactly as it will run, up to 8192 characters, unredacted: redaction is for the audit copy only; a command with control or format characters is refused instead of asked; at most 2 questions wait per role),
+  answered with `decide`. It is sent only for targets registered with `ask_each_time`.
+
+### In the VM: the `ssh` wrapper and the runner socket (R12)
+
+The image has no ssh client. `/usr/local/bin/rubi-ssh` (a small node script, `runner/container/rubi-ssh`) is also linked as
+`ssh` in `/usr/local/rubi/bin`, which comes first in `PATH`. Usage: `ssh <target> <command...>`. It refuses every option
+(anything starting with `-` before the target: `-o -i -p -L -R -D -A -W -J -t ...`), `user@host`, anything that is not a
+target name and a missing command (exit 2); there is no TTY. Git over ssh is not supported (`protocol.ssh.allow never`
+in the image's system config; use https remotes with the credential helper). Stdin is relayed (EOF included); stdout and
+stderr are Home's; the exit status is the command's (255 when the stream ended with a `reason`, when Home refused, or when
+the relay is not there; 141 when its own stdout was closed by a reader such as `head`, after which the stream is closed).
+
+The wrapper talks to the runner on a unix socket, `RUBI_SSH_SOCK` (default `/tmp/rubi-ssh.sock`, mode 0600, removed on
+exit; the runner puts the variable and `RUBI_SESSION_ID` into the environment of each query's `claude` child). Frames:
+type byte, 4-byte big-endian length, payload; wrapper -> runner `OPEN` (JSON `{target, command, session_id?}`), `STDIN`,
+`EOF`, `ACK` (bytes the wrapper has written to its stdout or stderr); runner -> wrapper `ERR` (text), `STDOUT`, `STDERR`,
+`EXIT` (JSON `{code, reason?}`). The runner:
+
+- sends `ssh.open {target, command, session_id, tool_use_id?}`. `session_id` is the wrapper's `RUBI_SESSION_ID` when it
+  names a session the runner holds, else `""`. `tool_use_id` is set only when the session has exactly one allowed `Bash`
+  call that mentions `ssh` and has not ended; with several the runner cannot tell which one ran the wrapper and omits it
+  (the approval and audit then correlate by session only). Home's error text goes to the wrapper's stderr;
+- relays input as `ssh.data` fd 0 in pieces of at most 32 KiB, never more than 8 MiB unacknowledged by Home; the rest waits
+  in a queue (the socket is paused above 256 KiB), EOF after the data;
+- passes output to the wrapper and sends `ssh.ack` to Home only when the wrapper acknowledges it, so a reader that stops
+  stops Home's reading of the command (the acknowledgement is clamped to what was handed over);
+- sends `ssh.close` when the wrapper disconnects (also if it left while Home was still deciding, once the answer arrives),
+  and cuts the session's streams (wrapper told `the connection was closed by Rubi`) on `session.interrupt` and
+  `session.close`; at exit it cuts all of them and removes the socket. A stream that Home overfills past the window is cut;
+- logs only `ssh.open: target <name>` (and the session id) and `ssh.exit: code N (reason)`: never a command, input or
+  output.
+
+The plugin's Bash classifier treats `ssh <target>` as a remote operation (asks unless a mandate covers it): the call is
+gated by `perm.ask` first, then Home checks the grant and `ssh.ask` again (two independent checks).
+
+Plugin operations (`claude-agent.*`, the plugin gates them; strict arguments, an unknown field is an error):
+
+| Op | Arguments | Result |
+|---|---|---|
+| `ssh.scan` | `{host, port?}` | `{fingerprint, key_type}`: Home dials from this computer and reads the host key; no authentication |
+| `ssh.register` | `{name, host, port?, user, fingerprint, allowed_commands?, ask_each_time?, reuse?}` | `{public_key_line}`; refused when the live host key's fingerprint is not `fingerprint`, or the name exists, or the name belongs to a removed target and `reuse` is not `true` (the plugin sends `reuse:true` only after a strong approval) |
+| `ssh.list` | `{}` | `{targets:[{name, host, port, user, fingerprint, key_type, allowed_commands, ask_each_time, created_at, host_key_changed?, roles:[{id, name, project}]}]}` |
+| `ssh.remove` | `{name}` | `{ok, closed_streams}`: deletes the key, forgets the target, cuts its streams, and keeps the name as a tombstone (`removed` in `targets.json`) so it can't be registered again without `reuse:true`: roles may still list it |
+| `ssh.audit` | `{target?, limit?, after_seq?}` | `{last_seq, entries:[{seq, count?, stream?, role, project, bot?, target, command, start, end, exit?, bytes_in, bytes_out, result, reason?}]}`, newest first; with `after_seq` the entries after that `seq`, oldest first (page forward from the last `seq` you got to copy the audit without loss). `seq` is monotonic across restarts and rotation. `count` on an entry means that many further identical refusals were collapsed into it |
+
+`allowed_commands` entries are exact commands, or prefixes when they end in `*`. `prefix *` (`ls *`; `ls*` reads the same, so
+it does not allow `lsof`) allows the prefix alone, or the prefix, a space and arguments of letters, digits and ` _./:=@%+,-`
+that hold no option (no word starting with `-`) and no `=`, so a prefix cannot be extended into a second command or into
+options. `prefix **` (`ls **`) allows options and `name=value` arguments too; the panel shows a warning for it
+(`option_patterns` in `ssh.list`). **A prefix pattern is not a safety boundary** for a program with options or arguments
+that run code or open files (`git -c core.sshCommand=...`, `tar --checkpoint-action=exec=...`, `rsync -e ...`, `find
+-exec`, `ssh -o ProxyCommand=...`): allow such programs only as exact commands. With none, any command runs. The
+public key line is `restrict[,command="..."] ssh-ed25519 AAAA... rubi-<name>`; `command=` is added only when exactly one
+exact command is allowed. The private key is in `<helper>/agent-ssh/keys/<name>` (0600, directory 0700) and is in no result,
+item, event, log line, error, audit entry or environment variable.

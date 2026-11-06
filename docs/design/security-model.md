@@ -77,6 +77,7 @@ a malicious network path between the panel and Rubi; a phishing link to a fake p
 | `KEK_pk` | **Never stored anywhere.** Re-derived in the browser from the passkey's PRF output | Wraps `DEK`. |
 | `KEK_pw` | **Never stored anywhere.** Re-derived in the browser with Argon2id from the password | Wraps `DEK` (fallback). |
 | `AK` approval credential (passkey public key) | Inside the vault | Verifies approval signatures. |
+| Library key (Ed25519) | Inside the vault; made on first use; usable only while unlocked | Signs skills the curator Bot admitted to the shared skill library (agent-roles.md §8). Rubi Home pins its public half on a core-only op; the library files are sealed under a key derived from `DEK`. |
 
 Properties:
 - **KEKs never leave the user's device.** The panel downloads the wrapped `DEK`, unwraps it locally, and
@@ -89,7 +90,7 @@ Properties:
 
 ## 6. Transport
 
-- **The user picks one option at install** (the agent asks; `rubi transport` changes it later):
+- **The user picks one option at install** (the agent asks; the user changes it later in the panel, Settings, Security, Connection, behind a passkey approval; the agent can still use `rubi transport`, which stops Rubi so that it restarts locked and needs a new unlock link, while the panel path restarts Rubi the way an update does and keeps it unlocked):
   - **Rubi Gateway** (default): `wss://gateway.rubi-panel.com`, a relay that carries only Rubi's traffic
     (`internal/gateway`), with the public relays below as a fallback. Only its name is built into Rubi.
   - **Public relays** only.

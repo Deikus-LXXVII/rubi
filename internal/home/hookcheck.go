@@ -16,13 +16,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 // DefaultHookBinary is where Claude Code's managed settings run the hook from: root-owned on purpose, so
 // no process of the user's can swap it for one that allows everything.
-const DefaultHookBinary = "/usr/local/bin/rubi-home"
+var DefaultHookBinary = hostpaths.HookBinary()
 
 // HookBinaryTimeout bounds `<hook> version`.
 const HookBinaryTimeout = 3 * time.Second
@@ -48,7 +50,10 @@ type HookBinary struct {
 	Symlink bool
 	// WhyInsecure names the directory above the binary that anyone but root could change.
 	WhyInsecure string
-	VersionE    string // why the version couldn't be read ("" when it was)
+	// WhyFile says why the trust check refused the binary itself (set on every system; it is shown only where
+	// fsx.ExplainTrust is true, because on Unix the owner and mode already say it).
+	WhyFile  string
+	VersionE string // why the version couldn't be read ("" when it was)
 }
 
 // limitWriter keeps the first n bytes and drops the rest.
@@ -70,14 +75,13 @@ func runVersion(path string, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "version")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	fsx.KillTree(cmd)
 	cmd.WaitDelay = 500 * time.Millisecond
 	cmd.Env = []string{privilegedPath}
 	out := &limitWriter{n: 256}
 	cmd.Stdout = out
 	cmd.Stdin = nil
-	err := cmd.Run()
+	err := fsx.RunTree(cmd)
 	if ctx.Err() != nil {
 		return "", fmt.Errorf("it didn't answer `version` within %s", timeout)
 	}
@@ -133,21 +137,20 @@ func insecureAncestors(path string) string {
 		if err != nil {
 			return fmt.Sprintf("can't look at %s: %v", d, err)
 		}
+		if fsx.Reparse(d, li) {
+			return d + " is a link or a junction"
+		}
 		if li.Mode()&os.ModeSymlink != 0 {
-			if st, ok := li.Sys().(*syscall.Stat_t); !ok || st.Uid != 0 {
-				return d + " is a symlink that root doesn't own"
+			if uid, _, ok := fsx.OwnerOf(li); !ok || uid != 0 {
+				return d + " is a symlink that " + fsx.AdminName + " doesn't own"
 			}
 		}
 		fi, err := os.Stat(d)
 		if err != nil || !fi.IsDir() {
 			return fmt.Sprintf("%s isn't a directory", d)
 		}
-		st, ok := fi.Sys().(*syscall.Stat_t)
-		if !ok || st.Uid != 0 {
-			return d + " is not owned by root"
-		}
-		if fi.Mode().Perm()&0o022 != 0 {
-			return fmt.Sprintf("%s is writable by group or others (mode %04o)", d, fi.Mode().Perm())
+		if ok, why := fsx.TrustedAncestor(d, fi); !ok {
+			return d + " is " + why
 		}
 		if d == filepath.Dir(d) {
 			return ""
@@ -155,8 +158,19 @@ func insecureAncestors(path string) string {
 	}
 }
 
-// InspectHookBinary looks at the hook binary at path.
+// InspectHookBinary looks at the hook binary at path (hash and version, whoever owns it).
 func InspectHookBinary(path string, timeout time.Duration) HookBinary {
+	return inspectHook(path, timeout, inspectOpts{Hash: true, VersionIfInsecure: true})
+}
+
+// inspectOpts says how much of the binary inspectHook looks at.
+type inspectOpts struct {
+	Hash              bool              // read the whole file for its SHA-256
+	VersionIfInsecure bool              // run `version` on a binary that isn't Secure (the panel's check does not)
+	afterSecure       func(*HookBinary) // a test seam: changes what the file checks found, before `version` runs
+}
+
+func inspectHook(path string, timeout time.Duration, o inspectOpts) HookBinary {
 	b := HookBinary{Path: path, Owner: -1}
 	li, err := os.Lstat(path)
 	if err != nil {
@@ -164,7 +178,7 @@ func InspectHookBinary(path string, timeout time.Duration) HookBinary {
 		b.VersionE = err.Error()
 		return b
 	}
-	b.Symlink = li.Mode()&os.ModeSymlink != 0
+	b.Symlink = li.Mode()&os.ModeSymlink != 0 || fsx.Reparse(path, li)
 	fi, err := os.Stat(path)
 	if err != nil {
 		b.VersionE = err.Error()
@@ -175,17 +189,29 @@ func InspectHookBinary(path string, timeout time.Duration) HookBinary {
 		b.VersionE = "not a regular file"
 		return b
 	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		b.Owner = int(st.Uid)
+	if uid, _, ok := fsx.OwnerOf(fi); ok {
+		b.Owner = int(uid)
 	}
-	b.Secure = b.Owner == 0 && !b.Symlink && fi.Mode().Perm()&0o022 == 0
+	trusted, whyFile := fsx.TrustedByAdmin(path, fi)
+	b.Secure = trusted && !b.Symlink
+	if !trusted {
+		b.WhyFile = whyFile
+	}
 	if b.Secure {
 		if why := insecureAncestors(path); why != "" {
 			b.Secure, b.WhyInsecure = false, why
 		}
 	}
-	if b.SHA256, err = fileSHA256(path); err != nil {
-		b.VersionE = err.Error()
+	if o.afterSecure != nil {
+		o.afterSecure(&b)
+	}
+	if o.Hash {
+		if b.SHA256, err = fileSHA256(path); err != nil {
+			b.VersionE = err.Error()
+			return b
+		}
+	}
+	if !b.Secure && !o.VersionIfInsecure {
 		return b
 	}
 	if b.Version, err = runVersion(path, timeout); err != nil {
@@ -197,7 +223,7 @@ func InspectHookBinary(path string, timeout time.Duration) HookBinary {
 // WritePlain prints the hook binary's state for `rubi-home status`; self is this binary's version.
 func (b HookBinary) WritePlain(w io.Writer, self string) {
 	if b.Missing {
-		fmt.Fprintf(w, "Claude Code hook binary: none at %s (see the claude-code plugin's README to set it up)\n", b.Path)
+		fmt.Fprintf(w, "Claude Code hook binary: none at %s (install it from the Rubi panel: Settings, Home)\n", b.Path)
 		return
 	}
 	fmt.Fprintf(w, "Claude Code hook binary: %s\n", b.Path)
@@ -216,12 +242,15 @@ func (b HookBinary) WritePlain(w io.Writer, self string) {
 		if b.WhyInsecure != "" {
 			fmt.Fprintf(w, "  directories: %s\n", b.WhyInsecure)
 		}
+		if fsx.ExplainTrust && b.WhyFile != "" {
+			fmt.Fprintf(w, "  the file: %s\n", b.WhyFile)
+		}
 		if b.Symlink {
 			fmt.Fprintln(w, "  it is a symlink; a hook binary must be a plain file")
 		}
 	}
 	if versionOlder(b.Version, self) {
-		fmt.Fprintf(w, "  stale: older than this binary (%s); run `%s`\n", self, InstallHookCommand)
+		fmt.Fprintf(w, "  stale: older than this binary (%s); %s\n", self, UpdateHookHint)
 	}
 }
 
@@ -233,6 +262,6 @@ func WarnIfHookOlder(path, self string, logf func(format string, args ...any)) {
 		return
 	}
 	if versionOlder(b.Version, self) {
-		logf("the Claude Code hook binary %s is %s, older than Rubi Home %s: run `%s`", path, b.Version, self, InstallHookCommand)
+		logf("the Claude Code hook binary %s is %s, older than Rubi Home %s: %s", path, b.Version, self, UpdateHookHint)
 	}
 }

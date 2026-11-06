@@ -26,3 +26,295 @@ jobs:
         run: for f in panel/js/*.js; do node --check "$f"; done
       - name: Installer syntax
         run: sh -n panel/install.sh
+
+  # Rubi Home runs on macOS, Linux and Windows (docs/plans/home-platforms.md, stage P1). The core (the rest of the
+  # repository) is not ported to Windows, so only Home and what it imports are built and vetted for each system.
+  home-cross:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, windows]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet Home (sources and tests)
+        run: GOOS=${{ matrix.goos }} GOARCH=amd64 go vet ./cmd/rubi-home ./internal/home/... ./internal/homeproto
+      - name: Build Home
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=$arch go build -trimpath -o /dev/null ./cmd/rubi-home
+          done
+
+  # The macOS-only files of Home (Apple's container tool, the package check, the Mac helpers) are built and tested only here;
+  # the Apple backend's command lines are plain Go and also run on Linux, but their tool name and path are darwin files.
+  home-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test Home
+        run: go test ./internal/home/... ./internal/homeproto ./cmd/rubi-home
+
+  # The Windows installer (panel/install-home.ps1) runs on a clean Windows runner against a release made here: a zip with the
+  # program built from this commit, SHA256SUMS signed with a throwaway key (the copy of the script under test gets that key's
+  # public half in place of the release key), served from this computer. It must install and set up the Scheduled Task, and it
+  # must refuse a bad signature, a malleated one (S + L), and a bad checksum. It takes the version from a signed release feed
+  # and refuses a feed that is unsigned or changed, a signed list of another release, and any release older than the
+  # installed one. The fake releases are signed here with the openssl that Git brings to the runner; the installer itself
+  # runs no such program.
+  home-windows-install:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Make signed fake releases
+        # Two genuine releases (the older one must be refused once the newer is installed), a signed feed for each, and a
+        # signed checksum list that names another release's file next to its own archive.
+        shell: pwsh
+        run: |
+          $git = Join-Path $env:ProgramFiles 'Git'
+          $ossl = Join-Path $git 'mingw64\bin\openssl.exe'
+          if (-not (Test-Path $ossl)) { $ossl = Join-Path $git 'usr\bin\openssl.exe' }
+          $old = 'v0.0.1-ci'
+          $tag = 'v0.0.2-ci'
+          $mixed = 'v0.0.3-ci'
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'amd64' }
+          $utf8 = New-Object Text.UTF8Encoding($false)
+          New-Item -ItemType Directory -Force -Path work, fake/feeds | Out-Null
+          & $ossl genpkey -algorithm ed25519 -out fake/key.pem
+          & $ossl pkey -in fake/key.pem -pubout -out fake/pub.pem
+          function Sign([string]$File) { & $ossl pkeyutl -sign -inkey fake/key.pem -rawin -in $File -out "$File.sig"; if ($LASTEXITCODE -ne 0) { throw "signing $File failed" } }
+          function Publish([string]$Tag, [string[]]$ExtraLines) {
+            $rel = Join-Path $PWD "fake/$Tag"
+            New-Item -ItemType Directory -Force -Path $rel | Out-Null
+            go build -trimpath -ldflags "-s -w -X github.com/Deikus-LXXVII/rubi/internal/version.Version=$Tag" -o work/rubi-home.exe ./cmd/rubi-home
+            if ($LASTEXITCODE -ne 0) { throw 'go build failed' }
+            $zip = Join-Path $rel "rubi-home-$Tag-windows-$arch.zip"
+            Compress-Archive -LiteralPath work/rubi-home.exe -DestinationPath $zip
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLower()
+            $sums = Join-Path $rel 'SHA256SUMS'
+            [IO.File]::WriteAllText($sums, ((@("$hash  rubi-home-$Tag-windows-$arch.zip") + $ExtraLines) -join "`n") + "`n", $utf8)
+            & $ossl pkeyutl -sign -inkey fake/key.pem -rawin -in $sums -out (Join-Path $rel 'SHA256SUMS.sig')
+            # the signed release feed that names this release
+            $feed = Join-Path $PWD "fake/feeds/$Tag.json"
+            [IO.File]::WriteAllText($feed, "{`n  `"version`": `"$Tag`"`n}`n", $utf8)
+            Sign $feed
+          }
+          Publish $old @()
+          Publish $tag @()
+          $h = 'a' * 64
+          Publish $mixed @("$h  rubi-home-$old-macos-universal.zip")
+          # the script under test: the same file with the throwaway public key in place of the release key
+          $pub = (Get-Content -Raw fake/pub.pem).Trim()
+          $src = Get-Content -Raw panel/install-home.ps1
+          $swapped = [regex]::Replace($src, '(?s)(\$ReleaseKey = @\x27\r?\n).*?(\r?\n\x27@)', { param($m) $m.Groups[1].Value + $pub + $m.Groups[2].Value })
+          if ($swapped -eq $src) { throw 'the release key was not found in the script' }
+          [IO.File]::WriteAllText((Join-Path $PWD 'fake/install-home.ps1'), $swapped, $utf8)
+          "RUBI_TAG=$tag" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "RUBI_OLD_TAG=$old" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "RUBI_MIXED_TAG=$mixed" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+      - name: Serve it
+        shell: pwsh
+        run: |
+          Start-Process -FilePath python -ArgumentList '-m', 'http.server', '8099', '--bind', '127.0.0.1', '--directory', 'fake' -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8099/$env:RUBI_TAG/SHA256SUMS" | Out-Null
+      - name: It refuses what it must refuse
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $env:RUBI_INSTALL_TEST = '1'
+          $env:RUBI_DOWNLOAD_BASE = 'http://127.0.0.1:8099'
+          $env:RUBI_HOME_INSTALL = Join-Path $PWD 'refused'
+          function Run-Installer { & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -Version $env:RUBI_TAG -NoPairing 2>&1 | Out-String }
+          $good = Join-Path $PWD "fake/$env:RUBI_TAG"
+          # 1. a signature that is not the release's
+          $sig = Join-Path $good 'SHA256SUMS.sig'
+          $bytes = [IO.File]::ReadAllBytes($sig); [IO.File]::WriteAllBytes("$sig.good", $bytes); $bytes[0] = $bytes[0] -bxor 1; [IO.File]::WriteAllBytes($sig, $bytes)
+          $out = Run-Installer
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch "signature doesn't verify" -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a bad signature was not refused' }
+          Move-Item -Force "$sig.good" $sig
+          # 2. a malleated signature: S + L is the same signature to a lax verifier, and must be refused
+          [void][System.Reflection.Assembly]::Load('System.Numerics, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
+          $sigBytes = [IO.File]::ReadAllBytes($sig)
+          $sPart = New-Object byte[] 33
+          [Array]::Copy($sigBytes, 32, $sPart, 0, 32)
+          $big = New-Object System.Numerics.BigInteger(, $sPart)
+          $order = [System.Numerics.BigInteger]::Pow(2, 252) + [System.Numerics.BigInteger]::Parse('27742317777372353535851937790883648493')
+          $moved = ($big + $order).ToByteArray()
+          if ($moved.Length -gt 32) { throw 'S + L does not fit in 32 bytes' }
+          $mall = New-Object byte[] 64
+          [Array]::Copy($sigBytes, 0, $mall, 0, 32)
+          [Array]::Copy($moved, 0, $mall, 32, $moved.Length)
+          [IO.File]::WriteAllBytes("$sig.good", $sigBytes)
+          [IO.File]::WriteAllBytes($sig, $mall)
+          $out = Run-Installer
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch "signature doesn't verify" -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a malleated signature (S + L) was not refused' }
+          Move-Item -Force "$sig.good" $sig
+          # 3. a signed list, but an archive that is not the one it names
+          $zip = Get-ChildItem $good -Filter '*.zip' | Select-Object -First 1
+          Copy-Item $zip.FullName "$($zip.FullName).good"
+          Add-Content -Path $zip.FullName -Value 'x' -Encoding ascii
+          $out = Run-Installer
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'checksum mismatch' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a bad checksum was not refused' }
+          Move-Item -Force "$($zip.FullName).good" $zip.FullName
+          # 4. without the test flag the environment changes nothing: the stand-in address and folder are ignored, so the script
+          # goes to the real release (which has no such tag) and installs nothing
+          Remove-Item Env:RUBI_INSTALL_TEST
+          $env:RUBI_HOME_INSTALL = Join-Path $PWD 'refused-noflag'
+          $out = Run-Installer
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -match 'signature and checksum verified' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'the environment changed where the installer downloads from or installs to' }
+          # 5. in test mode the address must still be this computer
+          $env:RUBI_INSTALL_TEST = '1'
+          $env:RUBI_DOWNLOAD_BASE = 'https://example.com/releases'
+          $out = Run-Installer
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'must be this computer' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a test address that is not this computer was accepted' }
+          $env:RUBI_DOWNLOAD_BASE = 'http://127.0.0.1:8099'
+          # 6. a feed with no signature, and a feed whose version was changed after it was signed: no version is taken from it
+          $env:RUBI_RELEASE_FEED = 'http://127.0.0.1:8099/latest.json'
+          function Run-FeedInstaller { & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -NoPairing 2>&1 | Out-String }
+          Copy-Item "fake/feeds/$env:RUBI_TAG.json" fake/latest.json
+          Remove-Item -ErrorAction SilentlyContinue fake/latest.json.sig
+          $out = Run-FeedInstaller
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'release feed is not signed' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a feed without a signature was not refused' }
+          Copy-Item "fake/feeds/$env:RUBI_TAG.json.sig" fake/latest.json.sig
+          Copy-Item "fake/feeds/$env:RUBI_OLD_TAG.json" fake/latest.json
+          $out = Run-FeedInstaller
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'release feed is not signed' -or $out -match 'downloading' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a tampered feed was not refused' }
+          Remove-Item fake/latest.json, fake/latest.json.sig
+          # 7. a signed list that names the archive and, next to it, a file of another release
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -Version $env:RUBI_MIXED_TAG -NoPairing 2>&1 | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'the signed checksums are for' -or (Test-Path $env:RUBI_HOME_INSTALL)) { throw 'a signed list of another release was not refused' }
+          Remove-Item Env:RUBI_RELEASE_FEED
+          # every refusal above left a non-zero exit code on purpose; the step itself passed
+          exit 0
+      - name: It installs
+        shell: powershell
+        run: |
+          $env:RUBI_INSTALL_TEST = '1'
+          $env:RUBI_DOWNLOAD_BASE = 'http://127.0.0.1:8099'
+          $env:RUBI_RELEASE_FEED = 'http://127.0.0.1:8099/latest.json'
+          $env:RUBI_HOME_INSTALL = Join-Path $PWD 'installed'
+          # with no version given: the signed feed names it
+          Copy-Item "fake/feeds/$env:RUBI_TAG.json" fake/latest.json
+          Copy-Item "fake/feeds/$env:RUBI_TAG.json.sig" fake/latest.json.sig
+          & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -NoPairing
+          if ($LASTEXITCODE -ne 0) { throw "the installer failed ($LASTEXITCODE)" }
+          $exe = Join-Path $env:RUBI_HOME_INSTALL 'bin\rubi-home.exe'
+          if (-not (Test-Path $exe)) { throw 'rubi-home.exe is not installed' }
+          $v = (& $exe version | Out-String).Trim()
+          if ($v -ne $env:RUBI_TAG) { throw "version said: $v" }
+          schtasks /Query /TN "Rubi Home" | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'the Scheduled Task is not there' }
+          # running it again (the same version) upgrades in place
+          & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -Version $env:RUBI_TAG -NoPairing
+          if ($LASTEXITCODE -ne 0) { throw "the second run failed ($LASTEXITCODE)" }
+          if (Get-ChildItem (Join-Path $env:RUBI_HOME_INSTALL 'bin') -Filter 'rubi-home.exe.new') { throw 'a half-installed file was left' }
+          # an older release is genuine and signed, and still refused: by name, and by the feed replayed to it (that feed's own
+          # signature is valid)
+          $ErrorActionPreference = 'Continue'
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -Version $env:RUBI_OLD_TAG -NoPairing 2>&1 | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'older than the installed') { throw 'an older release was installed over a newer one' }
+          if ((& $exe version | Out-String).Trim() -ne $env:RUBI_TAG) { throw 'the installed copy changed' }
+          Copy-Item "fake/feeds/$env:RUBI_OLD_TAG.json" fake/latest.json
+          Copy-Item "fake/feeds/$env:RUBI_OLD_TAG.json.sig" fake/latest.json.sig
+          $out = & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -NoPairing 2>&1 | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -eq 0 -or $out -notmatch 'older than the installed') { throw 'a replayed feed installed an older release' }
+          if ((& $exe version | Out-String).Trim() -ne $env:RUBI_TAG) { throw 'the installed copy changed after the replayed feed' }
+          $ErrorActionPreference = 'Stop'
+          # the other way is an upgrade: the older release first, then the feed's newer one
+          $env:RUBI_HOME_INSTALL = Join-Path $PWD 'upgraded'
+          & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -Version $env:RUBI_OLD_TAG -NoPairing
+          if ($LASTEXITCODE -ne 0) { throw "the older release did not install on a clean folder ($LASTEXITCODE)" }
+          Copy-Item "fake/feeds/$env:RUBI_TAG.json" fake/latest.json
+          Copy-Item "fake/feeds/$env:RUBI_TAG.json.sig" fake/latest.json.sig
+          & powershell -NoProfile -ExecutionPolicy Bypass -File fake/install-home.ps1 -NoPairing
+          if ($LASTEXITCODE -ne 0) { throw "the upgrade through the feed failed ($LASTEXITCODE)" }
+          $up = Join-Path $env:RUBI_HOME_INSTALL 'bin\rubi-home.exe'
+          if ((& $up version | Out-String).Trim() -ne $env:RUBI_TAG) { throw 'the upgrade did not install the newer release' }
+          & $up install-autostart --remove
+          if ($LASTEXITCODE -ne 0) { throw 'the task was not removed' }
+          & $exe install-autostart --remove
+          if ($LASTEXITCODE -ne 0) { throw 'the task was not removed' }
+
+  # The Ed25519 check of the Windows installer (panel/install-home.ps1) on the RFC 8032, Wycheproof and ed25519-speccheck
+  # vectors, and on the newest published release's real SHA256SUMS and .sig with the key in the script: under Windows
+  # PowerShell 5.1, which is what the installer runs in, and under PowerShell 7 on Linux.
+  home-ed25519-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vectors, and the newest published release's real signature, under Windows PowerShell 5.1
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          # the newest published (not draft) release that has a signed list, as deploy/pages/latest.jq picks it
+          $list = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=20"
+          if ($LASTEXITCODE -ne 0) { throw 'could not list the releases' }
+          $releases = ($list -join "`n") | ConvertFrom-Json  # assigned first: Windows PowerShell 5.1 passes a JSON array on as one object
+          $tag = ($releases | Where-Object { -not $_.draft -and ($_.assets | Where-Object { $_.name -eq 'SHA256SUMS.sig' }) } |
+            Sort-Object { [datetime]$_.published_at } | Select-Object -Last 1).tag_name
+          if (-not $tag) { Write-Output 'no published release with a signature here; checking the vectors only'; ./scripts/test-install-home-ed25519.ps1; exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path real | Out-Null
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern SHA256SUMS --pattern SHA256SUMS.sig --dir real
+          if ($LASTEXITCODE -ne 0) { throw "could not download the signed list of $tag" }
+          Write-Output "checking the signature of $tag"
+          ./scripts/test-install-home-ed25519.ps1 -Sums real/SHA256SUMS -Sig real/SHA256SUMS.sig
+          if ($LASTEXITCODE -ne 0) { throw 'the Ed25519 check failed' }
+
+  home-ed25519-pwsh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vectors, and the newest published release's real signature, under PowerShell 7
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # the newest published (not draft) release that has a signed list, as deploy/pages/latest.jq picks it
+          $list = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=20"
+          if ($LASTEXITCODE -ne 0) { throw 'could not list the releases' }
+          $releases = ($list -join "`n") | ConvertFrom-Json  # assigned first: Windows PowerShell 5.1 passes a JSON array on as one object
+          $tag = ($releases | Where-Object { -not $_.draft -and ($_.assets | Where-Object { $_.name -eq 'SHA256SUMS.sig' }) } |
+            Sort-Object { [datetime]$_.published_at } | Select-Object -Last 1).tag_name
+          if (-not $tag) { Write-Output 'no published release with a signature here; checking the vectors only'; ./scripts/test-install-home-ed25519.ps1; exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path real | Out-Null
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern SHA256SUMS --pattern SHA256SUMS.sig --dir real
+          if ($LASTEXITCODE -ne 0) { throw "could not download the signed list of $tag" }
+          Write-Output "checking the signature of $tag"
+          ./scripts/test-install-home-ed25519.ps1 -Sums real/SHA256SUMS -Sig real/SHA256SUMS.sig
+
+  # The Windows-only helpers run on a real Windows host.
+  home-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test the OS helpers
+        run: |
+          go test ./internal/home/fsx/... ./internal/home/hostpaths/...
+          go test ./internal/home/agent/t3vm -run "PeerIsSelf|Relay"
+          go test ./internal/home -run "XDG|Zenity|Kdialog|WindowsOpen|WindowsClipboard|WindowsDialog|WindowsOffers|WindowsRefuses|AsciiJSON|Task|UTF16|ValidateTaskXML|WindowsProgramsAre|UAC|WindowsPlanDocument|WindowsElevatedScript|RealPeerPID|UnknownPeerIsRefused|Features|SchemeHandler|EveryOpOfAnUnavailable|HelloListsOnly|InstallOnWindows|UnpackZip|T3PlatformsAndWhatTheyNeed|T3NeedsABuild"

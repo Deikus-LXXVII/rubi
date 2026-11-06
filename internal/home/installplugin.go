@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -22,10 +23,11 @@ import (
 	"strings"
 
 	claudeplugin "github.com/Deikus-LXXVII/rubi/claude-plugin"
+	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 )
 
 // DefaultClaudePluginDir is where the marketplace is installed (and what managed settings point at).
-const DefaultClaudePluginDir = "/Library/Application Support/Rubi Home/claude-plugin"
+var DefaultClaudePluginDir = hostpaths.PluginDir()
 
 // maxPluginScript bounds the privileged script (it travels as one argument).
 const maxPluginScript = 256 << 10
@@ -45,6 +47,22 @@ type PluginPlan struct {
 }
 
 var pluginPathRE = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]*$`)
+
+// embeddedHookPath is the hook binary's path as the embedded .mcp.json writes it (macOS and Linux).
+const embeddedHookPath = "/usr/local/bin/rubi-home"
+
+// renderPluginFile is a file of the embedded marketplace as it is installed on this computer. The plugin's .mcp.json runs
+// the root-owned hook binary (`<hook> claude-mcp`), and that binary is not in /usr/local/bin everywhere: on Windows it is
+// under Program Files. Only that one command path is replaced; where the path is the embedded one (macOS, Linux) the
+// file is returned as it is, byte for byte.
+func renderPluginFile(name string, data []byte, hook string) []byte {
+	if hook == embeddedHookPath || path.Base(name) != ".mcp.json" {
+		return data
+	}
+	want, _ := json.Marshal(embeddedHookPath)
+	have, _ := json.Marshal(hook)
+	return []byte(strings.ReplaceAll(string(data), `"command": `+string(want), `"command": `+string(have)))
+}
 
 // EmbeddedPluginFiles lists the embedded marketplace's files, sorted.
 func EmbeddedPluginFiles() ([]PluginFile, error) { return pluginFiles(claudeplugin.Files) }
@@ -71,6 +89,7 @@ func pluginFiles(fsys fs.FS) ([]PluginFile, error) {
 		if err != nil {
 			return err
 		}
+		b = renderPluginFile(p, b, hostpaths.HookBinary())
 		sum := sha256.Sum256(b)
 		out = append(out, PluginFile{Path: p, Data: b, SHA256: hex.EncodeToString(sum[:])})
 		return nil
@@ -93,6 +112,9 @@ func pluginScript(t installTools, dst string, files []PluginFile, asRoot bool) s
 	w := func(f string, a ...any) { fmt.Fprintf(&b, f+"\n", a...) }
 	w("set -e; umask 022")
 	w("pdst='%s'; pdir='%s'; pparent='%s'", dst, dir, filepath.Dir(dir))
+	// The script replaces a folder called claude-plugin that is the Rubi plugin (it has the marketplace's own manifest, as
+	// every earlier install does) and nothing else, whatever it is told.
+	w("case \"$pdst\" in */claude-plugin) ;; *) echo \"$pdst is not a claude-plugin folder; nothing installed\" >&2; exit 1;; esac")
 	if asRoot {
 		w("pchk() { d=$1; while :; do")
 		w("  s=$(%s \"$d\") || exit 1", t.Stat)
@@ -109,6 +131,7 @@ func pluginScript(t installTools, dst string, files []PluginFile, asRoot bool) s
 		w("pchk \"$pdir\"")
 	}
 	w("[ ! -e \"$pdst\" ] || { [ -d \"$pdst\" ] && [ ! -L \"$pdst\" ]; } || { echo \"$pdst is not a plain directory\" >&2; exit 1; }")
+	w("[ ! -e \"$pdst\" ] || [ -f \"$pdst/.claude-plugin/marketplace.json\" ] || { echo \"$pdst is not a Rubi plugin folder; nothing replaced\" >&2; exit 1; }")
 	// Leftovers of an earlier run that was cut off (temporary trees, a moved-aside old tree).
 	w("for x in \"$pdir\"/.claude-plugin.*; do [ -e \"$x\" ] || [ -L \"$x\" ] || continue; %s -rf \"$x\"; done", t.Rm)
 	w("ptmp=$(%s -d \"$pdir/.claude-plugin.XXXXXX\")", t.Mktemp)
@@ -162,8 +185,16 @@ func planClaudePlugin(fsys fs.FS, dst string, requireRoot bool, tools installToo
 	if err != nil {
 		return PluginPlan{}, err
 	}
+	if filepath.Base(dst) != "claude-plugin" {
+		return PluginPlan{}, fmt.Errorf("the plugin target %q is not a folder called claude-plugin", dst)
+	}
 	if li, err := os.Lstat(dst); err == nil && (!li.IsDir() || li.Mode()&fs.ModeSymlink != 0) {
 		return PluginPlan{}, fmt.Errorf("%s exists and isn't a plain directory; remove it by hand and run install-hook again", dst)
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		if _, err := os.Stat(filepath.Join(dst, ".claude-plugin", "marketplace.json")); err != nil {
+			return PluginPlan{}, fmt.Errorf("%s exists and is not a Rubi plugin folder; it is not replaced", dst)
+		}
 	}
 	if requireRoot {
 		probe := dst
@@ -175,11 +206,14 @@ func planClaudePlugin(fsys fs.FS, dst string, requireRoot bool, tools installToo
 				break
 			}
 		}
-		if why := insecureAncestors(probe); why != "" {
+		if why := ancestorProbe(probe); why != "" {
 			return PluginPlan{}, fmt.Errorf("refusing to install the Claude Code plugin into %s: %s. Its files are only safe where no one but root can replace them", filepath.Dir(dst), why)
 		}
 	}
 	sc := pluginScript(tools, dst, files, requireRoot)
+	if winPlans {
+		sc = windowsPluginScript(dst, files)
+	}
 	if len(sc) > maxPluginScript {
 		return PluginPlan{}, fmt.Errorf("the plugin is too large to install in one step (%d bytes)", len(sc))
 	}

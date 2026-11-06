@@ -1,0 +1,352 @@
+# Agent VMs on Linux: the microvm backend (stage P9 spike)
+
+This note answers the open technical questions of `docs/plans/home-platforms.md` (section 2.7) and fixes the design the
+P9 work builds. Where an answer rests on a source, the source is named; where it is still to be measured on a computer
+with KVM, it says so. Nothing here has run on a real KVM host yet: there is no test machine with KVM so far, so every
+"measure" item is open until there is one.
+
+The code that exists so far is `internal/home/agent/microvm`: the QEMU and virtiofsd command lines, the guest's mount
+table and the KVM check, with their tests. It starts nothing yet.
+
+## The shape
+
+One VM per project (or per isolated role), as with Apple's `container` on macOS:
+
+- **QEMU** (`qemu-system-x86_64` or `qemu-system-aarch64`), one process per VM, run as the user. A pinned build that Rubi
+  Home downloads and checks against the release signature, like T3 and Node (owner's decision). KVM only, no TCG.
+- **virtiofsd**, one process per shared folder, run as the user; the same pinned, signed delivery.
+- **A guest agent** as PID 1 (`/sbin/rubi-guest`, a small static Go program in the root file system). It mounts the
+  shares, starts processes with stdio and carries the netpipe frames, over one virtio-serial port.
+- **Kernel and root file system**, built in CI per CPU from `runner/container/Dockerfile`, signed in the release's
+  `SHA256SUMS`, downloaded once per runner hash. The root is a raw ext4 image attached read-only.
+
+## The questions
+
+### 1. Can the user use `/dev/kvm`?
+
+systemd's udev rules give `/dev/kvm` (and `/dev/vhost-vsock`, `/dev/vhost-net`) the `kvm` group and a mode set when
+systemd is built (`DEV_KVM_MODE`); the rules carry no `uaccess` tag (systemd, `rules.d/50-udev-default.rules.in`). The
+mode varies by distribution, so Rubi Home does not guess: it opens `/dev/kvm` and asks `KVM_GET_API_VERSION`, which
+must be 12 (`microvm.CheckKVM`, `HostKVMProbe`). The answers:
+
+- opens and says 12: available;
+- not there, and an x86 CPU without the `vmx` or `svm` flag: "agents need hardware virtualisation, which this computer's
+  CPU doesn't offer to Linux" (a VPS or VM without nested virtualisation, an old CPU);
+- not there otherwise: no KVM (turned off in the firmware, or the module isn't loaded);
+- permission denied: the user is not in the `kvm` group. Adding them is a root step; the panel says so in words (project
+  rule 2: no terminal commands in user text). Whether Rubi Home offers to do it with the administrator step of 2.4 is
+  a later decision; it is not part of P9.
+
+### 2. Which machines get "agents need hardware virtualisation"?
+
+Every computer where the check above fails: most VPSes and cloud VMs (no nested virtualisation), 32-bit computers, and
+ARM boards whose kernel has no KVM. The check is the answer, not a list. Raspberry Pi: not confirmed from a source for
+the Pi 5 with the stock kernel; to be tried on a real board.
+
+### 3. virtio-fs or 9p?
+
+**virtio-fs.** It is the faster of the two and the one QEMU keeps developing; 9p is not deprecated (QEMU removed only
+its `proxy` backend, in 9.2), so it stays the fallback if virtiofsd turns out unusable somewhere.
+
+File-change events: a watcher in the guest does **not** see the user's edits on the computer through virtio-fs (FUSE
+has no remote fsnotify; an upstream series to add it was posted in 2021 and not merged). The agent itself does not
+watch files; tools that do (dev servers) use polling inside the VM (`CHOKIDAR_USEPOLLING`, `WATCHPACK_POLLING`), which
+the runner can set. If that proves a problem, Home can relay the computer's own file events over the control channel.
+
+### 4. Shipping QEMU and virtiofsd
+
+**Pinned builds signed with the release key** (owner's decision), like T3 and Node:
+
+- CI builds QEMU per CPU with only what the VM uses: `--target-list=<arch>-softmmu --without-default-features
+  --enable-kvm --enable-seccomp --enable-vhost-user` plus the virtio devices of the command line. `-sandbox` needs the
+  seccomp build. The build is relocatable (a folder with its libraries), not a glibc static binary, which QEMU
+  discourages. Size: to be measured (expected tens of MB).
+- virtiofsd (Rust) is built with the musl target where its libseccomp and libcap-ng allow, else as a relocatable folder.
+- Both go into the release's `SHA256SUMS` and are checked exactly as the Home binary is (`docs/design/rubi-home.md`).
+- **Licences.** QEMU is GPL-2.0-or-later: the release must carry or offer the exact source and build scripts it was built
+  from. The release job attaches a source archive of the pinned QEMU with the build script. virtiofsd is Apache-2.0
+  and BSD-3-Clause: the licence texts go with it. Signing does not conflict with GPLv2.
+
+### 5. vsock or serial?
+
+**virtio-serial** for the control channel. It needs no kernel module and no device node on the computer, no CID to
+allocate, and nothing but a Unix socket QEMU serves in the VM's folder (`control.sock`, port `rubi.control`). vsock
+needs `/dev/vhost-vsock` (the same `kvm` group as `/dev/kvm`) and a host-wide unique CID; the unprivileged alternative,
+`vhost-device-vsock`, is one more daemon to ship. Throughput of virtio-serial is not documented; it is expected in the
+tens to low hundreds of MB/s, enough for a command's stdio, the proxy and the hook gate. **Measure** with a T3 session
+before the backend is called done; vsock stays the option if it is too slow.
+
+### 6. Image size and boot time
+
+First measurements (x86-64): the root file system built from today's runner image is 1039 MiB uncompressed (the image
+export is 815 MB); the kernel is a 15.8 MB `vmlinux`. The download is compressed and happens once per runner change; the
+setup wizard shows its size before it starts. Boot: under QEMU's emulator (no KVM) Rubi's kernel reaches the probe and
+the VM has ended again in under a second. With KVM on the test machine (Debian's QEMU 10.0.13, Rubi's kernel 6.18.60):
+the whole run through the launcher, from starting virtiofsd to QEMU's end after the guest's restart, took 0.40 s; the
+probe mounted the share served by the confined virtiofsd, and the file it wrote is the user's (uid 1000) on the host.
+With everything Rubi's own (kernel 6.18.60, QEMU 11.1.3, virtiofsd 1.14.0 under the rule set): 0.31 s, the same
+checks. arm64 (Rubi's kernel, built in 93 s; QEMU 27 MB; virtiofsd 2.3 MB) passes under QEMU's emulator in Docker on an
+arm64 Mac; with KVM it waits for an arm64 test machine.
+
+### 7. Memory
+
+A VM per role per project, as on macOS. The defaults are 2 CPUs and 2 GiB (`microvm.DefaultCPUs`,
+`DefaultMemoryMiB`); the setup wizard's `CPUs` and `Memory` are the limits, accepted only as a count of 1 to 999 and a
+size of 256 MiB to 256 GiB (`2G`, `1536M`). A shared VM for a project's roles is not done: it would weaken the role
+boundary. The guest's memory is a shared memfd (vhost-user needs it), so it is not swapped by the computer like an
+ordinary process's; the wizard says how many VMs the chosen size allows.
+
+### 8. Windows file sharing
+
+Unchanged from the plan: QEMU with WHPX has no virtio-fs or 9p on a Windows host (a 2022 series for 9p with
+`security_model=none` was not confirmed merged; virtiofsd does not run on Windows). P12 needs a file service of its own
+over the control channel. Not part of P9.
+
+### 9. Same behaviour as Apple's inside `/work`
+
+virtio-fs passes hard links, symlinks, case sensitivity and mode bits through to the computer's file system, so the
+shield and snapshot code (`agent/shield.go`) sees what it sees on macOS with bind mounts (and Linux file systems are
+case-sensitive, unlike the macOS default). Ownership: the runner (uid 10001, `microvm.GuestUID`) and the user are
+mapped onto each other by virtiofsd (`--translate-uid`, `--translate-gid`), so what the agent writes is the user's. To
+be confirmed by the shield tests in a live VM.
+
+## Isolation
+
+What keeps an agent in its VM, and what keeps the VM's helpers in their place:
+
+- **No network device.** `-nic none` with `-nodefaults`: the VM has no network card of any kind. The proxy, the hook
+  gate and T3's port are netpipe streams over the control channel, as with Apple's `container`.
+- **QEMU** runs as the user, under its seccomp sandbox (`-sandbox on,obsolete=deny,elevateprivileges=deny,spawn=deny,
+  resourcecontrol=deny`, the set libvirt uses), with no default devices, no user config file, no display, no monitor,
+  and `-no-reboot` (a guest reboot or panic ends QEMU). `-run-with user=` and `chroot=` need root and are not used.
+- **The root file system** is read-only (`readonly=on` on the drive); the guest's writable places are tmpfs and the
+  shares.
+- **The shares.** Each folder of `agent.Project.Mounts` is its own virtiofsd and its own tag (`rubi0`...), in the same
+  order, and the guest agent mounts them as the table says (read-only ones with `ro`). A read-only share is also refused
+  writes by virtiofsd itself (`--readonly`).
+- **virtiofsd's confinement.** Its own sandbox (`--sandbox namespace`) needs a user namespace with capabilities, which
+  Ubuntu 24.04 does not give unconfined programs (`kernel.apparmor_restrict_unprivileged_userns`), and Rubi Home installs
+  nothing as root to change that. So virtiofsd runs with `--sandbox none`, and the launcher confines it instead: before
+  starting virtiofsd it applies a **Landlock** rule set (unprivileged, Linux 5.13 and later) that lets the process reach
+  only its shared folder, read-only for a read-only share, plus the libraries it loads. On a kernel without Landlock the
+  backend is not available (it does not run an unconfined file server). virtiofsd's own seccomp filter stays on.
+- **Nothing the guest writes is stored by QEMU.** The serial console is a socket in the VM's folder that Home reads
+  into a bounded buffer; QEMU drops console output nobody reads. No chardev is a file.
+- **Paths.** Every path given to QEMU must be absolute and clean, with no control characters, and the VM's folder
+  short enough for its Unix sockets (107 bytes with the socket's name); a comma inside an option
+  value is doubled (QEMU's only escape), so a folder named `a,readonly=off` can't add an option. Guest places must be
+  absolute, clean and not `/`, and no place is shared twice.
+
+## The guest agent
+
+`cmd/rubi-guest` is the VM's PID 1 (`init=/sbin/rubi-guest`), a static Go program; its logic is
+`internal/home/agent/guest`, which also holds Home's client.
+
+- **Start.** As PID 1 it mounts `/proc`, `/sys` (read-only), `/dev`, `/tmp` and `/run`, starts itself again as
+  `rubi-guest serve`, and from then on only reaps: every orphan of the VM becomes PID 1's child, and a wait for any
+  child must not take an exit status the server is waiting for, so the server runs in a process of its own. When the
+  server ends, PID 1 ends the VM.
+- **Ending the VM.** The guest restarts rather than powers off, and QEMU runs with `-no-reboot`, so any restart ends
+  QEMU: the x86 `microvm` machine has no ACPI power button, and `reboot=t` on its kernel command line makes the restart
+  a triple fault. A kernel panic restarts at once (`panic=-1`), so it ends QEMU too. To be confirmed in a live VM.
+- **Home may come and go.** Home connects to the control port after the VM has started; until then a read gives end of
+  file and a write fails. The server opens the port and serves it again each time the channel ends (with a HELLO each
+  time), so a late or restarted Home finds it. Processes of a channel that ended are killed with it.
+- **The control channel.** The server finds the virtio-serial port by its name (`/sys/class/virtio-ports/*/name` is
+  `rubi.control`; there is no udev in the guest to make `/dev/virtio-ports/`), opens `/dev/vportNpM` and serves it with
+  package netpipe's frames. It says HELLO when it is ready. Home opens every stream and the guest opens none, so stream
+  numbers never collide.
+- **Control requests** (service 1): JSON lines, one answer per request: `mount` (the table of
+  `microvm.GuestMounts`; each share is mounted `nosuid,nodev`, and `ro` when read-only), `ping`, `poweroff`.
+- **Processes** (service 2): one stream per process. Home writes the request (argv, the whole environment, the folder,
+  the user and group: never root), the guest answers whether it started, then chunks follow (a kind byte, a 4-byte
+  length, at most 32 KiB): stdin and its end from Home; stdout, stderr and, last, the exit status from the guest. The
+  process runs as the request's user with no extra groups, in a session of its own, with nothing of the guest agent's
+  environment.
+- **What ends a process.** Home closing its stream (or the channel ending) kills its process group at once, seen even
+  when nothing reads the stream (netpipe's `PeerDone`), so a process that ignores its stdin can't keep a writer stuck.
+  The leader's exit also ends its group: the guest waits for the exit without reaping (`waitid` with `WNOWAIT`), kills
+  the group while its id is still taken, then reaps. Output still in the pipes is passed on for two seconds after the
+  leader's exit, so a descendant that left the group and keeps the pipes open can't hold the stream.
+- **Home's side of a process** (`guest.Process`, with `agent.Conn`'s methods): its stdout is not buffered, so the
+  reader reads to the end (or closes) for the exit status to arrive, as with a pipe; the stream is closed once the
+  exit status is in. Requests wait as long as the caller's context allows: callers give a deadline.
+- **Trust.** What runs in the VM may take over its root, so the guest is the less trusted side: Home's client bounds
+  every line (64 KiB) and chunk (32 KiB) it reads, treats any other kind of chunk as a protocol error, and gives the
+  guest only what the request carries. User and group ids are 1 to 4294967294 on both sides (a larger number would
+  wrap to root).
+- **The netpipe** of the proxy, the hook gate and T3's port stays what it is: a process (`rubi-netpipe`) started in the
+  VM with this exec, whose stdio carries its own multiplexed streams.
+
+## Machines and devices
+
+x86-64 uses the `microvm` machine, whose virtio devices are virtio-mmio (`virtio-blk-device`, `virtio-serial-device`,
+`vhost-user-fs-device`); arm64 uses the `virt` machine with its PCIe (`virtio-blk-pci` and so on), which needs no
+firmware for a `-kernel` boot.
+
+On x86 the microvm machine runs with `acpi=off`: QEMU then names the virtio-mmio devices on the kernel command line
+(`virtio_mmio.device=`) and the interrupt controller is in the MP table, so the guest kernel needs neither ACPI nor PCI.
+With ACPI on, the tables of the minimal kernel (no PCI) didn't load ("AE_BAD_PARAMETER, During Region initialization")
+and no virtio device was found.
+
+On x86 the microvm machine always runs a firmware first, and without option ROMs (`x-option-roms=off`) only QEMU's own
+qboot can start the kernel, through its PVH entry. So:
+
+- the kernel is an ELF `vmlinux` built with `CONFIG_PVH` (a compressed bzImage has no PVH entry; QEMU loads it, the
+  firmware finds nothing to start, and the console stays empty);
+- the command line names the firmware (`-bios`, `microvm.Spec.Firmware`): the pinned build's `qboot.rom`. Debian 13's
+  QEMU makes a SeaBIOS build the microvm default (`bios-microvm.bin` from the seabios package), which can't start a
+  kernel without option ROMs: the live test sat in the firmware (real mode at `f000:…`) until `-bios qboot.rom`.
+
+Found with the live test (`internal/home/agent/microvm/live`) on Debian 13 with QEMU 10.0.13 and Alpine's virt kernel
+6.6 (its vmlinux has a PVH entry): with qboot the kernel was running in under 2 s, and a kernel panic with `panic=-1`
+ended QEMU with status 0 (`-no-reboot`). The full test then passed in 2 s: the probe ran as PID 1, mounted `/proc`,
+`/sys` and `/dev`, found the control port (`/dev/vport1p1`, named `rubi.control`) and ended the VM the guest agent's way
+(a restart; QEMU exited with status 0). The two virtiofsd processes took every flag and their vhost-user connection and
+ended with QEMU. Alpine's kernel has virtio-fs only as a module, so the share wasn't mounted there; Rubi's kernel builds
+`CONFIG_VIRTIO_FS`, `CONFIG_VIRTIO_CONSOLE`, `CONFIG_VIRTIO_BLK` and `CONFIG_VIRTIO_MMIO` in (it has no modules).
+
+The runner's user and group inside the VM are 10001 (`microvm.GuestUID`, `GuestGID`);
+the runner's Dockerfile pins only the user, so the CI build of the root file system checks that the group is 10001 and
+stops otherwise (pinning it in the Dockerfile would change the runner image macOS users build).
+
+## The guest kernel and root file system
+
+`runner/microvm` builds both:
+
+- **Kernel** (`build-kernel.sh`): the longterm source pinned by its SHA-256 (`kernel.pin`, from kernel.org's signed
+  sums), `allnoconfig` plus the fragments in `kernel/` (what the VM uses and nothing else: the PVH entry, virtio-mmio on
+  x86 or PCIe on arm64, virtio-blk, -console and -fs, ext4, the serial console, loopback networking, seccomp and
+  namespaces for the tools' own sandboxes; no modules, no network card). `check-kernel-config.sh` fails the build when
+  an option didn't make it into the configuration (a missing dependency only warns in Kconfig), before and after
+  `make`. `TestGuestKernelDrivesTheCommandLine` ties the fragments to `QEMUArgs`. Initramfs support is built in for the
+  live test's probe; Rubi's VMs boot from the root disk.
+- **Root file system** (`build-rootfs.sh`): the runner image's files and `/sbin/rubi-guest` as a read-only ext4 image
+  without a journal, with the mount points outside `/work` made in it (`rootfs-dirs.txt`; the root is read-only). It
+  stops when the runner's user and group aren't 10001.
+
+## QEMU and virtiofsd builds
+
+- **QEMU** (`build-qemu.sh`, `qemu.pin`: 11.1.3, its `.sig` checked against the release key qemu.org lists): only the
+  target CPU, KVM without the emulator, seccomp, vhost-user and libfdt; no display, network back ends, tools or docs.
+  Built on Ubuntu 22.04 (glibc 2.35, so it runs on Ubuntu 22.04 and later and Debian 12 and later) as a relocatable
+  folder: `bin/qemu-system-<arch>`, the libraries it loads that aren't glibc's in `lib/` (glib, pcre, libseccomp,
+  libfdt, zlib), found through an RPATH of `$ORIGIN/../lib` (an RPATH, not a RUNPATH: it also serves the libraries'
+  own dependencies, such as glib's libpcre), and `share/qemu/qboot.rom`. The script stops when a library resolves
+  outside the folder. x86-64: 28 MB, in about five minutes; checked to run with all the command line's devices on
+  Ubuntu 22.04 and 24.04 and Debian 12 and 13 without any development package.
+- **virtiofsd** (`build-virtiofsd.sh`, `virtiofsd.pin`: 1.14.0 by crates.io's checksum): built with its own
+  `Cargo.lock` (`--locked`), the same folder layout (libseccomp, libcap-ng in `lib/`): 2.6 MB. Version 1.14 takes every
+  flag `VirtiofsdArgs` passes. 1.14 made `--inode-file-handles=prefer` its default, which reopens the share's mount point
+  (say `/`) for reading: the rule set refuses that, and file handles need `CAP_DAC_READ_SEARCH`, which an unprivileged
+  virtiofsd never has, so `VirtiofsdArgs` says `--inode-file-handles=never`. Its Landlock rule set allows its folder and the system's library folders (glibc and
+  the loader stay the system's).
+- **Licences.** QEMU is GPL-2.0-or-later: the release attaches the pinned tarball and the build script. The bundled
+  glib, libseccomp and libcap-ng are LGPL-2.1: their exact source (the Ubuntu 22.04 source packages of the versions
+  bundled) must be offered too; the release job is to attach them. virtiofsd's Apache-2.0 and BSD-3-Clause texts go in
+  its folder.
+
+## The workflow
+
+`.github/workflows/microvm.yml` builds all of it per CPU on native runners (Ubuntu 22.04, x86-64 and arm64): the
+kernel, QEMU, virtiofsd, and the root file system from the runner image; checks that QEMU has the command line's machine
+and devices and virtiofsd takes its flags; and makes reproducible archives `rubi-vm-<version>-linux-<arch>-{kernel,
+rootfs,qemu,virtiofsd}.tar.gz`. A sources job archives the QEMU tarball with the build scripts and the exact Ubuntu
+source packages of the bundled LGPL libraries (the versions installed, recorded in `VERSIONS`). It runs on changes to
+what goes into the VM, on demand, and as a reusable workflow. **Not yet wired into the release** (the release would then
+publish the VM files to everyone): that is the owner's decision.
+
+## The launcher
+
+`microvm.Launcher.Start` runs one VM as the user:
+
+1. `PrepareDir` makes the VM's folder 0700, or checks that an existing one is a real folder of the user's own (not a
+   link, a file or another user's), closes it to 0700 and clears what an earlier run left.
+2. Each share's virtiofsd starts through Home's own `vm-confine` command (`ConfineMain`): it applies the share's Landlock
+   rule set (`VirtiofsdRules`: the share, read-only for a read-only share; the VM's folder for the socket and the lock
+   file virtiofsd makes beside it; virtiofsd itself and its library folders; `/proc`, which virtiofsd reopens files
+   through), sets `no_new_privs` and becomes virtiofsd with an empty environment. Every file system right the kernel's
+   Landlock version knows is handled. On a kernel without Landlock nothing runs (`ErrNoLandlock`). The launcher writes
+   its pid file (`fsN.pid`) and waits for its socket.
+3. QEMU starts with an empty environment; the launcher waits for the console and control sockets and keeps the last
+   64 KiB of the console in memory.
+
+A failed start ends what it started and clears the folder. The VM ends as a whole: when QEMU ends the file servers go
+with it, and a file server that dies ends QEMU, since its share is gone. `Stop` waits for the guest's own end (the
+caller asks the guest agent to power off), then SIGTERM, then SIGKILL.
+
+`Sweeper` ends what a Home that stopped without ending its VMs left: for each `*.pid` in a VM folder it kills the pid
+only while that process's command line (`/proc/<pid>/cmdline`) still names the folder, so a reused pid is never killed.
+
+Found while testing it: the kernel's exec of a confined program also needs execute permission on its dynamic loader,
+so a dynamically linked virtiofsd (a distribution's) needs its library folders in `Launcher.Libs`. Debian's virtiofsd
+1.13.2 starts and serves its socket under the rule set as an ordinary user, for a writable and a read-only share.
+
+The launcher has run the probe VM on the KVM test machine (`TestLiveLauncher`, Debian's QEMU 10.0.13 and virtiofsd
+1.13.2 under the rule set): started, the guest restarted, and the VM ended cleanly in about 2 s with nothing left. Two
+things the live runs found and the launcher now handles: QEMU makes a socket's file a moment before it listens (the
+launcher dials again until it does), and on QEMU's way out its file servers end first (QEMU gets a second to end before a
+file server's end counts as a lost share).
+
+A Landlock rule set does not cover connecting to a Unix socket by path; virtiofsd could reach the VM's own control
+socket in the same folder. That gives it nothing it didn't have: it already serves the guest's file system.
+
+## The backend
+
+`agent.MicroVMBackend` is Linux's `VMBackend` (`platformBackend` picks it, with this release's version and Home's own
+program for `vm-confine`):
+
+- *Available*: a CPU with a guest kernel (x86-64 or arm64), Landlock, and KVM. A `/dev/kvm` the user can't open yet
+  still counts: an administrator can fix that, and the setup wizard's KVM step says so (it has no button).
+- *New* is a `MicroVM`: it boots the VM with the project's shares in order, waits for the guest agent, has it mount the
+  shares, and runs the network forwarder and the runner as guest execs (user 10001, `/work`, the runner image's
+  environment under each exec's own; a guest exec inherits nothing).
+- *Provision*: the tool step is the VM files, the service step is KVM, the image comes with the files. The tool step is
+  a `ToolInstaller`, so the setup wizard calls it instead of the Mac's administrator package install: the files are
+  downloaded from Home's own release, every archive is checked against the release's signed `SHA256SUMS` before it is
+  unpacked, only folders and regular files are unpacked, nothing lands outside its folder, and the finished folder is
+  renamed into place with a marker, so a cancelled or failed install leaves nothing half there.
+- *Login* and *Sessions* are nil for now: the sign-in VM and T3's session VMs on this backend are later steps. T3 says
+  "T3 sessions don't run in this computer's VMs yet" where agents are available but the backend has no session host,
+  and the session server serves nothing there.
+
+## libkrun
+
+libkrun (Apache-2.0) is a VMM library with virtio-fs, vsock and KVM (and HVF on macOS) built in, used rootless by
+crun-krun. It would replace QEMU and virtiofsd with one library, and could one day replace Apple's `container` too. Not
+now: its current major version's API is not stable, it is a C library (cgo, or a helper binary), and it turns on its
+TSI networking whenever the VM has no network card, which is exactly the case Rubi Home relies on; its file server is
+not confined either. It is worth a second look once its API is stable.
+
+## What P9 still has to do
+
+In order; each step has its tests:
+
+1. The guest agent (`/sbin/rubi-guest`): done (above); tested over a pipe, its init only in a live VM.
+2. The launcher: done (`microvm.Launcher`, `PrepareDir`, `Sweeper`, `ExecConfined`, Home's `vm-confine`; below).
+3. CI builds: kernel, root file system, QEMU, virtiofsd per CPU, into `SHA256SUMS`; the QEMU source archive.
+4. The backend: done (`MicroVMBackend`, above), chosen in `platformBackend` for Linux; the sign-in VM is still to do.
+5. T3 sessions: the `agent-vm` shim's stream attached to a guest exec.
+6. The live test on a computer with KVM: done for agents. Home's own live tests of the agent VMs (`TestLiveRoles`,
+   `TestLiveSSH`, `TestLiveNetless`) run on the microvm backend on Linux, with Rubi's kernel, root file system, QEMU and
+   virtiofsd installed through the setup wizard from a signed (test) release, and pass on an x86_64 test machine with
+   KVM: each role sees only its own role folder, read-only, and its writable Claude folder; `ssh` through Home works and
+   its forbidden forms are refused; the VM has only `lo`, every direct connection fails with `ENETUNREACH`, the proxy
+   through the pipe allows a listed host (TLS works through it) and refuses an unlisted one or one without credentials,
+   the pipe comes back after its forwarder is killed, and no QEMU or virtiofsd is left after a test. What the runs
+   found: the VMs' folder on a fresh Home, loopback (the guest's init brings `lo` up; a container runtime does that),
+   the role variables on every exec, and the kernel's `sit0` (its IPv6 tunnel driver is off now).
+7. Still to do: the sign-in VM and T3's session VMs on this backend, and the release wiring of the workflow.
+
+## Sources
+
+- systemd udev rules: https://github.com/systemd/systemd/blob/main/rules.d/50-udev-default.rules.in
+- virtiofsd README (sandbox modes, unprivileged use, `--translate-uid`, `--readonly`): https://gitlab.com/virtio-fs/virtiofsd/-/blob/main/README.md
+- Ubuntu 24.04 user namespace restriction: https://seclists.org/oss-sec/2024/q2/147
+- FUSE/virtiofs inotify series: https://lore.kernel.org/linux-fsdevel/YXm4eNztvEyGGp4L@redhat.com/
+- QEMU removed features (9p proxy, `-chroot`, `-runas`): https://www.qemu.org/docs/master/about/removed-features.html
+- QEMU microvm machine: https://www.qemu.org/docs/master/system/i386/microvm.html
+- QEMU manual (`-sandbox`, `-nic`, `-fsdev`): https://www.qemu.org/docs/master/system/qemu-manpage.html
+- vhost-device-vsock: https://docs.rs/crate/vhost-device-vsock/latest/source/README.md
+- libkrun: https://github.com/containers/libkrun
+- QEMU WHPX: https://www.qemu.org/docs/master/system/whpx.html

@@ -6,36 +6,26 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 )
 
 // Shortcuts: Rubi sees and runs only the shortcuts in one folder (Rubi, by default), which the user
 // fills on purpose, e.g. "Heating on" made of Apple Home actions. A shortcut runs by its identifier,
 // so one with the same name elsewhere can't be run instead.
+//
+// The shortcuts command exists on macOS only: runShortcuts is in shortcuts_darwin.go, and everywhere else
+// (shortcuts_notmac.go) it answers not_available_here (features.go) instead of running anything. This file is the
+// part that does not depend on the system.
 
 const (
 	shortcutTimeout = 90 * time.Second
 	maxOutput       = 64 << 10
 )
-
-func runShortcuts(ctx context.Context, args ...string) ([]byte, error) {
-	out, err := exec.CommandContext(ctx, "shortcuts", args...).CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if len(msg) > 300 {
-			msg = msg[:300]
-		}
-		if msg != "" {
-			return nil, fmt.Errorf("%w: %s", err, msg)
-		}
-		return nil, err
-	}
-	return out, nil
-}
 
 var listLine = regexp.MustCompile(`^(.*) \(([0-9A-Fa-f-]{36})\)$`)
 
@@ -50,6 +40,10 @@ func (h *Helper) shortcuts(ctx context.Context) ([]shortcut, error) {
 	defer cancel()
 	out, err := h.Shortcuts(ctx, "list", "--folder-name", folder, "--show-identifiers")
 	if err != nil {
+		var coded *homeproto.CodedError
+		if errors.As(err, &coded) {
+			return nil, err // not available here: the answer stays as it is
+		}
 		return nil, fmt.Errorf("couldn't list the shortcuts in the %q folder (create it in the Shortcuts app): %w", folder, err)
 	}
 	list := []shortcut{}

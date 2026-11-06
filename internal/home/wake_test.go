@@ -378,6 +378,9 @@ func TestWaiterSlotsAreSeparateAndBounded(t *testing.T) {
 			cn.Close()
 		}
 	}()
+	// One at a time: a connection holds one of the claudeMaxReading slots until its line is read (the
+	// socket probe of serveSocket too), and as many connections as there are slots, all at once, would
+	// have the last one turned away on a slow machine.
 	for i := 0; i < claudeMaxWaiters; i++ {
 		cn, err := net.Dial("unix", sock)
 		if err != nil {
@@ -385,12 +388,12 @@ func TestWaiterSlotsAreSeparateAndBounded(t *testing.T) {
 		}
 		conns = append(conns, cn)
 		fmt.Fprintf(cn, `{"hook_event_name":"RubiWait","session_id":"w%d"}`+"\n", i)
+		waitFor(t, fmt.Sprintf("waiter %d", i), func() bool {
+			c.wmu.Lock()
+			defer c.wmu.Unlock()
+			return len(c.waiters) == i+1
+		})
 	}
-	waitFor(t, "all waiters", func() bool {
-		c.wmu.Lock()
-		defer c.wmu.Unlock()
-		return len(c.waiters) == claudeMaxWaiters
-	})
 	if r := gotResult(t, startWaiter(sock, "extra", time.Minute)); r.code != 0 || r.took > 2*time.Second {
 		t.Fatalf("waiter over the slots: %+v", r)
 	}

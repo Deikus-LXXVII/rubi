@@ -1,0 +1,4 @@
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"method":"hello","params":{"run_token":"tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt","version":"test"}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"result":{"ok":true}}}
+{"from":"home","msg":{"jsonrpc":"2.0","id":1,"method":"session.list","params":{}}}
+{"from":"runner","msg":{"jsonrpc":"2.0","id":1,"result":{"sessions":[]}}}
