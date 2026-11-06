@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -313,6 +314,9 @@ func liveRedact(out string) string {
 // liveListeners lists the TCP listeners of this process (lsof, read only); nil when lsof can't say.
 func liveListeners(t *testing.T) []string {
 	t.Helper()
+	if runtime.GOOS == "linux" {
+		return procListeners()
+	}
 	out, err := exec.Command("lsof", "-nP", "-a", "-p", strconv.Itoa(os.Getpid()), "-iTCP", "-sTCP:LISTEN", "-Fn").Output()
 	if ee, ok := err.(*exec.ExitError); err != nil && !(ok && ee.ExitCode() == 1) { // 1 is "nothing matched"
 		return nil
@@ -594,4 +598,34 @@ func liveNewVM(t *testing.T, h *Helper) func(agent.Project) agent.VM {
 	return func(agent.Project) agent.VM {
 		return &agent.AppleContainer{RunnerDir: cfg.AgentRunnerDir, EnvDir: h.Dir}
 	}
+}
+
+// procListeners are this process's listening TCP sockets on Linux, from /proc (no lsof needed): the inodes of its socket
+// descriptors, matched with the LISTEN lines (state 0A) of /proc/self/net/tcp and tcp6, as "address:port" in hex.
+func procListeners() []string {
+	mine := map[string]bool{}
+	fds, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return nil
+	}
+	for _, fd := range fds {
+		if l, err := os.Readlink("/proc/self/fd/" + fd.Name()); err == nil && strings.HasPrefix(l, "socket:[") {
+			mine[strings.TrimSuffix(strings.TrimPrefix(l, "socket:["), "]")] = true
+		}
+	}
+	l := []string{}
+	for _, f := range []string{"/proc/self/net/tcp", "/proc/self/net/tcp6"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n")[1:] {
+			c := strings.Fields(line)
+			if len(c) > 9 && c[3] == "0A" && mine[c[9]] {
+				l = append(l, c[1])
+			}
+		}
+	}
+	sort.Strings(l)
+	return l
 }

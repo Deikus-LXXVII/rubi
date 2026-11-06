@@ -327,9 +327,16 @@ In order; each step has its tests:
 3. CI builds: kernel, root file system, QEMU, virtiofsd per CPU, into `SHA256SUMS`; the QEMU source archive.
 4. The backend: done (`MicroVMBackend`, above), chosen in `platformBackend` for Linux; the sign-in VM is still to do.
 5. T3 sessions: the `agent-vm` shim's stream attached to a guest exec.
-6. The live test on a computer with KVM (started: boot, control port, the firmware, virtiofsd and the restart are checked; mounts, exec and the rest wait
-   for Rubi's kernel) (boot, exec, no network, a read-only share refuses writes, a kill leaves nothing),
-   and the measurements of questions 5 and 6.
+6. The live test on a computer with KVM: done for agents. Home's own live tests of the agent VMs (`TestLiveRoles`,
+   `TestLiveSSH`, `TestLiveNetless`) run on the microvm backend on Linux, with Rubi's kernel, root file system, QEMU and
+   virtiofsd installed through the setup wizard from a signed (test) release, and pass on an x86_64 test machine with
+   KVM: each role sees only its own role folder, read-only, and its writable Claude folder; `ssh` through Home works and
+   its forbidden forms are refused; the VM has only `lo`, every direct connection fails with `ENETUNREACH`, the proxy
+   through the pipe allows a listed host (TLS works through it) and refuses an unlisted one or one without credentials,
+   the pipe comes back after its forwarder is killed, and no QEMU or virtiofsd is left after a test. What the runs
+   found: the VMs' folder on a fresh Home, loopback (the guest's init brings `lo` up; a container runtime does that),
+   the role variables on every exec, and the kernel's `sit0` (its IPv6 tunnel driver is off now).
+7. Still to do: the sign-in VM and T3's session VMs on this backend, and the release wiring of the workflow.
 
 ## Sources
 
