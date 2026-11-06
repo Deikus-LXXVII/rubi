@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -86,6 +87,28 @@ func probe() {
 	}
 }
 
+// guestArch is the guest's CPU: RUBI_LIVE_ARCH, else this computer's (the guest always has the host's under KVM).
+func guestArch() microvm.Arch {
+	switch os.Getenv("RUBI_LIVE_ARCH") {
+	case "aarch64":
+		return microvm.AArch64
+	case "x86_64":
+		return microvm.X86_64
+	}
+	if runtime.GOARCH == "arm64" {
+		return microvm.AArch64
+	}
+	return microvm.X86_64
+}
+
+// archDefaults are the QEMU and the firmware of arch on a distribution (Debian's paths); arm64 has no firmware.
+func archDefaults(arch microvm.Arch) (qemu, firmware string) {
+	if arch == microvm.AArch64 {
+		return env("RUBI_LIVE_QEMU", "/usr/bin/qemu-system-aarch64"), ""
+	}
+	return env("RUBI_LIVE_QEMU", "/usr/bin/qemu-system-x86_64"), env("RUBI_LIVE_BIOS", "/usr/share/qemu/qboot.rom")
+}
+
 func env(name, def string) string {
 	if v := os.Getenv(name); v != "" {
 		return v
@@ -97,7 +120,7 @@ func env(name, def string) string {
 // that QEMU accepts every option, that the virtiofsd processes take their flags and their vhost-user connection, that
 // the console socket carries the guest's output, and that the guest's restart ends QEMU with status 0.
 //
-// RUBI_LIVE_KERNEL (default /boot/vmlinuz-<this kernel>), RUBI_LIVE_QEMU (/usr/bin/qemu-system-x86_64) and
+// RUBI_LIVE_KERNEL (default /boot/vmlinuz-<this kernel>), RUBI_LIVE_QEMU (/usr/bin/qemu-system-<guest CPU>) and
 // RUBI_LIVE_VIRTIOFSD (/usr/libexec/virtiofsd) say what to run, RUBI_LIVE_BIOS the firmware (/usr/share/qemu/qboot.rom). The microvm machine boots without option ROMs, which
 // takes a kernel with a PVH entry (an ELF vmlinux); for a compressed bzImage the test also tries option ROMs on, to tell
 // the kernel's format from the rest.
@@ -105,7 +128,7 @@ func TestLiveVM(t *testing.T) {
 	var u unix.Utsname
 	_ = unix.Uname(&u)
 	kernel := env("RUBI_LIVE_KERNEL", "/boot/vmlinuz-"+unix.ByteSliceToString(u.Release[:]))
-	qemu := env("RUBI_LIVE_QEMU", "/usr/bin/qemu-system-x86_64")
+	qemu, _ := archDefaults(guestArch())
 	virtiofsd := env("RUBI_LIVE_VIRTIOFSD", "/usr/libexec/virtiofsd")
 	for _, p := range []string{kernel, qemu, virtiofsd} {
 		if _, err := os.Stat(p); err != nil {
@@ -261,8 +284,9 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, v variant) {
 	initrd := filepath.Join(dir, "initrd.cpio")
 	writeInitrd(t, initrd)
 
-	spec := microvm.Spec{QEMU: qemu, Arch: microvm.X86_64, Name: "rubi-live", Kernel: kernel, Rootfs: rootfs,
-		Firmware: env("RUBI_LIVE_BIOS", "/usr/share/qemu/qboot.rom"),
+	_, firmware := archDefaults(guestArch())
+	spec := microvm.Spec{QEMU: qemu, Arch: guestArch(), Name: "rubi-live", Kernel: kernel, Rootfs: rootfs,
+		Firmware: firmware,
 		CPUs:     "1", Memory: "256M", Dir: vm,
 		Shares: []microvm.Share{{Source: rw, Target: "/work"}, {Source: ro, Target: "/ref", ReadOnly: true}}}
 
@@ -517,7 +541,8 @@ func qemuWrapper(args []string) {
 		for i, a := range args {
 			if strings.HasPrefix(a, "microvm,") || strings.HasPrefix(a, "virt,") {
 				// the emulator has no kvmclock: the guest needs the legacy timers to keep time
-				args[i] = strings.NewReplacer("accel=kvm", "accel=tcg", "pit=off", "pit=on", "pic=off", "pic=on", "rtc=off", "rtc=on").Replace(a)
+				args[i] = strings.NewReplacer("accel=kvm", "accel=tcg", "pit=off", "pit=on", "pic=off", "pic=on", "rtc=off", "rtc=on",
+					"gic-version=host", "gic-version=3").Replace(a)
 			}
 			if i > 0 && args[i-1] == "-append" {
 				args[i] = strings.Replace(a, " quiet", "", 1) + " earlyprintk=ttyS0,115200 ignore_loglevel"
@@ -581,14 +606,15 @@ func TestLiveLauncher(t *testing.T) {
 		IDs:        microvm.HostIDs{UID: os.Getuid(), GID: os.Getgid()},
 		SocketWait: 10 * time.Second,
 	}
-	if err := os.WriteFile(filepath.Join(dir, "qemu-path"), []byte(env("RUBI_LIVE_QEMU", "/usr/bin/qemu-system-x86_64")), 0o600); err != nil {
+	realQEMU, firmware := archDefaults(guestArch())
+	if err := os.WriteFile(filepath.Join(dir, "qemu-path"), []byte(realQEMU), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if os.Getenv("RUBI_LIVE_TCG") != "" {
 		_ = os.WriteFile(filepath.Join(dir, "tcg"), nil, 0o600)
 	}
-	spec := microvm.Spec{QEMU: self, Arch: microvm.X86_64, Name: "rubi-live",
-		Firmware: env("RUBI_LIVE_BIOS", "/usr/share/qemu/qboot.rom"), Kernel: kernel, Rootfs: rootfs,
+	spec := microvm.Spec{QEMU: self, Arch: guestArch(), Name: "rubi-live",
+		Firmware: firmware, Kernel: kernel, Rootfs: rootfs,
 		CPUs: "1", Memory: "256M", Dir: filepath.Join(dir, "vm"),
 		Shares: []microvm.Share{{Source: rw, Target: "/work"}, {Source: ro, Target: "/ref", ReadOnly: true}}}
 	t.Logf("libraries allowed to virtiofsd: %q", libs)
