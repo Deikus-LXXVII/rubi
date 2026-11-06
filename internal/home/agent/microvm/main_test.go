@@ -86,6 +86,7 @@ func fakeVirtiofsd(args []string) {
 		go func() { time.Sleep(300 * time.Millisecond); fmt.Fprintln(os.Stderr, "died"); os.Exit(1) }()
 	case "chatty":
 		fmt.Fprintln(os.Stderr, "WARN virtiofsd: something about the shared folder")
+		time.Sleep(100 * time.Millisecond) // the launcher reads output as it arrives: let it arrive before the socket
 	}
 	var l net.Listener
 	if strings.TrimSpace(string(mode)) == "slow-listen" {
