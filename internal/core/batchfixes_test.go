@@ -399,7 +399,10 @@ func TestEndedBatchLeavesNoStagedFiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			waitUntil(t, "the staging folder to be emptied", func() bool { return stagingDirs(c) == 0 })
-			if n := len(c.mkt.staged); n != 0 {
+			c.mkt.mu.Lock() // unstage changes it under this lock
+			n := len(c.mkt.staged)
+			c.mkt.mu.Unlock()
+			if n != 0 {
 				t.Fatalf("%d staged entries remain in the bookkeeping", n)
 			}
 		})

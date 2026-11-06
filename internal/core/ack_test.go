@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -104,7 +105,7 @@ func TestAccessGrantedNextStepHasNoAck(t *testing.T) {
 	defer srv.Close()
 	ev := events.Event{ID: "evt_access_abcd1234", Integration: "rubi", Type: "access.granted", CreatedAt: time.Now().UTC(),
 		Data: map[string]any{"next_step": "Continue your task."}}
-	c.deliverTo(vault.Agent{Name: "Main", URL: srv.URL}, ev)
+	c.deliverTo(context.Background(), vault.Agent{Name: "Main", URL: srv.URL}, ev)
 	m := <-got
 	next, _ := m["next_step"].(string)
 	if next == "" || strings.Contains(next, "rubi_ack") || strings.Contains(next, "rubi_events") {
@@ -112,7 +113,7 @@ func TestAccessGrantedNextStepHasNoAck(t *testing.T) {
 	}
 	// An event without its own next_step still gets one that doesn't mention ack.
 	ev.Data = map[string]any{}
-	c.deliverTo(vault.Agent{Name: "Main", URL: srv.URL}, ev)
+	c.deliverTo(context.Background(), vault.Agent{Name: "Main", URL: srv.URL}, ev)
 	if n, _ := (<-got)["next_step"].(string); strings.Contains(n, "rubi_ack") || n == "" {
 		t.Fatalf("generic next_step: %q", n)
 	}

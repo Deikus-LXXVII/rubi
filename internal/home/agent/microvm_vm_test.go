@@ -211,9 +211,16 @@ func TestMicroVMStartMountsPipesAndRunsTheRunner(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Error("the runner still runs after Stop")
 	}
-	r.fake.mu.Lock()
-	powered, stopped := r.fake.powered, r.fake.stopped
-	r.fake.mu.Unlock()
+	// the guest powers off after it has answered (guest.Server), so the fake may note it a moment after Stop returns
+	var powered, stopped bool
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		r.fake.mu.Lock()
+		powered, stopped = r.fake.powered, r.fake.stopped
+		r.fake.mu.Unlock()
+		if powered || time.Now().After(deadline) {
+			break
+		}
+	}
 	if !powered || !stopped || r.m.State() != StateStopped {
 		t.Errorf("powered %v stopped %v state %s", powered, stopped, r.m.State())
 	}

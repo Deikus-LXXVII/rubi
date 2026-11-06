@@ -153,6 +153,12 @@ func (s *Setup) download(ctx context.Context, dir string, log func(string)) (str
 			}
 		}
 		if rerr == io.EOF {
+			// a body cut short by our own stall or time limit can end in a clean EOF (the transport ends it when the
+			// request is cancelled): that is the limit's failure, not a short file
+			if context.Cause(dctx) != nil {
+				f.Close()
+				return "", fmt.Errorf("download failed: %s", downloadCause(dctx, ctx, rerr))
+			}
 			break
 		}
 		if rerr != nil {

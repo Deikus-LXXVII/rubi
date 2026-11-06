@@ -159,7 +159,7 @@ func (c *Core) RequestAgentCode(name string) error {
 	ev := events.Event{ID: "evt_code_" + randomID()[:8], Integration: "rubi", Type: "agent.code", CreatedAt: time.Now().UTC(),
 		Data: map[string]any{"agent": hook.Name,
 			"message": "A code to read your Rubi events was requested for you. It is in agent_code. If neither you nor the user asked for it just now, tell the user: another Bot may be trying to read Rubi's events under your name."}}
-	go c.deliverTo(*hook, ev)
+	c.goDeliver(*hook, ev)
 	return nil
 }
 

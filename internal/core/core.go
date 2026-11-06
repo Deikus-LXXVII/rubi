@@ -117,6 +117,9 @@ type Core struct {
 	botReqs    botRequests  // what Bots asked for themselves, waiting for the user (botrequest.go)
 	devs       deviceClients
 	libPins    libraryPins
+	// deliveries are the webhook deliveries in flight (goDeliver); Lock cancels them and waits for them, so nothing of
+	// theirs (a request, an audit line) happens once Rubi is locked.
+	deliveries deliveries
 }
 
 // SetIntegrity records the result of the binary self-check.
@@ -431,6 +434,7 @@ func (c *Core) LockWith(reason string) {
 	c.Approvals.CancelAll()
 	c.discardBotRequests()
 	c.Events.Clear()
+	c.deliveries.stop()
 	c.Vault.Lock()
 	c.Audit.SetVaultKey(nil)
 	c.Audit.Record("rubi.locked", nil)

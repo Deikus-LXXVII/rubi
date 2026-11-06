@@ -481,7 +481,7 @@ func (c *Core) issueAccess(hook vault.Agent, granted []resolved, task string, d 
 	ev := events.Event{ID: "evt_access_" + randomID()[:8], Integration: "rubi", Type: "access.granted", CreatedAt: time.Now().UTC(),
 		Data: map[string]any{"accounts": names, "task": task, "expires_at": time.Now().Add(d).UTC(), "access_code": code,
 			"next_step": "Continue your task: " + task + ". Pass rubi_agent=\"" + hook.Name + "\" and rubi_access=<data.access_code> to the tools of these accounts: " + what + ". The code works only for you and only for them, until expires_at; don't share it. If it stops working earlier (Rubi restarted), ask again with rubi_access: what the user allowed for longer is granted again without asking."}}
-	go c.deliverTo(hook, ev)
+	c.goDeliver(hook, ev)
 	return nil
 }
 
