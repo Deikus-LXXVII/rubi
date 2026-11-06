@@ -116,10 +116,14 @@ func newMicroRig(t *testing.T) *microRig {
 	}
 	r := &microRig{fake: newFakeVM(t), envFile: envFile}
 	r.m = &MicroVM{QEMU: "/opt/q/bin/qemu-system-x86_64", Arch: microvm.X86_64, Firmware: "/opt/q/qboot.rom",
-		Kernel: "/opt/k/vmlinux", Rootfs: "/opt/k/rootfs.img", StateDir: "/home/u/.local/state/rubi-home/vm",
+		Kernel: "/opt/k/vmlinux", Rootfs: "/opt/k/rootfs.img", StateDir: filepath.Join(t.TempDir(), "fresh-home", "vm"),
 		ImageEnv: map[string]string{"PATH": bin + ":/usr/bin:/bin", "HOME": "/tmp", "CLAUDE_CONFIG_DIR": "/work/.rubi/claude"}}
 	r.m.launch = func(s microvm.Spec) (microVMProcess, error) {
 		r.spec = s
+		// a fresh Home has no VMs' folder yet: the VM's own folder is made by PrepareDir, inside one that must be there
+		if err := microvm.PrepareDir(s.Dir); err != nil {
+			return nil, err
+		}
 		return r.fake, nil
 	}
 	return r
@@ -152,7 +156,7 @@ func TestMicroVMStartMountsPipesAndRunsTheRunner(t *testing.T) {
 	for _, mt := range p.Mounts() {
 		want = append(want, microvm.Share{Source: mt.Source, Target: mt.Target, ReadOnly: mt.ReadOnly})
 	}
-	if !slices.Equal(r.spec.Shares, want) || r.spec.Dir != "/home/u/.local/state/rubi-home/vm/"+containerName(p) || r.spec.Name != containerName(p) {
+	if !slices.Equal(r.spec.Shares, want) || r.spec.Dir != filepath.Join(r.m.StateDir, containerName(p)) || r.spec.Name != containerName(p) {
 		t.Errorf("spec %+v", r.spec)
 	}
 	var wantMounts []guest.Mount

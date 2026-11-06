@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -157,6 +158,9 @@ func (m *MicroVM) Start(ctx context.Context, spec StartSpec) (Conn, error) {
 // boot starts the VM, waits for the guest agent and mounts the shares. A failure leaves nothing running.
 func (m *MicroVM) boot(ctx context.Context, p Project) error {
 	spec := m.spec(p)
+	if err := ensureStateDir(m.StateDir); err != nil {
+		return err
+	}
 	launch := m.launch
 	if launch == nil {
 		launch = func(s microvm.Spec) (microVMProcess, error) { return m.Launcher.Start(s) }
@@ -301,4 +305,20 @@ func (w *stderrLog) Write(b []byte) (int, error) {
 		b = b[i+1:]
 	}
 	return n, nil
+}
+
+// ensureStateDir makes the folder of the VMs' folders (0700, with its missing parents) on a fresh Home, which has none
+// yet; microvm.PrepareDir makes each VM's own folder inside it and needs it there. A link or a file there is refused.
+func ensureStateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("the VMs' folder: %w", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("the VMs' folder: %w", err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("the VMs' folder %s is not a folder", dir)
+	}
+	return nil
 }
