@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -273,5 +274,52 @@ func TestInstallFailureShowsOnlyFixedLines(t *testing.T) {
 	got := installFailure("installer: token=sk-abcdef0123456789abcdef0123456789 leaked")
 	if strings.Contains(got, "sk-") || strings.Contains(got, "leaked") {
 		t.Errorf("unknown output shown: %q", got)
+	}
+}
+
+// eofOnCancel is a transport whose body sends some bytes, then waits for the request to be cancelled and ends in a clean
+// EOF: what an HTTP/1.1 body cut by the client's own cancel can look like.
+type eofOnCancel struct{ head []byte }
+
+func (e eofOnCancel) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, ContentLength: -1, Request: r, Header: http.Header{},
+		Body: &cancelEOFBody{ctx: r.Context(), head: e.head}}, nil
+}
+
+type cancelEOFBody struct {
+	ctx  context.Context
+	head []byte
+}
+
+func (b *cancelEOFBody) Read(p []byte) (int, error) {
+	if len(b.head) > 0 {
+		n := copy(p, b.head)
+		b.head = b.head[n:]
+		return n, nil
+	}
+	<-b.ctx.Done()
+	return 0, io.EOF
+}
+func (b *cancelEOFBody) Close() error { return nil }
+
+// A download the stall limit ends says it stalled, also when the cut body ends in a clean EOF (this was TestDownload's
+// "stalls" failing now and then with "its size is 100 bytes"). Every time, not by chance: the body ends exactly so.
+func TestStallIsReportedWhenTheCutBodyEndsInEOF(t *testing.T) {
+	old := stallLimit
+	stallLimit = 100 * time.Millisecond
+	defer func() { stallLimit = old }()
+	body := make([]byte, 1000)
+	sum := sha256.Sum256(body)
+	e := newTestEnv(t, func(o *Options) {
+		o.HTTP = &http.Client{Transport: eofOnCancel{head: body[:100]}}
+		o.Release = Release{Version: "1.6.1", URL: "https://dl.example/pkg", Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:]), Team: "UPBK2H6LZM"}
+		o.DownloadHosts = []string{"dl.example"}
+	})
+	dir := t.TempDir()
+	if _, err := e.s.download(context.Background(), dir, func(string) {}); err == nil || !strings.Contains(err.Error(), "stalled") {
+		t.Fatalf("err %v", err)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Errorf("left behind: %v", ents)
 	}
 }
