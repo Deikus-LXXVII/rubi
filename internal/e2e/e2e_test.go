@@ -49,8 +49,18 @@ func TestWrongInstanceOrPathOrTamper(t *testing.T) {
 	if _, _, err := s.Open("/v1/other", req); !errors.Is(err, ErrOpen) {
 		t.Fatal("request accepted on a different path")
 	}
+	// one bit of the ciphertext flipped: always a change (replacing its end with fixed characters was none when it
+	// already ended with them, about 1 run in 4096)
+	ct, err := b64.DecodeString(req.CT)
+	if err != nil || len(ct) == 0 {
+		t.Fatalf("ciphertext %q: %v", req.CT, err)
+	}
+	ct[len(ct)-1] ^= 1
 	tampered := req
-	tampered.CT = req.CT[:len(req.CT)-2] + "AA"
+	tampered.CT = b64.EncodeToString(ct)
+	if tampered.CT == req.CT {
+		t.Fatal("the tampered ciphertext is the original")
+	}
 	if _, _, err := s.Open("/v1/rpc", tampered); !errors.Is(err, ErrOpen) {
 		t.Fatal("tampered request accepted")
 	}
