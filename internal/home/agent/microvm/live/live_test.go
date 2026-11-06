@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -209,6 +210,9 @@ func whereIsTheCPU(qmp string) string {
 // waitKVM waits until /dev/kvm opens for reading and writing: on a shared test machine its access is sometimes
 // withdrawn for a while between runs.
 func waitKVM(t *testing.T) {
+	if os.Getenv("RUBI_LIVE_TCG") != "" {
+		return
+	}
 	deadline := time.Now().Add(60 * time.Second)
 	for {
 		f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
@@ -349,7 +353,7 @@ func boot(t *testing.T, qemu, virtiofsd, kernel string, v variant) {
 	}
 	if b, err := os.ReadFile(filepath.Join(rw, "from-guest")); err == nil {
 		fi, _ := os.Stat(filepath.Join(rw, "from-guest"))
-		st := fi.Sys().(*unix.Stat_t)
+		st := fi.Sys().(*syscall.Stat_t)
 		t.Logf("the guest wrote %q; on this computer it is uid %d gid %d", b, st.Uid, st.Gid)
 		if int(st.Uid) != ids.UID || int(st.Gid) != ids.GID {
 			t.Errorf("the guest's file is not the user's")
@@ -446,6 +450,8 @@ func writeInitrd(t *testing.T, path string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// RUBI_LIVE_INIT: another build of this test for the guest's CPU, when it isn't the host's (an emulated guest)
+	self = env("RUBI_LIVE_INIT", self)
 	exe, err := os.ReadFile(self)
 	if err != nil {
 		t.Fatal(err)
@@ -506,6 +512,21 @@ func qemuWrapper(args []string) {
 		os.Exit(1)
 	}
 	q := strings.TrimSpace(string(real))
+	if _, err := os.Stat(filepath.Join(dir, "tcg")); err == nil {
+		// no KVM here (RUBI_LIVE_TCG): QEMU's emulator, the rest of the command line as it is
+		for i, a := range args {
+			if strings.HasPrefix(a, "microvm,") || strings.HasPrefix(a, "virt,") {
+				// the emulator has no kvmclock: the guest needs the legacy timers to keep time
+				args[i] = strings.NewReplacer("accel=kvm", "accel=tcg", "pit=off", "pit=on", "pic=off", "pic=on", "rtc=off", "rtc=on").Replace(a)
+			}
+			if i > 0 && args[i-1] == "-append" {
+				args[i] = strings.Replace(a, " quiet", "", 1) + " earlyprintk=ttyS0,115200 ignore_loglevel"
+			}
+			if a == "host" && i > 0 && args[i-1] == "-cpu" {
+				args[i] = "max"
+			}
+		}
+	}
 	err = unix.Exec(q, append(append([]string{q}, args...), "-initrd", filepath.Join(dir, "initrd.cpio")), os.Environ())
 	fmt.Fprintln(os.Stderr, "wrapper:", err)
 	os.Exit(1)
@@ -561,6 +582,9 @@ func TestLiveLauncher(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "qemu-path"), []byte(env("RUBI_LIVE_QEMU", "/usr/bin/qemu-system-x86_64")), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if os.Getenv("RUBI_LIVE_TCG") != "" {
+		_ = os.WriteFile(filepath.Join(dir, "tcg"), nil, 0o600)
+	}
 	spec := microvm.Spec{QEMU: self, Arch: microvm.X86_64, Name: "rubi-live",
 		Firmware: env("RUBI_LIVE_BIOS", "/usr/share/qemu/qboot.rom"), Kernel: kernel, Rootfs: rootfs,
 		CPUs: "1", Memory: "256M", Dir: filepath.Join(dir, "vm"),
@@ -574,20 +598,31 @@ func TestLiveLauncher(t *testing.T) {
 	}
 	select {
 	case <-vm.Done():
-	case <-time.After(60 * time.Second):
+	case <-time.After(180 * time.Second):
 		vm.Stop(0)
 		t.Errorf("the VM still ran after 60 s")
 	}
 	t.Logf("ended after %v: %v", time.Since(began).Round(time.Millisecond), vm.Err())
 	t.Logf("console (lines from the probe):\n%s", probeLines(vm.Console()))
 	if err := vm.Err(); err != nil {
-		t.Errorf("ended with %v; console tail:\n%s", err, tail(vm.Console(), 3000))
+		t.Errorf("ended with %v; console tail:\n%s", err, tail(vm.Console(), 16000))
 	}
 	if !strings.Contains(vm.Console(), markReboot) {
-		t.Errorf("the probe never got to restart; console tail:\n%s", tail(vm.Console(), 3000))
+		t.Errorf("the probe never got to restart; console tail:\n%s", tail(vm.Console(), 16000))
 	}
 	ents, _ := os.ReadDir(spec.Dir)
 	for _, e := range ents {
 		t.Errorf("left in the VM folder: %s", e.Name())
+	}
+	// a kernel with virtio-fs (Rubi's) mounts the share: what the guest wrote there is the user's
+	if strings.Contains(vm.Console(), "mount rubi0: ok") {
+		fi, err := os.Stat(filepath.Join(rw, "from-guest"))
+		if err != nil {
+			t.Fatalf("the guest's file: %v", err)
+		}
+		st := fi.Sys().(*syscall.Stat_t)
+		if int(st.Uid) != os.Getuid() || int(st.Gid) != os.Getgid() {
+			t.Errorf("the guest's file is %d:%d, not the user's", st.Uid, st.Gid)
+		}
 	}
 }
