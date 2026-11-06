@@ -226,6 +226,12 @@ Found while testing it: the kernel's exec of a confined program also needs execu
 so a dynamically linked virtiofsd (a distribution's) needs its library folders in `Launcher.Libs`. Debian's virtiofsd
 1.13.2 starts and serves its socket under the rule set as an ordinary user, for a writable and a read-only share.
 
+The launcher has run the probe VM on the KVM test machine (`TestLiveLauncher`, Debian's QEMU 10.0.13 and virtiofsd
+1.13.2 under the rule set): started, the guest restarted, and the VM ended cleanly in about 2 s with nothing left. Two
+things the live runs found and the launcher now handles: QEMU makes a socket's file a moment before it listens (the
+launcher dials again until it does), and on QEMU's way out its file servers end first (QEMU gets a second to end before a
+file server's end counts as a lost share).
+
 A Landlock rule set does not cover connecting to a Unix socket by path; virtiofsd could reach the VM's own control
 socket in the same folder. That gives it nothing it didn't have: it already serves the guest's file system.
 
