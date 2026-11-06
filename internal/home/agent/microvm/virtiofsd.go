@@ -52,6 +52,10 @@ func VirtiofsdArgs(bin string, spec Spec, i int, ids HostIDs) ([]string, error) 
 		"--translate-uid", "map:" + strconv.Itoa(GuestUID) + ":" + strconv.Itoa(ids.UID) + ":1",
 		"--translate-gid", "map:" + strconv.Itoa(GuestGID) + ":" + strconv.Itoa(ids.GID) + ":1",
 		"--cache", "auto",
+		// no file handles: they need CAP_DAC_READ_SEARCH, which an unprivileged virtiofsd never has, and making them
+		// opens the share's mount point (say /), which the Landlock rule set refuses. 1.14 made "prefer" the default, so
+		// it is said explicitly (an option that takes its value only after "=").
+		"--inode-file-handles=never",
 	}
 	if s.ReadOnly {
 		args = append(args, "--readonly")
