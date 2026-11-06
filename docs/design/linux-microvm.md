@@ -81,7 +81,9 @@ before the backend is called done; vsock stays the option if it is too slow.
 First measurements (x86-64): the root file system built from today's runner image is 1039 MiB uncompressed (the image
 export is 815 MB); the kernel is a 15.8 MB `vmlinux`. The download is compressed and happens once per runner change; the
 setup wizard shows its size before it starts. Boot: under QEMU's emulator (no KVM) Rubi's kernel reaches the probe and
-the VM has ended again in under a second; with KVM it is to be measured on the test machine.
+the VM has ended again in under a second. With KVM on the test machine (Debian's QEMU 10.0.13, Rubi's kernel 6.18.60):
+the whole run through the launcher, from starting virtiofsd to QEMU's end after the guest's restart, took 0.40 s; the
+probe mounted the share served by the confined virtiofsd, and the file it wrote is the user's (uid 1000) on the host.
 
 ### 7. Memory
 
