@@ -110,6 +110,25 @@ func waitSocket(c *child, path string, d time.Duration) error {
 	}
 }
 
+// dialSocket connects to a socket of the process. The file is there from the moment the process binds it, a little
+// before it listens, so a refused connection is tried again until the process ends or the time is up.
+func dialSocket(c *child, path string, d time.Duration) (net.Conn, error) {
+	deadline := time.Now().Add(d)
+	for {
+		conn, err := net.Dial("unix", path)
+		if err == nil {
+			return conn, nil
+		}
+		if !c.running() {
+			return nil, c.failure()
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%s: %s: %w", c.name, filepath.Base(path), err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // Start starts spec's VM: it prepares the VM's folder, starts each share's virtiofsd confined to its folder (and writes
 // its pid file), waits for their sockets, then starts QEMU and connects to its console. On any failure what it started
 // is ended and the folder cleared.
@@ -166,9 +185,9 @@ func (l Launcher) Start(spec Spec) (_ *VM, err error) {
 	if err := waitSocket(q, filepath.Join(spec.Dir, ConsoleSocket), wait); err != nil {
 		return nil, err
 	}
-	conn, err := net.Dial("unix", filepath.Join(spec.Dir, ConsoleSocket))
+	conn, err := dialSocket(q, filepath.Join(spec.Dir, ConsoleSocket), wait)
 	if err != nil {
-		return nil, fmt.Errorf("the console: %w", err)
+		return nil, err
 	}
 	if err := waitSocket(q, filepath.Join(spec.Dir, ControlSocket), wait); err != nil {
 		conn.Close()
@@ -234,9 +253,9 @@ func (vm *VM) Err() error {
 // Console is the end of what the VM wrote on its console (at most 64 KiB).
 func (vm *VM) Console() string { return vm.console.String() }
 
-// DialControl connects to the VM's control channel (the guest agent's port).
+// DialControl connects to the VM's control channel (the guest agent's port), waiting a little for QEMU to listen.
 func (vm *VM) DialControl() (net.Conn, error) {
-	return net.Dial("unix", filepath.Join(vm.Spec.Dir, ControlSocket))
+	return dialSocket(vm.qemu, filepath.Join(vm.Spec.Dir, ControlSocket), 2*time.Second)
 }
 
 // Stop ends the VM: it waits grace for it to end by itself (the caller asked the guest to power off), then ends QEMU

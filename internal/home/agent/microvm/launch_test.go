@@ -142,6 +142,32 @@ func TestLaunchStartsAndEnds(t *testing.T) {
 	}
 }
 
+// QEMU binds its console socket (the file appears) a little before it listens: the launcher waits through the gap.
+func TestLaunchWaitsForTheConsoleToListen(t *testing.T) {
+	r := newLaunchRig(t)
+	r.qemuMode(t, "slow-listen")
+	vm, err := r.start(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := vm.DialControl()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	vm.Stop(0)
+}
+
+// A QEMU that dies right after making its console socket fails the start with what it said.
+func TestLaunchSaysWhyQEMUDied(t *testing.T) {
+	r := newLaunchRig(t)
+	r.qemuMode(t, "die-after-bind")
+	_, err := r.start(t)
+	if err == nil || !strings.Contains(err.Error(), "memory backend") {
+		t.Fatalf("error %v", err)
+	}
+}
+
 // A file server that won't start fails the start with what it said; nothing is left running and the folder is cleared.
 func TestLaunchFileServerFailsTheStart(t *testing.T) {
 	r := newLaunchRig(t)

@@ -150,8 +150,15 @@ func fakeQEMU(args []string) {
 		os.Exit(1)
 	}
 	defer cl.Close()
-	ln, err := net.Listen("unix", console)
-	if err != nil {
+	if m == "die-after-bind" {
+		_ = bindThenListen(console, 0)
+		fmt.Fprintln(os.Stderr, "qemu-system-x86_64: cannot create memory backend")
+		os.Exit(1)
+	}
+	var ln net.Listener
+	if m == "slow-listen" {
+		ln = bindThenListen(console, 300*time.Millisecond) // as QEMU does, with a gap between the two
+	} else if ln, err = net.Listen("unix", console); err != nil {
 		os.Exit(1)
 	}
 	c, err := ln.Accept()
@@ -166,4 +173,25 @@ func fakeQEMU(args []string) {
 	for {
 		time.Sleep(time.Hour)
 	}
+}
+
+// bindThenListen makes the socket file at once and listens only after gap.
+func bindThenListen(path string, gap time.Duration) net.Listener {
+	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err == nil {
+		err = syscall.Bind(fd, &syscall.SockaddrUnix{Name: path})
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	time.Sleep(gap)
+	if err := syscall.Listen(fd, 1); err != nil {
+		os.Exit(1)
+	}
+	ln, err := net.FileListener(os.NewFile(uintptr(fd), path))
+	if err != nil {
+		os.Exit(1)
+	}
+	return ln
 }
