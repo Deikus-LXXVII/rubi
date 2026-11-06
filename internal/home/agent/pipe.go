@@ -30,9 +30,12 @@ var (
 	pipeRestartDelay  = 500 * time.Millisecond
 )
 
-// pipeSup runs the forwarder for one container and restarts it when it dies.
+// pipeExec starts argv in the VM with env and stdin open (the backend's exec: `container exec -i`, a guest exec).
+type pipeExec func(ctx context.Context, env map[string]string, argv []string) (Conn, error)
+
+// pipeSup runs the forwarder for one VM and restarts it when it dies.
 type pipeSup struct {
-	a      *AppleContainer
+	exec   pipeExec
 	name   string
 	spec   *PipeSpec
 	env    map[string]string // the forwarder's environment (RUBI_T3_PORT for a T3 session)
@@ -59,7 +62,16 @@ func (a *AppleContainer) startPipe(ctx context.Context, name string, spec *PipeS
 
 // startPipeEnv is startPipe with an environment for the forwarder.
 func (a *AppleContainer) startPipeEnv(ctx context.Context, name string, spec *PipeSpec, env map[string]string, giveUp func()) (*pipeSup, error) {
-	s := &pipeSup{a: a, name: name, spec: spec, env: env, stopCh: make(chan struct{}),
+	exec := func(ctx context.Context, env map[string]string, argv []string) (Conn, error) {
+		return a.execNamed(ctx, name, env, argv, true)
+	}
+	return startPipeWith(ctx, name, exec, spec, env, giveUp)
+}
+
+// startPipeWith starts the forwarder through exec (any backend's) and waits until it listens; it is restarted as
+// startPipe says.
+func startPipeWith(ctx context.Context, name string, exec pipeExec, spec *PipeSpec, env map[string]string, giveUp func()) (*pipeSup, error) {
+	s := &pipeSup{exec: exec, name: name, spec: spec, env: env, stopCh: make(chan struct{}),
 		helloWait: pipeHelloWait, maxRestarts: pipeMaxRestarts, window: pipeRestartWindow, delay: pipeRestartDelay}
 	s.giveUp = func(err error) {
 		log.Printf("agent: the network pipe of %s keeps failing (%v); stopping its VM", name, err)
@@ -75,7 +87,7 @@ func (a *AppleContainer) startPipeEnv(ctx context.Context, name string, spec *Pi
 
 // attempt starts the forwarder once and returns when it said HELLO.
 func (s *pipeSup) attempt(ctx context.Context) error {
-	conn, err := s.a.execNamed(ctx, s.name, s.env, []string{pipeBin}, true)
+	conn, err := s.exec(ctx, s.env, []string{pipeBin})
 	if err != nil {
 		return err
 	}
