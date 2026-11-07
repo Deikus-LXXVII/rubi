@@ -633,6 +633,9 @@ func TestSignInCompletionStartsTheSelfTest(t *testing.T) {
 
 func TestSelfTestQueueSurvivesTheJobEndingInTheGap(t *testing.T) {
 	l, _, _, _ := loginLife(t)
+	// The self-test runs in its own goroutine and writes under the temp dir; wait for it
+	// before the dir is removed.
+	t.Cleanup(l.h.T3.wg.Wait)
 	l.h.T3.mu.Lock()
 	l.h.T3.job = &t3Job{Step: T3StepInstall, Started: time.Now()}
 	l.h.T3.mu.Unlock()
@@ -665,6 +668,9 @@ func TestSelfTestQueueSurvivesTheJobEndingInTheGap(t *testing.T) {
 
 func TestSelfTestQueuesBehindABusyStep(t *testing.T) {
 	l, _, _, _ := loginLife(t)
+	// The self-test runs in its own goroutine and writes under the temp dir; wait for it
+	// before the dir is removed.
+	t.Cleanup(l.h.T3.wg.Wait)
 	l.h.T3.mu.Lock()
 	l.h.T3.job = &t3Job{Step: T3StepInstall, Started: time.Now()}
 	l.h.T3.mu.Unlock()

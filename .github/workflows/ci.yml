@@ -38,8 +38,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # Ubuntu 24.04 lets AppArmor refuse unprivileged user namespaces, which the sandbox needs.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Sandbox lifecycle
         run: scripts/sandbox/check.sh
+      - name: Sandbox logs
+        if: failure()
+        run: tail -n 50 .sandbox/logs/*.log || true
 
   # Rubi Home runs on macOS, Linux and Windows (docs/plans/home-platforms.md, stage P1). The core (the rest of the
   # repository) is not ported to Windows, so only Home and what it imports are built and vetted for each system.
