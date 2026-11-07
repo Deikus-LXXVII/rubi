@@ -551,6 +551,7 @@ func (c *Core) preparePluginUpdate(ctx context.Context, id string) (u *pluginUpd
 	}
 	upToDate := map[string]any{"status": "up_to_date", "plugin": id, "version": rec.Version}
 	var cand *plugins.Candidate
+	toStore := false
 	if rec.Reviewed {
 		cat, cerr := c.catalog(ctx, true)
 		if cerr != nil {
@@ -565,6 +566,10 @@ func (c *Core) preparePluginUpdate(ctx context.Context, id string) (u *pluginUpd
 			return nil, upToDate, nil
 		}
 		cand, err = c.fetchReviewed(ctx, e)
+	} else if e, _, ok := c.storeUpgrade(ctx, rec, id, true); ok {
+		// sideloaded once, now in the store from the same publisher: the update moves it there, state kept
+		cand, err = c.fetchReviewed(ctx, e)
+		toStore = true
 	} else {
 		latest, lerr := c.sideloadLatest(ctx, rec.Source)
 		if lerr != nil {
@@ -589,11 +594,45 @@ func (c *Core) preparePluginUpdate(ctx context.Context, id string) (u *pluginUpd
 	}
 	preview := permissions(m, cand.Reviewed, cand.Source)
 	preview["current"] = rec.Version
+	if toStore {
+		preview["source_change"] = "From now on it comes from the Rubi store (reviewed), no longer from " + rec.Source + "; its settings and accounts stay"
+	}
 	if added := newPermissions(old, m); added != "" {
 		preview["new_permissions"] = added
 	}
 	return &pluginUpdate{core: c, id: id, name: m.Name, from: rec.Version, cand: cand, preview: preview, pinnedKey: rec.PublisherKey, old: old,
 		summary: "Update " + m.Name + " to " + m.Version}, nil, nil
+}
+
+// storeUpgrade is the store's newer release for a sideloaded plugin, when the store lists the same id from the same
+// publisher: the key in the catalog is the key pinned when it was installed. Then the update comes from the store (and
+// moves the plugin there) instead of from its old source, which may be gone (a sideload from a local server). A
+// different key keeps it on its source: that is another publisher's plugin under the same id.
+// fresh asks the store again, as an update request does; a background check takes the catalog it has.
+func (c *Core) storeUpgrade(ctx context.Context, rec *vault.Plugin, id string, fresh bool) (*plugins.CatalogEntry, string, bool) {
+	if rec == nil || rec.Reviewed {
+		return nil, "", false
+	}
+	cat, err := c.catalog(ctx, fresh)
+	if err != nil {
+		return nil, "", false
+	}
+	return c.storeUpgradeIn(cat, rec, id)
+}
+
+func (c *Core) storeUpgradeIn(cat *plugins.Catalog, rec *vault.Plugin, id string) (*plugins.CatalogEntry, string, bool) {
+	if rec == nil || rec.Reviewed || strings.TrimSpace(rec.PublisherKey) == "" {
+		return nil, "", false
+	}
+	e, ok := cat.Entry(id)
+	if !ok || strings.TrimSpace(e.Publisher.Key) != strings.TrimSpace(rec.PublisherKey) {
+		return nil, "", false
+	}
+	v, ok := e.Latest(version.Version)
+	if !ok || !update.Newer(v.Version, rec.Version) {
+		return nil, "", false
+	}
+	return e, v.Version, true
 }
 
 // apply installs the approved release, keeping the replaced version for rollback.
@@ -897,6 +936,9 @@ func (c *Core) updateAvailable(ctx context.Context, id string) (bool, error) {
 		return false, fmt.Errorf("plugin %q is not installed", id)
 	}
 	if !rec.Reviewed {
+		if _, _, ok := c.storeUpgrade(ctx, rec, id, false); ok {
+			return true, nil
+		}
 		v, err := c.sideloadLatest(ctx, rec.Source)
 		if err != nil {
 			return false, err
@@ -1475,6 +1517,9 @@ func (c *Core) CheckPluginUpdates(ctx context.Context) {
 					notes = plugins.NormalizeSource(e.Source) + "/releases/tag/" + v.Version
 				}
 			}
+		} else if e, v, ok := c.storeUpgradeIn(cat, &rec, id); ok {
+			latest = v
+			notes = plugins.NormalizeSource(e.Source) + "/releases/tag/" + v
 		} else if v, err := c.sideloadLatest(ctx, rec.Source); err == nil {
 			latest = v
 		}
