@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.14.1 (2026-11-07)
 
 - **A plugin you sideloaded moves to the store when the store has it from the same publisher.** If the Rubi store lists a plugin with the same id and the publisher key that was pinned when you sideloaded it, `rubi_plugin_update` (and the update check that tells your Bots) takes the store's release instead of going back to the old source, which may be gone. The approval says the source changes; afterwards the plugin is a store plugin, with its accounts, settings and state kept and the sideloaded version as its rollback. A store entry with another publisher's key is a different plugin and is never offered as its update.
 
