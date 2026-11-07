@@ -64,7 +64,7 @@ All are `agent-setup.*`, listed in the hello as capability `agent-setup`.
   and no address). Running `network` does nothing and ends `done` ("Not needed"); it never runs a network command.
 - `agent-setup.login.code {project, code}` -> `{sent: true}`: writes the code and a newline to the running sign-in's
   stdin. At most 512 printable ASCII characters, no spaces; refused when no sign-in waits; the `project` argument is ignored.
-- `agent-setup.login.open {}` -> `{opened: true}`: opens the sign-in link in the computer's default browser
+- `agent-setup.login.open {}` -> `{url, opened: false}`: returns the full sign-in link. The panel opens it on the phone or computer that is showing the panel and offers the whole URL to copy. Rubi Home does not open a browser on the home computer.
   (through Rubi Home's Opener: `open` on a Mac), only when it is an `https://` link to `claude.com`, `claude.ai`, `platform.claude.com` or
   `console.anthropic.com`.
 - `agent-setup.project.add {dir}` -> `{added: dir}`: adds the folder to `agent_projects`. The folder is chosen in the

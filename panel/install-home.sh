@@ -205,9 +205,19 @@ elif [ -e "$hook" ]; then
 else
   say "Claude Code hook (optional): not set up. To let Bots ask for approvals and message your Claude Code sessions, install the hook from the Rubi panel (Settings, Home)."
 fi
-echo
-"$bin" pair
-echo
+# pair-or-skip: begin
+# A computer that is already paired keeps that pairing. `pair` always mints a new code, which
+# replaces any pending secret and prints one the person does not need.
+paired_with=$("$bin" status 2>/dev/null | sed -n 's/^Paired with \([0-9][0-9]*\) Rubi$/\1/p' | head -n 1 || true)
+if [ -n "${paired_with:-}" ] && [ "$paired_with" -gt 0 ]; then
+  say "already paired; not minting a new pairing code"
+  say "to pair another Rubi, open Rubi Home and choose Pair again"
+else
+  echo
+  "$bin" pair
+  echo
+fi
+# pair-or-skip: end
 if [ "$os" = darwin ]; then
   echo "Shortcuts: make a folder named \"Rubi\" in the Shortcuts app and put there only the shortcuts Rubi may run."
 fi

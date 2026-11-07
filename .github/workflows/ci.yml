@@ -25,7 +25,30 @@ jobs:
       - name: Panel syntax
         run: for f in panel/js/*.js; do node --check "$f"; done
       - name: Installer syntax
-        run: sh -n panel/install.sh
+        run: sh -n panel/install.sh && sh -n panel/install-home.sh && sh -n scripts/sandbox/*.sh
+
+  # The disposable sandbox (scripts/sandbox) builds this checkout, starts it in a rootless
+  # user/network/PID namespace with a fake Home, and stops it again. The browser beta test is
+  # opt-in (workflow betatest).
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Ubuntu 24.04 lets AppArmor refuse unprivileged user namespaces, which the sandbox needs.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Sandbox lifecycle
+        run: scripts/sandbox/check.sh
+      - name: Sandbox logs
+        if: failure()
+        run: tail -n 50 .sandbox/logs/*.log || true
 
   # Rubi Home runs on macOS, Linux and Windows (docs/plans/home-platforms.md, stage P1). The core (the rest of the
   # repository) is not ported to Windows, so only Home and what it imports are built and vetted for each system.

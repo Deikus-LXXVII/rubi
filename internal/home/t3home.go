@@ -86,18 +86,22 @@ type T3Home struct {
 
 	opMu sync.Mutex // one install/start/pair/stop at a time
 
-	mu       sync.Mutex
-	srv      t3Server
-	cl       *t3.Client
-	runCtx   context.Context // lives while the server does; the watchers and the session server belong to it
-	runStop  context.CancelFunc
-	sessDone chan struct{}
-	base     context.Context // Home's lifetime (Run); Background until Run is called
-	job      *t3Job
-	lastErr  *t3Failure
-	phase    string
-	bytes    atomic.Int64
-	wg       sync.WaitGroup // the background step
+	mu          sync.Mutex
+	srv         t3Server
+	cl          *t3.Client
+	runCtx      context.Context // lives while the server does; the watchers and the session server belong to it
+	runStop     context.CancelFunc
+	sessDone    chan struct{}
+	base        context.Context // Home's lifetime (Run); Background until Run is called
+	job         *t3Job
+	pendingSelf bool // a self-test waiting for the job that was running when sign-in finished
+	// onBusyGap runs after that self-test was queued and the lock was released. Tests finish
+	// the busy step here, which is the gap that used to drop the self-test.
+	onBusyGap func()
+	lastErr   *t3Failure
+	phase     string
+	bytes     atomic.Int64
+	wg        sync.WaitGroup // the background step
 
 	loginSetup *setup.Setup
 	selfRows   map[string]selfRow // the last self-test, per role
@@ -472,7 +476,7 @@ func (t *T3Home) RunStepFor(step, project, role string) error {
 	if t.job != nil {
 		j := t.job
 		t.mu.Unlock()
-		return fmt.Errorf("T3 setup is busy with the %s step", j.Step)
+		return &setupBusyError{Step: j.Step}
 	}
 	t.job = &t3Job{Step: step, Started: t.now().UTC()}
 	t.lastErr = nil
@@ -481,16 +485,73 @@ func (t *T3Home) RunStepFor(step, project, role string) error {
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
-		err := t.runStep(ctx, step, project, role)
-		t.mu.Lock()
-		t.job, t.phase = nil, ""
-		if err != nil {
-			t.lastErr = &t3Failure{Step: step, Message: err.Error()}
-			log.Printf("T3 setup (%s): %v", step, err)
-		}
-		t.mu.Unlock()
+		t.finishJob(step, t.runStep(ctx, step, project, role))
 	}()
 	return nil
+}
+
+// errSetupBusy is the error a setup step returns when another step is already running.
+var errSetupBusy = errors.New("T3 setup is busy")
+
+// setupBusyError is errSetupBusy with the step that holds the lock. Callers match it with errors.Is.
+type setupBusyError struct{ Step string }
+
+func (e *setupBusyError) Error() string {
+	return fmt.Sprintf("T3 setup is busy with the %s step", e.Step)
+}
+
+func (e *setupBusyError) Is(target error) bool { return target == errSetupBusy }
+
+// startSelfTestAfterSignIn starts the self-test, or queues it when another T3 step is still
+// running. The queue is set under the same lock that sees the busy step, so a job that ends
+// in the gap cannot miss it. A queued test runs when that step's job ends.
+func (t *T3Home) startSelfTestAfterSignIn() error {
+	t.mu.Lock()
+	if t.job != nil {
+		t.pendingSelf = true
+		t.mu.Unlock()
+		if t.onBusyGap != nil {
+			t.onBusyGap()
+		}
+		return nil
+	}
+	t.mu.Unlock()
+	err := t.RunStepFor(T3StepSelfTest, "", "")
+	if err == nil || !errors.Is(err, errSetupBusy) {
+		return err
+	}
+	// A step started after the check above. Queue it under the lock, and if that step
+	// has already finished, start the self-test now rather than leave it queued.
+	t.mu.Lock()
+	if t.job != nil {
+		t.pendingSelf = true
+		t.mu.Unlock()
+		if t.onBusyGap != nil {
+			t.onBusyGap()
+		}
+		return nil
+	}
+	t.mu.Unlock()
+	return t.startSelfTestAfterSignIn()
+}
+
+// finishJob records the outcome of the step that just ended and starts a self-test that was
+// waiting for it.
+func (t *T3Home) finishJob(step string, err error) {
+	t.mu.Lock()
+	t.job, t.phase = nil, ""
+	if err != nil {
+		t.lastErr = &t3Failure{Step: step, Message: err.Error()}
+		log.Printf("T3 setup (%s): %v", step, err)
+	}
+	queued := t.pendingSelf
+	t.pendingSelf = false
+	t.mu.Unlock()
+	if queued {
+		if err := t.RunStepFor(T3StepSelfTest, "", ""); err != nil {
+			log.Printf("self-test after sign-in: %v", err)
+		}
+	}
 }
 
 func (t *T3Home) runStep(ctx context.Context, step, project, role string) error {
@@ -597,9 +658,9 @@ func (t *T3Home) Status() map[string]any {
 		pairReason = "Start T3 first"
 	}
 	steps := []map[string]any{
-		{"id": "t3", "title": "T3 installed, pinned and running", "state": rowState(installed && running, T3StepT3, T3StepInstall, T3StepStart),
+		{"id": "t3", "title": setup.TitleT3, "state": rowState(installed && running, T3StepT3, T3StepInstall, T3StepStart),
 			"reason": rowReason(t3Reason, T3StepT3, T3StepInstall, T3StepStart), "action": t3Action},
-		{"id": T3StepPair, "title": "T3 paired with Rubi Home", "state": rowState(paired, T3StepPair),
+		{"id": T3StepPair, "title": setup.TitlePair, "state": rowState(paired, T3StepPair),
 			"reason": rowReason(pairReason, T3StepPair), "action": "pair"},
 	}
 	out := map[string]any{
@@ -688,11 +749,7 @@ func (t *T3Home) setupStatus(ctx context.Context) (any, error) {
 			loginAt = i
 		}
 	}
-	if loginAt >= 0 {
-		merged[loginAt] = t.loginStep()
-	} else { // the agent setup was not heard from: the row is still ours to show
-		merged = append(merged, t.loginStep())
-	}
+	merged = placeLogin(merged, loginAt, t.loginStep())
 	out["steps"] = merged
 	out["login"] = nil
 	if li := t.login().LoginProgress(); li.Working && li.URL != "" {
@@ -708,6 +765,64 @@ func (t *T3Home) setupStatus(ctx context.Context) (any, error) {
 	return out, nil
 }
 
+// placeLogin puts the sign-in row where the agent setup had one, or at the end, and says so when
+// earlier steps are still to do. A bare "not signed in" with a Sign in button, while the container
+// or T3 is not there yet, reads as no status at all.
+func placeLogin(merged []any, loginAt int, step map[string]any) []any {
+	before := merged
+	if loginAt >= 0 && loginAt <= len(merged) {
+		before = merged[:loginAt]
+	}
+	noteLoginWaiting(step, before)
+	if loginAt >= 0 && loginAt < len(merged) {
+		merged[loginAt] = step
+		return merged
+	}
+	return append(merged, step)
+}
+
+// noteLoginWaiting replaces a still-idle sign-in row's reason when an earlier step is not done.
+func noteLoginWaiting(step map[string]any, before []any) {
+	if st, _ := step["state"].(string); st != "todo" {
+		return
+	}
+	var waiting []string
+	for _, raw := range before {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		switch id {
+		case "", "projects", "network", "login", "selftest":
+			continue
+		}
+		if s, _ := m["state"].(string); s == "done" {
+			continue
+		}
+		title, _ := m["title"].(string)
+		if title == "" {
+			title = id
+		}
+		waiting = append(waiting, title)
+	}
+	if len(waiting) == 0 {
+		return
+	}
+	reason := "Waiting for earlier steps: " + strings.Join(waiting, ", ") + "."
+	step["reason"] = reason
+	step["action"] = ""
+	rows, _ := step["projects"].([]map[string]any)
+	for _, row := range rows {
+		switch row["action"] {
+		case "login", "login_again", "check":
+			row["action"] = ""
+			row["state"] = "todo"
+			row["reason"] = reason
+		}
+	}
+}
+
 // loginStep is the "login" row: one row per role (the id is the role's), all with the one shared state, because the
 // sign-in folder is shared by every role (docs/plans/t3-integration.md decision 4). While a sign-in runs the rows carry
 // its link and whether it waits for the code.
@@ -721,12 +836,14 @@ func (t *T3Home) loginStep() map[string]any {
 	var progress []string
 	switch {
 	case li.Working:
-		state, reason, action, progress = "working", "Signing in...", "cancel", li.Progress
-		if li.URL != "" {
+		state, reason, action, progress = "working", setup.SigningIn, "cancel", li.Progress
+		switch {
+		case li.CodeSent:
+			reason = setup.SigningIn
+		case li.URL != "" && li.WantsCode:
+			reason = "Paste the code the browser shows."
+		case li.URL != "":
 			reason = "Open the link and sign in."
-			if li.WantsCode {
-				reason = "Paste the code the browser shows."
-			}
 		}
 	case !in && li.State != "":
 		state, reason = li.State, li.Reason
@@ -738,14 +855,14 @@ func (t *T3Home) loginStep() map[string]any {
 	rows := []map[string]any{}
 	for _, r := range t.h.Agent.T3Projects() {
 		row := map[string]any{"id": r.Role, "dir": r.Dir, "state": state, "reason": reason, "action": action}
-		if li.Working && li.URL != "" {
+		if li.Working && li.URL != "" && !li.CodeSent {
 			row["url"], row["wants_code"] = li.URL, li.WantsCode
 		}
 		rows = append(rows, row)
 	}
-	step := map[string]any{"id": "login", "title": "Claude sign-in", "state": state, "reason": reason, "action": action,
+	step := map[string]any{"id": "login", "title": setup.TitleLogin, "state": state, "reason": reason, "action": action,
 		"action2": "check", "projects": rows, "progress": progress}
-	if li.Working && li.URL != "" {
+	if li.Working && li.URL != "" && !li.CodeSent {
 		step["url"], step["wants_code"] = li.URL, li.WantsCode
 	}
 	return step
@@ -788,10 +905,11 @@ func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessag
 		}
 		return map[string]any{"sent": true}, nil
 	case name == "login.open":
-		if err := t.login().LoginOpen(ctx); err != nil {
+		u, err := t.login().LoginOpen(ctx)
+		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"opened": true}, nil
+		return map[string]any{"url": u, "opened": false}, nil
 	case name == "cancel":
 		stopped := t.login().Cancel()
 		res, err := t.agentSetup(ctx, "agent-setup.cancel", args)

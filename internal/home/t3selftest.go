@@ -17,6 +17,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
+	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 )
 
 // T3StepSelfTest is the setup page's self-test row.
@@ -317,6 +318,7 @@ func (t *T3Home) runSelfTest(ctx context.Context, project, role string) error {
 func (t *T3Home) selfTestStep() map[string]any {
 	t.mu.Lock()
 	job := t.job
+	pending := t.pendingSelf
 	results := map[string]selfRow{}
 	for k, v := range t.selfRows {
 		results[k] = v
@@ -333,7 +335,7 @@ func (t *T3Home) selfTestStep() map[string]any {
 			row["state"], row["reason"], row["progress"] = res.State, res.Reason, res.Progress
 		}
 		if working {
-			row["state"], row["reason"] = "working", "Working..."
+			row["state"], row["reason"] = "working", setup.SelfTestRunning
 		} else if !paired && !ran {
 			row["state"], row["reason"], row["action"] = "todo", "Needs T3 running and paired first.", ""
 		}
@@ -345,14 +347,26 @@ func (t *T3Home) selfTestStep() map[string]any {
 	case len(rows) == 0:
 		reason = "Make a role first."
 	case agg["working"] > 0:
-		state, reason = "working", "Working..."
+		state, reason = "working", setup.SelfTestRunning
+	case pending:
+		state, reason = "todo", "Waiting for the other setup step to finish. The self-test runs then."
+		for _, row := range rows {
+			if row["state"] == "todo" {
+				row["reason"] = reason
+				row["action"] = "selftest"
+			}
+		}
 	case agg["failed"] > 0:
-		state, reason = "failed", fmt.Sprintf("%d of %d roles failed.", agg["failed"], len(rows))
+		cause := ""
+		if len(rows) == 1 {
+			cause, _ = rows[0]["reason"].(string)
+		}
+		state, reason = "failed", setup.SelfTestFailedReason(agg["failed"], len(rows), cause)
 	case agg["needs_user"] > 0:
 		state, reason = "needs_user", "Sign in to Claude, then run it again."
 	case agg["done"] == len(rows):
 		state, reason = "done", "Every role passed."
 	}
-	return map[string]any{"id": "selftest", "title": "Self-test", "state": state, "reason": reason, "action": "selftest",
+	return map[string]any{"id": "selftest", "title": setup.TitleSelfTest, "state": state, "reason": reason, "action": "selftest",
 		"projects": rows, "progress": []string{}}
 }

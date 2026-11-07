@@ -769,7 +769,7 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	if strings.HasPrefix(purpose, "setup:") {
 		// A setup link connects one integration and nothing else.
 		switch env.Op {
-		case "integration.catalog", "integration.setup", "plugin.config.get", "plugin.config.set":
+		case "integration.catalog", "integration.setup", "plugin.config.get", "plugin.config.set", "plugin.panel":
 		default:
 			return nil, errors.New("this link only sets up an integration; ask your agent for a settings link")
 		}
@@ -900,10 +900,10 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 	case "account.agents":
 		approvalID, err = s.core.SetAccountAgents(ctx, args.ID, args.Account, args.Agents, args.Temp)
 	case "plugin.panel":
-		// A plugin's own page (e.g. notes): what it shows can be private, so only a settings link opens it.
-		if purpose != "settings" {
-			return nil, errViewOnly
-		}
+		// A plugin's own page. A settings link can use it. The view-only settings opened from an
+		// approval link can read the page (so finishing an approval and opening the plugin does not
+		// dead-end on "Something's wrong"); changing it still needs a settings link. A setup link
+		// can drive that one plugin's page, which is how its first-time setup is shown.
 		var pa struct {
 			ID   string          `json:"id"`
 			Op   string          `json:"op"`
@@ -911,6 +911,13 @@ func (s *Server) settings(ctx context.Context, purpose string, env Envelope) (an
 		}
 		if err := json.Unmarshal(env.Args, &pa); err != nil {
 			return nil, errors.New("bad arguments")
+		}
+		switch {
+		case purpose == "settings":
+		case purpose == settingsView && pa.Op == "view":
+		case strings.HasPrefix(purpose, "setup:") && pa.ID == strings.TrimPrefix(purpose, "setup:"):
+		default:
+			return nil, errViewOnly
 		}
 		return s.core.PanelCall(ctx, pa.ID, pa.Op, pa.Args)
 	case "approval.list":
@@ -1016,6 +1023,9 @@ func (s *Server) catalog() any {
 	for _, m := range s.core.Store.Installed() {
 		entry := map[string]any{"id": m.ID, "name": m.Name, "description": m.Description, "needs": m.Needs,
 			"fields": m.Fields, "secrets": m.Secrets, "egress": m.Egress, "connected": false, "has_config": len(m.Config) > 0}
+		if m.Panel != "" {
+			entry["panel"] = m.Panel
+		}
 		if a := accounts[m.ID]; len(a) > 0 {
 			entry["connected"], entry["accounts"] = true, a
 		}

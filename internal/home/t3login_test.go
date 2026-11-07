@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -322,20 +323,21 @@ func TestT3LoginRefusals(t *testing.T) {
 	}
 }
 
-// login.open opens the sign-in's own link in the Mac's browser, and nothing else.
-func TestT3LoginOpenOpensTheLink(t *testing.T) {
+// login.open returns the sign-in link for the panel. It does not open a browser on this computer.
+func TestT3LoginOpenReturnsTheLink(t *testing.T) {
 	l, _, op, _ := loginLife(t)
 	if _, err := handle(t, l.h, "tok", "t3-setup.run", map[string]any{"step": "login", "method": "claudeai"}); err != nil {
 		t.Fatal(err)
 	}
 	waitLogin(t, l, func(s map[string]any) bool { return s["wants_code"] == true })
-	if res, err := handle(t, l.h, "tok", "t3-setup.login.open", nil); err != nil || res["opened"] != true {
+	res, err := handle(t, l.h, "tok", "t3-setup.login.open", nil)
+	if err != nil || res["url"] != loginLink || res["opened"] != false {
 		t.Fatalf("%v %v", res, err)
 	}
 	op.mu.Lock()
 	defer op.mu.Unlock()
-	if len(op.opened) != 1 || op.opened[0] != loginLink || len(op.runs) != 0 {
-		t.Errorf("opened: %v, commands run: %v", op.opened, op.runs)
+	if len(op.opened) != 0 || len(op.runs) != 0 {
+		t.Errorf("the home computer opened a browser: %v, commands run: %v", op.opened, op.runs)
 	}
 }
 
@@ -365,7 +367,16 @@ func TestT3LoginStateComesFromTheFolderOnly(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if step, _ := loginBlock(t, l); step["state"] != "todo" || !strings.Contains(step["reason"].(string), "No credential file yet") {
+	step, _ := loginBlock(t, l)
+	reason, _ := step["reason"].(string)
+	if step["state"] != "todo" {
+		t.Errorf("empty folder: %v", step)
+	}
+	if strings.Contains(reason, "Waiting for earlier steps") {
+		if step["action"] != "" {
+			t.Errorf("sign-in offered while earlier steps are not done: %v", step)
+		}
+	} else if !strings.Contains(reason, "No credential file yet") {
 		t.Errorf("empty folder: %v", step)
 	}
 	if err := os.WriteFile(filepath.Join(dir, agent.CredentialFile), []byte("x"), 0o000); err != nil {
@@ -536,4 +547,152 @@ func TestStartRemovesTheEarlierDesignsTokenFolder(t *testing.T) {
 	if _, err := os.Stat(legacy); err != nil {
 		t.Errorf("a file was removed: %v", err)
 	}
+}
+
+// The code handler only writes the code. When the helper then saves the credential, the same
+// AfterSignIn path the sandbox uses starts the self-test. A failed sign-in does not.
+func TestSignInCompletionStartsTheSelfTest(t *testing.T) {
+	l, box, _, _ := loginLife(t)
+	var started atomic.Int32
+	l.h.T3.LoginOptions = func(o *setup.Options) {
+		orig := o.OnSignedIn
+		if orig == nil {
+			t.Errorf("sign-in completion has no OnSignedIn")
+		}
+		o.OnSignedIn = func() {
+			started.Add(1)
+			if orig != nil {
+				orig()
+			}
+		}
+	}
+	box.script = func(b *loginBox, c *loginConn) {
+		c.say("URL " + loginLink)
+		c.say("CODE?")
+		if code := <-c.lines; code != "CODE-9876-xyz" {
+			c.say("FAILED unexpected code")
+			c.finish()
+			return
+		}
+		time.Sleep(400 * time.Millisecond)
+		_ = os.MkdirAll(b.dir, 0o700)
+		_ = os.WriteFile(filepath.Join(b.dir, agent.CredentialFile), []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-FAKE"}}`), 0o000)
+		c.say("SAVED")
+		c.finish()
+	}
+	if _, err := handle(t, l.h, "tok", "t3-setup.run", map[string]any{"step": "login", "method": "claudeai"}); err != nil {
+		t.Fatal(err)
+	}
+	waitLogin(t, l, func(s map[string]any) bool { return s["wants_code"] == true })
+	if _, err := handle(t, l.h, "tok", "t3-setup.login.code", map[string]any{"code": "CODE-9876-xyz"}); err != nil {
+		t.Fatal(err)
+	}
+	step := waitLogin(t, l, func(s map[string]any) bool { return s["reason"] == setup.SigningIn })
+	if step["state"] != "working" || step["url"] != nil {
+		t.Fatalf("while the helper finishes: %#v", step)
+	}
+	waitLogin(t, l, func(s map[string]any) bool { return s["state"] == "done" })
+	waitUntil(t, func() bool { return started.Load() == 1 })
+	waitUntil(t, func() bool {
+		st, err := handle(t, l.h, "tok", "t3-setup.status", nil)
+		if err != nil {
+			return false
+		}
+		self := stepByID(t, st, "selftest")
+		return self["state"] == "working" || self["state"] == "failed" || self["state"] == "done"
+	})
+	if started.Load() != 1 {
+		t.Fatalf("self-test starts: %d", started.Load())
+	}
+
+	l2, box2, _, _ := loginLife(t)
+	var failed atomic.Int32
+	l2.h.T3.LoginOptions = func(o *setup.Options) {
+		orig := o.OnSignedIn
+		o.OnSignedIn = func() {
+			failed.Add(1)
+			if orig != nil {
+				orig()
+			}
+		}
+	}
+	box2.script = func(b *loginBox, c *loginConn) {
+		c.say("URL " + loginLink)
+		c.say("FAILED the code was refused")
+		c.finish()
+	}
+	if _, err := handle(t, l2.h, "tok", "t3-setup.run", map[string]any{"step": "login", "method": "claudeai"}); err != nil {
+		t.Fatal(err)
+	}
+	waitLogin(t, l2, func(s map[string]any) bool { return s["state"] == "failed" })
+	time.Sleep(50 * time.Millisecond)
+	if failed.Load() != 0 {
+		t.Fatalf("a failed sign-in started the self-test %d times", failed.Load())
+	}
+}
+
+func TestSelfTestQueueSurvivesTheJobEndingInTheGap(t *testing.T) {
+	l, _, _, _ := loginLife(t)
+	// The self-test runs in its own goroutine and writes under the temp dir; wait for it
+	// before the dir is removed.
+	t.Cleanup(l.h.T3.wg.Wait)
+	l.h.T3.mu.Lock()
+	l.h.T3.job = &t3Job{Step: T3StepInstall, Started: time.Now()}
+	l.h.T3.mu.Unlock()
+	var gapErr string
+	l.h.T3.onBusyGap = func() {
+		// The busy step ends in the gap after it was observed. The queue is already set,
+		// so this start is not missed.
+		l.h.T3.opMu.Lock()
+		l.h.T3.finishJob(T3StepInstall, nil)
+		l.h.T3.mu.Lock()
+		switch {
+		case l.h.T3.pendingSelf:
+			gapErr = "the self-test was still only queued after the busy step ended"
+		case l.h.T3.job == nil || l.h.T3.job.Step != T3StepSelfTest:
+			gapErr = fmt.Sprintf("self-test did not start: %#v", l.h.T3.job)
+		}
+		l.h.T3.mu.Unlock()
+		l.h.T3.opMu.Unlock()
+	}
+	if err := l.h.T3.startSelfTestAfterSignIn(); err != nil {
+		t.Fatal(err)
+	}
+	if gapErr != "" {
+		t.Fatal(gapErr)
+	}
+	if !errors.Is(&setupBusyError{Step: T3StepInstall}, errSetupBusy) {
+		t.Fatal("busy error is not errSetupBusy")
+	}
+}
+
+func TestSelfTestQueuesBehindABusyStep(t *testing.T) {
+	l, _, _, _ := loginLife(t)
+	// The self-test runs in its own goroutine and writes under the temp dir; wait for it
+	// before the dir is removed.
+	t.Cleanup(l.h.T3.wg.Wait)
+	l.h.T3.mu.Lock()
+	l.h.T3.job = &t3Job{Step: T3StepInstall, Started: time.Now()}
+	l.h.T3.mu.Unlock()
+	if err := l.h.T3.startSelfTestAfterSignIn(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := handle(t, l.h, "tok", "t3-setup.status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := stepByID(t, st, "selftest")
+	if !strings.Contains(fmt.Sprint(self["reason"]), "other setup step") || self["state"] == "failed" {
+		t.Fatalf("queued self-test: %#v", self)
+	}
+	l.h.T3.finishJob(T3StepInstall, nil)
+	waitUntil(t, func() bool {
+		st, err := handle(t, l.h, "tok", "t3-setup.status", nil)
+		if err != nil {
+			return false
+		}
+		self = stepByID(t, st, "selftest")
+		s, _ := self["state"].(string)
+		return s == "working" || s == "failed" || s == "done"
+	})
 }

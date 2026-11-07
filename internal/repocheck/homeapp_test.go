@@ -567,6 +567,9 @@ func fakeTool(t *testing.T, name, body string) []string {
 }
 
 func TestHomeAppBuildShowsCodesignsOutputWhenItFails(t *testing.T) {
+	if _, err := exec.LookPath("zip"); err != nil {
+		t.Skip("zip is not installed")
+	}
 	bin := filepath.Join(t.TempDir(), "rubi-home")
 	if err := os.WriteFile(bin, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)

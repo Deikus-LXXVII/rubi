@@ -122,6 +122,9 @@ type Options struct {
 	// proxy's. Without them no sign-in runs (the T3 roles' sign-in sets both).
 	LoginHelper string
 	LoginEnv    func() map[string]string
+	// OnSignedIn runs after a sign-in job ends with a credential. The T3 Home uses it to start
+	// the self-test. It is not called when the sign-in fails or is cancelled.
+	OnSignedIn func()
 }
 
 // Setup runs the steps. It is safe for concurrent use; one job runs at a time.

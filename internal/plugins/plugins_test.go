@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Deikus-LXXVII/rubi/internal/version"
 )
 
 const testKey = "MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="
@@ -73,6 +75,30 @@ func TestCheck(t *testing.T) {
 		if err := Check(&m); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func TestSandboxPluginKeyOverrideIsDevOnly(t *testing.T) {
+	const other = "MCowBQYDK2VwAyEAkG4bjWz38ru0Wpsihr0VVFTAMPjRvK8darUtybopFdk="
+	m := manifest(t, `{"id":"t3agents","actions":[],"tools":[],"home":["t3-setup"],"publisher":{"name":"x","key":"`+other+`"}}`)
+	if err := Check(&m); err == nil {
+		t.Fatal("a throwaway key was accepted for t3-setup")
+	}
+	t.Setenv("RUBI_TEST_PLUGIN_KEY", other)
+	prev := version.Version
+	t.Cleanup(func() { version.Version = prev })
+	version.Version = "dev"
+	if err := Check(&m); err != nil {
+		t.Fatalf("dev build: %v", err)
+	}
+	version.Version = "v0.14.1"
+	if err := Check(&m); err == nil {
+		t.Fatal("a release build honored RUBI_TEST_PLUGIN_KEY")
+	}
+	version.Version = "dev"
+	t.Setenv("RUBI_TEST_PLUGIN_KEY", "")
+	if err := Check(&m); err == nil {
+		t.Fatal("clearing the variable still accepted the throwaway key")
 	}
 }
 

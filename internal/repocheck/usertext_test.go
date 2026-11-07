@@ -42,6 +42,8 @@ var userTextExempt = map[string]string{
 	"cmd/t3-bump/":                       "CI tool that opens the T3 pin pull request",
 	"internal/t3bump/":                   "CI tool that opens the T3 pin pull request",
 	"cmd/rubi-gateway/":                  "the hosted gateway's own command line, run by the host operator",
+	"cmd/rubi-sandbox/":                  "the maintainer sandbox, not shipped to people using Rubi",
+	"internal/sandbox/":                  "the maintainer sandbox, not shipped to people using Rubi",
 	"cmd/rubi-announce/":                 "release tool run by the maintainer",
 	"cmd/rubi/usage.go":                  "rubi's --help, read by the Bot that runs Rubi on its machine, not by the user",
 	"skills/":                            "Bot skills (also served as rubi-panel.com/install.md): written for the Bot, which runs the commands while the user only confirms",
@@ -289,7 +291,7 @@ func TestNoTextTellsTheUserToUseATerminal(t *testing.T) {
 		rel, _ := filepath.Rel(base, p)
 		rel = filepath.ToSlash(rel)
 		if err != nil || d.IsDir() {
-			if d != nil && d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor" || d.Name() == "testdata") {
+			if d != nil && d.IsDir() && (d.Name() == ".git" || d.Name() == "node_modules" || d.Name() == "vendor" || d.Name() == "testdata" || d.Name() == ".sandbox") {
 				return filepath.SkipDir
 			}
 			return nil
