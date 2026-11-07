@@ -34,7 +34,11 @@ func (t *T3Home) login() *setup.Setup {
 					dir = real
 				}
 				return agent.LoginEnv(dir)
-			}}
+			},
+			// The code handler only writes the code. When the helper then saves the credential,
+			// this starts the self-test. A panel does not have to.
+			OnSignedIn: func() { setup.AfterSignIn(t.startSelfTestAfterSignIn) },
+		}
 		if t.LoginOptions != nil {
 			t.LoginOptions(&opt)
 		}

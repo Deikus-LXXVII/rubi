@@ -60,7 +60,9 @@ function screen(...children) {
     if (opts.quiet) {
       // A redraw of the page on screen (its refresh): no entrance, and the control that had the focus keeps it.
       const again = opts.refocus && controlByKey(main, opts.refocus);
-      if (again) again.focus({ preventScroll: true });
+      // A button kept its focus from the tap that redrew the page, and that leftover focus
+      // looked like the button was still pressed. Only a field is put back.
+      if (again && again.matches("input, textarea, select")) again.focus({ preventScroll: true });
       return;
     }
     animateIn(main, morph ? hero : null);
@@ -692,6 +694,7 @@ function pairScreen(ctx) {
     savePin(hello.instance, ctx.link.k, res.vault_version);
     const settingsCtx = { ...ctx, client: tracked(new RubiClient({ ...ctx.link, t: res.ticket })) };
     settingsCtx.hello = await settingsCtx.client.call("hello");
+    activeCtx = settingsCtx;
     connectAgentScreen(settingsCtx);
   }
 
@@ -1419,6 +1422,12 @@ async function setupScreen(ctx, id, back) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
   if (!entry) return fatal("This plugin isn't installed. Ask your agent to install it from the store first.");
+  // A plugin with its own page (T3 Agents) does its first-time setup there. The generic Connect
+  // form would only end on a Saved card and never show that page.
+  if (entry.panel === "view") {
+    const backTo = back || (() => openSettings(ctx));
+    return pluginViewScreen(ctx, id, entry.name, backTo, { page: "setup" });
+  }
   const connected = () => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
     h("p", {}, "You can close this page and go back to your agent."));
   const finish = back || connected;
@@ -1760,7 +1769,7 @@ async function settingsScreen(ctx, tab) {
           h("button", { type: "button", class: "danger-item", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, icon("close", 16), "Disconnect"),
         ])))) : h("p", { class: "muted small" }, "Not connected yet."),
       p.panel === "notes" ? h("button", { class: "secondary small", onclick: () => notesScreen(ctx, p.id, back) }, icon("doc", 16), "Open notes") : null,
-      p.panel === "view" && p.connected ? h("button", { class: "secondary small", onclick: () => pluginViewScreen(ctx, p.id, p.name, back) }, icon("doc", 16), "Open " + p.name) : null,
+      p.panel === "view" ? h("button", { class: "secondary small", onclick: () => pluginViewScreen(ctx, p.id, p.name, back) }, icon("doc", 16), "Open " + p.name) : null,
       p.panel && !p.setup ? null : h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
   };
 
@@ -2377,6 +2386,160 @@ function askFolder(client, title, label, device) {
 // (e.g. a countdown to sending), but not while a box on the page holds text the user typed or a prompt box is open,
 // and a reload of the same page keeps its scroll position.
 const VIEW_TEXT_MAX = 600;
+
+// plainWords turns a few identifiers a plugin writes for itself into words a phone can read.
+function plainWords(s) {
+  return String(s)
+    .replace(/\bbypassPermissions\b/g, "skipping permission questions")
+    .replace(/\bt3agents_mandates\b/g, "the mandates list");
+}
+
+// sentences splits on a finished sentence, so a note is never cut in the middle of one.
+function sentences(text) {
+  return (String(text).match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || []).map((s) => s.trim()).filter(Boolean);
+}
+
+// noteBlock shows the first complete sentence. The rest is a disclosure, not a second heading.
+function noteBlock(text, small) {
+  const plain = plainWords(clip(text, 1500));
+  const cls = small ? "muted small" : "muted";
+  const parts = sentences(plain);
+  if (parts.length <= 1) return h("p", { class: cls }, plain);
+  return h("div", { class: "note-fold" },
+    h("p", { class: cls }, parts[0]),
+    h("details", { class: "note-more" }, h("summary", {}, "Details"), h("p", { class: cls }, parts.slice(1).join(" "))));
+}
+
+// pageNote is the line under a plugin's front-page title. The T3 Agents page leads with the
+// permission-mode identifier; that becomes one plain sentence, with the plugin's own wording behind Details.
+function pageNote(text) {
+  if (!text) return null;
+  if (/\bbypassPermissions\b/.test(text)) {
+    return h("div", { class: "note-fold" },
+      h("p", { class: "muted" }, "Sessions that skip permission questions aren't covered by the approvals on this page. Messages to and from Bots still work."),
+      h("details", { class: "note-more" }, h("summary", {}, "Details"), h("p", { class: "muted small" }, plainWords(clip(text, 1500)))));
+  }
+  return noteBlock(text, false);
+}
+
+// pluginHeading uses the installed plugin's name when a view still introduces itself as
+// "Claude Code". T3 Agents' manifest name is T3 Agents, but its front page and the setup
+// page's link back still send the old title: the program that runs inside the VM, left
+// from before the plugin was renamed. Any other title is the plugin's own.
+function pluginHeading(sent, fallback) {
+  const title = clip(sent, 120);
+  if (title.trim().toLowerCase() === "claude code" && fallback && fallback.trim().toLowerCase() !== "claude code") return fallback;
+  return title || fallback;
+}
+
+// stepBadge is the status a setup row repeats after its section title ("1. Apple container: done").
+// The heading is drawn once; this is the badge.
+function stepBadge(sectionTitle, item) {
+  const head = clip(sectionTitle, 120);
+  const title = clip(item && item.title, 200);
+  const prefix = head + ": ";
+  if (!head || !title.startsWith(prefix)) return "";
+  const status = title.slice(prefix.length).trim();
+  if (!status || status.length > 24 || /[.:]/.test(status)) return "";
+  return status;
+}
+
+// shortSignInURL is the host plus an ellipsis. The full address stays available to Copy.
+const RAW_URL = /https?:\/\/\S+/;
+function withoutURL(s) {
+  return String(s || "").replace(/https?:\/\/\S+/g, "").replace(/\(\s*\)/g, "").replace(/\s{2,}/g, " ").replace(/\s+([.,:;])/g, "$1").trim();
+}
+
+// foldStepRows keeps one card per setup step. A single role that only repeats the step is
+// merged into that card. A row that carries the raw sign-in URL is not printed; its buttons stay.
+function foldStepRows(rows) {
+  if (!rows || rows.length < 2) return rows || [];
+  const head = { ...rows[0], actions: objs(rows[0].actions, VIEW_ACTIONS_MAX).slice() };
+  const roles = [];
+  const rest = [];
+  const extra = [];
+  const seen = new Set(head.actions.map((a) => clip(a.label, 60)));
+  const take = (actions) => {
+    for (const a of objs(actions, VIEW_ACTIONS_MAX)) {
+      const label = clip(a.label, 60);
+      if (seen.has(label)) continue;
+      seen.add(label);
+      extra.push(a);
+    }
+  };
+  for (const it of rows.slice(1)) {
+    const title = clip(it.title, 200);
+    const detail = clip(it.detail, VIEW_TEXT_MAX);
+    const waiting = /sign-in waiting|waiting for the browser/i.test(title) || RAW_URL.test(title) || RAW_URL.test(detail);
+    if (waiting) {
+      take(it.actions);
+      continue;
+    }
+    if (title && detail) roles.push(it);
+    else rest.push(it);
+  }
+  if (roles.length <= 1) {
+    for (const it of roles) take(it.actions);
+  }
+  head.actions = head.actions.concat(extra);
+  const shown = roles.length > 1 ? roles : [];
+  return [head, ...shown, ...rest].map((it, i) => {
+    if (i === 0) return it;
+    const title = withoutURL(clip(it.title, 200));
+    const detail = withoutURL(clip(it.detail, VIEW_TEXT_MAX));
+    return { ...it, title, detail };
+  }).filter((it, i) => i === 0 || clip(it.title, 200) || clip(it.detail, VIEW_TEXT_MAX) || objs(it.actions, 1).length);
+}
+
+function findViewAction(sections, label) {
+  for (const sec of sections || []) {
+    for (const a of objs(sec.actions, VIEW_ACTIONS_MAX)) if (clip(a.label, 60) === label) return a;
+    for (const it of objs(sec.items, VIEW_ITEMS_MAX)) {
+      for (const a of objs(it.actions, VIEW_ACTIONS_MAX)) if (clip(a.label, 60) === label) return a;
+    }
+  }
+  return null;
+}
+
+function shortSignInURL(url) {
+  try {
+    return new URL(url).host + "/\u2026";
+  } catch {
+    return url.length > 40 ? url.slice(0, 32) + "\u2026" : url;
+  }
+}
+
+// signInLinkSheet lets the person open or copy a sign-in URL on the device that is showing the
+// panel. The home computer's browser is not involved. The address is shown short so Copy and Open
+// stay on screen; Copy still writes the whole URL.
+function signInLinkSheet(url) {
+  return new Promise((resolve) => {
+    const full = h("textarea", { class: "signin-full", readonly: true, rows: "4", "aria-label": "Full sign-in link" });
+    full.value = url;
+    const copy = h("button", { type: "button", class: "secondary", onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        copy.textContent = "Copied";
+      } catch {
+        full.focus();
+        full.select();
+        copy.textContent = "Select the link and copy it";
+      }
+    } }, "Copy the link");
+    const done = () => { overlay.remove(); resolve(); };
+    const overlay = h("div", { class: "ask-overlay", onclick: (e) => { if (e.target === overlay) done(); } },
+      h("div", { class: "ask-box", role: "dialog", "aria-modal": "true", "aria-label": "Sign-in link" },
+        h("h2", {}, "Open the sign-in page here"),
+        h("p", {}, "This opens on the phone or computer you are using now. Copy keeps the whole link."),
+        h("p", { class: "signin-short", "data-full-url": url }, shortSignInURL(url)),
+        h("details", { class: "note-more signin-full-wrap" }, h("summary", {}, "Show the full link"), full),
+        h("div", { class: "signin-actions" },
+          h("a", { class: "btn primary", href: url, target: "_blank", rel: "noopener noreferrer" }, "Open the sign-in page"),
+          copy,
+          h("button", { type: "button", class: "ghost", onclick: done }, "Done"))));
+    document.body.append(overlay);
+  });
+}
 const CHAT_TEXT_MAX = 4000;
 const CHAT_ITEMS_MAX = 300;
 const VIEW_SECTIONS_MAX = 20;
@@ -2436,6 +2599,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     const btn = e.currentTarget;
     if (currentView !== mine) return;
     if (a.open && typeof a.open === "object") return go(a.open);
+    if (typeof a.href === "string" && /^https:\/\/\S+$/.test(a.href)) return signInLinkSheet(a.href);
     if (a.confirm && !confirm(clip(a.confirm, 300))) return;
     let args = a.args && typeof a.args === "object" && !Array.isArray(a.args) ? a.args : {};
     const pr = a.prompt && typeof a.prompt === "object" ? a.prompt : null;
@@ -2459,14 +2623,90 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     }
     btn.disabled = true;
     try {
-      await call(String(a.op || ""), args);
+      const res = await call(String(a.op || ""), args);
+      const url = res && typeof res === "object" ? res.url : "";
+      if (typeof url === "string" && /^https:\/\/\S+$/.test(url)) await signInLinkSheet(url);
       again();
     } catch (x) {
       btn.disabled = false;
       showError(err, x);
     }
   };
-  const button = (a) => h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, clip(a.label, 60));
+  const rawSections = objs(data.sections, VIEW_SECTIONS_MAX);
+  const stepped = rawSections.filter((sec) => stepBadge(sec.title, objs(sec.items, 1)[0]));
+  const stepIsDone = (sec) => stepBadge(sec.title, objs(sec.items, 1)[0]).toLowerCase() === "done";
+  // "Set up everything" repeats the steps up through pairing. Once those are done it stays hidden;
+  // sign-in and the self-test have their own buttons.
+  const early = stepped.filter((sec) => !/sign-in|self-test/i.test(clip(sec.title, 120)));
+  const setupFinished = early.length > 0 && early.every(stepIsDone);
+  const allStepsDone = stepped.length >= 3 && stepped.every(stepIsDone);
+  const offersAll = !setupFinished && !allStepsDone && rawSections.some((sec) => objs(sec.actions, VIEW_ACTIONS_MAX).some((a) => clip(a.label, 60) === "Set up everything"));
+  const forwardStep = new Set(["Start", "Build", "Install the pinned T3", "Pair", "Install"]);
+  const selfAct = findViewAction(rawSections, "Run self-test");
+  const running = stepped.find((s) => stepBadge(s.title, objs(s.items, 1)[0]).toLowerCase() === "working");
+  const findAction = (sections, label) => {
+    for (const sec of sections) {
+      for (const it of objs(sec.items, VIEW_ITEMS_MAX)) {
+        for (const a of objs(it.actions, VIEW_ACTIONS_MAX)) {
+          if (clip(a.label, 60) === label) return a;
+        }
+      }
+    }
+    return null;
+  };
+  const openLink = findAction(rawSections, "Open the sign-in page");
+  const pasteCode = findAction(rawSections, "Paste the code");
+  // The link is on screen: the user has to open it and paste the code. Home is not working yet.
+  const awaitingUser = !!(openLink || pasteCode);
+  if (!awaitingUser) signinLinkOpened = false;
+  const homeWorking = running && !awaitingUser;
+  const runningCopy = !homeWorking ? null : /self-test/i.test(clip(running.title, 120))
+    ? { title: "Running the self-test\u2026", cancel: "Cancel the self-test" }
+    : /sign-in|claude/i.test(clip(running.title, 120))
+      ? { title: "Signing in\u2026", cancel: "Cancel signing in" }
+      : { title: "Working on " + clip(running.title, 120).replace(/^\d+\.\s*/, "") + "\u2026", cancel: "Cancel" };
+  const failedSec = homeWorking ? null : awaitingUser ? null : stepped.find((s) => /failed|needs/.test(stepBadge(s.title, objs(s.items, 1)[0]).toLowerCase()));
+  let failure = null;
+  if (failedSec) {
+    const items = objs(failedSec.items, VIEW_ITEMS_MAX);
+    const heading = clip(failedSec.title, 120);
+    const loginFail = /sign-in|claude/i.test(heading);
+    const selfFail = /self-test/i.test(heading);
+    const roleDetail = items.slice(1).map((it) => clip(it.detail, 300)).find((d) => d) || "";
+    const acts = [];
+    const signIn = findAction([failedSec], "Get a new sign-in link") || findAction([failedSec], "Sign in");
+    const runSelf = findAction([failedSec], "Run self-test");
+    const again = findAction(rawSections, "Sign in again");
+    if (loginFail && signIn) acts.push({ a: signIn, look: "primary", shown: "Get a new sign-in link" });
+    else if (selfFail && runSelf) {
+      acts.push({ a: runSelf, look: "primary", shown: "" });
+      if (again) acts.push({ a: again, look: "quiet", shown: "" });
+    } else if (signIn) acts.push({ a: signIn, look: "primary", shown: "" });
+    else if (runSelf) acts.push({ a: runSelf, look: "primary", shown: "" });
+    const next = loginFail ? "Next: get a new sign-in link." : selfFail ? "Next: run the self-test." : "";
+    failure = {
+      title: clip(items[0] && items[0].detail, 300) || "This step failed.",
+      detail: [loginFail ? "" : roleDetail.replace(/^(failed|needs you)\.\s*/i, ""), next].filter(Boolean).join(" "),
+      acts,
+      hide: new Set(acts.map((x) => clip(x.a.label, 60))),
+    };
+  }
+  const button = (a, stepState, display, look) => {
+    const real = clip(a.label, 60);
+    const label = display || real;
+    const failed = /failed|needs/.test(String(stepState || ""));
+    // One primary path. The per-step buttons come back when that step failed or is being retried.
+    if (offersAll && !failed && forwardStep.has(real)) return null;
+    if ((setupFinished || allStepsDone) && real === "Set up everything") return null;
+    if (allStepsDone && (real === "Refresh" || real === "Run self-test")) return null;
+    const onclick = (e) => {
+      if (real === "Open the sign-in page") signinLinkOpened = true;
+      return act(a)(e);
+    };
+    if (real === "Set up everything") return h("button", { type: "button", class: "primary", onclick }, "Set up everything");
+    const cls = look === "primary" ? "primary" : look === "quiet" ? "quiet" : (a.danger ? "danger " : "secondary ") + "small";
+    return h("button", { type: "button", class: cls, onclick }, label);
+  };
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
   // input {op, args, arg, label, send}: the text the user writes goes to the plugin as args[arg]. Everything the
   // plugin supplies is drawn as text. A message is marked untrusted when the plugin says so, when its role is sister,
@@ -2507,35 +2747,104 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     }
     return [log, form];
   };
-  const sections = objs(data.sections, VIEW_SECTIONS_MAX).map((sec) => {
-    const secActions = objs(sec.actions, VIEW_ACTIONS_MAX);
+  const built = rawSections.map((sec) => {
+    const secTitle = clip(sec.title, 120);
+    if (allStepsDone && /^setup$/i.test(secTitle.trim())) return null;
+    const secActions = objs(sec.actions, VIEW_ACTIONS_MAX).map((a) => button(a, "")).filter(Boolean);
     const list = sec.kind === "chat" ? null : objs(sec.items, VIEW_ITEMS_MAX);
-    return h("section", { class: "view-section" },
-      h("h2", {}, clip(sec.title, 120)),
-      sec.note ? h("p", { class: "muted small" }, clip(sec.note, 1500)) : null,
-      secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions.map(button)) : null,
+    let rows = list;
+    let badge = "";
+    if (rows && rows.length) {
+      badge = stepBadge(secTitle, rows[0]);
+      if (badge) rows = foldStepRows([{ ...rows[0], title: "" }, ...rows.slice(1)]);
+    }
+    const badgeCls = badge ? "status-" + badge.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "";
+    const waitBadge = awaitingUser && badge.toLowerCase() === "working" ? " status-wait" : "";
+    const setupSec = /^setup$/i.test(secTitle.trim());
+    const failCard = setupSec && failure ? h("li", { class: "view-warn" },
+      h("div", { class: "view-text" }, h("strong", {}, failure.title), failure.detail ? h("span", { class: "muted small" }, failure.detail) : null),
+      h("div", { class: "view-actions" }, failure.acts.map((x) => button(x.a, "failed", x.shown, x.look)).filter(Boolean))) : null;
+    const lis = [];
+    if (failCard) lis.push(failCard);
+    if (rows && rows.length) lis.push(...rows.map((it) => {
+      let title = clip(it.title, 200);
+      const busyLine = /^(Something is running|Working on:|Starting)/.test(title);
+      const userBox = awaitingUser && busyLine;
+      if (userBox) title = "Open the link and sign in";
+      else if (busyLine && runningCopy && /^(Something is running|Working on:)/.test(title)) title = runningCopy.title;
+      let detail = userBox ? "" : clip(it.detail, VIEW_TEXT_MAX);
+      const itemActs = objs(it.actions, VIEW_ACTIONS_MAX);
+      if (itemActs.some((a) => /^Cancel/.test(clip(a.label, 60)))) detail = detail.replace(/\s*The buttons below wait until it ends\.?/g, "").trim();
+      const lifted = (label) => awaitingUser && (label === "Open the sign-in page" || label === "Paste the code");
+      let actions;
+      if (userBox) {
+        const primary = signinLinkOpened && pasteCode ? pasteCode : openLink;
+        const secondary = signinLinkOpened ? openLink : pasteCode;
+        actions = [primary && button(primary, "", "", "primary"), secondary && secondary !== primary ? button(secondary, "", "", "") : null,
+          ...itemActs.filter((a) => /^Cancel/.test(clip(a.label, 60))).map((a) => button(a, "", "Cancel sign-in", ""))].filter(Boolean);
+      } else {
+        actions = itemActs.map((a) => {
+          const label = clip(a.label, 60);
+          if (failure && badge && failure.hide.has(label)) return null;
+          if (badge && lifted(label)) return null;
+          return button(a, badge, busyLine && runningCopy && label === "Cancel" ? runningCopy.cancel : "");
+        }).filter(Boolean);
+      }
+      return h("li", it.warn ? { class: "view-warn" } : {},
+        h("div", { class: "view-text" }, title ? h("strong", {}, title) : null, detail ? h("span", { class: "muted small" }, detail) : null),
+        h("div", { class: "view-actions" }, actions));
+    }));
+    return { step: !!badge, done: badge.toLowerCase() === "done", setup: setupSec, el: h("section", { class: "view-section" },
+      h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls + waitBadge }, badge) : null),
+      sec.note && !((offersAll || allStepsDone || setupFinished) && /set up everything/i.test(String(sec.note))) ? noteBlock(sec.note, true) : null,
+      secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions) : null,
       sec.kind === "chat" ? chatSection(sec)
-      : list.length ? h("ul", { class: "view-list" }, list.map((it) => h("li", it.warn ? { class: "view-warn" } : {},
-        h("div", { class: "view-text" }, h("strong", {}, clip(it.title, 200)), it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
-        h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map(button)))))
-        : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here."));
-  });
+      : lis.length ? h("ul", { class: "view-list" }, lis)
+        : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here.")) };
+  }).filter(Boolean);
+  const stepEls = built.filter((b) => b.step).map((b) => b.el);
+  const restEls = built.filter((b) => !b.step).map((b) => b.el);
+  const doneEls = built.filter((b) => b.step && b.done).map((b) => b.el);
+  const liveEls = built.filter((b) => b.step && !b.done).map((b) => b.el);
+  const sections = allStepsDone && stepEls.length
+    ? [h("details", { class: "setup-fold" },
+        h("summary", {}, `Setup steps (${stepped.filter(stepIsDone).length}/${stepped.length} done)`),
+        ...stepEls), ...restEls]
+    : (runningCopy || failure || awaitingUser) && doneEls.length
+      ? [...built.filter((b) => b.setup).map((b) => b.el),
+        h("details", { class: "setup-fold" }, h("summary", {}, `Finished steps (${doneEls.length} done)`), ...doneEls),
+        ...liveEls, ...built.filter((b) => !b.step && !b.setup).map((b) => b.el)]
+      : built.map((b) => b.el);
   const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
+  const front = !(viewArgs && viewArgs.page);
+  const opensRoot = !!(up && up.open && !up.open.page);
+  const heading = front ? pluginHeading(data.title, name) : (clip(data.title, 120) || name);
+  const backLabel = up ? (opensRoot ? pluginHeading(up.label, name) : (clip(up.label, 40) || "Back")) : "";
   if (oldErr) { err.textContent = oldErr; err.hidden = false; } // an error the user hasn't read yet stays
+  // A refresh redraws the page. Disclosures the user opened (the finished steps) stay open.
+  const openSummaries = same ? [...document.querySelectorAll("details[open] > summary")].map((s) => (s.textContent || "").trim()) : [];
   screen(
     { cls: "wide", focus: false, keepScroll: pageTop, quiet: same && byRefresh, refocus },
     header(ctx.hello),
-    up ? backBar(clip(up.label, 40) || "Back", () => go(up.open)) : backBar("Settings", back),
-    h("div", { class: "section-head" }, h("h1", {}, clip(data.title, 120) || name)),
-    data.note ? h("p", { class: "muted" }, clip(data.note, 1500)) : null,
+    up ? backBar(backLabel, () => go(up.open)) : backBar("Settings", back),
+    h("div", { class: "section-head" }, h("h1", {}, heading)),
+    allStepsDone ? h("div", { class: "ready-banner", role: "status" },
+      h("strong", {}, `${name} is ready`),
+      h("p", {}, "Ask a Bot to start a session in a role on this computer."),
+      selfAct ? h("button", { type: "button", class: "secondary small", onclick: act(selfAct) }, "Run the self-test again") : null) : null,
+    data.note ? (front ? pageNote(data.note) : noteBlock(data.note, false)) : null,
     err,
     ...sections,
   );
+  for (const s of document.querySelectorAll("details > summary")) {
+    if (openSummaries.includes((s.textContent || "").trim())) s.parentElement.open = true;
+  }
   if (refresh > 0) viewRefresh.arm(refresh, tick);
   else viewRefresh.cancel();
 }
 let chatKey = ""; // which plugin page the chat on screen belongs to
 let viewJSON = ""; // what that page showed, as the plugin sent it
+let signinLinkOpened = false; // the user opened the sign-in link; Paste the code becomes the primary
 const viewRefresh = createRefresher(); // the one refresh to come of the plugin page on screen
 
 function noteEditor(ctx, id, n, done) {

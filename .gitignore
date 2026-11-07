@@ -21,6 +21,10 @@ mail-bridge/
 
 # Local tooling
 .claude/
+.sandbox/
+/betatest/
+betatest-out/
+scripts/betatest/node_modules/
 
 # Release signing key (private) - never commit
 /.release-key/

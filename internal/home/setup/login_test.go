@@ -225,7 +225,7 @@ func TestLoginRefusesAnUnexpectedLink(t *testing.T) {
 		if e.s.Status(context.Background()).Login != nil {
 			t.Error("login info kept after the job")
 		}
-		if err := e.s.LoginOpen(context.Background()); err == nil {
+		if _, err := e.s.LoginOpen(context.Background()); err == nil {
 			t.Error("opened a link after the job")
 		}
 		if !e.lastAuth().isClosed() {
@@ -353,11 +353,16 @@ func TestLoginOpen(t *testing.T) {
 	}
 	waitFor(t, "the link", e.linkShown)
 	res, err := e.op("login.open", map[string]any{"project": "ignored"})
-	if err != nil || res["opened"] != true {
+	if err != nil || res["url"] != claudeURL || res["opened"] != false {
 		t.Fatalf("%v %v", res, err)
 	}
-	if len(op.links) != 1 || op.links[0] != claudeURL {
-		t.Errorf("opened: %v", op.links)
+	if len(op.links) != 0 {
+		t.Errorf("the home computer opened a browser: %v", op.links)
+	}
+	e.s.opt.Opener = nil
+	res, err = e.op("login.open", nil)
+	if err != nil || res["url"] != claudeURL {
+		t.Fatalf("without a local browser: %v %v", res, err)
 	}
 	for _, c := range e.cmd.calls {
 		if c[0] == "/usr/bin/open" {
@@ -367,7 +372,7 @@ func TestLoginOpen(t *testing.T) {
 	e.s.Cancel()
 	e.wait()
 	e.s.opt.Backend = noBackendLinux
-	if err := e.s.LoginOpen(context.Background()); err == nil {
+	if _, err := e.s.LoginOpen(context.Background()); err == nil {
 		t.Error("opened on a non-Mac")
 	}
 }

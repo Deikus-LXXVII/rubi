@@ -205,10 +205,12 @@ func (s *Setup) LoginCode(code string) error {
 	return nil
 }
 
-// LoginOpen opens the running sign-in's link in the default browser, through the Opener.
-func (s *Setup) LoginOpen(ctx context.Context) error {
+// LoginOpen returns the running sign-in's link so the panel can open it on the device the person
+// is holding (a phone, usually). It does not open a browser on this computer: that browser is the
+// home computer's, and the person approving the sign-in is somewhere else.
+func (s *Setup) LoginOpen(ctx context.Context) (string, error) {
 	if av := s.agentsHere(ctx); !av.OK {
-		return errNoBackend(av)
+		return "", errNoBackend(av)
 	}
 	s.mu.Lock()
 	raw := ""
@@ -217,19 +219,13 @@ func (s *Setup) LoginOpen(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	if raw == "" {
-		return errors.New("no sign-in is waiting")
+		return "", errors.New("no sign-in is waiting")
 	}
 	u, err := loginURL(raw)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if s.opt.Opener == nil {
-		return errors.New("this computer has no way to open the browser")
-	}
-	if err := s.opt.Opener.Open(ctx, u); err != nil {
-		return errors.New("couldn't open the browser")
-	}
-	return nil
+	return u, nil
 }
 
 // StartLogin starts the sign-in as a job without looking at the other steps first (the sign-in container fails closed
@@ -247,8 +243,14 @@ func (s *Setup) StartLogin(method string) error {
 		return err
 	}
 	go func() {
-		defer s.release(j)
-		s.record(jctx, StepLogin, "", j, s.runLogin(jctx, j))
+		out := s.runLogin(jctx, j)
+		s.record(jctx, StepLogin, "", j, out)
+		s.release(j)
+		// The code handler only relays what the person typed. The sign-in is finished here,
+		// when the helper has saved a credential, and that is what starts the self-test.
+		if out.State == Done && s.opt.OnSignedIn != nil {
+			s.opt.OnSignedIn()
+		}
 	}()
 	return nil
 }
@@ -259,6 +261,8 @@ type LoginProgress struct {
 	Working   bool
 	URL       string
 	WantsCode bool
+	// CodeSent says the code was written to the helper and the sign-in has not finished yet.
+	CodeSent bool
 	// State and Reason are the last finished attempt's outcome (empty before one, or after a success).
 	State, Reason string
 	Progress      []string
@@ -272,7 +276,7 @@ func (s *Setup) LoginProgress() LoginProgress {
 	if j := s.job; j != nil && j.step == StepLogin {
 		li.Working, li.Progress = true, j.prog.snapshot()
 		if l := j.login; l != nil {
-			li.URL, li.WantsCode = l.url, l.wantsCode
+			li.URL, li.WantsCode, li.CodeSent = l.url, l.wantsCode, l.codeSent
 		}
 		return li
 	}

@@ -611,15 +611,39 @@ func (c *Core) checkPanelOrigin() {
 	_ = vault.WriteFileAtomic(c.Layout.PanelOrigin(), []byte(sealed+"\n"), 0o600)
 }
 
-// checkDowngrade remembers the newest Rubi ever unlocked and reports when an older one is unlocked
+// devBuild is a version that must not count as the highest release this Rubi has run.
+// The plain "dev" string and test builds are the ones `go test` and local `go build` produce.
+// A stamped local build is the same kind of thing: a pre-release whose name says dev or dirty,
+// or a git-describe version (v1.2.3-4-gabcdef). Those sort above the release the person later
+// installs, and used to raise a false "downgraded" alarm.
+func devBuild(v string) bool {
+	if v == "" || v == "dev" || strings.HasSuffix(v, "-test") || !update.ValidVersion(v) {
+		return true
+	}
+	_, pre, ok := strings.Cut(strings.TrimPrefix(v, "v"), "-")
+	if !ok || pre == "" {
+		return false
+	}
+	low := strings.ToLower(pre)
+	if strings.Contains(low, "dev") || strings.Contains(low, "dirty") {
+		return true
+	}
+	return strings.Contains(pre, "-g")
+}
+
+// checkDowngrade remembers the newest release Rubi ever unlocked and reports when an older one is unlocked
 // (rubi rollback, or a replaced binary): the user sees it on the panel and the agent is told.
+// Local and development builds are ignored, including one that was recorded before this rule.
 func (c *Core) checkDowngrade() {
 	cur := version.Version
-	if cur == "dev" || strings.HasSuffix(cur, "-test") {
+	if devBuild(cur) {
 		return
 	}
 	var highest string
 	_ = c.Vault.Update(func(d *vault.Data) error {
+		if devBuild(d.HighestVersion) {
+			d.HighestVersion = ""
+		}
 		if d.HighestVersion == "" || update.Newer(cur, d.HighestVersion) {
 			d.HighestVersion = cur
 		}

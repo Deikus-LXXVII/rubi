@@ -132,7 +132,7 @@ r.cancel();
 const now = pending; pending = []; now.forEach((t) => t.f());
 console.log(JSON.stringify({ byRefresh: draws - afterClicks, waiting, afterCancel: pending.length,
   same: unchanged("k", "{}", "k", "{}"), other: unchanged("k", "{}", "j", "{}"), changed: unchanged("k", "{}", "k", "{\"a\":1}") }));`
-	out, err := exec.Command(node, "--input-type=module", "-e", script).CombinedOutput()
+	out, err := exec.Command(node, "--no-warnings", "--input-type=module", "-e", script).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, out)
 	}
@@ -140,7 +140,7 @@ console.log(JSON.stringify({ byRefresh: draws - afterClicks, waiting, afterCance
 		ByRefresh, Waiting, AfterCancel int
 		Same, Other, Changed            bool
 	}
-	if err := json.Unmarshal(out, &got); err != nil {
+	if err := json.Unmarshal(jsonLine(out), &got); err != nil {
 		t.Fatalf("node output: %v\n%s", err, out)
 	}
 	if got.ByRefresh != 10 || got.Waiting != 1 || got.AfterCancel != 0 {
@@ -157,4 +157,20 @@ console.log(JSON.stringify({ byRefresh: draws - afterClicks, waiting, afterCance
 	if strings.Contains(string(app), "setTimeout(tick") {
 		t.Error("panel/js/app.js arms a refresh with a bare setTimeout")
 	}
+}
+
+// jsonLine is the last line of node output that is JSON. A warning on stderr mixed into
+// combined output must not make the parse fail.
+func jsonLine(out []byte) []byte {
+	var last []byte
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) > 0 && line[0] == '{' {
+			last = line
+		}
+	}
+	if last == nil {
+		return out
+	}
+	return last
 }

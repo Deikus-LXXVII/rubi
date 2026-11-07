@@ -10,11 +10,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
 	"regexp"
 	"strings"
 
 	"github.com/Deikus-LXXVII/rubi/internal/update"
+	"github.com/Deikus-LXXVII/rubi/internal/version"
 	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
 
@@ -44,6 +46,19 @@ var OfficialT3PluginID = "t3agents"
 // a VM (roles, SSH targets, MCP servers) and setting up that path (installing software, creating networks). The T3
 // pair (t3-agent, t3-setup) is the same power through T3, reserved for the T3 Agents plugin.
 var ReservedHomeCapability = map[string]bool{"claude-agent": true, "agent-setup": true, "t3-agent": true, "t3-setup": true}
+
+// trustedPublisherKey is the publisher key a reserved Home capability must be signed under.
+// A development or test build may set RUBI_TEST_PLUGIN_KEY to a throwaway public key so a sandbox
+// can install the T3 Agents plugin from a catalog it signed itself. A release build ignores the
+// variable and always requires the key built into Rubi.
+func trustedPublisherKey() string {
+	if version.Version == "dev" || strings.HasSuffix(version.Version, "-test") {
+		if k := strings.TrimSpace(os.Getenv("RUBI_TEST_PLUGIN_KEY")); k != "" {
+			return k
+		}
+	}
+	return OfficialPublisherKey
+}
 
 // officialFor is the id of the plugin that may declare a reserved capability.
 func officialFor(capability string) string {
@@ -139,7 +154,7 @@ func Check(m *Manifest) error {
 		}
 	}
 	for _, h := range m.Home {
-		if ReservedHomeCapability[h] && (m.ID != officialFor(h) || strings.TrimSpace(m.Publisher.Key) != OfficialPublisherKey) {
+		if ReservedHomeCapability[h] && (m.ID != officialFor(h) || strings.TrimSpace(m.Publisher.Key) != trustedPublisherKey()) {
 			return fmt.Errorf("the Rubi Home capability %q is reserved for the official %s plugin", h, officialFor(h))
 		}
 		if h != "hue" && h != "shortcuts" && h != "claude" && h != "claude-sessions" && h != "claude-start" && h != "claude-agent" && h != "agent-setup" &&
