@@ -17,6 +17,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
+	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 )
 
 // T3StepSelfTest is the setup page's self-test row.
@@ -333,7 +334,7 @@ func (t *T3Home) selfTestStep() map[string]any {
 			row["state"], row["reason"], row["progress"] = res.State, res.Reason, res.Progress
 		}
 		if working {
-			row["state"], row["reason"] = "working", "Working..."
+			row["state"], row["reason"] = "working", setup.SelfTestRunning
 		} else if !paired && !ran {
 			row["state"], row["reason"], row["action"] = "todo", "Needs T3 running and paired first.", ""
 		}
@@ -345,7 +346,7 @@ func (t *T3Home) selfTestStep() map[string]any {
 	case len(rows) == 0:
 		reason = "Make a role first."
 	case agg["working"] > 0:
-		state, reason = "working", "Working..."
+		state, reason = "working", setup.SelfTestRunning
 	case agg["failed"] > 0:
 		state, reason = "failed", fmt.Sprintf("%d of %d roles failed.", agg["failed"], len(rows))
 	case agg["needs_user"] > 0:

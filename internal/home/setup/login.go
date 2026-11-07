@@ -243,8 +243,14 @@ func (s *Setup) StartLogin(method string) error {
 		return err
 	}
 	go func() {
-		defer s.release(j)
-		s.record(jctx, StepLogin, "", j, s.runLogin(jctx, j))
+		out := s.runLogin(jctx, j)
+		s.record(jctx, StepLogin, "", j, out)
+		s.release(j)
+		// The code handler only relays what the person typed. The sign-in is finished here,
+		// when the helper has saved a credential, and that is what starts the self-test.
+		if out.State == Done && s.opt.OnSignedIn != nil {
+			s.opt.OnSignedIn()
+		}
 	}()
 	return nil
 }
@@ -255,6 +261,8 @@ type LoginProgress struct {
 	Working   bool
 	URL       string
 	WantsCode bool
+	// CodeSent says the code was written to the helper and the sign-in has not finished yet.
+	CodeSent bool
 	// State and Reason are the last finished attempt's outcome (empty before one, or after a success).
 	State, Reason string
 	Progress      []string
@@ -268,7 +276,7 @@ func (s *Setup) LoginProgress() LoginProgress {
 	if j := s.job; j != nil && j.step == StepLogin {
 		li.Working, li.Progress = true, j.prog.snapshot()
 		if l := j.login; l != nil {
-			li.URL, li.WantsCode = l.url, l.wantsCode
+			li.URL, li.WantsCode, li.CodeSent = l.url, l.wantsCode, l.codeSent
 		}
 		return li
 	}

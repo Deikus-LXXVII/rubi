@@ -2624,7 +2624,6 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       const res = await call(String(a.op || ""), args);
       const url = res && typeof res === "object" ? res.url : "";
       if (typeof url === "string" && /^https:\/\/\S+$/.test(url)) await signInLinkSheet(url);
-      if (/^paste the code$/i.test(clip(a.label, 60))) setupAfterSignIn = true;
       again();
     } catch (x) {
       btn.disabled = false;
@@ -2738,39 +2737,14 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     allStepsDone ? h("div", { class: "ready-banner", role: "status" },
       h("strong", {}, `${name} is ready`),
       h("p", {}, "Ask a Bot to start a session in a role on this computer."),
-      selfAct ? h("button", { type: "button", class: "secondary small", onclick: act(selfAct) }, "Run again") : null) : null,
+      selfAct ? h("button", { type: "button", class: "secondary small", onclick: act(selfAct) }, "Run the self-test again") : null) : null,
     data.note ? (front ? pageNote(data.note) : noteBlock(data.note, false)) : null,
     err,
     ...sections,
   );
   if (refresh > 0) viewRefresh.arm(refresh, tick);
   else viewRefresh.cancel();
-  // The plugin reuses a status for a couple of seconds. After the code is accepted, reload once
-  // that window has passed, and run the self-test if sign-in is done and it has not run yet.
-  if (setupAfterSignIn && currentView === mine) {
-    if (allStepsDone) setupAfterSignIn = false;
-    else if (!setupReloadArmed) {
-      setupReloadArmed = true;
-      const loginDone = stepped.some((s) => /sign-in/i.test(clip(s.title, 120)) && stepIsDone(s));
-      const selfDone = stepped.some((s) => /self-test/i.test(clip(s.title, 120)) && stepIsDone(s));
-      const shouldRun = loginDone && !selfDone && selfAct && !selfTestRan;
-      if (shouldRun) selfTestRan = true;
-      setTimeout(async () => {
-        setupReloadArmed = false;
-        if (currentView !== mine) return;
-        if (shouldRun) {
-          try { await call(String(selfAct.op || ""), selfAct.args && typeof selfAct.args === "object" && !Array.isArray(selfAct.args) ? selfAct.args : {}); }
-          catch { /* the reload shows whatever the computer reports */ }
-        }
-        setupAfterSignIn = false;
-        if (currentView === mine) mine();
-      }, 2200);
-    }
-  }
 }
-let setupAfterSignIn = false;
-let setupReloadArmed = false;
-let selfTestRan = false;
 let chatKey = ""; // which plugin page the chat on screen belongs to
 let viewJSON = ""; // what that page showed, as the plugin sent it
 const viewRefresh = createRefresher(); // the one refresh to come of the plugin page on screen

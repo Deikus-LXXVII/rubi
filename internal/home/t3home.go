@@ -775,12 +775,14 @@ func (t *T3Home) loginStep() map[string]any {
 	var progress []string
 	switch {
 	case li.Working:
-		state, reason, action, progress = "working", "Signing in...", "cancel", li.Progress
-		if li.URL != "" {
+		state, reason, action, progress = "working", setup.SigningIn, "cancel", li.Progress
+		switch {
+		case li.CodeSent:
+			reason = setup.SigningIn
+		case li.URL != "" && li.WantsCode:
+			reason = "Paste the code the browser shows."
+		case li.URL != "":
 			reason = "Open the link and sign in."
-			if li.WantsCode {
-				reason = "Paste the code the browser shows."
-			}
 		}
 	case !in && li.State != "":
 		state, reason = li.State, li.Reason
@@ -792,14 +794,14 @@ func (t *T3Home) loginStep() map[string]any {
 	rows := []map[string]any{}
 	for _, r := range t.h.Agent.T3Projects() {
 		row := map[string]any{"id": r.Role, "dir": r.Dir, "state": state, "reason": reason, "action": action}
-		if li.Working && li.URL != "" {
+		if li.Working && li.URL != "" && !li.CodeSent {
 			row["url"], row["wants_code"] = li.URL, li.WantsCode
 		}
 		rows = append(rows, row)
 	}
 	step := map[string]any{"id": "login", "title": "Claude sign-in", "state": state, "reason": reason, "action": action,
 		"action2": "check", "projects": rows, "progress": progress}
-	if li.Working && li.URL != "" {
+	if li.Working && li.URL != "" && !li.CodeSent {
 		step["url"], step["wants_code"] = li.URL, li.WantsCode
 	}
 	return step

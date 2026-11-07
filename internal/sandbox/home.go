@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 )
 
@@ -18,13 +20,16 @@ type Home struct {
 	Name      string
 	SignInURL string
 
-	mu       sync.Mutex
-	secret   string
-	token    string
-	order    []string
-	state    map[string]string
-	signedIn bool
-	login    bool
+	mu          sync.Mutex
+	secret      string
+	token       string
+	order       []string
+	state       map[string]string
+	signedIn    bool
+	login       bool
+	signingIn   bool
+	signInFor   time.Duration
+	selfTestFor time.Duration
 }
 
 // NewHome starts every step not done except the container, which the sandbox stubs as already installed.
@@ -37,6 +42,8 @@ func NewHome(name, secret, signInURL string) *Home {
 			"container": "done", "service": "todo", "image": "todo", "t3": "todo",
 			"pair": "todo", "login": "todo", "selftest": "todo",
 		},
+		// Long enough that a panel polling every few seconds sees each phase.
+		signInFor: 8 * time.Second, selfTestFor: 8 * time.Second,
 	}
 }
 
@@ -129,7 +136,15 @@ func (h *Home) status() map[string]any {
 		st := h.state[id]
 		reason := reasons[id]
 		action := ""
-		if st == "done" {
+		if st == "working" {
+			if id == "login" {
+				reason = setup.SigningIn
+			} else if id == "selftest" {
+				reason = setup.SelfTestRunning
+			}
+			action = ""
+			blocked = true
+		} else if st == "done" {
 			reason = "Done"
 			if id == "container" {
 				reason = reasons[id]
@@ -156,7 +171,7 @@ func (h *Home) status() map[string]any {
 		step := map[string]any{"id": id, "title": titles[id], "state": st, "reason": reason, "action": action}
 		if id == "login" {
 			roleState, roleAction, roleReason := st, action, reason
-			if h.login && !h.signedIn {
+			if h.login && !h.signedIn && !h.signingIn {
 				roleState, roleAction = "working", ""
 				roleReason = "Open the link and sign in."
 				step["state"], step["reason"], step["action"] = roleState, roleReason, "cancel"
@@ -178,7 +193,7 @@ func (h *Home) status() map[string]any {
 		steps = append(steps, step)
 	}
 	out := map[string]any{"steps": steps, "supported": true, "running": h.state["t3"] == "done", "paired": h.state["pair"] == "done"}
-	if h.login && !h.signedIn {
+	if h.login && !h.signedIn && !h.signingIn {
 		out["login"] = map[string]any{"url": h.SignInURL, "wants_code": true, "role": "reviewer"}
 	}
 	return out
@@ -204,7 +219,9 @@ func (h *Home) run(raw json.RawMessage) (any, error) {
 		if !h.signedIn || !h.earlierDone("selftest") {
 			return nil, errString("Sign in first, then run the self-test.")
 		}
-		h.state["selftest"] = "done"
+		if err := h.beginSelfTestLocked(); err != nil {
+			return nil, err
+		}
 		return map[string]any{"started": true}, nil
 	}
 	if in.Step == "login" {
@@ -262,21 +279,57 @@ func (h *Home) code(raw json.RawMessage) (any, error) {
 		return nil, errString("bad arguments")
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if !h.login {
+	if !h.login || h.signingIn {
+		h.mu.Unlock()
 		return nil, errString("no sign-in is waiting for a code")
 	}
 	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(in.Code)), []byte(SignInCode)) != 1 {
+		h.mu.Unlock()
 		return nil, errString("that code was not accepted")
 	}
+	// The code is only accepted here. Sign-in stays working until it would have saved
+	// the credential; that completion, through setup.AfterSignIn, starts the self-test.
+	h.signingIn = true
+	h.state["login"] = "working"
+	wait := h.signInFor
+	h.mu.Unlock()
+	go h.finishSignIn(wait)
+	return map[string]any{"sent": true}, nil
+}
+
+func (h *Home) finishSignIn(wait time.Duration) {
+	time.Sleep(wait)
+	h.mu.Lock()
+	h.signingIn = false
 	h.login = false
 	h.signedIn = true
 	h.state["login"] = "done"
-	// The self-test follows sign-in with no extra tap. Run again stays available.
-	if h.earlierDone("selftest") {
-		h.state["selftest"] = "done"
+	h.mu.Unlock()
+	setup.AfterSignIn(h.startSelfTest)
+}
+
+func (h *Home) startSelfTest() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.beginSelfTestLocked()
+}
+
+// beginSelfTestLocked starts the self-test the way a finished sign-in does. h.mu is held.
+func (h *Home) beginSelfTestLocked() error {
+	if h.state["selftest"] == "working" {
+		return errString("self-test is already running")
 	}
-	return map[string]any{"sent": true}, nil
+	h.state["selftest"] = "working"
+	wait := h.selfTestFor
+	go func() {
+		time.Sleep(wait)
+		h.mu.Lock()
+		if h.state["selftest"] == "working" {
+			h.state["selftest"] = "done"
+		}
+		h.mu.Unlock()
+	}()
+	return nil
 }
 
 type strErr string

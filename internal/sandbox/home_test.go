@@ -4,12 +4,16 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 )
 
 func TestHomeLoginWaitsAndThenReturnsTheFullLink(t *testing.T) {
 	h := NewHome("Sandbox Home", "secret", "https://127.0.0.1:18443/oauth/authorize?state="+strings.Repeat("a", 480))
+	h.signInFor = 40 * time.Millisecond
+	h.selfTestFor = 40 * time.Millisecond
 	hello, err := h.Handle(homeproto.Envelope{Op: "pair", Args: mustJSON(t, map[string]string{"secret": "secret", "token": "tok"})})
 	if err != nil {
 		t.Fatal(err)
@@ -57,24 +61,35 @@ func TestHomeLoginWaitsAndThenReturnsTheFullLink(t *testing.T) {
 	}
 	st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
 	login = step(t, st, "login")
-	if login["state"] != "done" {
-		t.Fatalf("after code: %#v", login)
-	}
 	self = step(t, st, "selftest")
-	projects, _ := self["projects"].([]map[string]any)
-	if self["state"] != "done" || !strings.Contains(fmtReason(self), "Ready") {
-		t.Fatalf("self-test did not follow sign-in: %#v", self)
+	if login["state"] == "done" || self["state"] == "done" {
+		t.Fatalf("code() finished the sign-in itself: login %#v self %#v", login, self)
 	}
-	if self["action"] != "selftest" || len(projects) != 1 || projects[0]["action"] != "selftest" {
-		t.Fatalf("no rerun after the automatic self-test: %#v", self)
+	var seen []string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(seen) < 3 {
+		st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
+		login = step(t, st, "login")
+		self = step(t, st, "selftest")
+		phase := ""
+		switch {
+		case login["state"] == "working" && login["reason"] == setup.SigningIn && self["state"] != "working" && self["state"] != "done":
+			phase = setup.SignInPhases()[0]
+		case login["state"] == "done" && self["state"] == "working" && self["reason"] == setup.SelfTestRunning:
+			phase = setup.SignInPhases()[1]
+		case login["state"] == "done" && self["state"] == "done" && strings.Contains(fmtReason(self), "Ready"):
+			phase = setup.SignInPhases()[2]
+		}
+		if phase != "" && (len(seen) == 0 || seen[len(seen)-1] != phase) {
+			seen = append(seen, phase)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": "selftest", "project": "reviewer"})}); err != nil {
-		t.Fatal(err)
+	if strings.Join(seen, ",") != strings.Join(setup.SignInPhases(), ",") {
+		t.Fatalf("phases %v, want %v", seen, setup.SignInPhases())
 	}
-	st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
-	self = step(t, st, "selftest")
-	if self["state"] != "done" || self["action"] != "selftest" {
-		t.Fatalf("after rerun: %#v", self)
+	if self["action"] != "selftest" {
+		t.Fatalf("no rerun: %#v", self)
 	}
 }
 

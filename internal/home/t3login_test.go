@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -545,5 +546,87 @@ func TestStartRemovesTheEarlierDesignsTokenFolder(t *testing.T) {
 	h.SweepAgent(context.Background())
 	if _, err := os.Stat(legacy); err != nil {
 		t.Errorf("a file was removed: %v", err)
+	}
+}
+
+// The code handler only writes the code. When the helper then saves the credential, the same
+// AfterSignIn path the sandbox uses starts the self-test. A failed sign-in does not.
+func TestSignInCompletionStartsTheSelfTest(t *testing.T) {
+	l, box, _, _ := loginLife(t)
+	var started atomic.Int32
+	l.h.T3.LoginOptions = func(o *setup.Options) {
+		orig := o.OnSignedIn
+		if orig == nil {
+			t.Errorf("sign-in completion has no OnSignedIn")
+		}
+		o.OnSignedIn = func() {
+			started.Add(1)
+			if orig != nil {
+				orig()
+			}
+		}
+	}
+	box.script = func(b *loginBox, c *loginConn) {
+		c.say("URL " + loginLink)
+		c.say("CODE?")
+		if code := <-c.lines; code != "CODE-9876-xyz" {
+			c.say("FAILED unexpected code")
+			c.finish()
+			return
+		}
+		time.Sleep(400 * time.Millisecond)
+		_ = os.MkdirAll(b.dir, 0o700)
+		_ = os.WriteFile(filepath.Join(b.dir, agent.CredentialFile), []byte(`{"claudeAiOauth":{"accessToken":"sk-ant-oat01-FAKE"}}`), 0o000)
+		c.say("SAVED")
+		c.finish()
+	}
+	if _, err := handle(t, l.h, "tok", "t3-setup.run", map[string]any{"step": "login", "method": "claudeai"}); err != nil {
+		t.Fatal(err)
+	}
+	waitLogin(t, l, func(s map[string]any) bool { return s["wants_code"] == true })
+	if _, err := handle(t, l.h, "tok", "t3-setup.login.code", map[string]any{"code": "CODE-9876-xyz"}); err != nil {
+		t.Fatal(err)
+	}
+	step := waitLogin(t, l, func(s map[string]any) bool { return s["reason"] == setup.SigningIn })
+	if step["state"] != "working" || step["url"] != nil {
+		t.Fatalf("while the helper finishes: %#v", step)
+	}
+	waitLogin(t, l, func(s map[string]any) bool { return s["state"] == "done" })
+	waitUntil(t, func() bool { return started.Load() == 1 })
+	waitUntil(t, func() bool {
+		st, err := handle(t, l.h, "tok", "t3-setup.status", nil)
+		if err != nil {
+			return false
+		}
+		self := stepByID(t, st, "selftest")
+		return self["state"] == "working" || self["state"] == "failed" || self["state"] == "done"
+	})
+	if started.Load() != 1 {
+		t.Fatalf("self-test starts: %d", started.Load())
+	}
+
+	l2, box2, _, _ := loginLife(t)
+	var failed atomic.Int32
+	l2.h.T3.LoginOptions = func(o *setup.Options) {
+		orig := o.OnSignedIn
+		o.OnSignedIn = func() {
+			failed.Add(1)
+			if orig != nil {
+				orig()
+			}
+		}
+	}
+	box2.script = func(b *loginBox, c *loginConn) {
+		c.say("URL " + loginLink)
+		c.say("FAILED the code was refused")
+		c.finish()
+	}
+	if _, err := handle(t, l2.h, "tok", "t3-setup.run", map[string]any{"step": "login", "method": "claudeai"}); err != nil {
+		t.Fatal(err)
+	}
+	waitLogin(t, l2, func(s map[string]any) bool { return s["state"] == "failed" })
+	time.Sleep(50 * time.Millisecond)
+	if failed.Load() != 0 {
+		t.Fatalf("a failed sign-in started the self-test %d times", failed.Load())
 	}
 }

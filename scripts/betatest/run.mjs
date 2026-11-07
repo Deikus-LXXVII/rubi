@@ -492,10 +492,14 @@ await flow("paste the code", async () => {
   await page.getByRole("dialog").locator("input").fill(pub.signin_code);
   await shot(page, "21-paste-code");
   await page.getByRole("button", { name: "OK" }).click();
+  await page.getByText("Signing in...").waitFor({ timeout: 25000 });
+  await shot(page, "22-signing-in");
+  await page.getByText("Running the self-test.").waitFor({ timeout: 25000 });
+  await shot(page, "22b-selftest");
   const banner = page.locator(".ready-banner");
-  await banner.waitFor({ timeout: 20000 });
+  await banner.waitFor({ timeout: 25000 });
   await page.getByText(/Setup steps \(7\/7 done\)/).waitFor();
-  await page.getByRole("button", { name: "Run again" }).waitFor();
+  await page.getByRole("button", { name: "Run the self-test again" }).waitFor();
   if (await page.getByRole("button", { name: "Run self-test", exact: true }).count()) {
     throw new Error("sign-in still asks for a separate self-test");
   }
@@ -543,7 +547,7 @@ await flow("self-test ran with sign-in and can be run again", async () => {
   });
   addCheck("collapsed Details has no empty gap on the ready screen", readyGap >= -2 && readyGap <= 32, `gap ${Math.round(readyGap)}px`);
   if (readyGap > 32) throw new Error("collapsed Details leaves a gap of " + Math.round(readyGap) + "px");
-  await page.getByRole("button", { name: "Run again" }).click();
+  await page.getByRole("button", { name: "Run the self-test again" }).click();
   await page.locator(".ready-banner", { hasText: "is ready" }).waitFor({ timeout: 15000 });
   await page.getByText(/Setup steps \(7\/7 done\)/).waitFor({ timeout: 15000 });
   await shot(page, "23-ready");
