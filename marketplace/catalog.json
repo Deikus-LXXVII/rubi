@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-06T19:00:00Z",
+  "updated_at": "2026-11-07T17:00:00Z",
   "plugins": [
     {
       "id": "icloud-mail",
@@ -236,6 +236,11 @@
         {
           "version": "v0.1.0",
           "sums_sha256": "899beca65118c36a8b2a82e4986b41d152e70f56eb7177821d6385b3d4a78653",
+          "min_rubi": "v0.14.0"
+        },
+        {
+          "version": "v0.2.0",
+          "sums_sha256": "5ba561015955c8ed14162e887242a3a4768987ea19bc7c01e79ed3b0aa49e790",
           "min_rubi": "v0.14.0"
         }
       ]
