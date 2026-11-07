@@ -111,6 +111,11 @@ func stack(args []string) error {
 	}
 	go fs.Serve(ln)
 	defer fs.Close()
+	hook, hookURL, err := sandbox.ListenHook("127.0.0.1:18082")
+	if err != nil {
+		return err
+	}
+	defer hook.Close()
 
 	id, err := identity.LoadOrCreate(filepath.Join(state, "identity.json"))
 	if err != nil {
@@ -141,7 +146,8 @@ func stack(args []string) error {
 		"name": "Sandbox Home", "relay": rel.URL,
 		"catalog":    "http://127.0.0.1:18081/marketplace/catalog.json",
 		"signin_url": signIn, "signin_code": sandbox.SignInCode,
-		"code_file": "home-code",
+		"webhook_url": hookURL,
+		"code_file":   "home-code",
 	}
 	b, _ := json.MarshalIndent(pub, "", "  ")
 	if err := os.WriteFile(filepath.Join(run, "public.json"), append(b, '\n'), 0o644); err != nil {

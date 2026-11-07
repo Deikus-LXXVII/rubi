@@ -48,9 +48,15 @@ This installs Playwright Chromium under the sandbox directory and drives the pan
 and 1280×800. Screenshots, `summary.json` and `summary.md` are written to `/workspace/betatest/<run>`
 when that directory can be created, otherwise to `<sandbox>/betatest/<run>`.
 
-The run pairs with a password, pairs the fake Home, installs T3 Agents, opens an approval link and
-then the plugin page, opens a `setup:t3agents` link, walks the setup steps, and completes the sandbox
-sign-in. It records horizontal overflow, tap targets under 44px, truncated sign-in links, and page errors.
+The run pairs with a password, pairs the fake Home, connects a Bot to a local webhook stub (so the
+routine test succeeds), installs T3 Agents, opens an approval link and then the plugin page, opens a
+`setup:t3agents` link, walks the setup steps, completes the sandbox sign-in, and runs the self-test
+through to Ready.
+
+Screenshots wait for the finite entrance animation, then capture with animations disabled. The
+mascot's idle animation never ends, so it is not waited on. A shot that is one flat colour fails.
+`summary.md` lists every check with its own pass or fail: overflow, tap targets, error pages, the
+sign-in link, and each screenshot.
 
 ## CI
 

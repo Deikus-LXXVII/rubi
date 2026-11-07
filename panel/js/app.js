@@ -2385,30 +2385,98 @@ function askFolder(client, title, label, device) {
 // and a reload of the same page keeps its scroll position.
 const VIEW_TEXT_MAX = 600;
 
-// signInLinkSheet shows a sign-in URL in full and lets the person open or copy it on the device
-// that is showing the panel. The home computer's browser is not involved.
+// plainWords turns a few identifiers a plugin writes for itself into words a phone can read.
+function plainWords(s) {
+  return String(s)
+    .replace(/\bbypassPermissions\b/g, "skipping permission questions")
+    .replace(/\bt3agents_mandates\b/g, "the mandates list");
+}
+
+// noteBlock shows a short lead. Anything past it is behind Details, so a long trust paragraph
+// does not fill the phone before the buttons.
+function noteBlock(text, small) {
+  const plain = plainWords(clip(text, 1500));
+  const cls = small ? "muted small" : "muted";
+  const limit = 140;
+  if (plain.length <= limit) return h("p", { class: cls }, plain);
+  let cut = plain.lastIndexOf(" ", limit);
+  if (cut < 60) cut = limit;
+  return h("div", { class: "note-fold" },
+    h("p", { class: cls }, plain.slice(0, cut).trim()),
+    h("details", {}, h("summary", {}, "Details"), h("p", { class: cls }, plain.slice(cut).trim())));
+}
+
+// pageNote is the line under a plugin's front-page title. The T3 Agents page leads with the
+// permission-mode identifier; that becomes one plain sentence, with the plugin's own wording behind Details.
+function pageNote(text) {
+  if (!text) return null;
+  if (/\bbypassPermissions\b/.test(text)) {
+    return h("div", { class: "note-fold" },
+      h("p", { class: "muted" }, "Sessions that skip permission questions aren't covered by the approvals on this page. Messages to and from Bots still work."),
+      h("details", {}, h("summary", {}, "Details"), h("p", { class: "muted small" }, plainWords(clip(text, 1500)))));
+  }
+  return noteBlock(text, false);
+}
+
+// pluginHeading uses the installed plugin's name when a view still introduces itself as
+// "Claude Code". T3 Agents' manifest name is T3 Agents, but its front page and the setup
+// page's link back still send the old title: the program that runs inside the VM, left
+// from before the plugin was renamed. Any other title is the plugin's own.
+function pluginHeading(sent, fallback) {
+  const title = clip(sent, 120);
+  if (title.trim().toLowerCase() === "claude code" && fallback && fallback.trim().toLowerCase() !== "claude code") return fallback;
+  return title || fallback;
+}
+
+// stepBadge is the status a setup row repeats after its section title ("1. Apple container: done").
+// The heading is drawn once; this is the badge.
+function stepBadge(sectionTitle, item) {
+  const head = clip(sectionTitle, 120);
+  const title = clip(item && item.title, 200);
+  const prefix = head + ": ";
+  if (!head || !title.startsWith(prefix)) return "";
+  const status = title.slice(prefix.length).trim();
+  if (!status || status.length > 24 || /[.:]/.test(status)) return "";
+  return status;
+}
+
+// shortSignInURL is the host plus an ellipsis. The full address stays available to Copy.
+function shortSignInURL(url) {
+  try {
+    return new URL(url).host + "/\u2026";
+  } catch {
+    return url.length > 40 ? url.slice(0, 32) + "\u2026" : url;
+  }
+}
+
+// signInLinkSheet lets the person open or copy a sign-in URL on the device that is showing the
+// panel. The home computer's browser is not involved. The address is shown short so Copy and Open
+// stay on screen; Copy still writes the whole URL.
 function signInLinkSheet(url) {
   return new Promise((resolve) => {
-    const link = h("a", { class: "signin-link", href: url, target: "_blank", rel: "noopener noreferrer" }, url);
+    const full = h("textarea", { class: "signin-full", readonly: true, rows: "4", "aria-label": "Full sign-in link" });
+    full.value = url;
     const copy = h("button", { type: "button", class: "secondary", onclick: async () => {
       try {
         await navigator.clipboard.writeText(url);
         copy.textContent = "Copied";
       } catch {
+        full.focus();
+        full.select();
         copy.textContent = "Select the link and copy it";
-        link.focus();
       }
     } }, "Copy the link");
     const done = () => { overlay.remove(); resolve(); };
     const overlay = h("div", { class: "ask-overlay", onclick: (e) => { if (e.target === overlay) done(); } },
       h("div", { class: "ask-box", role: "dialog", "aria-modal": "true", "aria-label": "Sign-in link" },
         h("h2", {}, "Open the sign-in page here"),
-        h("p", {}, "This opens on the phone or computer you are using now. The whole link is below, so you can copy it."),
-        link,
+        h("p", {}, "This opens on the phone or computer you are using now. Copy keeps the whole link."),
+        h("p", { class: "signin-short", "data-full-url": url }, shortSignInURL(url)),
+        h("details", { class: "signin-full-wrap" }, h("summary", {}, "Show the full link"), full),
         h("div", { class: "signin-actions" },
+          h("a", { class: "btn primary", href: url, target: "_blank", rel: "noopener noreferrer" }, "Open the sign-in page"),
           copy,
-          h("a", { class: "btn", href: url, target: "_blank", rel: "noopener noreferrer" }, "Open the sign-in page"),
-          h("button", { type: "button", class: "primary", onclick: done }, "Done"))));
+          h("button", { type: "button", class: "ghost", onclick: done }, "Done"))));
     document.body.append(overlay);
   });
 }
@@ -2504,7 +2572,18 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       showError(err, x);
     }
   };
-  const button = (a) => h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, clip(a.label, 60));
+  const rawSections = objs(data.sections, VIEW_SECTIONS_MAX);
+  const stepped = rawSections.filter((sec) => stepBadge(sec.title, objs(sec.items, 1)[0]));
+  const stepIsDone = (sec) => stepBadge(sec.title, objs(sec.items, 1)[0]).toLowerCase() === "done";
+  // "Set up everything" repeats the steps up through pairing. Once those are done it stays hidden;
+  // sign-in and the self-test have their own buttons.
+  const early = stepped.filter((sec) => !/sign-in|self-test/i.test(clip(sec.title, 120)));
+  const setupFinished = early.length > 0 && early.every(stepIsDone);
+  const allStepsDone = stepped.length >= 3 && stepped.every(stepIsDone);
+  const button = (a) => {
+    if (setupFinished && clip(a.label, 60) === "Set up everything") return null;
+    return h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, clip(a.label, 60));
+  };
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
   // input {op, args, arg, label, send}: the text the user writes goes to the plugin as args[arg]. Everything the
   // plugin supplies is drawn as text. A message is marked untrusted when the plugin says so, when its role is sister,
@@ -2545,27 +2624,43 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     }
     return [log, form];
   };
-  const sections = objs(data.sections, VIEW_SECTIONS_MAX).map((sec) => {
-    const secActions = objs(sec.actions, VIEW_ACTIONS_MAX);
+  const sections = rawSections.map((sec) => {
+    const secActions = objs(sec.actions, VIEW_ACTIONS_MAX).map(button).filter(Boolean);
     const list = sec.kind === "chat" ? null : objs(sec.items, VIEW_ITEMS_MAX);
+    const secTitle = clip(sec.title, 120);
+    let rows = list;
+    let badge = "";
+    if (rows && rows.length) {
+      badge = stepBadge(secTitle, rows[0]);
+      if (badge) rows = [{ ...rows[0], title: "" }, ...rows.slice(1)];
+    }
+    const badgeCls = badge ? "status-" + badge.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "";
     return h("section", { class: "view-section" },
-      h("h2", {}, clip(sec.title, 120)),
-      sec.note ? h("p", { class: "muted small" }, clip(sec.note, 1500)) : null,
-      secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions.map(button)) : null,
+      h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls }, badge) : null),
+      sec.note ? noteBlock(sec.note, true) : null,
+      secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions) : null,
       sec.kind === "chat" ? chatSection(sec)
-      : list.length ? h("ul", { class: "view-list" }, list.map((it) => h("li", it.warn ? { class: "view-warn" } : {},
-        h("div", { class: "view-text" }, h("strong", {}, clip(it.title, 200)), it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
-        h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map(button)))))
+      : rows && rows.length ? h("ul", { class: "view-list" }, rows.map((it) => {
+        const title = clip(it.title, 200);
+        return h("li", it.warn ? { class: "view-warn" } : {},
+          h("div", { class: "view-text" }, title ? h("strong", {}, title) : null, it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
+          h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map(button).filter(Boolean)));
+      }))
         : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here."));
   });
   const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
+  const front = !(viewArgs && viewArgs.page);
+  const opensRoot = !!(up && up.open && !up.open.page);
+  const heading = front ? pluginHeading(data.title, name) : (clip(data.title, 120) || name);
+  const backLabel = up ? (opensRoot ? pluginHeading(up.label, name) : (clip(up.label, 40) || "Back")) : "";
   if (oldErr) { err.textContent = oldErr; err.hidden = false; } // an error the user hasn't read yet stays
   screen(
     { cls: "wide", focus: false, keepScroll: pageTop, quiet: same && byRefresh, refocus },
     header(ctx.hello),
-    up ? backBar(clip(up.label, 40) || "Back", () => go(up.open)) : backBar("Settings", back),
-    h("div", { class: "section-head" }, h("h1", {}, clip(data.title, 120) || name)),
-    data.note ? h("p", { class: "muted" }, clip(data.note, 1500)) : null,
+    up ? backBar(backLabel, () => go(up.open)) : backBar("Settings", back),
+    h("div", { class: "section-head" }, h("h1", {}, heading)),
+    data.note ? (front ? pageNote(data.note) : noteBlock(data.note, false)) : null,
+    allStepsDone ? h("p", { class: "ready-line", role: "status" }, "Ready") : null,
     err,
     ...sections,
   );

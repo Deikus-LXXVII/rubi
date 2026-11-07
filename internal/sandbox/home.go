@@ -137,6 +137,9 @@ func (h *Home) status() map[string]any {
 			if id == "login" && h.signedIn {
 				reason = "Signed in with the sandbox Claude page."
 			}
+			if id == "selftest" {
+				reason = "Ready. This computer can run a session."
+			}
 		} else if blocked {
 			reason = "Waiting for earlier steps: " + strings.Join(waiting, ", ") + "."
 		} else {
@@ -158,6 +161,14 @@ func (h *Home) status() map[string]any {
 			step["projects"] = []map[string]any{{
 				"id": "reviewer", "dir": "sandbox · role reviewer",
 				"state": roleState, "reason": roleReason, "action": roleAction,
+			}}
+		}
+		// The self-test button lives on the role row (the T3 Agents page reads action there).
+		// Until sign-in is done the row waits and offers nothing.
+		if id == "selftest" {
+			step["projects"] = []map[string]any{{
+				"id": "reviewer", "dir": "sandbox · role reviewer",
+				"state": st, "reason": reason, "action": action,
 			}}
 		}
 		steps = append(steps, step)
@@ -183,6 +194,13 @@ func (h *Home) run(raw json.RawMessage) (any, error) {
 		for _, id := range []string{"service", "image", "t3", "pair"} {
 			h.state[id] = "done"
 		}
+		return map[string]any{"started": true}, nil
+	}
+	if in.Step == "selftest" {
+		if !h.signedIn || !h.earlierDone("selftest") {
+			return nil, errString("Sign in first, then run the self-test.")
+		}
+		h.state["selftest"] = "done"
 		return map[string]any{"started": true}, nil
 	}
 	if in.Step == "login" {

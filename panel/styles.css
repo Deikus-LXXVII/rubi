@@ -1013,9 +1013,13 @@ h1:focus { outline: none; box-shadow: none; }
 .menu summary:focus-visible { box-shadow: var(--focus); }
 .pill-toggle, .seg label { min-height: 36px; }
 @media (pointer: coarse) { .menu summary, .icon-btn { width: 44px; height: 44px; } button.small { min-height: 44px; } }
-.signin-link { display: block; margin: 8px 0; overflow-wrap: anywhere; user-select: all; color: var(--link); font-size: 0.95rem; }
-.signin-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.signin-actions .btn, .signin-actions button { min-height: 44px; width: auto; }
+.signin-short { margin: 0; font-weight: 650; overflow-wrap: anywhere; }
+.signin-full-wrap summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+.signin-full { width: 100%; min-height: 0; margin-top: 4px; font: 0.85rem/1.45 ui-monospace, monospace; }
+.signin-actions { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.signin-actions .btn, .signin-actions button { min-height: 44px; width: 100%; }
+button.ghost { background: transparent; border-color: var(--line-2); color: var(--muted); font-weight: 550; }
+button.ghost:hover:not(:disabled) { background: var(--raise); color: var(--text); }
 
 /* ============================================================ micro-interactions (iteration 15) */
 
@@ -1143,7 +1147,14 @@ button.copy { box-shadow: none; }
 
 /* ----- a plugin's own page (pluginViewScreen) ----- */
 .view-section { margin-top: 24px; }
-.view-section h2 { font-size: 1.05rem; margin: 0 0 8px; }
+.view-section h2 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 1.05rem; margin: 0 0 8px; }
+.status-badge { font-size: 0.75rem; font-weight: 650; line-height: 1.2; padding: 3px 8px; border-radius: 999px;
+  background: var(--raise); color: var(--muted); }
+.status-badge.status-done { background: color-mix(in srgb, #4caf5c 18%, var(--card)); color: #1d6b2a; }
+.status-badge.status-failed, .status-badge.status-needs-you { background: color-mix(in srgb, var(--danger) 14%, var(--card)); color: var(--danger); }
+.ready-line { margin: 0 0 8px; font-weight: 700; }
+.note-fold p { margin: 0 0 8px; }
+.note-fold summary { min-height: 44px; display: flex; align-items: center; cursor: pointer; font-weight: 650; }
 .view-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .view-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px;
   border: 1px solid var(--line, rgba(127,127,127,.2)); border-radius: 14px; background: var(--card, transparent); }

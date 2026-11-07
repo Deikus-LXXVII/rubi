@@ -26,10 +26,17 @@ func TestHomeLoginWaitsAndThenReturnsTheFullLink(t *testing.T) {
 	if !strings.Contains(login["reason"].(string), "Waiting for earlier steps") || login["action"] != "" {
 		t.Fatalf("login before earlier steps: %#v", login)
 	}
+	self := step(t, st, "selftest")
+	if !strings.Contains(self["reason"].(string), "Waiting for earlier steps") || self["action"] != "" {
+		t.Fatalf("self-test before earlier steps: %#v", self)
+	}
 	for _, id := range []string{"service", "image", "t3", "pair"} {
 		if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": id})}); err != nil {
 			t.Fatal(id, err)
 		}
+	}
+	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": "selftest"})}); err == nil {
+		t.Fatal("self-test ran before sign-in")
 	}
 	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": "login", "method": "claudeai"})}); err != nil {
 		t.Fatal(err)
@@ -52,6 +59,19 @@ func TestHomeLoginWaitsAndThenReturnsTheFullLink(t *testing.T) {
 	login = step(t, st, "login")
 	if login["state"] != "done" {
 		t.Fatalf("after code: %#v", login)
+	}
+	self = step(t, st, "selftest")
+	projects, _ := self["projects"].([]map[string]any)
+	if self["action"] != "selftest" || len(projects) != 1 || projects[0]["action"] != "selftest" {
+		t.Fatalf("self-test offered no button: %#v", self)
+	}
+	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": "selftest", "project": "reviewer"})}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
+	self = step(t, st, "selftest")
+	if self["state"] != "done" || !strings.Contains(self["reason"].(string), "Ready") {
+		t.Fatalf("after self-test: %#v", self)
 	}
 }
 

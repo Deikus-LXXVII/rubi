@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { inflateSync } from "node:zlib";
 import { chromium } from "playwright";
 
 const dir = process.env.RUBI_SANDBOX_DIR;
@@ -22,8 +23,13 @@ const realPlugin = String(plugin.source || "").includes("github.com");
 const password = "sandbox-password-ok";
 const shots = [];
 const flows = [];
-const usability = [];
+const checks = [];
 const consoleErrors = [];
+
+function addCheck(name, ok, detail = "") {
+  checks.push({ name, status: ok ? "pass" : "fail", detail: detail || "" });
+  return ok;
+}
 
 function redact(s) {
   return String(s)
@@ -37,10 +43,109 @@ function record(flow) {
   console.log(`${tag} ${flow.name}${flow.error ? " — " + redact(flow.error) : ""}${flow.reason ? " — " + flow.reason : ""}`);
 }
 
+// pngNearUniform samples a PNG and reports whether it is one flat colour.
+// A shot taken in the middle of a view transition comes out that way.
+function pngNearUniform(buf) {
+  if (buf.length < 8 || buf.toString("ascii", 1, 4) !== "PNG") return false;
+  let o = 8;
+  let width = 0;
+  let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  const idat = [];
+  while (o + 12 <= buf.length) {
+    const len = buf.readUInt32BE(o);
+    const type = buf.toString("ascii", o + 4, o + 8);
+    const data = buf.subarray(o + 8, o + 8 + len);
+    if (type === "IHDR") {
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+    } else if (type === "IDAT") {
+      idat.push(data);
+    } else if (type === "IEND") {
+      break;
+    }
+    o += 12 + len;
+  }
+  const channels = { 2: 3, 6: 4 }[colorType];
+  if (!channels || bitDepth !== 8 || !width || !height) return false;
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  let p = 0;
+  let min = [255, 255, 255];
+  let max = [0, 0, 0];
+  let prev = null;
+  const stepX = Math.max(1, Math.floor(width / 24));
+  const stepY = Math.max(1, Math.floor(height / 36));
+  for (let y = 0; y < height; y++) {
+    const filter = raw[p++];
+    const row = Buffer.alloc(stride);
+    for (let i = 0; i < stride; i++) {
+      const x = raw[p++];
+      const a = i >= channels ? row[i - channels] : 0;
+      const b = prev ? prev[i] : 0;
+      const c = prev && i >= channels ? prev[i - channels] : 0;
+      let v = x;
+      if (filter === 1) v = (x + a) & 255;
+      else if (filter === 2) v = (x + b) & 255;
+      else if (filter === 3) v = (x + ((a + b) >> 1)) & 255;
+      else if (filter === 4) {
+        const pa = Math.abs(b - c);
+        const pb = Math.abs(a - c);
+        const pc = Math.abs(a + b - 2 * c);
+        const pr = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        v = (x + pr) & 255;
+      }
+      row[i] = v;
+    }
+    prev = row;
+    if (y % stepY !== 0) continue;
+    for (let x = 0; x < width; x += stepX) {
+      const i = x * channels;
+      for (let c = 0; c < 3; c++) {
+        const n = row[i + c];
+        if (n < min[c]) min[c] = n;
+        if (n > max[c]) max[c] = n;
+      }
+    }
+  }
+  const spread = Math.max(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+  return spread < 18;
+}
+
+// settle waits out the finite entrance (the view transition and the card rising).
+// The mascot's idle animation never ends, so it is not waited on.
+async function settle(page) {
+  await page.waitForFunction(() => {
+    const skip = new Set(["breathe", "breathe-deep", "sway", "aurora", "progress", "shimmer", "pulse", "dots"]);
+    return !document.getAnimations().some((a) => {
+      const target = a.effect && a.effect.target;
+      if (target && target.closest && target.closest(".mascot")) return false;
+      const name = a.animationName || "";
+      if (!name || skip.has(name)) return false;
+      const iterations = a.effect && a.effect.getTiming ? a.effect.getTiming().iterations : 1;
+      return iterations !== Infinity && a.playState === "running";
+    });
+  }, { timeout: 2000 }).catch(() => {});
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+}
+
 async function shot(page, name) {
+  await settle(page);
   const file = path.join(out, "screenshots", name + ".png");
-  await page.screenshot({ path: file, fullPage: true });
+  const buf = await page.screenshot({ path: file, fullPage: true, animations: "disabled" });
   shots.push({ name, file });
+  let uniform = false;
+  try {
+    uniform = pngNearUniform(buf);
+  } catch (err) {
+    addCheck(`screenshot ${name}: not a solid colour`, false, err.message);
+    throw err;
+  }
+  addCheck(`screenshot ${name}: not a solid colour`, !uniform, uniform ? "the image is one flat colour" : "");
+  if (uniform) throw new Error(`screenshot ${name} is a solid colour`);
   return file;
 }
 
@@ -48,27 +153,29 @@ async function phoneChecks(page, where) {
   const report = await page.evaluate(() => {
     const doc = document.documentElement;
     const overflow = doc.scrollWidth > doc.clientWidth + 1;
-    const buttons = [...document.querySelectorAll("button, a.btn, a.signin-link")].map((el) => {
+    const buttons = [...document.querySelectorAll("button, a.btn, .note-fold summary, .signin-full-wrap summary")].map((el) => {
       const r = el.getBoundingClientRect();
       const text = (el.innerText || el.getAttribute("aria-label") || "").trim().slice(0, 80);
-      return { text, w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 && r.height > 0 };
+      return { text, w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden" };
     });
-    const h1 = document.querySelector("h1")?.innerText || "";
+    const h1 = document.querySelector(".card h1")?.innerText || "";
     return { overflow, buttons, h1, scrollWidth: doc.scrollWidth, clientWidth: doc.clientWidth };
   });
-  if (report.overflow) {
-    usability.push({ where, kind: "horizontal-overflow", detail: `${report.scrollWidth} > ${report.clientWidth}` });
-  }
-  for (const b of report.buttons) {
-    if (!b.visible) continue;
-    if (b.h < 44 || (b.w < 44 && b.w > 0 && b.text.length < 12)) {
-      usability.push({ where, kind: "tap-target", detail: `${b.text || "(unlabeled)"} is ${b.w}x${b.h}` });
-    }
-  }
-  if (/Something.s wrong/.test(report.h1)) {
-    usability.push({ where, kind: "error-page", detail: report.h1 });
-  }
+  addCheck(`${where}: no horizontal overflow`, !report.overflow, report.overflow ? `${report.scrollWidth} > ${report.clientWidth}` : "");
+  const small = report.buttons.filter((b) => b.visible && (b.h < 44 || (b.w < 44 && b.w > 0 && b.text.length < 12)));
+  addCheck(`${where}: tap targets at least 44px`, small.length === 0, small.map((b) => `${b.text || "(unlabeled)"} is ${b.w}x${b.h}`).join("; "));
+  const errorPage = /Something.s wrong/.test(report.h1);
+  addCheck(`${where}: not an error page`, !errorPage, errorPage ? report.h1 : "");
   return report;
+}
+
+async function noRepeatedHeadings(page, where) {
+  const dup = await page.evaluate(() => [...document.querySelectorAll(".view-section")].filter((sec) => {
+    const head = (sec.querySelector("h2")?.childNodes?.[0]?.textContent || "").trim();
+    return head && [...sec.querySelectorAll(".view-text strong")].some((s) => s.textContent.trim().startsWith(head));
+  }).map((sec) => (sec.querySelector("h2")?.childNodes?.[0]?.textContent || "").trim()));
+  addCheck(`${where}: step heading shown once`, dup.length === 0, dup.join("; "));
+  if (dup.length) throw new Error("heading repeated in the card: " + dup.join("; "));
 }
 
 async function approveWithPassword(page) {
@@ -76,7 +183,7 @@ async function approveWithPassword(page) {
   await pw.waitFor({ timeout: 20000 });
   await pw.fill(password);
   await page.locator("button.primary").last().click();
-  await page.getByRole("heading", { name: /Sent|Saved|Done|Installed|Updated|routine/ }).waitFor({ timeout: 40000 });
+  await page.getByRole("heading", { name: /Sent|Saved|Done|Installed|Updated|routine|connected/ }).waitFor({ timeout: 40000 });
 }
 
 const bin = path.join(dir, "bin/rubi-sandbox");
@@ -108,6 +215,7 @@ const context = await browser.newContext({
   hasTouch: true,
   ignoreHTTPSErrors: true,
   deviceScaleFactor: 2,
+  permissions: ["clipboard-read", "clipboard-write"],
 });
 const page = await context.newPage();
 page.on("pageerror", (err) => consoleErrors.push(redact(err.message)));
@@ -149,10 +257,13 @@ if (!pairLink) {
     await shot(page, "02-paired");
     await page.getByText("I have the routine open here").click();
     await page.getByPlaceholder("The Grok Bot's name*").fill("Sandbox");
-    await page.locator("textarea").fill("http://127.0.0.1:9/hook sandbox-webhook-key");
+    if (!pub.webhook_url) throw new Error("sandbox did not publish a webhook stub");
+    await page.locator("textarea").fill(`${pub.webhook_url} sandbox-webhook-key-ok`);
     await page.getByRole("button", { name: "Connect", exact: true }).click();
     await approveWithPassword(page);
-    await page.getByRole("heading", { name: /routine|Saved|Connect/ }).waitFor({ timeout: 40000 });
+    await page.getByRole("heading", { name: /is connected/ }).waitFor({ timeout: 40000 });
+    const connected = await cardTitle(page);
+    if (/didn.t take the test|No answer from the routine/.test(connected)) throw new Error(connected);
     await shot(page, "02b-agent");
     await phoneChecks(page, "after pair");
   });
@@ -223,9 +334,18 @@ await flow("plugins list and open the plugin page", async () => {
   await open.waitFor();
   await shot(page, "08-plugins-list");
   await open.click();
-  await page.locator(".card h1").first().waitFor();
+  await page.waitForFunction(() => {
+    const t = document.querySelector(".card h1")?.innerText?.trim() || "";
+    return t && t !== "Settings" && t !== "Plugins";
+  }, { timeout: 20000 });
   const h1 = await cardTitle(page);
   if (/Something.s wrong/.test(h1)) throw new Error(h1);
+  if (h1 !== "T3 Agents") throw new Error("plugin page title is " + JSON.stringify(h1) + "; the view still says Claude Code, and the page should use the plugin name");
+  const visible = await page.locator(".card").innerText();
+  if (/\bbypassPermissions\b/.test(visible)) throw new Error("plugin page shows bypassPermissions in the open text");
+  if (await page.locator(".note-fold").count()) {
+    if (!(await page.locator(".note-fold summary", { hasText: "Details" }).count())) throw new Error("long note is not collapsible");
+  }
   await shot(page, "09-plugin-page");
   await phoneChecks(page, "plugin page");
 });
@@ -260,6 +380,10 @@ await flow("setup link opens the setup page", async () => {
     throw new Error("bug a: setup link showed " + h1);
   }
   if (!/Set up T3 Agents/.test(h1)) throw new Error("expected the setup page, saw " + h1);
+  const back = (await page.locator("button.back").innerText()).replace(/\s+/g, " ").trim();
+  if (/Claude Code/.test(back)) throw new Error("setup back link says " + JSON.stringify(back));
+  if (!/T3 Agents/.test(back)) throw new Error("setup back link should name the plugin, saw " + JSON.stringify(back));
+  await noRepeatedHeadings(page, "setup link");
   await shot(page, "13-setup-link");
   const body = await page.locator(".card").innerText();
   if (!/Waiting for earlier steps/.test(body)) {
@@ -270,12 +394,12 @@ await flow("setup link opens the setup page", async () => {
 
 await flow("T3 setup steps advance", async () => {
   const steps = [
-    ["Start", "Container service: done", "14-service"],
-    ["Build", "Runner image: done", "15-image"],
-    ["Install the pinned T3", "T3 installed and pinned: done", "16-t3"],
-    ["Pair", "T3 paired with Rubi: done", "17-pair"],
+    ["Start", /Container service/, "14-service"],
+    ["Build", /Runner image/, "15-image"],
+    ["Install the pinned T3", /T3 installed and pinned/, "16-t3"],
+    ["Pair", /T3 paired with Rubi/, "17-pair"],
   ];
-  for (const [label, done, file] of steps) {
+  for (const [label, heading, file] of steps) {
     const btn = page.getByRole("button", { name: label, exact: true });
     await btn.waitFor({ timeout: 20000 });
     await btn.evaluate((el) => el.click());
@@ -284,8 +408,9 @@ await flow("T3 setup steps advance", async () => {
     await page.waitForTimeout(2500);
     const refresh = page.getByRole("button", { name: "Refresh", exact: true });
     if (await refresh.count()) await refresh.click();
+    const sec = page.locator(".view-section", { has: page.getByRole("heading", { name: heading }) });
     try {
-      await page.getByText(done).waitFor({ timeout: 15000 });
+      await sec.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
     } catch (err) {
       const text = await page.locator(".card").innerText();
       const errText = await page.locator(".error").allInnerTexts().catch(() => []);
@@ -304,25 +429,45 @@ await flow("T3 setup steps advance", async () => {
 
 await flow("open and copy the full sign-in link on the phone", async () => {
   await page.getByRole("button", { name: "Open the sign-in page" }).click();
-  const link = page.locator("a.signin-link");
-  await link.waitFor({ timeout: 10000 });
-  const href = await link.getAttribute("href");
-  const text = await link.innerText();
-  if (href !== pub.signin_url) throw new Error("link href is not the full sign-in URL");
-  if (text !== pub.signin_url) throw new Error("the visible link is not the full URL");
-  if (text.endsWith("…") || text.includes("shortened")) throw new Error("the sign-in link is truncated");
+  const sheet = page.getByRole("dialog", { name: "Sign-in link" });
+  await sheet.waitFor({ timeout: 10000 });
+  const short = sheet.locator(".signin-short");
+  const shown = (await short.innerText()).trim();
+  const stored = await short.getAttribute("data-full-url");
+  const full = await sheet.locator("textarea.signin-full").inputValue();
+  addCheck("sign-in link: short form on screen", shown.length < 80 && shown !== pub.signin_url && shown.includes("…"), shown);
+  addCheck("sign-in link: full URL kept for copy", stored === pub.signin_url && full === pub.signin_url, stored === pub.signin_url ? "" : "stored link differs");
+  if (shown.length >= 80 || shown === pub.signin_url || !shown.includes("…")) throw new Error("the sign-in link is shown as a wall of text: " + shown.slice(0, 80));
+  if (stored !== pub.signin_url || full !== pub.signin_url) throw new Error("the sheet does not hold the full sign-in URL");
+  const actions = await sheet.locator(".signin-actions").locator("a, button").allInnerTexts();
+  const open = sheet.getByRole("link", { name: "Open the sign-in page" });
+  const openCls = await open.getAttribute("class");
+  const doneCls = await sheet.getByRole("button", { name: "Done" }).getAttribute("class");
+  addCheck("sign-in link: Open is the single primary action", /primary/.test(openCls || "") && !/primary/.test(doneCls || "") && actions[0].includes("Open the sign-in page"), actions.join(" | "));
+  if (!/primary/.test(openCls || "") || /primary/.test(doneCls || "")) throw new Error("Open and Done are not primary then neutral");
+  if (!actions[0].includes("Open the sign-in page")) throw new Error("Open is not the first action: " + actions.join(" | "));
+  const box = await open.boundingBox();
+  const onScreen = !!(box && box.y + box.height < 852);
+  addCheck("sign-in link: Open is on the phone screen", onScreen, box ? `y=${Math.round(box.y)}` : "no box");
+  if (!onScreen) throw new Error("Open the sign-in page is below the phone screen");
+  await phoneChecks(page, "sign-in link");
   await shot(page, "19-signin-link");
-  const box = await link.boundingBox();
-  if (box && box.y + box.height > 852) usability.push({ where: "sign-in link", kind: "below-fold", detail: "link extends past the phone viewport" });
   await page.getByRole("button", { name: "Copy the link" }).click();
-  await page.getByRole("link", { name: "Open the sign-in page" }).click();
+  const copied = await page.evaluate(async () => {
+    try { return await navigator.clipboard.readText(); } catch { return ""; }
+  });
+  const selected = await page.evaluate(() => (document.activeElement && document.activeElement.value) || "");
+  const copyOk = copied === pub.signin_url || selected === pub.signin_url;
+  addCheck("sign-in link: Copy copies the full URL", copyOk, copyOk ? "" : "clipboard and the field differ from the full URL");
+  if (!copyOk) throw new Error("Copy did not provide the full sign-in URL");
+  await open.click();
   await page.waitForTimeout(500);
   const pages = context.pages();
   const opened = pages[pages.length - 1];
   await opened.waitForLoadState("domcontentloaded").catch(() => {});
   const code = await opened.locator("#code").innerText().catch(() => "");
   if (code.trim() !== pub.signin_code) throw new Error("the sign-in page did not show the sandbox code");
-  await opened.screenshot({ path: path.join(out, "screenshots", "20-oauth.png"), fullPage: true });
+  await shot(opened, "20-oauth");
   if (opened !== page) await opened.close();
   await page.getByRole("button", { name: "Done" }).click();
 }, { needsReal: true });
@@ -332,9 +477,32 @@ await flow("paste the code", async () => {
   await page.getByRole("dialog").locator("input").fill(pub.signin_code);
   await shot(page, "21-paste-code");
   await page.getByRole("button", { name: "OK" }).click();
-  await page.getByText(/Signed in|done/i).first().waitFor({ timeout: 15000 });
+  const login = page.locator(".view-section", { has: page.getByRole("heading", { name: /^6\. Provider sign-in/ }) });
+  await login.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
+  await login.getByText("Signed in with the sandbox Claude page.", { exact: true }).waitFor();
+  if (await page.getByRole("button", { name: "Set up everything", exact: true }).count()) {
+    throw new Error("Set up everything is still offered after the steps it runs are done");
+  }
   await shot(page, "22-signed-in");
   await phoneChecks(page, "signed in");
+  await noRepeatedHeadings(page, "signed in");
+}, { needsReal: true });
+
+await flow("run the self-test until ready", async () => {
+  const self = page.locator(".view-section", { has: page.getByRole("heading", { name: /^7\. Self-test/ }) });
+  await self.getByRole("button", { name: "Run self-test" }).click();
+  await page.waitForTimeout(2500);
+  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+  if (await refresh.count()) await refresh.click();
+  await self.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
+  await self.getByText("Ready. This computer can run a session.", { exact: true }).waitFor();
+  await page.locator(".ready-line", { hasText: "Ready" }).waitFor();
+  if (await page.getByRole("button", { name: "Set up everything", exact: true }).count()) {
+    throw new Error("Set up everything is still offered");
+  }
+  await shot(page, "23-ready");
+  await phoneChecks(page, "ready");
+  await noRepeatedHeadings(page, "ready");
 }, { needsReal: true });
 
 await flow("desktop viewport of the setup page", async () => {
@@ -347,7 +515,7 @@ await flow("desktop viewport of the setup page", async () => {
   await page.getByRole("heading", { name: /Set up T3 Agents/ }).waitFor({ timeout: 20000 });
   await shot(page, "24-desktop");
   const desk = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
-  if (desk) usability.push({ where: "desktop", kind: "horizontal-overflow", detail: "desktop viewport overflows" });
+  addCheck("desktop: no horizontal overflow", !desk, desk ? "desktop viewport overflows" : "");
   await page.goBack().catch(() => {});
 }, { needsReal: true });
 
@@ -356,15 +524,22 @@ await browser.close();
 const failed = flows.filter((f) => f.status === "fail");
 const passed = flows.filter((f) => f.status === "pass");
 const blocked = flows.filter((f) => f.status === "blocked");
+const checkFails = checks.filter((c) => c.status === "fail");
 const summary = {
   ref,
   plugin,
   viewport: { phone: "393x852", desktop: "1280x800" },
   flows,
-  usability,
+  checks,
   console_errors: consoleErrors.slice(0, 30),
   screenshots: shots.map((s) => path.basename(s.file)),
-  counts: { pass: passed.length, fail: failed.length, blocked: blocked.length },
+  counts: {
+    pass: passed.length,
+    fail: failed.length,
+    blocked: blocked.length,
+    checks_pass: checks.length - checkFails.length,
+    checks_fail: checkFails.length,
+  },
 };
 fs.writeFileSync(path.join(out, "summary.json"), JSON.stringify(summary, null, 2) + "\n");
 const md = [
@@ -376,8 +551,8 @@ const md = [
   `## Flows`,
   ...flows.map((f) => `- **${f.status}** ${f.name}${f.error ? `: ${redact(f.error)}` : ""}${f.reason ? ` (${f.reason})` : ""}`),
   ``,
-  `## Usability`,
-  ...(usability.length ? usability.map((u) => `- ${u.where}: ${u.kind} — ${u.detail}`) : ["- No overflow or undersized tap target was measured."]),
+  `## Checks`,
+  ...(checks.length ? checks.map((c) => `- **${c.status}** ${c.name}${c.detail ? `: ${redact(c.detail)}` : ""}`) : ["- No check ran."]),
   ``,
   `## Console`,
   ...(consoleErrors.length ? consoleErrors.slice(0, 20).map((e) => `- ${e}`) : ["- No page errors."]),
@@ -386,4 +561,4 @@ const md = [
 ].join("\n");
 fs.writeFileSync(path.join(out, "summary.md"), md + "\n");
 
-if (failed.length) process.exit(1);
+if (failed.length || checkFails.length) process.exit(1);
