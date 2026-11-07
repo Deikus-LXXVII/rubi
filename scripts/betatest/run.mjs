@@ -487,14 +487,46 @@ await flow("open and copy the full sign-in link on the phone", async () => {
   await page.getByRole("button", { name: "Done" }).click();
 }, { needsReal: true });
 
+await flow("a wrong code fails the sign-in and can be retried", async () => {
+  await page.getByRole("button", { name: "Paste the code" }).click();
+  await page.getByRole("dialog").locator("input").fill("not-the-sandbox-code");
+  await page.getByRole("button", { name: "OK" }).click();
+  await page.getByText("Signing in...").waitFor({ timeout: 25000 });
+  await page.getByText("The sign-in failed: that code was not accepted.").waitFor({ timeout: 25000 });
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+  await shot(page, "21b-wrong-code");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.waitForTimeout(2500);
+  const retry = mcp("rubi_link", { purpose: "setup:t3agents" });
+  if (!retry.url) throw new Error("no setup link");
+  await page.goto(retry.url);
+  await page.getByRole("button", { name: "Open the sign-in page" }).waitFor({ timeout: 20000 });
+}, { needsReal: true });
+
 await flow("paste the code", async () => {
   await page.getByRole("button", { name: "Paste the code" }).click();
   await page.getByRole("dialog").locator("input").fill(pub.signin_code);
   await shot(page, "21-paste-code");
   await page.getByRole("button", { name: "OK" }).click();
   await page.getByText("Signing in...").waitFor({ timeout: 25000 });
+  const setupBox = page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) });
+  await setupBox.getByText("Signing in to Claude").waitFor();
+  await setupBox.getByRole("button", { name: "Cancel signing in" }).waitFor();
+  const foldedWhile = await page.locator(".view-section h2", { hasText: "Apple container" }).isVisible().catch(() => false);
+  addCheck("finished steps fold while a step runs", foldedWhile === false, foldedWhile ? "Apple container is still on screen" : "");
+  if (foldedWhile) throw new Error("finished steps stay open while signing in");
+  const spin = await page.evaluate(() => getComputedStyle(document.querySelector(".status-badge.status-working"), "::before").animationName);
+  addCheck("working badge spins", spin === "spin", spin || "no spinner");
+  if (spin !== "spin") throw new Error("the working badge does not spin");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const still = await page.evaluate(() => getComputedStyle(document.querySelector(".status-badge.status-working"), "::before").animationName);
+  addCheck("working badge is still when motion is reduced", still === "none", still || "");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  if (still !== "none") throw new Error("the working badge keeps spinning when motion is reduced");
   await shot(page, "22-signing-in");
   await page.getByText("Running the self-test.").waitFor({ timeout: 25000 });
+  await setupBox.getByText("Running the self-test").waitFor();
+  await setupBox.getByRole("button", { name: "Cancel the self-test" }).waitFor();
   await shot(page, "22b-selftest");
   const banner = page.locator(".ready-banner");
   await banner.waitFor({ timeout: 25000 });
@@ -514,7 +546,6 @@ await flow("paste the code", async () => {
   });
   addCheck("collapsed Details has no empty gap after sign-in", signedGap >= -2 && signedGap <= 32, `gap ${Math.round(signedGap)}px`);
   if (signedGap > 32) throw new Error("collapsed Details leaves a gap of " + Math.round(signedGap) + "px");
-  await shot(page, "22-signed-in");
   await phoneChecks(page, "signed in");
 }, { needsReal: true });
 
@@ -548,11 +579,32 @@ await flow("self-test ran with sign-in and can be run again", async () => {
   addCheck("collapsed Details has no empty gap on the ready screen", readyGap >= -2 && readyGap <= 32, `gap ${Math.round(readyGap)}px`);
   if (readyGap > 32) throw new Error("collapsed Details leaves a gap of " + Math.round(readyGap) + "px");
   await page.getByRole("button", { name: "Run the self-test again" }).click();
-  await page.locator(".ready-banner", { hasText: "is ready" }).waitFor({ timeout: 15000 });
-  await page.getByText(/Setup steps \(7\/7 done\)/).waitFor({ timeout: 15000 });
+  await page.locator(".ready-banner", { hasText: "is ready" }).waitFor({ timeout: 25000 });
+  await page.getByText(/Setup steps \(7\/7 done\)/).waitFor({ timeout: 25000 });
   await shot(page, "23-ready");
   await phoneChecks(page, "ready");
   await noRepeatedHeadings(page, "ready");
+}, { needsReal: true });
+
+await flow("a failed self-test explains itself and can be retried", async () => {
+  await page.locator(".setup-fold > summary").click();
+  await page.getByRole("button", { name: "Sign in again" }).click();
+  await page.waitForTimeout(2500);
+  const again = mcp("rubi_link", { purpose: "setup:t3agents" });
+  if (!again.url) throw new Error("no setup link");
+  await page.goto(again.url);
+  await page.getByRole("button", { name: "Paste the code" }).waitFor({ timeout: 20000 });
+  await page.getByRole("button", { name: "Paste the code" }).click();
+  await page.getByRole("dialog").locator("input").fill("sandbox-selftest-fail");
+  await page.getByRole("button", { name: "OK" }).click();
+  await page.getByText("The self-test failed: the role VM did not start.").waitFor({ timeout: 30000 });
+  await page.getByRole("button", { name: "Run self-test" }).waitFor();
+  await shot(page, "25-selftest-failed");
+  await page.getByRole("button", { name: "Run self-test" }).click();
+  await page.waitForTimeout(2500);
+  const after = mcp("rubi_link", { purpose: "setup:t3agents" });
+  await page.goto(after.url);
+  await page.locator(".ready-banner").waitFor({ timeout: 30000 });
 }, { needsReal: true });
 
 await flow("desktop viewport of the setup page", async () => {

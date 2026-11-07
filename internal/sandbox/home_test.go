@@ -53,8 +53,8 @@ func TestHomeLoginWaitsAndThenReturnsTheFullLink(t *testing.T) {
 	if got["opened"] != false || got["url"] != h.SignInURL || len(h.SignInURL) < 500 {
 		t.Fatalf("open: %#v len %d", got, len(h.SignInURL))
 	}
-	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.login.code", Token: "tok", Args: mustJSON(t, map[string]string{"code": "nope"})}); err == nil {
-		t.Fatal("wrong code accepted")
+	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.login.code", Token: "tok", Args: mustJSON(t, map[string]string{"code": "has space"})}); err == nil {
+		t.Fatal("a code with a space was accepted")
 	}
 	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.login.code", Token: "tok", Args: mustJSON(t, map[string]string{"code": SignInCode})}); err != nil {
 		t.Fatal(err)
@@ -107,6 +107,82 @@ func step(t *testing.T, st any, id string) map[string]any {
 	}
 	t.Fatalf("no step %s", id)
 	return nil
+}
+
+func TestSandboxTitlesMatchTheRealHome(t *testing.T) {
+	h := NewHome("Sandbox Home", "secret", "https://127.0.0.1:18443/oauth")
+	st, err := h.Handle(homeproto.Envelope{Op: "pair", Args: mustJSON(t, map[string]string{"secret": "secret", "token": "tok"})})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st
+	st, err = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step(t, st, "login")["title"] != setup.TitleLogin || step(t, st, "t3")["title"] != setup.TitleT3 ||
+		step(t, st, "pair")["title"] != setup.TitlePair || step(t, st, "selftest")["title"] != setup.TitleSelfTest {
+		t.Fatalf("titles diverged: login %v t3 %v pair %v self %v", step(t, st, "login")["title"], step(t, st, "t3")["title"], step(t, st, "pair")["title"], step(t, st, "selftest")["title"])
+	}
+	projects, _ := step(t, st, "selftest")["projects"].([]map[string]any)
+	if len(projects) != 1 || projects[0]["id"] != "reviewer" || projects[0]["progress"] == nil {
+		t.Fatalf("self-test role row: %#v", projects)
+	}
+}
+
+func TestWrongCodeFailsTheSignInAfterItWorks(t *testing.T) {
+	h := NewHome("Sandbox Home", "secret", "https://127.0.0.1:18443/oauth")
+	h.signInFor = 20 * time.Millisecond
+	if _, err := h.Handle(homeproto.Envelope{Op: "pair", Args: mustJSON(t, map[string]string{"secret": "secret", "token": "tok"})}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"service", "image", "t3", "pair"} {
+		if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": id})}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": "login", "method": "claudeai"})}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.login.code", Token: "tok", Args: mustJSON(t, map[string]string{"code": "has space"})}); err == nil {
+		t.Fatal("a code with a space was accepted")
+	}
+	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.login.code", Token: "tok", Args: mustJSON(t, map[string]string{"code": "not-the-code"})}); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
+	login := step(t, st, "login")
+	if login["state"] != "working" || login["action"] != "cancel" || login["action2"] != "check" {
+		t.Fatalf("while signing in: %#v", login)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
+		login = step(t, st, "login")
+		if login["state"] == "failed" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	self := step(t, st, "selftest")
+	if login["state"] != "failed" || !strings.Contains(fmtReason(login), "that code was not accepted") || login["action"] != "login" || self["state"] == "done" {
+		t.Fatalf("wrong code: login %#v self %#v", login, self)
+	}
+}
+
+func TestNeedsUserSelfTestState(t *testing.T) {
+	h := NewHome("Sandbox Home", "secret", "https://127.0.0.1:18443/oauth")
+	if _, err := h.Handle(homeproto.Envelope{Op: "pair", Args: mustJSON(t, map[string]string{"secret": "secret", "token": "tok"})}); err != nil {
+		t.Fatal(err)
+	}
+	h.mu.Lock()
+	h.state["selftest"] = "needs_user"
+	h.mu.Unlock()
+	st, _ := h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
+	self := step(t, st, "selftest")
+	if self["state"] != "needs_user" || self["action"] != "selftest" || !strings.Contains(fmtReason(self), "Sign in") {
+		t.Fatalf("%#v", self)
+	}
 }
 
 func mustJSON(t *testing.T, v any) json.RawMessage {

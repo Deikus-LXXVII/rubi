@@ -630,3 +630,31 @@ func TestSignInCompletionStartsTheSelfTest(t *testing.T) {
 		t.Fatalf("a failed sign-in started the self-test %d times", failed.Load())
 	}
 }
+
+func TestSelfTestQueuesBehindABusyStep(t *testing.T) {
+	l, _, _, _ := loginLife(t)
+	l.h.T3.mu.Lock()
+	l.h.T3.job = &t3Job{Step: T3StepInstall, Started: time.Now()}
+	l.h.T3.mu.Unlock()
+	if err := l.h.T3.startSelfTestAfterSignIn(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := handle(t, l.h, "tok", "t3-setup.status", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := stepByID(t, st, "selftest")
+	if !strings.Contains(fmt.Sprint(self["reason"]), "other setup step") || self["state"] == "failed" {
+		t.Fatalf("queued self-test: %#v", self)
+	}
+	l.h.T3.finishJob(T3StepInstall, nil)
+	waitUntil(t, func() bool {
+		st, err := handle(t, l.h, "tok", "t3-setup.status", nil)
+		if err != nil {
+			return false
+		}
+		self = stepByID(t, st, "selftest")
+		s, _ := self["state"].(string)
+		return s == "working" || s == "failed" || s == "done"
+	})
+}

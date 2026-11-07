@@ -11,8 +11,13 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
 )
 
-// SignInCode is the only code the fake Claude page accepts. It is a test fixture, not a credential.
-const SignInCode = "sandbox-code"
+// SignInCode is the code the fake Claude page shows. Any other well-formed code is accepted
+// and then fails the sign-in, the way a real helper rejects a code it did not print.
+// FailSelfTestCode signs in and then fails the self-test once, so a retry can be tried.
+const (
+	SignInCode       = "sandbox-code"
+	FailSelfTestCode = "sandbox-selftest-fail"
+)
 
 // Home is a Rubi Home that advertises t3-setup and walks the first-time setup in fixed stages.
 // It never opens a browser. The sign-in step hands the panel a URL on the sandbox OAuth stub.
@@ -20,16 +25,18 @@ type Home struct {
 	Name      string
 	SignInURL string
 
-	mu          sync.Mutex
-	secret      string
-	token       string
-	order       []string
-	state       map[string]string
-	signedIn    bool
-	login       bool
-	signingIn   bool
-	signInFor   time.Duration
-	selfTestFor time.Duration
+	mu           sync.Mutex
+	secret       string
+	token        string
+	order        []string
+	state        map[string]string
+	signedIn     bool
+	login        bool
+	signingIn    bool
+	acceptedCode string
+	failNext     bool
+	signInFor    time.Duration
+	selfTestFor  time.Duration
 }
 
 // NewHome starts every step not done except the container, which the sandbox stubs as already installed.
@@ -117,8 +124,8 @@ func (h *Home) status() map[string]any {
 	defer h.mu.Unlock()
 	titles := map[string]string{
 		"container": "Apple container", "service": "Container service", "image": "Runner image",
-		"t3": "T3 installed and pinned", "pair": "T3 paired with Rubi",
-		"login": "Provider sign-in per role", "selftest": "Self-test",
+		"t3": setup.TitleT3, "pair": setup.TitlePair,
+		"login": setup.TitleLogin, "selftest": setup.TitleSelfTest,
 	}
 	reasons := map[string]string{
 		"container": "Installed (sandbox: the container tool is stubbed, so this step starts done).",
@@ -132,17 +139,34 @@ func (h *Home) status() map[string]any {
 	var steps []map[string]any
 	blocked := false
 	var waiting []string
+	var runningID string
 	for _, id := range h.order {
 		st := h.state[id]
 		reason := reasons[id]
 		action := ""
 		if st == "working" {
+			if runningID == "" {
+				runningID = id
+			}
 			if id == "login" {
 				reason = setup.SigningIn
 			} else if id == "selftest" {
 				reason = setup.SelfTestRunning
 			}
 			action = ""
+			blocked = true
+		} else if st == "failed" || st == "needs_user" {
+			switch {
+			case id == "login" && st == "failed":
+				reason = "The sign-in failed: that code was not accepted."
+				action = "login"
+			case id == "selftest" && st == "failed":
+				reason = "The self-test failed: the role VM did not start."
+				action = "selftest"
+			case id == "selftest" && st == "needs_user":
+				reason = "Sign in to Claude, then run the self-test again."
+				action = "selftest"
+			}
 			blocked = true
 		} else if st == "done" {
 			reason = "Done"
@@ -151,6 +175,7 @@ func (h *Home) status() map[string]any {
 			}
 			if id == "login" && h.signedIn {
 				reason = "Signed in with the sandbox Claude page."
+				action = "login_again"
 			}
 			if id == "selftest" {
 				reason = "Ready. This computer can run a session."
@@ -170,6 +195,11 @@ func (h *Home) status() map[string]any {
 		}
 		step := map[string]any{"id": id, "title": titles[id], "state": st, "reason": reason, "action": action}
 		if id == "login" {
+			step["action2"] = "check"
+			if st == "working" {
+				step["action"] = "cancel"
+				action = "cancel"
+			}
 			roleState, roleAction, roleReason := st, action, reason
 			if h.login && !h.signedIn && !h.signingIn {
 				roleState, roleAction = "working", ""
@@ -179,7 +209,7 @@ func (h *Home) status() map[string]any {
 			}
 			step["projects"] = []map[string]any{{
 				"id": "reviewer", "dir": "sandbox · role reviewer",
-				"state": roleState, "reason": roleReason, "action": roleAction,
+				"state": roleState, "reason": roleReason, "action": roleAction, "progress": []string{},
 			}}
 		}
 		// The self-test button lives on the role row (the T3 Agents page reads action there).
@@ -187,7 +217,7 @@ func (h *Home) status() map[string]any {
 		if id == "selftest" {
 			step["projects"] = []map[string]any{{
 				"id": "reviewer", "dir": "sandbox · role reviewer",
-				"state": st, "reason": reason, "action": action,
+				"state": st, "reason": reason, "action": action, "progress": []string{},
 			}}
 		}
 		steps = append(steps, step)
@@ -195,6 +225,9 @@ func (h *Home) status() map[string]any {
 	out := map[string]any{"steps": steps, "supported": true, "running": h.state["t3"] == "done", "paired": h.state["pair"] == "done"}
 	if h.login && !h.signedIn && !h.signingIn {
 		out["login"] = map[string]any{"url": h.SignInURL, "wants_code": true, "role": "reviewer"}
+	}
+	if runningID != "" {
+		out["job"] = map[string]any{"step": runningID}
 	}
 	return out
 }
@@ -234,7 +267,11 @@ func (h *Home) run(raw json.RawMessage) (any, error) {
 		if !h.earlierDone("login") {
 			return nil, errString("Waiting for earlier steps.")
 		}
+		// Sign in again starts over: the previous credential is no longer the one in progress.
 		h.login = true
+		h.signingIn = false
+		h.signedIn = false
+		h.state["login"] = "todo"
 		return map[string]any{"started": true}, nil
 	}
 	if _, ok := h.state[in.Step]; !ok {
@@ -283,12 +320,14 @@ func (h *Home) code(raw json.RawMessage) (any, error) {
 		h.mu.Unlock()
 		return nil, errString("no sign-in is waiting for a code")
 	}
-	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(in.Code)), []byte(SignInCode)) != 1 {
+	code := strings.TrimSpace(in.Code)
+	if !setup.ValidCode(code) {
 		h.mu.Unlock()
-		return nil, errString("that code was not accepted")
+		return nil, errString("the code must be 1 to 512 visible characters without spaces")
 	}
-	// The code is only accepted here. Sign-in stays working until it would have saved
-	// the credential; that completion, through setup.AfterSignIn, starts the self-test.
+	// Format is the only check here. A code the helper did not print fails the sign-in
+	// after it has been working, not in this handler.
+	h.acceptedCode = code
 	h.signingIn = true
 	h.state["login"] = "working"
 	wait := h.signInFor
@@ -300,12 +339,22 @@ func (h *Home) code(raw json.RawMessage) (any, error) {
 func (h *Home) finishSignIn(wait time.Duration) {
 	time.Sleep(wait)
 	h.mu.Lock()
+	code := h.acceptedCode
 	h.signingIn = false
 	h.login = false
-	h.signedIn = true
-	h.state["login"] = "done"
+	ok := subtle.ConstantTimeCompare([]byte(code), []byte(SignInCode)) == 1 || code == FailSelfTestCode
+	if ok {
+		h.signedIn = true
+		h.state["login"] = "done"
+		h.failNext = code == FailSelfTestCode
+	} else {
+		h.signedIn = false
+		h.state["login"] = "failed"
+	}
 	h.mu.Unlock()
-	setup.AfterSignIn(h.startSelfTest)
+	if ok {
+		setup.AfterSignIn(h.startSelfTest)
+	}
 }
 
 func (h *Home) startSelfTest() error {
@@ -321,11 +370,17 @@ func (h *Home) beginSelfTestLocked() error {
 	}
 	h.state["selftest"] = "working"
 	wait := h.selfTestFor
+	fail := h.failNext
+	h.failNext = false
 	go func() {
 		time.Sleep(wait)
 		h.mu.Lock()
 		if h.state["selftest"] == "working" {
-			h.state["selftest"] = "done"
+			if fail {
+				h.state["selftest"] = "failed"
+			} else {
+				h.state["selftest"] = "done"
+			}
 		}
 		h.mu.Unlock()
 	}()

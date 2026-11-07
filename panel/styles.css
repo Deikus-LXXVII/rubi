@@ -1151,6 +1151,13 @@ button.copy { box-shadow: none; }
 .status-badge { font-size: 0.75rem; font-weight: 650; line-height: 1.2; padding: 3px 8px; border-radius: 999px;
   background: var(--raise); color: var(--muted); }
 .status-badge.status-done { background: color-mix(in srgb, #4caf5c 18%, var(--card)); color: #1d6b2a; }
+.status-badge.status-working { display: inline-flex; align-items: center; gap: 6px; }
+.status-badge.status-working::before { content: ""; width: 0.7em; height: 0.7em; border: 2px solid currentColor;
+  border-right-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .status-badge.status-working::before { animation: none; border-right-color: currentColor; }
+}
 .status-badge.status-failed, .status-badge.status-needs-you { background: color-mix(in srgb, var(--danger) 14%, var(--card)); color: var(--danger); }
 .ready-banner { margin: 4px 0 16px; padding: 14px 16px; border-radius: 14px;
   background: color-mix(in srgb, #4caf5c 16%, var(--card));

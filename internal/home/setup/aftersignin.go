@@ -7,6 +7,13 @@ const (
 	SigningIn = "Signing in..."
 	// SelfTestRunning is the self-test row while that step is in progress.
 	SelfTestRunning = "Running the self-test."
+
+	// Titles the setup status uses. The sandbox and the real Home both use these, so a
+	// renamed row fails the test that compares them.
+	TitleLogin    = "Claude sign-in"
+	TitleT3       = "T3 installed, pinned and running"
+	TitlePair     = "T3 paired with Rubi Home"
+	TitleSelfTest = "Self-test"
 )
 
 // SignInPhases is what a client sees, in order, after the code is accepted: the sign-in is still

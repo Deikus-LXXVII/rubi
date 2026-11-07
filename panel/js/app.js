@@ -2641,14 +2641,21 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
   const offersAll = !setupFinished && !allStepsDone && rawSections.some((sec) => objs(sec.actions, VIEW_ACTIONS_MAX).some((a) => clip(a.label, 60) === "Set up everything"));
   const forwardStep = new Set(["Start", "Build", "Install the pinned T3", "Pair", "Install"]);
   const selfAct = findViewAction(rawSections, "Run self-test");
-  const button = (a, stepState) => {
-    const label = clip(a.label, 60);
+  const running = stepped.find((s) => stepBadge(s.title, objs(s.items, 1)[0]).toLowerCase() === "working");
+  const runningCopy = !running ? null : /self-test/i.test(clip(running.title, 120))
+    ? { title: "Running the self-test\u2026", cancel: "Cancel the self-test" }
+    : /sign-in|claude/i.test(clip(running.title, 120))
+      ? { title: "Signing in to Claude\u2026", cancel: "Cancel signing in" }
+      : { title: "Working on " + clip(running.title, 120).replace(/^\d+\.\s*/, "") + "\u2026", cancel: "Cancel" };
+  const button = (a, stepState, display) => {
+    const real = clip(a.label, 60);
+    const label = display || real;
     const failed = /failed|needs/.test(String(stepState || ""));
     // One primary path. The per-step buttons come back when that step failed or is being retried.
-    if (offersAll && !failed && forwardStep.has(label)) return null;
-    if ((setupFinished || allStepsDone) && label === "Set up everything") return null;
-    if (allStepsDone && (label === "Refresh" || label === "Run self-test")) return null;
-    if (label === "Set up everything") return h("button", { type: "button", class: "primary", onclick: act(a) }, label);
+    if (offersAll && !failed && forwardStep.has(real)) return null;
+    if ((setupFinished || allStepsDone) && real === "Set up everything") return null;
+    if (allStepsDone && (real === "Refresh" || real === "Run self-test")) return null;
+    if (real === "Set up everything") return h("button", { type: "button", class: "primary", onclick: act(a) }, "Set up everything");
     return h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, label);
   };
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
@@ -2703,26 +2710,34 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       if (badge) rows = foldStepRows([{ ...rows[0], title: "" }, ...rows.slice(1)]);
     }
     const badgeCls = badge ? "status-" + badge.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "";
-    return { step: !!badge, el: h("section", { class: "view-section" },
+    return { step: !!badge, done: badge.toLowerCase() === "done", setup: /^setup$/i.test(secTitle.trim()), el: h("section", { class: "view-section" },
       h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls }, badge) : null),
       sec.note && !((offersAll || allStepsDone || setupFinished) && /set up everything/i.test(String(sec.note))) ? noteBlock(sec.note, true) : null,
       secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions) : null,
       sec.kind === "chat" ? chatSection(sec)
       : rows && rows.length ? h("ul", { class: "view-list" }, rows.map((it) => {
-        const title = clip(it.title, 200);
+        let title = clip(it.title, 200);
+        const busyLine = !!(runningCopy && /^(Something is running|Working on:)/.test(title));
+        if (busyLine) title = runningCopy.title;
         return h("li", it.warn ? { class: "view-warn" } : {},
           h("div", { class: "view-text" }, title ? h("strong", {}, title) : null, it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
-          h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map((a) => button(a, badge)).filter(Boolean)));
+          h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map((a) => button(a, badge, busyLine && clip(a.label, 60) === "Cancel" ? runningCopy.cancel : "")).filter(Boolean)));
       }))
         : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here.")) };
   }).filter(Boolean);
   const stepEls = built.filter((b) => b.step).map((b) => b.el);
   const restEls = built.filter((b) => !b.step).map((b) => b.el);
+  const doneEls = built.filter((b) => b.step && b.done).map((b) => b.el);
+  const liveEls = built.filter((b) => b.step && !b.done).map((b) => b.el);
   const sections = allStepsDone && stepEls.length
     ? [h("details", { class: "setup-fold" },
         h("summary", {}, `Setup steps (${stepped.filter(stepIsDone).length}/${stepped.length} done)`),
         ...stepEls), ...restEls]
-    : built.map((b) => b.el);
+    : runningCopy && doneEls.length
+      ? [...built.filter((b) => b.setup).map((b) => b.el),
+        h("details", { class: "setup-fold" }, h("summary", {}, `Finished steps (${doneEls.length} done)`), ...doneEls),
+        ...liveEls, ...built.filter((b) => !b.step && !b.setup).map((b) => b.el)]
+      : built.map((b) => b.el);
   const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
   const front = !(viewArgs && viewArgs.page);
   const opensRoot = !!(up && up.open && !up.open.page);

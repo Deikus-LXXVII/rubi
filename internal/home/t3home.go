@@ -86,18 +86,19 @@ type T3Home struct {
 
 	opMu sync.Mutex // one install/start/pair/stop at a time
 
-	mu       sync.Mutex
-	srv      t3Server
-	cl       *t3.Client
-	runCtx   context.Context // lives while the server does; the watchers and the session server belong to it
-	runStop  context.CancelFunc
-	sessDone chan struct{}
-	base     context.Context // Home's lifetime (Run); Background until Run is called
-	job      *t3Job
-	lastErr  *t3Failure
-	phase    string
-	bytes    atomic.Int64
-	wg       sync.WaitGroup // the background step
+	mu          sync.Mutex
+	srv         t3Server
+	cl          *t3.Client
+	runCtx      context.Context // lives while the server does; the watchers and the session server belong to it
+	runStop     context.CancelFunc
+	sessDone    chan struct{}
+	base        context.Context // Home's lifetime (Run); Background until Run is called
+	job         *t3Job
+	pendingSelf bool // a self-test waiting for the job that was running when sign-in finished
+	lastErr     *t3Failure
+	phase       string
+	bytes       atomic.Int64
+	wg          sync.WaitGroup // the background step
 
 	loginSetup *setup.Setup
 	selfRows   map[string]selfRow // the last self-test, per role
@@ -481,16 +482,44 @@ func (t *T3Home) RunStepFor(step, project, role string) error {
 	t.wg.Add(1)
 	go func() {
 		defer t.wg.Done()
-		err := t.runStep(ctx, step, project, role)
-		t.mu.Lock()
-		t.job, t.phase = nil, ""
-		if err != nil {
-			t.lastErr = &t3Failure{Step: step, Message: err.Error()}
-			log.Printf("T3 setup (%s): %v", step, err)
-		}
-		t.mu.Unlock()
+		t.finishJob(step, t.runStep(ctx, step, project, role))
 	}()
 	return nil
+}
+
+// startSelfTestAfterSignIn starts the self-test, or queues it when another T3 step is still
+// running. A queued test runs when that step's job ends, and the status says so in the meantime.
+func (t *T3Home) startSelfTestAfterSignIn() error {
+	err := t.RunStepFor(T3StepSelfTest, "", "")
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "busy") {
+		t.mu.Lock()
+		t.pendingSelf = true
+		t.mu.Unlock()
+		return nil
+	}
+	return err
+}
+
+// finishJob records the outcome of the step that just ended and starts a self-test that was
+// waiting for it.
+func (t *T3Home) finishJob(step string, err error) {
+	t.mu.Lock()
+	t.job, t.phase = nil, ""
+	if err != nil {
+		t.lastErr = &t3Failure{Step: step, Message: err.Error()}
+		log.Printf("T3 setup (%s): %v", step, err)
+	}
+	queued := t.pendingSelf
+	t.pendingSelf = false
+	t.mu.Unlock()
+	if queued {
+		if err := t.RunStepFor(T3StepSelfTest, "", ""); err != nil {
+			log.Printf("self-test after sign-in: %v", err)
+		}
+	}
 }
 
 func (t *T3Home) runStep(ctx context.Context, step, project, role string) error {
@@ -597,9 +626,9 @@ func (t *T3Home) Status() map[string]any {
 		pairReason = "Start T3 first"
 	}
 	steps := []map[string]any{
-		{"id": "t3", "title": "T3 installed, pinned and running", "state": rowState(installed && running, T3StepT3, T3StepInstall, T3StepStart),
+		{"id": "t3", "title": setup.TitleT3, "state": rowState(installed && running, T3StepT3, T3StepInstall, T3StepStart),
 			"reason": rowReason(t3Reason, T3StepT3, T3StepInstall, T3StepStart), "action": t3Action},
-		{"id": T3StepPair, "title": "T3 paired with Rubi Home", "state": rowState(paired, T3StepPair),
+		{"id": T3StepPair, "title": setup.TitlePair, "state": rowState(paired, T3StepPair),
 			"reason": rowReason(pairReason, T3StepPair), "action": "pair"},
 	}
 	out := map[string]any{
@@ -799,7 +828,7 @@ func (t *T3Home) loginStep() map[string]any {
 		}
 		rows = append(rows, row)
 	}
-	step := map[string]any{"id": "login", "title": "Claude sign-in", "state": state, "reason": reason, "action": action,
+	step := map[string]any{"id": "login", "title": setup.TitleLogin, "state": state, "reason": reason, "action": action,
 		"action2": "check", "projects": rows, "progress": progress}
 	if li.Working && li.URL != "" && !li.CodeSent {
 		step["url"], step["wants_code"] = li.URL, li.WantsCode
