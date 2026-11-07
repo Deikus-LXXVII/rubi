@@ -86,6 +86,7 @@ func newLife(t *testing.T) *life {
 	l.srv = &fakeServer{base: l.fake.URL(), version: testVer, pid: 4242}
 	th := h.T3
 	th.Fetch, th.Pin, th.Platform = l.kit.fetch, &l.kit.pin, func() string { return testPlat }
+	th.MemAvailable = func() (int, bool) { return 0, false } // unknown: the floor doesn't apply
 	th.NewServer = func(node, bin, base, rt string, port int) t3Server {
 		l.srv.node, l.srv.bin, l.srv.dir, l.srv.rtHome, l.srv.port = node, bin, base, rt, port
 		return l.srv
@@ -702,5 +703,27 @@ func TestT3SetupT3StepAndActions(t *testing.T) {
 	st, _ = handle(t, l.h, "tok", "t3-setup.status", nil)
 	if r := stepByID(t, st, "t3"); r["action"] != "upgrade" || !strings.Contains(r["reason"].(string), "pinned") {
 		t.Errorf("pin moved: %v", r)
+	}
+}
+
+func TestT3StartNeedsFreeMemory(t *testing.T) {
+	l := newLife(t)
+	l.install(t)
+	l.t3.MemAvailable = func() (int, bool) { return t3MinFreeMiB - 1, true }
+	err := l.t3.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "MiB of memory are free") {
+		t.Fatalf("a start with too little memory: %v", err)
+	}
+	if l.srv.port != 0 || l.t3.srvAlive() {
+		t.Fatal("the server was started anyway")
+	}
+	l.t3.MemAvailable = func() (int, bool) { return t3MinFreeMiB, true }
+	if err := l.t3.Start(context.Background()); err != nil {
+		t.Fatalf("a start with enough memory: %v", err)
+	}
+	// A running server isn't stopped or refused by a later low reading: the floor guards only a start.
+	l.t3.MemAvailable = func() (int, bool) { return 10, true }
+	if err := l.t3.Start(context.Background()); err != nil {
+		t.Fatalf("Start on a running server: %v", err)
 	}
 }

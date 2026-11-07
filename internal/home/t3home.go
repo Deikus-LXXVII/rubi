@@ -23,6 +23,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
+	"github.com/Deikus-LXXVII/rubi/internal/hostguard"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
@@ -68,6 +69,8 @@ type T3Home struct {
 	ServeSessions func(ctx context.Context) error
 	// SelfPath is the rubi-home binary the role shims run (os.Executable when nil; a live test builds its own).
 	SelfPath func() (string, error)
+	// MemAvailable is the computer's free memory in MiB, ok false when unknown (hostguard.MemAvailable when nil).
+	MemAvailable func() (mib int, ok bool)
 	// VMVersion and VMProbe replace the session server in the self-test (tests).
 	VMVersion func(ctx context.Context, role string) (string, error)
 	VMProbe   func(ctx context.Context, role string, cmd []string) ([]byte, error)
@@ -275,6 +278,9 @@ func (t *T3Home) startLocked(ctx context.Context) error {
 		return errors.New("T3 isn't installed (or isn't the pinned version): run the install step of the T3 setup first")
 	}
 	if !t.srvAlive() {
+		if err := t.memoryForServer(); err != nil {
+			return err
+		}
 		if err := t.startServer(ctx, pin.Version); err != nil {
 			return err
 		}
@@ -286,6 +292,23 @@ func (t *T3Home) startLocked(ctx context.Context) error {
 	}
 	t.startSessions()
 	t.resumeWatchers()
+	return nil
+}
+
+// t3MinFreeMiB is the free memory a T3 server start needs: the pinned server takes about 480 MiB on a Linux server
+// (measured on a shared 16 GiB machine with about 3 GiB free, docs/plans/t3-cloud-agents.md slice 0), plus room so
+// that starting it doesn't push the computer into its OOM killer (such machines often have no swap).
+const t3MinFreeMiB = 800
+
+// memoryForServer refuses a server start when the computer's free memory is known to be too low.
+func (t *T3Home) memoryForServer() error {
+	avail := hostguard.MemAvailable
+	if t.MemAvailable != nil {
+		avail = t.MemAvailable
+	}
+	if mib, ok := avail(); ok && mib < t3MinFreeMiB {
+		return fmt.Errorf("only %d MiB of memory are free; T3 needs about %d MiB, so it wasn't started (free some memory and start it again)", mib, t3MinFreeMiB)
+	}
 	return nil
 }
 
