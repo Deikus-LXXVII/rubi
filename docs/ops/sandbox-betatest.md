@@ -36,7 +36,8 @@ the T3 flows blocked.
 
 `make sandbox-check` is the same non-UI check CI runs: up, the panel and catalog answer, the daemon
 is unpaired in its own network namespace, down, up, reset, and a Rubi that was already running is
-unchanged.
+unchanged. The comparison ignores fields that move on their own, including how many relays are
+connected.
 
 ## Beta test
 

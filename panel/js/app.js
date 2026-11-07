@@ -2392,18 +2392,20 @@ function plainWords(s) {
     .replace(/\bt3agents_mandates\b/g, "the mandates list");
 }
 
-// noteBlock shows a short lead. Anything past it is behind Details, so a long trust paragraph
-// does not fill the phone before the buttons.
+// sentences splits on a finished sentence, so a note is never cut in the middle of one.
+function sentences(text) {
+  return (String(text).match(/[^.!?]+[.!?]+(?:\s|$)|[^.!?]+$/g) || []).map((s) => s.trim()).filter(Boolean);
+}
+
+// noteBlock shows the first complete sentence. The rest is a disclosure, not a second heading.
 function noteBlock(text, small) {
   const plain = plainWords(clip(text, 1500));
   const cls = small ? "muted small" : "muted";
-  const limit = 140;
-  if (plain.length <= limit) return h("p", { class: cls }, plain);
-  let cut = plain.lastIndexOf(" ", limit);
-  if (cut < 60) cut = limit;
+  const parts = sentences(plain);
+  if (parts.length <= 1) return h("p", { class: cls }, plain);
   return h("div", { class: "note-fold" },
-    h("p", { class: cls }, plain.slice(0, cut).trim()),
-    h("details", {}, h("summary", {}, "Details"), h("p", { class: cls }, plain.slice(cut).trim())));
+    h("p", { class: cls }, parts[0]),
+    h("details", { class: "note-more" }, h("summary", {}, "Details"), h("p", { class: cls }, parts.slice(1).join(" "))));
 }
 
 // pageNote is the line under a plugin's front-page title. The T3 Agents page leads with the
@@ -2413,7 +2415,7 @@ function pageNote(text) {
   if (/\bbypassPermissions\b/.test(text)) {
     return h("div", { class: "note-fold" },
       h("p", { class: "muted" }, "Sessions that skip permission questions aren't covered by the approvals on this page. Messages to and from Bots still work."),
-      h("details", {}, h("summary", {}, "Details"), h("p", { class: "muted small" }, plainWords(clip(text, 1500)))));
+      h("details", { class: "note-more" }, h("summary", {}, "Details"), h("p", { class: "muted small" }, plainWords(clip(text, 1500)))));
   }
   return noteBlock(text, false);
 }
@@ -2441,6 +2443,52 @@ function stepBadge(sectionTitle, item) {
 }
 
 // shortSignInURL is the host plus an ellipsis. The full address stays available to Copy.
+const RAW_URL = /https?:\/\/\S+/;
+function withoutURL(s) {
+  return String(s || "").replace(/https?:\/\/\S+/g, "").replace(/\(\s*\)/g, "").replace(/\s{2,}/g, " ").replace(/\s+([.,:;])/g, "$1").trim();
+}
+
+// foldStepRows keeps one card per setup step. A single role that only repeats the step is
+// merged into that card. A row that carries the raw sign-in URL is not printed; its buttons stay.
+function foldStepRows(rows) {
+  if (!rows || rows.length < 2) return rows || [];
+  const head = { ...rows[0], actions: objs(rows[0].actions, VIEW_ACTIONS_MAX).slice() };
+  const roles = [];
+  const rest = [];
+  const extra = [];
+  const seen = new Set(head.actions.map((a) => clip(a.label, 60)));
+  const take = (actions) => {
+    for (const a of objs(actions, VIEW_ACTIONS_MAX)) {
+      const label = clip(a.label, 60);
+      if (seen.has(label)) continue;
+      seen.add(label);
+      extra.push(a);
+    }
+  };
+  for (const it of rows.slice(1)) {
+    const title = clip(it.title, 200);
+    const detail = clip(it.detail, VIEW_TEXT_MAX);
+    const waiting = /sign-in waiting|waiting for the browser/i.test(title) || RAW_URL.test(title) || RAW_URL.test(detail);
+    if (waiting) {
+      take(it.actions);
+      continue;
+    }
+    if (title && detail) roles.push(it);
+    else rest.push(it);
+  }
+  if (roles.length <= 1) {
+    for (const it of roles) take(it.actions);
+  }
+  head.actions = head.actions.concat(extra);
+  const shown = roles.length > 1 ? roles : [];
+  return [head, ...shown, ...rest].map((it, i) => {
+    if (i === 0) return it;
+    const title = withoutURL(clip(it.title, 200));
+    const detail = withoutURL(clip(it.detail, VIEW_TEXT_MAX));
+    return { ...it, title, detail };
+  }).filter((it, i) => i === 0 || clip(it.title, 200) || clip(it.detail, VIEW_TEXT_MAX) || objs(it.actions, 1).length);
+}
+
 function shortSignInURL(url) {
   try {
     return new URL(url).host + "/\u2026";
@@ -2581,8 +2629,10 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
   const setupFinished = early.length > 0 && early.every(stepIsDone);
   const allStepsDone = stepped.length >= 3 && stepped.every(stepIsDone);
   const button = (a) => {
-    if (setupFinished && clip(a.label, 60) === "Set up everything") return null;
-    return h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, clip(a.label, 60));
+    const label = clip(a.label, 60);
+    if ((setupFinished || allStepsDone) && label === "Set up everything") return null;
+    if (allStepsDone && label === "Refresh") return null;
+    return h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, label);
   };
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
   // input {op, args, arg, label, send}: the text the user writes goes to the plugin as args[arg]. Everything the
@@ -2632,12 +2682,12 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     let badge = "";
     if (rows && rows.length) {
       badge = stepBadge(secTitle, rows[0]);
-      if (badge) rows = [{ ...rows[0], title: "" }, ...rows.slice(1)];
+      if (badge) rows = foldStepRows([{ ...rows[0], title: "" }, ...rows.slice(1)]);
     }
     const badgeCls = badge ? "status-" + badge.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "";
     return h("section", { class: "view-section" },
       h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls }, badge) : null),
-      sec.note ? noteBlock(sec.note, true) : null,
+      sec.note && !(allStepsDone && /set up everything/i.test(String(sec.note))) ? noteBlock(sec.note, true) : null,
       secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions) : null,
       sec.kind === "chat" ? chatSection(sec)
       : rows && rows.length ? h("ul", { class: "view-list" }, rows.map((it) => {
@@ -2659,8 +2709,10 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     header(ctx.hello),
     up ? backBar(backLabel, () => go(up.open)) : backBar("Settings", back),
     h("div", { class: "section-head" }, h("h1", {}, heading)),
+    allStepsDone ? h("div", { class: "ready-banner", role: "status" },
+      h("strong", {}, `${name} is ready`),
+      h("p", {}, "Ask a Bot to start a session in a role on this computer.")) : null,
     data.note ? (front ? pageNote(data.note) : noteBlock(data.note, false)) : null,
-    allStepsDone ? h("p", { class: "ready-line", role: "status" }, "Ready") : null,
     err,
     ...sections,
   );

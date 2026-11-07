@@ -423,6 +423,11 @@ await flow("T3 setup steps advance", async () => {
   const refresh = page.getByRole("button", { name: "Refresh", exact: true });
   if (await refresh.count()) await refresh.click();
   await page.getByRole("button", { name: "Open the sign-in page" }).waitFor({ timeout: 20000 });
+  const waitingCard = await page.locator(".card").innerText();
+  if (/https?:\/\//.test(waitingCard)) throw new Error("a setup row prints the raw sign-in URL");
+  if (/Sign-in waiting for the browser/i.test(waitingCard)) throw new Error("duplicate sign-in waiting row");
+  const loginSec = page.locator(".view-section", { has: page.getByRole("heading", { name: /Provider sign-in/ }) });
+  if (await loginSec.locator(".view-text strong").count()) throw new Error("a single role is shown as its own row");
   await shot(page, "18-signin-waiting");
   await phoneChecks(page, "sign-in waiting");
 }, { needsReal: true });
@@ -496,9 +501,22 @@ await flow("run the self-test until ready", async () => {
   if (await refresh.count()) await refresh.click();
   await self.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
   await self.getByText("Ready. This computer can run a session.", { exact: true }).waitFor();
-  await page.locator(".ready-line", { hasText: "Ready" }).waitFor();
+  const banner = page.locator(".ready-banner");
+  await banner.waitFor();
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const box = await banner.boundingBox();
+  const inView = !!(box && box.y >= 0 && box.y + box.height <= 852);
+  addCheck("ready banner is in the first phone viewport", inView, box ? `y=${Math.round(box.y)} h=${Math.round(box.height)}` : "missing");
+  if (!inView) throw new Error("the ready banner is not in the first phone viewport");
+  if (!/T3 Agents is ready/.test(await banner.innerText())) throw new Error("ready banner does not name the plugin");
   if (await page.getByRole("button", { name: "Set up everything", exact: true }).count()) {
     throw new Error("Set up everything is still offered");
+  }
+  if (await page.getByRole("button", { name: "Refresh", exact: true }).count()) {
+    throw new Error("Refresh is still offered when every step is done");
+  }
+  if (/Set up everything/.test(await page.locator(".card").innerText())) {
+    throw new Error("the Set up everything explanation is still shown");
   }
   await shot(page, "23-ready");
   await phoneChecks(page, "ready");

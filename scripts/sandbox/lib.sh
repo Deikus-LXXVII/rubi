@@ -90,10 +90,23 @@ sandbox_snapshot_live() {
       -u RUBI_RELAYS -u RUBI_MARKETPLACE_URL -u RUBI_TEST_RELEASE_KEY_FILE -u RUBI_TEST_PLUGIN_KEY \
       -u RUBI_DOWNLOAD_BASE -u RUBI_UPDATE_FEED -u RUBI_TUNNEL -u RUBI_CLOUDFLARED \
       "$bin" status > "$out.raw" 2>"$out.err"; then
-    python3 - "$out.raw" "$out" << 'PY'
+    sandbox_scrub_status "$out.raw" "$out"
+  else
+    printf '%s\n' '{"present":true,"read":false}' > "$out"
+  fi
+  rm -f "$out.raw" "$out.err"
+}
+
+# sandbox_scrub_status writes the snapshot check.sh compares. Fields that move on their
+# own (a fresh link, a clock, how many relays happen to be connected) are dropped, so
+# they cannot fail the isolation check. A real change in the status still fails it.
+sandbox_scrub_status() {
+  raw=$1
+  out=$2
+  python3 - "$raw" "$out" << 'PY'
 import json, sys
 raw = json.load(open(sys.argv[1]))
-drop = {"link", "link_error", "next_step", "webhook"}
+drop = {"link", "link_error", "next_step", "webhook", "relays_connected"}
 def scrub(v):
     if isinstance(v, dict):
         return {k: scrub(x) for k, x in v.items() if k not in drop and "time" not in k.lower() and not k.endswith("_at")}
@@ -102,10 +115,6 @@ def scrub(v):
     return v
 json.dump({"present": True, "status": scrub(raw)}, open(sys.argv[2], "w"), indent=2, sort_keys=True)
 PY
-  else
-    printf '%s\n' '{"present":true,"read":false}' > "$out"
-  fi
-  rm -f "$out.raw" "$out.err"
 }
 
 sandbox_compare_live() {
