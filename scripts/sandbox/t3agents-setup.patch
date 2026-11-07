@@ -1,8 +1,76 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..f355610
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1,8 @@
++# Changelog
++
++## v0.2.0
++
++- The setup page uses Rubi Home's step titles: Claude sign-in, T3 installed, pinned and running, and T3 paired with Rubi Home.
++- A setup action drops the cached status. The page redraws from a fresh read and keeps refreshing until the status changes, so Sign in and Set up everything update without a manual refresh.
++- A failed Claude sign-in offers "Get a new sign-in link".
++- The running box no longer says the buttons below are waiting when Cancel is on that box.
+diff --git a/README.md b/README.md
+index ff18704..91efd21 100644
+--- a/README.md
++++ b/README.md
+@@ -10,8 +10,8 @@ Rubi Home does the work on the computer.
+ 
+ - **`t3-agent`**: projects, threads (start, send, messages, status, close, interrupt, fork, mode, rename), the
+   queue of questions the agents ask, roles, SSH targets and the usage limits.
+-- **`t3-setup`**: the setup page's steps (container tool, runner image, T3 installed and pinned, T3 paired,
+-  each role's provider sign-in, a self-test).
++- **`t3-setup`**: the setup page's steps (container tool, runner image, T3 installed, pinned and running,
++  T3 paired with Rubi Home, Claude sign-in for each role, a self-test).
+ 
+ The plugin has no network access, no files and no secrets of its own.
+ 
+@@ -108,15 +108,16 @@ lists in `t3-setup.status`, in order, and the one button Home names for each:
+ 1. **Apple container**: install (a strong approval first; macOS shows its own administrator dialog).
+ 2. **Container service**: start.
+ 3. **Runner image**: build or update.
+-4. **T3 installed and pinned**: install or update to the pinned version.
+-5. **T3 paired with Rubi**: pair.
+-6. **Provider sign-in per role**: each role has its own row. Sign-in relays Claude's `claude auth login`:
++4. **T3 installed, pinned and running**: install or update to the pinned version.
++5. **T3 paired with Rubi Home**: pair.
++6. **Claude sign-in**: each role has its own row. Sign-in relays Claude's `claude auth login`:
+    open the link (shown as text, opened by a button), sign in, paste the code into the box that appears with the
+    link. The code goes to Rubi Home and is never kept or audited.
+ 7. **Self-test**, per project.
+ 
+ The project folders are listed apart, with Remove; a Bot adds one when you ask it (`t3agents_project_add`). The page
+-refreshes every 3 seconds while a step runs or a sign-in waits, and not otherwise.
++refreshes every 3 seconds while a step runs or a sign-in waits. A setup action drops the cached status, so the
++redraw shows the new state, and the page keeps refreshing until that state has changed.
+ 
+ ## Limits
+ 
 diff --git a/agent_setup.go b/agent_setup.go
-index 0227ee5..ae6f2ab 100644
+index 0227ee5..4366e01 100644
 --- a/agent_setup.go
 +++ b/agent_setup.go
-@@ -113,9 +113,11 @@ func (st setupStatus) busy() bool {
+@@ -2,11 +2,12 @@ package main
+ 
+ // The setup page of T3 Agents: Rubi Home's t3-setup.* operations behind buttons, so nobody types a command in a
+ // terminal. The steps are the ones t3-setup.status lists: the Apple container tool (and its service), the runner
+-// image, T3 installed and pinned, T3 paired with Rubi, the provider sign-in of each role, and a self-test. Everything here is the user's own
+-// request from the panel. Two buttons ask for a strong approval first (the container install, a
+-// folder), and "Set up everything" is offered only once the container step is done, so it can't reach it without
+-// the approval. Bots get no tool for any of it. What Rubi Home reports (reasons, progress, the sign-in link) is
+-// untrusted text: it is clipped, shown as item text only, never in a button label or a prompt.
++// image, T3 installed, pinned and running, T3 paired with Rubi Home, Claude sign-in for each role, and a self-test.
++// Home's own step title is what the page shows. Everything here is the user's own request from the panel. Two
++// buttons ask for a strong approval first (the container install, a folder), and "Set up everything" is offered
++// only once the container step is done, so it can't reach it without the approval. Bots get no tool for any of it.
++// What Rubi Home reports (reasons, progress, the sign-in link) is untrusted text: it is clipped, shown as item text
++// only, never in a button label or a prompt.
+ 
+ import (
+ 	"context"
+@@ -113,9 +114,11 @@ func (st setupStatus) busy() bool {
  	return false
  }
  
@@ -16,7 +84,7 @@ index 0227ee5..ae6f2ab 100644
  
  var setupStates = map[string]string{"todo": "not done", "working": "working", "done": "done", "failed": "failed", "needs_user": "needs you"}
  
-@@ -123,6 +125,10 @@ var setupStates = map[string]string{"todo": "not done", "working": "working", "d
+@@ -123,6 +126,10 @@ var setupStates = map[string]string{"todo": "not done", "working": "working", "d
  // tests can switch it off.
  var setupStatusReuse = 2 * time.Second
  
@@ -27,7 +95,7 @@ index 0227ee5..ae6f2ab 100644
  // setupCap is what is remembered of a computer's t3-setup capability and of its last status.
  type setupCap struct {
  	ok    bool
-@@ -130,6 +136,12 @@ type setupCap struct {
+@@ -130,10 +137,23 @@ type setupCap struct {
  	st    setupStatus
  	stAt  time.Time
  	hasSt bool
@@ -37,21 +105,48 @@ index 0227ee5..ae6f2ab 100644
 +	actedAt   time.Time
 +	actedFP   string
 +	sawChange bool // the status differed from the pre-action picture at least once
++	gen       int  // bumped when an action drops the cache, so a read already in flight cannot put the old picture back
  }
  
  // fetchSetup asks for the status (a full probe of the machine, so it gets a long wait) and remembers the answer.
-@@ -147,7 +159,9 @@ func (s *sisters) fetchSetup(ctx context.Context, h sisterHost, device string) (
+ func (s *sisters) fetchSetup(ctx context.Context, h sisterHost, device string) (setupStatus, error) {
++	s.mu.Lock()
++	gen := 0
++	if s.setupCaps != nil {
++		gen = s.setupCaps[device].gen
++	}
++	s.mu.Unlock()
+ 	pctx, cancel := context.WithTimeout(ctx, setupProbeWait)
+ 	defer cancel()
+ 	var raw json.RawMessage
+@@ -147,7 +167,14 @@ func (s *sisters) fetchSetup(ctx context.Context, h sisterHost, device string) (
  	switch {
  	case err == nil:
  		st := decodeSetup(raw)
 -		s.setupCaps[device] = setupCap{ok: true, at: now, st: st, stAt: now, hasSt: true}
 +		prev := s.setupCaps[device]
++		// An action landed while this read was in flight. Keep the invalidation; the next
++		// read sees what the action changed.
++		if prev.gen != gen {
++			return st, nil
++		}
 +		s.setupCaps[device] = setupCap{ok: true, at: now, st: st, stAt: now, hasSt: true,
-+			acted: prev.acted, actedAt: prev.actedAt, actedFP: prev.actedFP, sawChange: prev.sawChange}
++			acted: prev.acted, actedAt: prev.actedAt, actedFP: prev.actedFP, sawChange: prev.sawChange, gen: prev.gen}
  		return st, nil
  	case isUnknownOp(err):
  		s.setupCaps[device] = setupCap{at: now}
-@@ -266,6 +280,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
+@@ -216,6 +243,10 @@ func (s *sisters) setupLinkSection(ctx context.Context, h sisterHost) []map[stri
+ func (s *sisters) setupStatus(ctx context.Context, h sisterHost, device string, fresh bool) (setupStatus, error) {
+ 	s.mu.Lock()
+ 	e := s.setupCaps[device]
++	// Until the status has moved on from a setup action, do not reuse the picture from before it.
++	if e.acted && !e.sawChange {
++		fresh = true
++	}
+ 	ok := !fresh && e.hasSt && s.now().Sub(e.stAt) < setupStatusReuse
+ 	s.mu.Unlock()
+ 	if ok {
+@@ -266,6 +297,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
  	}
  	dev := func() map[string]any { return map[string]any{"device": d.ID} }
  	busy := st.busy()
@@ -59,7 +154,7 @@ index 0227ee5..ae6f2ab 100644
  	name := func(id, dir string) string {
  		return firstNonEmpty(oneLine(dir, 120), oneLine(id, 60))
  	}
-@@ -284,16 +299,25 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
+@@ -284,16 +316,25 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
  
  	// The top section: what runs now, Cancel, Refresh, Set up everything.
  	var top []map[string]any
@@ -88,7 +183,7 @@ index 0227ee5..ae6f2ab 100644
  			}
  		}
  		it["actions"] = []map[string]any{{"label": "Cancel", "op": "setup_cancel", "args": dev(), "danger": true, "confirm": "Stop what is running now? A step that is half done continues when you press its button again."}}
-@@ -319,7 +343,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
+@@ -319,7 +360,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
  			continue
  		}
  		n++
@@ -97,7 +192,7 @@ index 0227ee5..ae6f2ab 100644
  		label, known := setupStates[step.State]
  		if !known {
  			label = "unknown"
-@@ -349,7 +373,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
+@@ -349,7 +390,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
  			case "check":
  				actions = append(actions, act("Check the sign-in", "setup_run", map[string]any{"device": d.ID, "step": "login"}))
  			case "login", "login_again":
@@ -106,7 +201,7 @@ index 0227ee5..ae6f2ab 100644
  			}
  			if step.Action2 == "sign_out" {
  				actions = append(actions, map[string]any{"label": "Sign out", "op": "setup_run", "args": map[string]any{"device": d.ID, "step": "signout"}, "danger": true,
-@@ -400,7 +424,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
+@@ -400,7 +441,7 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
  				case "check":
  					pact = append(pact, act("Check the sign-in", "setup_run", run("login", "")))
  				case "login", "login_again":
@@ -115,7 +210,7 @@ index 0227ee5..ae6f2ab 100644
  				case "remove":
  					pact = append(pact, map[string]any{"label": "Remove", "op": "setup_remove", "args": pargs, "danger": true, "confirm": "Remove this folder from the agent projects? Its files stay where they are."})
  				case "selftest":
-@@ -452,12 +476,28 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
+@@ -452,12 +493,28 @@ func (s *sisters) setupPage(ctx context.Context, h sisterHost, p panelPage) (any
  	}
  	page := map[string]any{"title": "Set up T3 Agents: " + oneLine(d.Name, 60), "up": upMain,
  		"note": "T3 runs on that computer and each role has its own VM. A role signs in to its provider on its own (Claude's `claude auth login`): this page only relays the sign-in link and the code you paste to Rubi Home on that computer. Installing the container tool shows macOS's own administrator dialog on the computer: this page never asks for a password, and it asks for your strong approval first. The folders the agents work in are added by your Grok Bot when you ask it, each with your strong approval.", "sections": sections}
@@ -145,7 +240,7 @@ index 0227ee5..ae6f2ab 100644
  // ---- the actions ----
  
  type setupArgs struct {
-@@ -592,12 +632,73 @@ func (s *sisters) setupDo(ctx context.Context, h sisterHost, d rubiplugin.HomeDe
+@@ -592,12 +649,75 @@ func (s *sisters) setupDo(ctx context.Context, h sisterHost, d rubiplugin.HomeDe
  		return nil, errors.New(oneLine(err.Error(), 200))
  	}
  	h.Audit(auditSetup, fields)
@@ -170,6 +265,7 @@ index 0227ee5..ae6f2ab 100644
 +	e.actedFP = setupFingerprint(e.st)
 +	e.sawChange = false
 +	e.hasSt = false
++	e.gen++
 +	s.setupCaps[device] = e
 +}
 +
@@ -186,10 +282,11 @@ index 0227ee5..ae6f2ab 100644
 +	if changed {
 +		e.sawChange = true
 +	}
-+	// Still the picture from before the action: say so and keep looking.
-+	// Once it has changed, the busy/sign-in refresh takes over, including when a
-+	// step runs and then returns to the state it had.
-+	if !e.sawChange && !s.now().After(e.actedAt.Add(setupActWatch)) {
++	// Nothing visible has moved, and the page is not already showing a running step or a
++	// sign-in the user must finish. Say that the action is starting and keep looking.
++	// A sign-in that is already waiting (opening the link does not change the status) is
++	// settled: a second "Starting" box would only repeat it.
++	if !e.sawChange && !st.busy() && st.Login == nil && !s.now().After(e.actedAt.Add(setupActWatch)) {
 +		s.setupCaps[device] = e
 +		return true, true
 +	}
@@ -329,6 +426,19 @@ index 08bee81..1160e7a 100644
 +		t.Fatalf("no starting notice: %s", blob)
 +	}
 +}
+diff --git a/main.go b/main.go
+index 443cab0..9c9f5d1 100644
+--- a/main.go
++++ b/main.go
+@@ -39,7 +39,7 @@ func manifest() rubiplugin.Manifest {
+ 	// Version is the last release; a release build replaces it with its tag (rubiplugin.Version, set
+ 	// with -ldflags).
+ 	return rubiplugin.Manifest{
+-		ID: "t3agents", Name: "T3 Agents", Version: "v0.1.0",
++		ID: "t3agents", Name: "T3 Agents", Version: "v0.2.0",
+ 		Description: "Bots start and steer agent threads that run in T3 Code on your computer, each in a role VM; you approve what matters.",
+ 		Needs:       "Rubi Home on the computer that runs T3 Code, with the T3 Agents setup done (container tool, runner image, T3 installed and paired, a sign-in per role).",
+ 		Publisher:   rubiplugin.Publisher{Name: "Rubi-Project", Key: PublisherKey},
 diff --git a/t3_setup_test.go b/t3_setup_test.go
 index b7edc10..687e4b7 100644
 --- a/t3_setup_test.go

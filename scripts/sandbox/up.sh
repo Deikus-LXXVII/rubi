@@ -55,6 +55,7 @@ if command -v git >/dev/null 2>&1; then
       cd "$DIR/src/rubi-t3agents"
       git checkout --force HEAD
       git clean -fd
+      # Combined diff of scripts/sandbox/t3agents-patches, against rubi-t3agents 09cb1f9.
       git apply "$ROOT/scripts/sandbox/t3agents-setup.patch"
       go mod edit -replace "github.com/Deikus-LXXVII/rubi=$ROOT"
       go build -mod=mod -ldflags "-X main.PublisherKey=$pub" -o "$DIR/bin/t3agents" .

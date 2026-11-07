@@ -189,7 +189,7 @@ func TestNeedsUserSelfTestState(t *testing.T) {
 	st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
 	self = step(t, st, "selftest")
 	rows, _ := self["projects"].([]map[string]any)
-	if self["reason"] != "1 of 1 roles failed." || len(rows) != 1 || rows[0]["reason"] != "The role VM did not start." || rows[0]["state"] != "failed" {
+	if self["reason"] != setup.SelfTestFailedReason(1, 1, "The role VM did not start.") || len(rows) != 1 || rows[0]["reason"] != "The role VM did not start." || rows[0]["state"] != "failed" {
 		t.Fatalf("step %#v row %#v", self, rows)
 	}
 }

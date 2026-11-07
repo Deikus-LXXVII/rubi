@@ -60,7 +60,9 @@ function screen(...children) {
     if (opts.quiet) {
       // A redraw of the page on screen (its refresh): no entrance, and the control that had the focus keeps it.
       const again = opts.refocus && controlByKey(main, opts.refocus);
-      if (again) again.focus({ preventScroll: true });
+      // A button kept its focus from the tap that redrew the page, and that leftover focus
+      // looked like the button was still pressed. Only a field is put back.
+      if (again && again.matches("input, textarea, select")) again.focus({ preventScroll: true });
       return;
     }
     animateIn(main, morph ? hero : null);
@@ -2642,11 +2644,6 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
   const forwardStep = new Set(["Start", "Build", "Install the pinned T3", "Pair", "Install"]);
   const selfAct = findViewAction(rawSections, "Run self-test");
   const running = stepped.find((s) => stepBadge(s.title, objs(s.items, 1)[0]).toLowerCase() === "working");
-  const runningCopy = !running ? null : /self-test/i.test(clip(running.title, 120))
-    ? { title: "Running the self-test\u2026", cancel: "Cancel the self-test" }
-    : /sign-in|claude/i.test(clip(running.title, 120))
-      ? { title: "Signing in to Claude\u2026", cancel: "Cancel signing in" }
-      : { title: "Working on " + clip(running.title, 120).replace(/^\d+\.\s*/, "") + "\u2026", cancel: "Cancel" };
   const findAction = (sections, label) => {
     for (const sec of sections) {
       for (const it of objs(sec.items, VIEW_ITEMS_MAX)) {
@@ -2657,7 +2654,18 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     }
     return null;
   };
-  const failedSec = running ? null : stepped.find((s) => /failed|needs/.test(stepBadge(s.title, objs(s.items, 1)[0]).toLowerCase()));
+  const openLink = findAction(rawSections, "Open the sign-in page");
+  const pasteCode = findAction(rawSections, "Paste the code");
+  // The link is on screen: the user has to open it and paste the code. Home is not working yet.
+  const awaitingUser = !!(openLink || pasteCode);
+  if (!awaitingUser) signinLinkOpened = false;
+  const homeWorking = running && !awaitingUser;
+  const runningCopy = !homeWorking ? null : /self-test/i.test(clip(running.title, 120))
+    ? { title: "Running the self-test\u2026", cancel: "Cancel the self-test" }
+    : /sign-in|claude/i.test(clip(running.title, 120))
+      ? { title: "Signing in\u2026", cancel: "Cancel signing in" }
+      : { title: "Working on " + clip(running.title, 120).replace(/^\d+\.\s*/, "") + "\u2026", cancel: "Cancel" };
+  const failedSec = homeWorking ? null : awaitingUser ? null : stepped.find((s) => /failed|needs/.test(stepBadge(s.title, objs(s.items, 1)[0]).toLowerCase()));
   let failure = null;
   if (failedSec) {
     const items = objs(failedSec.items, VIEW_ITEMS_MAX);
@@ -2691,9 +2699,13 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     if (offersAll && !failed && forwardStep.has(real)) return null;
     if ((setupFinished || allStepsDone) && real === "Set up everything") return null;
     if (allStepsDone && (real === "Refresh" || real === "Run self-test")) return null;
-    if (real === "Set up everything") return h("button", { type: "button", class: "primary", onclick: act(a) }, "Set up everything");
+    const onclick = (e) => {
+      if (real === "Open the sign-in page") signinLinkOpened = true;
+      return act(a)(e);
+    };
+    if (real === "Set up everything") return h("button", { type: "button", class: "primary", onclick }, "Set up everything");
     const cls = look === "primary" ? "primary" : look === "quiet" ? "quiet" : (a.danger ? "danger " : "secondary ") + "small";
-    return h("button", { type: "button", class: cls, onclick: act(a) }, label);
+    return h("button", { type: "button", class: cls, onclick }, label);
   };
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
   // input {op, args, arg, label, send}: the text the user writes goes to the plugin as args[arg]. Everything the
@@ -2747,6 +2759,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       if (badge) rows = foldStepRows([{ ...rows[0], title: "" }, ...rows.slice(1)]);
     }
     const badgeCls = badge ? "status-" + badge.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "";
+    const waitBadge = awaitingUser && badge.toLowerCase() === "working" ? " status-wait" : "";
     const setupSec = /^setup$/i.test(secTitle.trim());
     const failCard = setupSec && failure ? h("li", { class: "view-warn" },
       h("div", { class: "view-text" }, h("strong", {}, failure.title), failure.detail ? h("span", { class: "muted small" }, failure.detail) : null),
@@ -2755,20 +2768,34 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     if (failCard) lis.push(failCard);
     if (rows && rows.length) lis.push(...rows.map((it) => {
       let title = clip(it.title, 200);
-      const busyLine = !!(runningCopy && /^(Something is running|Working on:|Starting)/.test(title));
-      if (busyLine && runningCopy && /^(Something is running|Working on:)/.test(title)) title = runningCopy.title;
-      let detail = clip(it.detail, VIEW_TEXT_MAX);
+      const busyLine = /^(Something is running|Working on:|Starting)/.test(title);
+      const userBox = awaitingUser && busyLine;
+      if (userBox) title = "Open the link and sign in";
+      else if (busyLine && runningCopy && /^(Something is running|Working on:)/.test(title)) title = runningCopy.title;
+      let detail = userBox ? "" : clip(it.detail, VIEW_TEXT_MAX);
       const itemActs = objs(it.actions, VIEW_ACTIONS_MAX);
       if (itemActs.some((a) => /^Cancel/.test(clip(a.label, 60)))) detail = detail.replace(/\s*The buttons below wait until it ends\.?/g, "").trim();
+      const lifted = (label) => awaitingUser && (label === "Open the sign-in page" || label === "Paste the code");
+      let actions;
+      if (userBox) {
+        const primary = signinLinkOpened && pasteCode ? pasteCode : openLink;
+        const secondary = signinLinkOpened ? openLink : pasteCode;
+        actions = [primary && button(primary, "", "", "primary"), secondary && secondary !== primary ? button(secondary, "", "", "") : null,
+          ...itemActs.filter((a) => /^Cancel/.test(clip(a.label, 60))).map((a) => button(a, "", "Cancel sign-in", ""))].filter(Boolean);
+      } else {
+        actions = itemActs.map((a) => {
+          const label = clip(a.label, 60);
+          if (failure && badge && failure.hide.has(label)) return null;
+          if (badge && lifted(label)) return null;
+          return button(a, badge, busyLine && runningCopy && label === "Cancel" ? runningCopy.cancel : "");
+        }).filter(Boolean);
+      }
       return h("li", it.warn ? { class: "view-warn" } : {},
         h("div", { class: "view-text" }, title ? h("strong", {}, title) : null, detail ? h("span", { class: "muted small" }, detail) : null),
-        h("div", { class: "view-actions" }, itemActs.map((a) => {
-          if (failure && badge && failure.hide.has(clip(a.label, 60))) return null;
-          return button(a, badge, busyLine && clip(a.label, 60) === "Cancel" ? runningCopy.cancel : "");
-        }).filter(Boolean)));
+        h("div", { class: "view-actions" }, actions));
     }));
     return { step: !!badge, done: badge.toLowerCase() === "done", setup: setupSec, el: h("section", { class: "view-section" },
-      h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls }, badge) : null),
+      h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls + waitBadge }, badge) : null),
       sec.note && !((offersAll || allStepsDone || setupFinished) && /set up everything/i.test(String(sec.note))) ? noteBlock(sec.note, true) : null,
       secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions) : null,
       sec.kind === "chat" ? chatSection(sec)
@@ -2783,7 +2810,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     ? [h("details", { class: "setup-fold" },
         h("summary", {}, `Setup steps (${stepped.filter(stepIsDone).length}/${stepped.length} done)`),
         ...stepEls), ...restEls]
-    : (runningCopy || failure) && doneEls.length
+    : (runningCopy || failure || awaitingUser) && doneEls.length
       ? [...built.filter((b) => b.setup).map((b) => b.el),
         h("details", { class: "setup-fold" }, h("summary", {}, `Finished steps (${doneEls.length} done)`), ...doneEls),
         ...liveEls, ...built.filter((b) => !b.step && !b.setup).map((b) => b.el)]
@@ -2817,6 +2844,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
 }
 let chatKey = ""; // which plugin page the chat on screen belongs to
 let viewJSON = ""; // what that page showed, as the plugin sent it
+let signinLinkOpened = false; // the user opened the sign-in link; Paste the code becomes the primary
 const viewRefresh = createRefresher(); // the one refresh to come of the plugin page on screen
 
 function noteEditor(ctx, id, n, done) {

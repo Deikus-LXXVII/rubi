@@ -149,6 +149,15 @@ async function shot(page, name) {
   return file;
 }
 
+async function primaryInView(page, name) {
+  const btn = page.locator("button.primary", { hasText: name }).first();
+  await btn.waitFor({ timeout: 15000 });
+  const box = await btn.boundingBox();
+  const inView = !!(box && box.y >= 0 && box.y + box.height <= 852);
+  addCheck(`primary action in the first viewport is ${name}`, inView, box ? `y=${Math.round(box.y)} h=${Math.round(box.height)}` : "missing");
+  if (!inView) throw new Error(name + " is not the primary action in the first viewport");
+}
+
 async function phoneChecks(page, where) {
   const report = await page.evaluate(() => {
     const doc = document.documentElement;
@@ -226,12 +235,14 @@ page.on("console", (msg) => {
 // A flow that navigates or reloads after one of those fails, so a harness reload cannot hide a dead button.
 const navGate = { acted: false, bad: "" };
 await page.exposeBinding("__rubiSawAction", () => { navGate.acted = true; });
+await page.exposeBinding("__rubiSawRefresh", () => { navGate.bad = "refresh"; });
 await page.addInitScript(() => {
   addEventListener("click", (ev) => {
     const b = ev.target && ev.target.closest && ev.target.closest("button");
     if (!b) return;
     const t = (b.innerText || "").replace(/\s+/g, " ").trim();
-    if (/^(Sign in|Sign in again|Get a new sign-in link|Run self-test|Run the self-test again|Set up everything|OK|Cancel|Cancel signing in|Cancel the self-test)$/.test(t)) {
+    if (t === "Refresh" && window.__rubiActed) window.__rubiSawRefresh();
+    if (/^(Sign in|Sign in again|Get a new sign-in link|Run self-test|Run the self-test again|Set up everything|OK|Cancel|Cancel signing in|Cancel the self-test|Open the sign-in page)$/.test(t)) {
       window.__rubiActed = true;
       window.__rubiSawAction();
     }
@@ -262,6 +273,7 @@ async function flow(name, fn, opts = {}) {
   };
   try {
     await fn();
+    if (navGate.bad === "refresh") throw new Error("this flow taps Refresh after an action button; the page has to update itself");
     if (navGate.bad) throw new Error("this flow navigated after an action button");
     const h1 = await cardTitle(page).catch(() => "");
     if (/Something.s wrong/.test(h1) && !opts.allowError) {
@@ -446,10 +458,6 @@ await flow("setup link opens the setup page", async () => {
 
 await flow("T3 setup steps advance", async () => {
   await page.getByRole("button", { name: "Set up everything", exact: true }).click();
-  // The plugin reuses a status it just read for a couple of seconds.
-  await page.waitForTimeout(2500);
-  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
-  if (await refresh.count()) await refresh.click();
   for (const heading of [/Container service/, /Runner image/, /T3 installed, pinned and running/, /T3 paired with Rubi Home/]) {
     const sec = page.locator(".view-section", { has: page.getByRole("heading", { name: heading }) });
     try {
@@ -461,10 +469,16 @@ await flow("T3 setup steps advance", async () => {
     }
   }
   await shot(page, "14-setup-all");
-  await page.getByRole("button", { name: "Sign in", exact: true }).first().evaluate((el) => el.click());
-  await page.waitForTimeout(2500);
-  if (await refresh.count()) await refresh.click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).first().click();
   await page.getByRole("button", { name: "Open the sign-in page" }).waitFor({ timeout: 20000 });
+  await primaryInView(page, "Open the sign-in page");
+  const waitingSpin = await page.evaluate(() => {
+    const b = document.querySelector(".status-badge.status-working");
+    return b ? getComputedStyle(b, "::before").animationName : "none";
+  });
+  addCheck("sign-in waiting does not spin", waitingSpin === "none", waitingSpin || "");
+  if (waitingSpin !== "none") throw new Error("the sign-in badge spins while the user still has to open the link");
+  await page.getByRole("strong").filter({ hasText: "Open the link and sign in" }).waitFor();
   const waitingCard = await page.locator(".card").innerText();
   if (/https?:\/\//.test(waitingCard)) throw new Error("a setup row prints the raw sign-in URL");
   if (/Sign-in waiting for the browser/i.test(waitingCard)) throw new Error("duplicate sign-in waiting row");
@@ -521,10 +535,11 @@ await flow("open and copy the full sign-in link on the phone", async () => {
   await shot(opened, "20-oauth");
   if (opened !== page) await opened.close();
   await page.getByRole("button", { name: "Done" }).click();
+  await primaryInView(page, "Paste the code");
 }, { needsReal: true });
 
 await flow("a wrong code fails the sign-in and can be retried", async () => {
-  await page.getByRole("button", { name: "Paste the code" }).click();
+  await page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) }).getByRole("button", { name: "Paste the code" }).click();
   await page.getByRole("dialog").locator("input").fill("not-the-sandbox-code");
   await page.getByRole("button", { name: "OK" }).click();
   await page.getByText("Signing in...").waitFor({ timeout: 25000 });
@@ -542,13 +557,13 @@ await flow("a wrong code fails the sign-in and can be retried", async () => {
 }, { needsReal: true });
 
 await flow("paste the code", async () => {
-  await page.getByRole("button", { name: "Paste the code" }).click();
+  await page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) }).getByRole("button", { name: "Paste the code" }).click();
   await page.getByRole("dialog").locator("input").fill(pub.signin_code);
   await shot(page, "21-paste-code");
   await page.getByRole("button", { name: "OK" }).click();
   await page.getByText("Signing in...").waitFor({ timeout: 25000 });
   const setupBox = page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) });
-  await setupBox.getByText("Signing in to Claude").waitFor();
+  await setupBox.getByText("Signing in").first().waitFor();
   await setupBox.getByRole("button", { name: "Cancel signing in" }).waitFor();
   if (/buttons below wait/.test(await setupBox.innerText())) throw new Error("the running box tells you to wait when Cancel is right there");
   const foldedWhile = await page.locator(".view-section h2", { hasText: "Apple container" }).isVisible().catch(() => false);
@@ -631,11 +646,12 @@ await flow("a failed self-test explains itself and can be retried", async () => 
   await page.getByText(/Setup steps \(7\/7 done\)/).waitFor();
   await page.locator(".setup-fold > summary").click();
   await page.getByRole("button", { name: "Sign in again" }).click();
-  await page.getByRole("button", { name: "Paste the code" }).waitFor({ timeout: 20000 });
-  await page.getByRole("button", { name: "Paste the code" }).click();
+  const pasteTop = page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) }).getByRole("button", { name: "Paste the code" });
+  await pasteTop.waitFor({ timeout: 20000 });
+  await pasteTop.click();
   await page.getByRole("dialog").locator("input").fill("sandbox-selftest-fail");
   await page.getByRole("button", { name: "OK" }).click();
-  await page.getByText("1 of 1 roles failed.").first().waitFor({ timeout: 30000 });
+  await page.getByText("The self-test failed: the role VM did not start.").first().waitFor({ timeout: 30000 });
   await page.getByText("The role VM did not start.").first().waitFor();
   const setupBox = page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) });
   await setupBox.getByText("Next: run the self-test.").waitFor();

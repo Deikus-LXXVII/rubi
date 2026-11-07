@@ -357,7 +357,11 @@ func (t *T3Home) selfTestStep() map[string]any {
 			}
 		}
 	case agg["failed"] > 0:
-		state, reason = "failed", fmt.Sprintf("%d of %d roles failed.", agg["failed"], len(rows))
+		cause := ""
+		if len(rows) == 1 {
+			cause, _ = rows[0]["reason"].(string)
+		}
+		state, reason = "failed", setup.SelfTestFailedReason(agg["failed"], len(rows), cause)
 	case agg["needs_user"] > 0:
 		state, reason = "needs_user", "Sign in to Claude, then run it again."
 	case agg["done"] == len(rows):

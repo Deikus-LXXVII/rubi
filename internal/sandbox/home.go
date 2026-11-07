@@ -161,7 +161,7 @@ func (h *Home) status() map[string]any {
 				reason = "The sign-in failed: that code was not accepted."
 				action = "login"
 			case id == "selftest" && st == "failed":
-				reason = "1 of 1 roles failed."
+				reason = setup.SelfTestFailedReason(1, 1, "The role VM did not start.")
 				action = "selftest"
 			case id == "selftest" && st == "needs_user":
 				reason = "Sign in to Claude, then run it again."
