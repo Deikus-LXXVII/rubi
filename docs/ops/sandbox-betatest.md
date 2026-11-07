@@ -45,14 +45,20 @@ connected.
 scripts/sandbox/betatest.sh
 ```
 
-This installs Playwright Chromium under the sandbox directory and drives the panel at 393×852 (touch)
-and 1280×800. Screenshots, `summary.json` and `summary.md` are written to `/workspace/betatest/<run>`
+This installs Playwright Chromium and WebKit under the sandbox directory (or the supplied
+`PLAYWRIGHT_BROWSERS_PATH`) and drives the panel at 393×852 (touch) and 1280×800.
+The host must provide the OS dependencies for both browsers; on a test runner, install them with
+`npx playwright install-deps chromium webkit` from `scripts/betatest`. A missing browser fails the
+run rather than silently skipping Safari coverage. Screenshots, `summary.json` and `summary.md`
+are written to `/workspace/betatest/<run>`
 when that directory can be created, otherwise to `<sandbox>/betatest/<run>`.
 
 The run pairs with a password, pairs the fake Home, connects a Bot to a local webhook stub (so the
 routine test succeeds), installs T3 Agents, opens an approval link and then the plugin page, opens a
 `setup:t3agents` link, walks setup with one primary action, completes the sandbox sign-in (the
-self-test runs on its own), and ends on Ready.
+self-test runs on its own), and ends on Ready. In both engines and both viewport sizes it opens
+the OAuth page in a new tab, returns, waits through two unchanged refresh periods, and checks that
+Paste the code still opens an editable prompt, Escape closes it, and it can be opened again.
 
 Screenshots wait for the finite entrance animation, then capture with animations disabled. The
 mascot's idle animation never ends, so it is not waited on. A shot that is one flat colour fails.

@@ -2552,7 +2552,9 @@ const objs = (v, max) => (Array.isArray(v) ? v : []).filter((x) => x && typeof x
 // gives to anyone else can't pose as the user or as Rubi, or mention a password, passkey or PIN: it becomes "Bot".
 const chatAuthor = (v) => { const t = clip(v, 60).trim(); return !t || PROMPT_FORBIDDEN.test(t) || /\b(you|your|me|user|admin|administrator)\b/i.test(t) ? "Bot" : t; };
 async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = false) {
-  const mine = () => pluginViewScreen(ctx, id, name, back, viewArgs);
+  // Refreshes may keep the existing DOM: its buttons must keep owning this view.
+  // Explicit navigation still gets a new owner, invalidating any late responses.
+  const mine = byRefresh ? currentView : () => pluginViewScreen(ctx, id, name, back, viewArgs);
   currentView = mine;
   if (!byRefresh) viewRefresh.cancel(); // a click or another page: the waiting refresh of the page before is moot
   const err = errorBox();

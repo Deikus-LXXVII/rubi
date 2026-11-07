@@ -18,6 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Browser OS dependencies
+        working-directory: scripts/betatest
+        run: npm ci --no-fund --no-audit && npx playwright install-deps chromium webkit
       - name: Browser beta test
         run: scripts/sandbox/betatest.sh
       - name: Upload the report
