@@ -25,7 +25,21 @@ jobs:
       - name: Panel syntax
         run: for f in panel/js/*.js; do node --check "$f"; done
       - name: Installer syntax
-        run: sh -n panel/install.sh
+        run: sh -n panel/install.sh && sh -n panel/install-home.sh && sh -n scripts/sandbox/*.sh
+
+  # The disposable sandbox (scripts/sandbox) builds this checkout, starts it in a rootless
+  # user/network/PID namespace with a fake Home, and stops it again. The browser beta test is
+  # opt-in (workflow betatest).
+  sandbox:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Sandbox lifecycle
+        run: scripts/sandbox/check.sh
 
   # Rubi Home runs on macOS, Linux and Windows (docs/plans/home-platforms.md, stage P1). The core (the rest of the
   # repository) is not ported to Windows, so only Home and what it imports are built and vetted for each system.

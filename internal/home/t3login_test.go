@@ -322,20 +322,21 @@ func TestT3LoginRefusals(t *testing.T) {
 	}
 }
 
-// login.open opens the sign-in's own link in the Mac's browser, and nothing else.
-func TestT3LoginOpenOpensTheLink(t *testing.T) {
+// login.open returns the sign-in link for the panel. It does not open a browser on this computer.
+func TestT3LoginOpenReturnsTheLink(t *testing.T) {
 	l, _, op, _ := loginLife(t)
 	if _, err := handle(t, l.h, "tok", "t3-setup.run", map[string]any{"step": "login", "method": "claudeai"}); err != nil {
 		t.Fatal(err)
 	}
 	waitLogin(t, l, func(s map[string]any) bool { return s["wants_code"] == true })
-	if res, err := handle(t, l.h, "tok", "t3-setup.login.open", nil); err != nil || res["opened"] != true {
+	res, err := handle(t, l.h, "tok", "t3-setup.login.open", nil)
+	if err != nil || res["url"] != loginLink || res["opened"] != false {
 		t.Fatalf("%v %v", res, err)
 	}
 	op.mu.Lock()
 	defer op.mu.Unlock()
-	if len(op.opened) != 1 || op.opened[0] != loginLink || len(op.runs) != 0 {
-		t.Errorf("opened: %v, commands run: %v", op.opened, op.runs)
+	if len(op.opened) != 0 || len(op.runs) != 0 {
+		t.Errorf("the home computer opened a browser: %v, commands run: %v", op.opened, op.runs)
 	}
 }
 
@@ -365,7 +366,16 @@ func TestT3LoginStateComesFromTheFolderOnly(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if step, _ := loginBlock(t, l); step["state"] != "todo" || !strings.Contains(step["reason"].(string), "No credential file yet") {
+	step, _ := loginBlock(t, l)
+	reason, _ := step["reason"].(string)
+	if step["state"] != "todo" {
+		t.Errorf("empty folder: %v", step)
+	}
+	if strings.Contains(reason, "Waiting for earlier steps") {
+		if step["action"] != "" {
+			t.Errorf("sign-in offered while earlier steps are not done: %v", step)
+		}
+	} else if !strings.Contains(reason, "No credential file yet") {
 		t.Errorf("empty folder: %v", step)
 	}
 	if err := os.WriteFile(filepath.Join(dir, agent.CredentialFile), []byte("x"), 0o000); err != nil {

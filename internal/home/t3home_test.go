@@ -466,7 +466,9 @@ func TestT3SetupStatusShape(t *testing.T) {
 	// The login row: one row per role, all with the one shared state, from the folder (the file is never read).
 	login := stepByID(t, st, "login")
 	rows := login["projects"].([]any)
-	if login["state"] != "todo" || login["action"] != "login" || len(rows) != 1 || rows[0].(map[string]any)["id"] != role || rows[0].(map[string]any)["state"] != "todo" {
+	// Container and image are not done yet, so the row says what it is waiting on and does not offer Sign in.
+	if login["state"] != "todo" || login["action"] != "" || !strings.Contains(login["reason"].(string), "Waiting for earlier steps") ||
+		len(rows) != 1 || rows[0].(map[string]any)["id"] != role || rows[0].(map[string]any)["state"] != "todo" || rows[0].(map[string]any)["action"] != "" {
 		t.Errorf("login before: %v", login)
 	}
 	if err := os.MkdirAll(filepath.Join(l.h.Dir, "agent-signin"), 0o700); err != nil {

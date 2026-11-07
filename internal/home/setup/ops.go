@@ -35,10 +35,12 @@ func (s *Setup) Handle(ctx context.Context, op string, args json.RawMessage) (an
 		}
 		return map[string]any{"sent": true}, nil
 	case "login.open":
-		if err := s.LoginOpen(ctx); err != nil {
+		u, err := s.LoginOpen(ctx)
+		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"opened": true}, nil
+		// opened is false: the browser that matters is the one showing the panel, not this computer's.
+		return map[string]any{"url": u, "opened": false}, nil
 	case "project.add":
 		if in.Dir == "" { // the folder is named by the panel's folder browser, and approved by the user
 			return nil, errChooseInPanel

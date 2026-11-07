@@ -1012,7 +1012,10 @@ h1:focus { outline: none; box-shadow: none; }
 .menu summary, .icon-btn { width: 40px; height: 40px; }
 .menu summary:focus-visible { box-shadow: var(--focus); }
 .pill-toggle, .seg label { min-height: 36px; }
-@media (pointer: coarse) { .menu summary, .icon-btn { width: 44px; height: 44px; } button.small { min-height: 40px; } }
+@media (pointer: coarse) { .menu summary, .icon-btn { width: 44px; height: 44px; } button.small { min-height: 44px; } }
+.signin-link { display: block; margin: 8px 0; overflow-wrap: anywhere; user-select: all; color: var(--link); font-size: 0.95rem; }
+.signin-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.signin-actions .btn, .signin-actions button { min-height: 44px; width: auto; }
 
 /* ============================================================ micro-interactions (iteration 15) */
 
@@ -1158,7 +1161,12 @@ button.copy { box-shadow: none; }
 .chat-form { display: grid; gap: 8px; margin-top: 10px; }
 .chat-input { width: 100%; resize: vertical; }
 .view-warn { border-left: 4px solid #d9a400; }
-@media (max-width: 520px) { .view-list li { flex-direction: column; align-items: stretch; } .view-actions { justify-content: flex-start; } }
+@media (max-width: 520px) {
+  .view-list li { flex-direction: column; align-items: stretch; }
+  .view-actions { justify-content: flex-start; }
+  button.small, button.back { min-height: 44px; }
+  .updates-btn { width: 44px; height: 44px; }
+}
 
 /* askText: a small box a plugin page can ask for text in; titled with the plugin's name */
 .ask-overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, 0.55); }

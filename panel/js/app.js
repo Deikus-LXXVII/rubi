@@ -692,6 +692,7 @@ function pairScreen(ctx) {
     savePin(hello.instance, ctx.link.k, res.vault_version);
     const settingsCtx = { ...ctx, client: tracked(new RubiClient({ ...ctx.link, t: res.ticket })) };
     settingsCtx.hello = await settingsCtx.client.call("hello");
+    activeCtx = settingsCtx;
     connectAgentScreen(settingsCtx);
   }
 
@@ -1419,6 +1420,12 @@ async function setupScreen(ctx, id, back) {
     return fatal(e instanceof UserError ? e.message : friendly(e));
   }
   if (!entry) return fatal("This plugin isn't installed. Ask your agent to install it from the store first.");
+  // A plugin with its own page (T3 Agents) does its first-time setup there. The generic Connect
+  // form would only end on a Saved card and never show that page.
+  if (entry.panel === "view") {
+    const backTo = back || (() => openSettings(ctx));
+    return pluginViewScreen(ctx, id, entry.name, backTo, { page: "setup" });
+  }
   const connected = () => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
     h("p", {}, "You can close this page and go back to your agent."));
   const finish = back || connected;
@@ -1760,7 +1767,7 @@ async function settingsScreen(ctx, tab) {
           h("button", { type: "button", class: "danger-item", onclick: change("integration.disconnect", () => ({ id: p.id, account: a.id })) }, icon("close", 16), "Disconnect"),
         ])))) : h("p", { class: "muted small" }, "Not connected yet."),
       p.panel === "notes" ? h("button", { class: "secondary small", onclick: () => notesScreen(ctx, p.id, back) }, icon("doc", 16), "Open notes") : null,
-      p.panel === "view" && p.connected ? h("button", { class: "secondary small", onclick: () => pluginViewScreen(ctx, p.id, p.name, back) }, icon("doc", 16), "Open " + p.name) : null,
+      p.panel === "view" ? h("button", { class: "secondary small", onclick: () => pluginViewScreen(ctx, p.id, p.name, back) }, icon("doc", 16), "Open " + p.name) : null,
       p.panel && !p.setup ? null : h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
   };
 
@@ -2377,6 +2384,34 @@ function askFolder(client, title, label, device) {
 // (e.g. a countdown to sending), but not while a box on the page holds text the user typed or a prompt box is open,
 // and a reload of the same page keeps its scroll position.
 const VIEW_TEXT_MAX = 600;
+
+// signInLinkSheet shows a sign-in URL in full and lets the person open or copy it on the device
+// that is showing the panel. The home computer's browser is not involved.
+function signInLinkSheet(url) {
+  return new Promise((resolve) => {
+    const link = h("a", { class: "signin-link", href: url, target: "_blank", rel: "noopener noreferrer" }, url);
+    const copy = h("button", { type: "button", class: "secondary", onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        copy.textContent = "Copied";
+      } catch {
+        copy.textContent = "Select the link and copy it";
+        link.focus();
+      }
+    } }, "Copy the link");
+    const done = () => { overlay.remove(); resolve(); };
+    const overlay = h("div", { class: "ask-overlay", onclick: (e) => { if (e.target === overlay) done(); } },
+      h("div", { class: "ask-box", role: "dialog", "aria-modal": "true", "aria-label": "Sign-in link" },
+        h("h2", {}, "Open the sign-in page here"),
+        h("p", {}, "This opens on the phone or computer you are using now. The whole link is below, so you can copy it."),
+        link,
+        h("div", { class: "signin-actions" },
+          copy,
+          h("a", { class: "btn", href: url, target: "_blank", rel: "noopener noreferrer" }, "Open the sign-in page"),
+          h("button", { type: "button", class: "primary", onclick: done }, "Done"))));
+    document.body.append(overlay);
+  });
+}
 const CHAT_TEXT_MAX = 4000;
 const CHAT_ITEMS_MAX = 300;
 const VIEW_SECTIONS_MAX = 20;
@@ -2436,6 +2471,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     const btn = e.currentTarget;
     if (currentView !== mine) return;
     if (a.open && typeof a.open === "object") return go(a.open);
+    if (typeof a.href === "string" && /^https:\/\/\S+$/.test(a.href)) return signInLinkSheet(a.href);
     if (a.confirm && !confirm(clip(a.confirm, 300))) return;
     let args = a.args && typeof a.args === "object" && !Array.isArray(a.args) ? a.args : {};
     const pr = a.prompt && typeof a.prompt === "object" ? a.prompt : null;
@@ -2459,7 +2495,9 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     }
     btn.disabled = true;
     try {
-      await call(String(a.op || ""), args);
+      const res = await call(String(a.op || ""), args);
+      const url = res && typeof res === "object" ? res.url : "";
+      if (typeof url === "string" && /^https:\/\/\S+$/.test(url)) await signInLinkSheet(url);
       again();
     } catch (x) {
       btn.disabled = false;

@@ -101,6 +101,44 @@ echo after
 	}
 }
 
+// Already paired: the installer must not mint another code. Unpaired: it still prints one.
+func TestInstallHomeShSkipsPairingWhenAlreadyPaired(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh")
+	}
+	sh := readRepo(t, "panel/install-home.sh")
+	i := strings.Index(sh, "# pair-or-skip: begin\n")
+	j := strings.Index(sh, "# pair-or-skip: end\n")
+	if i < 0 || j < i {
+		t.Fatal("the pairing decision is not marked in install-home.sh")
+	}
+	body := sh[i+len("# pair-or-skip: begin\n") : j]
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "rubi-home")
+	script := filepath.Join(dir, "pair.sh")
+	write := func(status string) {
+		os.WriteFile(bin, []byte("#!/bin/sh\ncase \"$1\" in\nstatus) printf '%s\\n' \""+status+"\" ;;\npair) echo MINTED ;;\n*) echo \"unexpected $*\" >&2; exit 9 ;;\nesac\n"), 0o755)
+	}
+	os.WriteFile(script, []byte("set -eu\nsay() { printf 'rubi-home: %s\\n' \"$*\"; }\nbin=$1\n"+body), 0o644)
+
+	write("Paired with 2 Rubi")
+	out, err := exec.Command("sh", script, bin).CombinedOutput()
+	if err != nil {
+		t.Fatalf("paired: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "MINTED") || !strings.Contains(string(out), "already paired") {
+		t.Fatalf("minted a code while paired:\n%s", out)
+	}
+	write("Paired with 0 Rubi")
+	out, err = exec.Command("sh", script, bin).CombinedOutput()
+	if err != nil {
+		t.Fatalf("unpaired: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "MINTED") || strings.Contains(string(out), "already paired") {
+		t.Fatalf("did not mint a code when nothing is paired:\n%s", out)
+	}
+}
+
 // The macOS part of the script is what it was: the LaunchAgent heredoc (which internal/home keeps equal to AgentPlist on a
 // Mac) and the launchctl calls, in order.
 func TestInstallHomeShMacPartIsUntouched(t *testing.T) {

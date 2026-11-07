@@ -688,11 +688,7 @@ func (t *T3Home) setupStatus(ctx context.Context) (any, error) {
 			loginAt = i
 		}
 	}
-	if loginAt >= 0 {
-		merged[loginAt] = t.loginStep()
-	} else { // the agent setup was not heard from: the row is still ours to show
-		merged = append(merged, t.loginStep())
-	}
+	merged = placeLogin(merged, loginAt, t.loginStep())
 	out["steps"] = merged
 	out["login"] = nil
 	if li := t.login().LoginProgress(); li.Working && li.URL != "" {
@@ -706,6 +702,64 @@ func (t *T3Home) setupStatus(ctx context.Context) (any, error) {
 		out[k] = v
 	}
 	return out, nil
+}
+
+// placeLogin puts the sign-in row where the agent setup had one, or at the end, and says so when
+// earlier steps are still to do. A bare "not signed in" with a Sign in button, while the container
+// or T3 is not there yet, reads as no status at all.
+func placeLogin(merged []any, loginAt int, step map[string]any) []any {
+	before := merged
+	if loginAt >= 0 && loginAt <= len(merged) {
+		before = merged[:loginAt]
+	}
+	noteLoginWaiting(step, before)
+	if loginAt >= 0 && loginAt < len(merged) {
+		merged[loginAt] = step
+		return merged
+	}
+	return append(merged, step)
+}
+
+// noteLoginWaiting replaces a still-idle sign-in row's reason when an earlier step is not done.
+func noteLoginWaiting(step map[string]any, before []any) {
+	if st, _ := step["state"].(string); st != "todo" {
+		return
+	}
+	var waiting []string
+	for _, raw := range before {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := m["id"].(string)
+		switch id {
+		case "", "projects", "network", "login", "selftest":
+			continue
+		}
+		if s, _ := m["state"].(string); s == "done" {
+			continue
+		}
+		title, _ := m["title"].(string)
+		if title == "" {
+			title = id
+		}
+		waiting = append(waiting, title)
+	}
+	if len(waiting) == 0 {
+		return
+	}
+	reason := "Waiting for earlier steps: " + strings.Join(waiting, ", ") + "."
+	step["reason"] = reason
+	step["action"] = ""
+	rows, _ := step["projects"].([]map[string]any)
+	for _, row := range rows {
+		switch row["action"] {
+		case "login", "login_again", "check":
+			row["action"] = ""
+			row["state"] = "todo"
+			row["reason"] = reason
+		}
+	}
 }
 
 // loginStep is the "login" row: one row per role (the id is the role's), all with the one shared state, because the
@@ -788,10 +842,11 @@ func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessag
 		}
 		return map[string]any{"sent": true}, nil
 	case name == "login.open":
-		if err := t.login().LoginOpen(ctx); err != nil {
+		u, err := t.login().LoginOpen(ctx)
+		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"opened": true}, nil
+		return map[string]any{"url": u, "opened": false}, nil
 	case name == "cancel":
 		stopped := t.login().Cancel()
 		res, err := t.agentSetup(ctx, "agent-setup.cancel", args)
