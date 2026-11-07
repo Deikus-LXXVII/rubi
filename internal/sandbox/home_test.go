@@ -62,17 +62,25 @@ func TestHomeLoginWaitsAndThenReturnsTheFullLink(t *testing.T) {
 	}
 	self = step(t, st, "selftest")
 	projects, _ := self["projects"].([]map[string]any)
+	if self["state"] != "done" || !strings.Contains(fmtReason(self), "Ready") {
+		t.Fatalf("self-test did not follow sign-in: %#v", self)
+	}
 	if self["action"] != "selftest" || len(projects) != 1 || projects[0]["action"] != "selftest" {
-		t.Fatalf("self-test offered no button: %#v", self)
+		t.Fatalf("no rerun after the automatic self-test: %#v", self)
 	}
 	if _, err := h.Handle(homeproto.Envelope{Op: "t3-setup.run", Token: "tok", Args: mustJSON(t, map[string]string{"step": "selftest", "project": "reviewer"})}); err != nil {
 		t.Fatal(err)
 	}
 	st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
 	self = step(t, st, "selftest")
-	if self["state"] != "done" || !strings.Contains(self["reason"].(string), "Ready") {
-		t.Fatalf("after self-test: %#v", self)
+	if self["state"] != "done" || self["action"] != "selftest" {
+		t.Fatalf("after rerun: %#v", self)
 	}
+}
+
+func fmtReason(step map[string]any) string {
+	s, _ := step["reason"].(string)
+	return s
 }
 
 func step(t *testing.T, st any, id string) map[string]any {

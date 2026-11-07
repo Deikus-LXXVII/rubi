@@ -2489,6 +2489,16 @@ function foldStepRows(rows) {
   }).filter((it, i) => i === 0 || clip(it.title, 200) || clip(it.detail, VIEW_TEXT_MAX) || objs(it.actions, 1).length);
 }
 
+function findViewAction(sections, label) {
+  for (const sec of sections || []) {
+    for (const a of objs(sec.actions, VIEW_ACTIONS_MAX)) if (clip(a.label, 60) === label) return a;
+    for (const it of objs(sec.items, VIEW_ITEMS_MAX)) {
+      for (const a of objs(it.actions, VIEW_ACTIONS_MAX)) if (clip(a.label, 60) === label) return a;
+    }
+  }
+  return null;
+}
+
 function shortSignInURL(url) {
   try {
     return new URL(url).host + "/\u2026";
@@ -2520,7 +2530,7 @@ function signInLinkSheet(url) {
         h("h2", {}, "Open the sign-in page here"),
         h("p", {}, "This opens on the phone or computer you are using now. Copy keeps the whole link."),
         h("p", { class: "signin-short", "data-full-url": url }, shortSignInURL(url)),
-        h("details", { class: "signin-full-wrap" }, h("summary", {}, "Show the full link"), full),
+        h("details", { class: "note-more signin-full-wrap" }, h("summary", {}, "Show the full link"), full),
         h("div", { class: "signin-actions" },
           h("a", { class: "btn primary", href: url, target: "_blank", rel: "noopener noreferrer" }, "Open the sign-in page"),
           copy,
@@ -2614,6 +2624,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       const res = await call(String(a.op || ""), args);
       const url = res && typeof res === "object" ? res.url : "";
       if (typeof url === "string" && /^https:\/\/\S+$/.test(url)) await signInLinkSheet(url);
+      if (/^paste the code$/i.test(clip(a.label, 60))) setupAfterSignIn = true;
       again();
     } catch (x) {
       btn.disabled = false;
@@ -2628,10 +2639,17 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
   const early = stepped.filter((sec) => !/sign-in|self-test/i.test(clip(sec.title, 120)));
   const setupFinished = early.length > 0 && early.every(stepIsDone);
   const allStepsDone = stepped.length >= 3 && stepped.every(stepIsDone);
-  const button = (a) => {
+  const offersAll = !setupFinished && !allStepsDone && rawSections.some((sec) => objs(sec.actions, VIEW_ACTIONS_MAX).some((a) => clip(a.label, 60) === "Set up everything"));
+  const forwardStep = new Set(["Start", "Build", "Install the pinned T3", "Pair", "Install"]);
+  const selfAct = findViewAction(rawSections, "Run self-test");
+  const button = (a, stepState) => {
     const label = clip(a.label, 60);
+    const failed = /failed|needs/.test(String(stepState || ""));
+    // One primary path. The per-step buttons come back when that step failed or is being retried.
+    if (offersAll && !failed && forwardStep.has(label)) return null;
     if ((setupFinished || allStepsDone) && label === "Set up everything") return null;
-    if (allStepsDone && label === "Refresh") return null;
+    if (allStepsDone && (label === "Refresh" || label === "Run self-test")) return null;
+    if (label === "Set up everything") return h("button", { type: "button", class: "primary", onclick: act(a) }, label);
     return h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, label);
   };
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
@@ -2674,10 +2692,11 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     }
     return [log, form];
   };
-  const sections = rawSections.map((sec) => {
-    const secActions = objs(sec.actions, VIEW_ACTIONS_MAX).map(button).filter(Boolean);
-    const list = sec.kind === "chat" ? null : objs(sec.items, VIEW_ITEMS_MAX);
+  const built = rawSections.map((sec) => {
     const secTitle = clip(sec.title, 120);
+    if (allStepsDone && /^setup$/i.test(secTitle.trim())) return null;
+    const secActions = objs(sec.actions, VIEW_ACTIONS_MAX).map((a) => button(a, "")).filter(Boolean);
+    const list = sec.kind === "chat" ? null : objs(sec.items, VIEW_ITEMS_MAX);
     let rows = list;
     let badge = "";
     if (rows && rows.length) {
@@ -2685,19 +2704,26 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       if (badge) rows = foldStepRows([{ ...rows[0], title: "" }, ...rows.slice(1)]);
     }
     const badgeCls = badge ? "status-" + badge.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "";
-    return h("section", { class: "view-section" },
+    return { step: !!badge, el: h("section", { class: "view-section" },
       h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls }, badge) : null),
-      sec.note && !(allStepsDone && /set up everything/i.test(String(sec.note))) ? noteBlock(sec.note, true) : null,
+      sec.note && !((offersAll || allStepsDone || setupFinished) && /set up everything/i.test(String(sec.note))) ? noteBlock(sec.note, true) : null,
       secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions) : null,
       sec.kind === "chat" ? chatSection(sec)
       : rows && rows.length ? h("ul", { class: "view-list" }, rows.map((it) => {
         const title = clip(it.title, 200);
         return h("li", it.warn ? { class: "view-warn" } : {},
           h("div", { class: "view-text" }, title ? h("strong", {}, title) : null, it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
-          h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map(button).filter(Boolean)));
+          h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map((a) => button(a, badge)).filter(Boolean)));
       }))
-        : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here."));
-  });
+        : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here.")) };
+  }).filter(Boolean);
+  const stepEls = built.filter((b) => b.step).map((b) => b.el);
+  const restEls = built.filter((b) => !b.step).map((b) => b.el);
+  const sections = allStepsDone && stepEls.length
+    ? [h("details", { class: "setup-fold" },
+        h("summary", {}, `Setup steps (${stepped.filter(stepIsDone).length}/${stepped.length} done)`),
+        ...stepEls), ...restEls]
+    : built.map((b) => b.el);
   const up = data.up && typeof data.up === "object" && data.up.open && typeof data.up.open === "object" ? data.up : null;
   const front = !(viewArgs && viewArgs.page);
   const opensRoot = !!(up && up.open && !up.open.page);
@@ -2711,14 +2737,40 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     h("div", { class: "section-head" }, h("h1", {}, heading)),
     allStepsDone ? h("div", { class: "ready-banner", role: "status" },
       h("strong", {}, `${name} is ready`),
-      h("p", {}, "Ask a Bot to start a session in a role on this computer.")) : null,
+      h("p", {}, "Ask a Bot to start a session in a role on this computer."),
+      selfAct ? h("button", { type: "button", class: "secondary small", onclick: act(selfAct) }, "Run again") : null) : null,
     data.note ? (front ? pageNote(data.note) : noteBlock(data.note, false)) : null,
     err,
     ...sections,
   );
   if (refresh > 0) viewRefresh.arm(refresh, tick);
   else viewRefresh.cancel();
+  // The plugin reuses a status for a couple of seconds. After the code is accepted, reload once
+  // that window has passed, and run the self-test if sign-in is done and it has not run yet.
+  if (setupAfterSignIn && currentView === mine) {
+    if (allStepsDone) setupAfterSignIn = false;
+    else if (!setupReloadArmed) {
+      setupReloadArmed = true;
+      const loginDone = stepped.some((s) => /sign-in/i.test(clip(s.title, 120)) && stepIsDone(s));
+      const selfDone = stepped.some((s) => /self-test/i.test(clip(s.title, 120)) && stepIsDone(s));
+      const shouldRun = loginDone && !selfDone && selfAct && !selfTestRan;
+      if (shouldRun) selfTestRan = true;
+      setTimeout(async () => {
+        setupReloadArmed = false;
+        if (currentView !== mine) return;
+        if (shouldRun) {
+          try { await call(String(selfAct.op || ""), selfAct.args && typeof selfAct.args === "object" && !Array.isArray(selfAct.args) ? selfAct.args : {}); }
+          catch { /* the reload shows whatever the computer reports */ }
+        }
+        setupAfterSignIn = false;
+        if (currentView === mine) mine();
+      }, 2200);
+    }
+  }
 }
+let setupAfterSignIn = false;
+let setupReloadArmed = false;
+let selfTestRan = false;
 let chatKey = ""; // which plugin page the chat on screen belongs to
 let viewJSON = ""; // what that page showed, as the plugin sent it
 const viewRefresh = createRefresher(); // the one refresh to come of the plugin page on screen

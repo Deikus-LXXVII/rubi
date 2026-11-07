@@ -51,8 +51,8 @@ when that directory can be created, otherwise to `<sandbox>/betatest/<run>`.
 
 The run pairs with a password, pairs the fake Home, connects a Bot to a local webhook stub (so the
 routine test succeeds), installs T3 Agents, opens an approval link and then the plugin page, opens a
-`setup:t3agents` link, walks the setup steps, completes the sandbox sign-in, and runs the self-test
-through to Ready.
+`setup:t3agents` link, walks setup with one primary action, completes the sandbox sign-in (the
+self-test runs on its own), and ends on Ready.
 
 Screenshots wait for the finite entrance animation, then capture with animations disabled. The
 mascot's idle animation never ends, so it is not waited on. A shot that is one flat colour fails.

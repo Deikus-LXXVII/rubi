@@ -153,7 +153,7 @@ async function phoneChecks(page, where) {
   const report = await page.evaluate(() => {
     const doc = document.documentElement;
     const overflow = doc.scrollWidth > doc.clientWidth + 1;
-    const buttons = [...document.querySelectorAll("button, a.btn, .note-fold summary, .signin-full-wrap summary")].map((el) => {
+    const buttons = [...document.querySelectorAll("button, a.btn, .note-fold summary, .signin-full-wrap summary, .setup-fold > summary")].map((el) => {
       const r = el.getBoundingClientRect();
       const text = (el.innerText || el.getAttribute("aria-label") || "").trim().slice(0, 80);
       return { text, w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden" };
@@ -383,6 +383,22 @@ await flow("setup link opens the setup page", async () => {
   const back = (await page.locator("button.back").innerText()).replace(/\s+/g, " ").trim();
   if (/Claude Code/.test(back)) throw new Error("setup back link says " + JSON.stringify(back));
   if (!/T3 Agents/.test(back)) throw new Error("setup back link should name the plugin, saw " + JSON.stringify(back));
+  const setupAll = page.getByRole("button", { name: "Set up everything", exact: true });
+  await setupAll.waitFor();
+  const setupCls = await setupAll.getAttribute("class");
+  const primaryOk = /primary/.test(setupCls || "") && !/secondary/.test(setupCls || "");
+  addCheck("Set up everything is the only primary action", primaryOk && (await page.getByRole("button", { name: "Start", exact: true }).count()) === 0, setupCls || "");
+  if (!primaryOk) throw new Error("Set up everything is not the primary button");
+  if (await page.getByRole("button", { name: "Start", exact: true }).count()) throw new Error("Start competes with Set up everything");
+  if (/appears once the container/.test(await page.locator(".card").innerText())) throw new Error("the Set up everything hint contradicts the button");
+  const gap = await page.evaluate(() => {
+    const sum = document.querySelector(".note-more summary");
+    const next = document.querySelector(".view-section, .setup-fold");
+    if (!sum || !next) return -1;
+    return next.getBoundingClientRect().top - sum.getBoundingClientRect().bottom;
+  });
+  addCheck("collapsed Details has no empty gap", gap >= -2 && gap <= 32, `gap ${Math.round(gap)}px`);
+  if (gap > 32) throw new Error("collapsed Details leaves a gap of " + Math.round(gap) + "px");
   await noRepeatedHeadings(page, "setup link");
   await shot(page, "13-setup-link");
   const body = await page.locator(".card").innerText();
@@ -393,34 +409,24 @@ await flow("setup link opens the setup page", async () => {
 }, { needsReal: true });
 
 await flow("T3 setup steps advance", async () => {
-  const steps = [
-    ["Start", /Container service/, "14-service"],
-    ["Build", /Runner image/, "15-image"],
-    ["Install the pinned T3", /T3 installed and pinned/, "16-t3"],
-    ["Pair", /T3 paired with Rubi/, "17-pair"],
-  ];
-  for (const [label, heading, file] of steps) {
-    const btn = page.getByRole("button", { name: label, exact: true });
-    await btn.waitFor({ timeout: 20000 });
-    await btn.evaluate((el) => el.click());
-    // The plugin reuses a status it just read for a couple of seconds, and this page does not
-    // refresh on its own once nothing is running. Ask it to read the computer again.
-    await page.waitForTimeout(2500);
-    const refresh = page.getByRole("button", { name: "Refresh", exact: true });
-    if (await refresh.count()) await refresh.click();
+  await page.getByRole("button", { name: "Set up everything", exact: true }).click();
+  // The plugin reuses a status it just read for a couple of seconds.
+  await page.waitForTimeout(2500);
+  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+  if (await refresh.count()) await refresh.click();
+  for (const heading of [/Container service/, /Runner image/, /T3 installed and pinned/, /T3 paired with Rubi/]) {
     const sec = page.locator(".view-section", { has: page.getByRole("heading", { name: heading }) });
     try {
       await sec.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
     } catch (err) {
       const text = await page.locator(".card").innerText();
       const errText = await page.locator(".error").allInnerTexts().catch(() => []);
-      throw new Error(label + " did not finish. " + errText.join(" | ") + " Page: " + text.slice(0, 700));
+      throw new Error(String(heading) + " did not finish. " + errText.join(" | ") + " Page: " + text.slice(0, 700));
     }
-    await shot(page, file);
   }
+  await shot(page, "14-setup-all");
   await page.getByRole("button", { name: "Sign in", exact: true }).first().evaluate((el) => el.click());
   await page.waitForTimeout(2500);
-  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
   if (await refresh.count()) await refresh.click();
   await page.getByRole("button", { name: "Open the sign-in page" }).waitFor({ timeout: 20000 });
   const waitingCard = await page.locator(".card").innerText();
@@ -440,6 +446,10 @@ await flow("open and copy the full sign-in link on the phone", async () => {
   const shown = (await short.innerText()).trim();
   const stored = await short.getAttribute("data-full-url");
   const full = await sheet.locator("textarea.signin-full").inputValue();
+  const show = sheet.locator("summary", { hasText: "Show the full link" });
+  const showBox = await show.boundingBox();
+  addCheck("Show the full link is a 44px disclosure", !!(showBox && showBox.height >= 44 && showBox.width >= 44), showBox ? `${Math.round(showBox.width)}x${Math.round(showBox.height)}` : "missing");
+  if (!showBox || showBox.height < 44 || showBox.width < 44) throw new Error("Show the full link is not a 44px target");
   addCheck("sign-in link: short form on screen", shown.length < 80 && shown !== pub.signin_url && shown.includes("…"), shown);
   addCheck("sign-in link: full URL kept for copy", stored === pub.signin_url && full === pub.signin_url, stored === pub.signin_url ? "" : "stored link differs");
   if (shown.length >= 80 || shown === pub.signin_url || !shown.includes("…")) throw new Error("the sign-in link is shown as a wall of text: " + shown.slice(0, 80));
@@ -482,25 +492,29 @@ await flow("paste the code", async () => {
   await page.getByRole("dialog").locator("input").fill(pub.signin_code);
   await shot(page, "21-paste-code");
   await page.getByRole("button", { name: "OK" }).click();
-  const login = page.locator(".view-section", { has: page.getByRole("heading", { name: /^6\. Provider sign-in/ }) });
-  await login.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
-  await login.getByText("Signed in with the sandbox Claude page.", { exact: true }).waitFor();
+  const banner = page.locator(".ready-banner");
+  await banner.waitFor({ timeout: 20000 });
+  await page.getByText(/Setup steps \(7\/7 done\)/).waitFor();
+  await page.getByRole("button", { name: "Run again" }).waitFor();
+  if (await page.getByRole("button", { name: "Run self-test", exact: true }).count()) {
+    throw new Error("sign-in still asks for a separate self-test");
+  }
   if (await page.getByRole("button", { name: "Set up everything", exact: true }).count()) {
     throw new Error("Set up everything is still offered after the steps it runs are done");
   }
+  const signedGap = await page.evaluate(() => {
+    const sum = document.querySelector(".note-more summary");
+    const next = document.querySelector(".setup-fold, .view-section");
+    if (!sum || !next) return -1;
+    return next.getBoundingClientRect().top - sum.getBoundingClientRect().bottom;
+  });
+  addCheck("collapsed Details has no empty gap after sign-in", signedGap >= -2 && signedGap <= 32, `gap ${Math.round(signedGap)}px`);
+  if (signedGap > 32) throw new Error("collapsed Details leaves a gap of " + Math.round(signedGap) + "px");
   await shot(page, "22-signed-in");
   await phoneChecks(page, "signed in");
-  await noRepeatedHeadings(page, "signed in");
 }, { needsReal: true });
 
-await flow("run the self-test until ready", async () => {
-  const self = page.locator(".view-section", { has: page.getByRole("heading", { name: /^7\. Self-test/ }) });
-  await self.getByRole("button", { name: "Run self-test" }).click();
-  await page.waitForTimeout(2500);
-  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
-  if (await refresh.count()) await refresh.click();
-  await self.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
-  await self.getByText("Ready. This computer can run a session.", { exact: true }).waitFor();
+await flow("self-test ran with sign-in and can be run again", async () => {
   const banner = page.locator(".ready-banner");
   await banner.waitFor();
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -518,6 +532,20 @@ await flow("run the self-test until ready", async () => {
   if (/Set up everything/.test(await page.locator(".card").innerText())) {
     throw new Error("the Set up everything explanation is still shown");
   }
+  const folded = await page.locator(".setup-fold .view-section h2").first().isVisible().catch(() => false);
+  addCheck("finished steps are collapsed", folded === false, folded ? "a step heading is visible" : "");
+  if (folded) throw new Error("finished steps are still expanded");
+  const readyGap = await page.evaluate(() => {
+    const sum = document.querySelector(".note-more summary");
+    const next = document.querySelector(".setup-fold");
+    if (!sum || !next) return -1;
+    return next.getBoundingClientRect().top - sum.getBoundingClientRect().bottom;
+  });
+  addCheck("collapsed Details has no empty gap on the ready screen", readyGap >= -2 && readyGap <= 32, `gap ${Math.round(readyGap)}px`);
+  if (readyGap > 32) throw new Error("collapsed Details leaves a gap of " + Math.round(readyGap) + "px");
+  await page.getByRole("button", { name: "Run again" }).click();
+  await page.locator(".ready-banner", { hasText: "is ready" }).waitFor({ timeout: 15000 });
+  await page.getByText(/Setup steps \(7\/7 done\)/).waitFor({ timeout: 15000 });
   await shot(page, "23-ready");
   await phoneChecks(page, "ready");
   await noRepeatedHeadings(page, "ready");

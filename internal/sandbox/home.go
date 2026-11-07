@@ -139,6 +139,10 @@ func (h *Home) status() map[string]any {
 			}
 			if id == "selftest" {
 				reason = "Ready. This computer can run a session."
+				// Still offer the action so the page can show Run again.
+				if h.signedIn {
+					action = "selftest"
+				}
 			}
 		} else if blocked {
 			reason = "Waiting for earlier steps: " + strings.Join(waiting, ", ") + "."
@@ -268,6 +272,10 @@ func (h *Home) code(raw json.RawMessage) (any, error) {
 	h.login = false
 	h.signedIn = true
 	h.state["login"] = "done"
+	// The self-test follows sign-in with no extra tap. Run again stays available.
+	if h.earlierDone("selftest") {
+		h.state["selftest"] = "done"
+	}
 	return map[string]any{"sent": true}, nil
 }
 
