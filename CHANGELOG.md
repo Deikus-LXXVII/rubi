@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.14.2 (2026-11-07)
+
+Fixes from trying T3 Agents setup on a phone, and a disposable copy of Rubi to try changes on before they reach you.
+
+- **Signing in to Claude from your phone.** "Open the sign-in page" opens the full sign-in link on the phone or computer you are using; Rubi Home no longer opens a browser on the home computer. The sheet shows a short link, Copy copies the whole link, and Open is the one main button.
+- **The self-test starts by itself when the sign-in finishes.** If another setup step is still running, it waits for that step and then runs. A failed self-test says why and offers Run self-test again; the page ends on Ready.
+- **The setup page is easier to finish.** The sign-in row says which earlier steps it waits for and offers Sign in only after them. Each step's heading appears once, its status is a badge, and "Set up everything" goes away once its steps are done. The plugin page and its back link use the plugin's name (T3 Agents).
+- **Links open the right page.** A `setup:` link for a plugin with its own page opens that page, and after an approval Settings can still open a plugin page.
+- A development build is no longer recorded as the highest version seen, and `install-home.sh` no longer makes a pairing code when Rubi Home is already paired.
+- **Store:** T3 Agents v0.2.0. The setup page uses Rubi Home's step names and updates by itself after Sign in or Set up everything, with no Refresh; a failed sign-in offers "Get a new sign-in link".
+- For maintainers: `scripts/sandbox/` runs a disposable Rubi with its own keys in a rootless namespace, and `scripts/sandbox/betatest.sh` walks the T3 Agents setup at phone and desktop size (`docs/ops/sandbox-betatest.md`). CI runs the sandbox lifecycle check.
+
 ## v0.14.1 (2026-11-07)
 
 - **A plugin you sideloaded moves to the store when the store has it from the same publisher.** If the Rubi store lists a plugin with the same id and the publisher key that was pinned when you sideloaded it, `rubi_plugin_update` (and the update check that tells your Bots) takes the store's release instead of going back to the old source, which may be gone. The approval says the source changes; afterwards the plugin is a store plugin, with its accounts, settings and state kept and the sideloaded version as its rollback. A store entry with another publisher's key is a different plugin and is never offered as its update.
