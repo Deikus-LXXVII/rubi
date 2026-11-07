@@ -49,13 +49,20 @@ if command -v git >/dev/null 2>&1; then
     git clone --depth 1 https://github.com/Deikus-LXXVII/rubi-t3agents.git "$DIR/src/rubi-t3agents" >>"$DIR/logs/plugin-build.log" 2>&1 || true
   fi
   if [ -d "$DIR/src/rubi-t3agents/.git" ]; then
-    if (
+    # The setup-action fix is not on the plugin's main yet (this environment cannot push to that
+    # repo). Apply it onto a clean clone so the sandbox runs that version.
+    if ! (
       cd "$DIR/src/rubi-t3agents"
+      git checkout --force HEAD
+      git clean -fd
+      git apply "$ROOT/scripts/sandbox/t3agents-setup.patch"
       go mod edit -replace "github.com/Deikus-LXXVII/rubi=$ROOT"
       go build -mod=mod -ldflags "-X main.PublisherKey=$pub" -o "$DIR/bin/t3agents" .
     ) >>"$DIR/logs/plugin-build.log" 2>&1; then
-      plugin_source="https://github.com/Deikus-LXXVII/rubi-t3agents"
+      printf 'rubi-sandbox: T3 Agents plugin did not build with scripts/sandbox/t3agents-setup.patch (see logs/plugin-build.log)\n' >&2
+      exit 1
     fi
+    plugin_source="https://github.com/Deikus-LXXVII/rubi-t3agents"
   fi
 fi
 if [ "$plugin_source" = "fallback" ]; then

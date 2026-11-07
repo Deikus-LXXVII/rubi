@@ -2647,7 +2647,43 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     : /sign-in|claude/i.test(clip(running.title, 120))
       ? { title: "Signing in to Claude\u2026", cancel: "Cancel signing in" }
       : { title: "Working on " + clip(running.title, 120).replace(/^\d+\.\s*/, "") + "\u2026", cancel: "Cancel" };
-  const button = (a, stepState, display) => {
+  const findAction = (sections, label) => {
+    for (const sec of sections) {
+      for (const it of objs(sec.items, VIEW_ITEMS_MAX)) {
+        for (const a of objs(it.actions, VIEW_ACTIONS_MAX)) {
+          if (clip(a.label, 60) === label) return a;
+        }
+      }
+    }
+    return null;
+  };
+  const failedSec = running ? null : stepped.find((s) => /failed|needs/.test(stepBadge(s.title, objs(s.items, 1)[0]).toLowerCase()));
+  let failure = null;
+  if (failedSec) {
+    const items = objs(failedSec.items, VIEW_ITEMS_MAX);
+    const heading = clip(failedSec.title, 120);
+    const loginFail = /sign-in|claude/i.test(heading);
+    const selfFail = /self-test/i.test(heading);
+    const roleDetail = items.slice(1).map((it) => clip(it.detail, 300)).find((d) => d) || "";
+    const acts = [];
+    const signIn = findAction([failedSec], "Get a new sign-in link") || findAction([failedSec], "Sign in");
+    const runSelf = findAction([failedSec], "Run self-test");
+    const again = findAction(rawSections, "Sign in again");
+    if (loginFail && signIn) acts.push({ a: signIn, look: "primary", shown: "Get a new sign-in link" });
+    else if (selfFail && runSelf) {
+      acts.push({ a: runSelf, look: "primary", shown: "" });
+      if (again) acts.push({ a: again, look: "quiet", shown: "" });
+    } else if (signIn) acts.push({ a: signIn, look: "primary", shown: "" });
+    else if (runSelf) acts.push({ a: runSelf, look: "primary", shown: "" });
+    const next = loginFail ? "Next: get a new sign-in link." : selfFail ? "Next: run the self-test." : "";
+    failure = {
+      title: clip(items[0] && items[0].detail, 300) || "This step failed.",
+      detail: [loginFail ? "" : roleDetail.replace(/^(failed|needs you)\.\s*/i, ""), next].filter(Boolean).join(" "),
+      acts,
+      hide: new Set(acts.map((x) => clip(x.a.label, 60))),
+    };
+  }
+  const button = (a, stepState, display, look) => {
     const real = clip(a.label, 60);
     const label = display || real;
     const failed = /failed|needs/.test(String(stepState || ""));
@@ -2656,7 +2692,8 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     if ((setupFinished || allStepsDone) && real === "Set up everything") return null;
     if (allStepsDone && (real === "Refresh" || real === "Run self-test")) return null;
     if (real === "Set up everything") return h("button", { type: "button", class: "primary", onclick: act(a) }, "Set up everything");
-    return h("button", { type: "button", class: (a.danger ? "danger " : "secondary ") + "small", onclick: act(a) }, label);
+    const cls = look === "primary" ? "primary" : look === "quiet" ? "quiet" : (a.danger ? "danger " : "secondary ") + "small";
+    return h("button", { type: "button", class: cls, onclick: act(a) }, label);
   };
   // A chat: items {role: "user" | "assistant" | "tool" | "sister", author, text, untrusted, time}, oldest first, and
   // input {op, args, arg, label, send}: the text the user writes goes to the plugin as args[arg]. Everything the
@@ -2710,19 +2747,32 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
       if (badge) rows = foldStepRows([{ ...rows[0], title: "" }, ...rows.slice(1)]);
     }
     const badgeCls = badge ? "status-" + badge.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") : "";
-    return { step: !!badge, done: badge.toLowerCase() === "done", setup: /^setup$/i.test(secTitle.trim()), el: h("section", { class: "view-section" },
+    const setupSec = /^setup$/i.test(secTitle.trim());
+    const failCard = setupSec && failure ? h("li", { class: "view-warn" },
+      h("div", { class: "view-text" }, h("strong", {}, failure.title), failure.detail ? h("span", { class: "muted small" }, failure.detail) : null),
+      h("div", { class: "view-actions" }, failure.acts.map((x) => button(x.a, "failed", x.shown, x.look)).filter(Boolean))) : null;
+    const lis = [];
+    if (failCard) lis.push(failCard);
+    if (rows && rows.length) lis.push(...rows.map((it) => {
+      let title = clip(it.title, 200);
+      const busyLine = !!(runningCopy && /^(Something is running|Working on:|Starting)/.test(title));
+      if (busyLine && runningCopy && /^(Something is running|Working on:)/.test(title)) title = runningCopy.title;
+      let detail = clip(it.detail, VIEW_TEXT_MAX);
+      const itemActs = objs(it.actions, VIEW_ACTIONS_MAX);
+      if (itemActs.some((a) => /^Cancel/.test(clip(a.label, 60)))) detail = detail.replace(/\s*The buttons below wait until it ends\.?/g, "").trim();
+      return h("li", it.warn ? { class: "view-warn" } : {},
+        h("div", { class: "view-text" }, title ? h("strong", {}, title) : null, detail ? h("span", { class: "muted small" }, detail) : null),
+        h("div", { class: "view-actions" }, itemActs.map((a) => {
+          if (failure && badge && failure.hide.has(clip(a.label, 60))) return null;
+          return button(a, badge, busyLine && clip(a.label, 60) === "Cancel" ? runningCopy.cancel : "");
+        }).filter(Boolean)));
+    }));
+    return { step: !!badge, done: badge.toLowerCase() === "done", setup: setupSec, el: h("section", { class: "view-section" },
       h("h2", {}, secTitle, badge ? h("span", { class: "status-badge " + badgeCls }, badge) : null),
       sec.note && !((offersAll || allStepsDone || setupFinished) && /set up everything/i.test(String(sec.note))) ? noteBlock(sec.note, true) : null,
       secActions.length ? h("div", { class: "view-actions view-sec-actions" }, secActions) : null,
       sec.kind === "chat" ? chatSection(sec)
-      : rows && rows.length ? h("ul", { class: "view-list" }, rows.map((it) => {
-        let title = clip(it.title, 200);
-        const busyLine = !!(runningCopy && /^(Something is running|Working on:)/.test(title));
-        if (busyLine) title = runningCopy.title;
-        return h("li", it.warn ? { class: "view-warn" } : {},
-          h("div", { class: "view-text" }, title ? h("strong", {}, title) : null, it.detail ? h("span", { class: "muted small" }, clip(it.detail, VIEW_TEXT_MAX)) : null),
-          h("div", { class: "view-actions" }, objs(it.actions, VIEW_ACTIONS_MAX).map((a) => button(a, badge, busyLine && clip(a.label, 60) === "Cancel" ? runningCopy.cancel : "")).filter(Boolean)));
-      }))
+      : lis.length ? h("ul", { class: "view-list" }, lis)
         : h("p", { class: "muted small" }, clip(sec.empty, 200) || "Nothing here.")) };
   }).filter(Boolean);
   const stepEls = built.filter((b) => b.step).map((b) => b.el);
@@ -2733,7 +2783,7 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     ? [h("details", { class: "setup-fold" },
         h("summary", {}, `Setup steps (${stepped.filter(stepIsDone).length}/${stepped.length} done)`),
         ...stepEls), ...restEls]
-    : runningCopy && doneEls.length
+    : (runningCopy || failure) && doneEls.length
       ? [...built.filter((b) => b.setup).map((b) => b.el),
         h("details", { class: "setup-fold" }, h("summary", {}, `Finished steps (${doneEls.length} done)`), ...doneEls),
         ...liveEls, ...built.filter((b) => !b.step && !b.setup).map((b) => b.el)]
@@ -2744,6 +2794,8 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
   const heading = front ? pluginHeading(data.title, name) : (clip(data.title, 120) || name);
   const backLabel = up ? (opensRoot ? pluginHeading(up.label, name) : (clip(up.label, 40) || "Back")) : "";
   if (oldErr) { err.textContent = oldErr; err.hidden = false; } // an error the user hasn't read yet stays
+  // A refresh redraws the page. Disclosures the user opened (the finished steps) stay open.
+  const openSummaries = same ? [...document.querySelectorAll("details[open] > summary")].map((s) => (s.textContent || "").trim()) : [];
   screen(
     { cls: "wide", focus: false, keepScroll: pageTop, quiet: same && byRefresh, refocus },
     header(ctx.hello),
@@ -2757,6 +2809,9 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     err,
     ...sections,
   );
+  for (const s of document.querySelectorAll("details > summary")) {
+    if (openSummaries.includes((s.textContent || "").trim())) s.parentElement.open = true;
+  }
   if (refresh > 0) viewRefresh.arm(refresh, tick);
   else viewRefresh.cancel();
 }

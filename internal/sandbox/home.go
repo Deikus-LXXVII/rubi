@@ -161,10 +161,10 @@ func (h *Home) status() map[string]any {
 				reason = "The sign-in failed: that code was not accepted."
 				action = "login"
 			case id == "selftest" && st == "failed":
-				reason = "The self-test failed: the role VM did not start."
+				reason = "1 of 1 roles failed."
 				action = "selftest"
 			case id == "selftest" && st == "needs_user":
-				reason = "Sign in to Claude, then run the self-test again."
+				reason = "Sign in to Claude, then run it again."
 				action = "selftest"
 			}
 			blocked = true
@@ -215,9 +215,13 @@ func (h *Home) status() map[string]any {
 		// The self-test button lives on the role row (the T3 Agents page reads action there).
 		// Until sign-in is done the row waits and offers nothing.
 		if id == "selftest" {
+			rowReason := reason
+			if st == "failed" {
+				rowReason = "The role VM did not start."
+			}
 			step["projects"] = []map[string]any{{
 				"id": "reviewer", "dir": "sandbox · role reviewer",
-				"state": st, "reason": reason, "action": action, "progress": []string{},
+				"state": st, "reason": rowReason, "action": action, "progress": []string{},
 			}}
 		}
 		steps = append(steps, step)

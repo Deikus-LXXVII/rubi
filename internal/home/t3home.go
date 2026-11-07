@@ -95,10 +95,13 @@ type T3Home struct {
 	base        context.Context // Home's lifetime (Run); Background until Run is called
 	job         *t3Job
 	pendingSelf bool // a self-test waiting for the job that was running when sign-in finished
-	lastErr     *t3Failure
-	phase       string
-	bytes       atomic.Int64
-	wg          sync.WaitGroup // the background step
+	// onBusyGap runs after that self-test was queued and the lock was released. Tests finish
+	// the busy step here, which is the gap that used to drop the self-test.
+	onBusyGap func()
+	lastErr   *t3Failure
+	phase     string
+	bytes     atomic.Int64
+	wg        sync.WaitGroup // the background step
 
 	loginSetup *setup.Setup
 	selfRows   map[string]selfRow // the last self-test, per role
@@ -473,7 +476,7 @@ func (t *T3Home) RunStepFor(step, project, role string) error {
 	if t.job != nil {
 		j := t.job
 		t.mu.Unlock()
-		return fmt.Errorf("T3 setup is busy with the %s step", j.Step)
+		return &setupBusyError{Step: j.Step}
 	}
 	t.job = &t3Job{Step: step, Started: t.now().UTC()}
 	t.lastErr = nil
@@ -487,20 +490,49 @@ func (t *T3Home) RunStepFor(step, project, role string) error {
 	return nil
 }
 
+// errSetupBusy is the error a setup step returns when another step is already running.
+var errSetupBusy = errors.New("T3 setup is busy")
+
+// setupBusyError is errSetupBusy with the step that holds the lock. Callers match it with errors.Is.
+type setupBusyError struct{ Step string }
+
+func (e *setupBusyError) Error() string {
+	return fmt.Sprintf("T3 setup is busy with the %s step", e.Step)
+}
+
+func (e *setupBusyError) Is(target error) bool { return target == errSetupBusy }
+
 // startSelfTestAfterSignIn starts the self-test, or queues it when another T3 step is still
-// running. A queued test runs when that step's job ends, and the status says so in the meantime.
+// running. The queue is set under the same lock that sees the busy step, so a job that ends
+// in the gap cannot miss it. A queued test runs when that step's job ends.
 func (t *T3Home) startSelfTestAfterSignIn() error {
-	err := t.RunStepFor(T3StepSelfTest, "", "")
-	if err == nil {
-		return nil
-	}
-	if strings.Contains(err.Error(), "busy") {
-		t.mu.Lock()
+	t.mu.Lock()
+	if t.job != nil {
 		t.pendingSelf = true
 		t.mu.Unlock()
+		if t.onBusyGap != nil {
+			t.onBusyGap()
+		}
 		return nil
 	}
-	return err
+	t.mu.Unlock()
+	err := t.RunStepFor(T3StepSelfTest, "", "")
+	if err == nil || !errors.Is(err, errSetupBusy) {
+		return err
+	}
+	// A step started after the check above. Queue it under the lock, and if that step
+	// has already finished, start the self-test now rather than leave it queued.
+	t.mu.Lock()
+	if t.job != nil {
+		t.pendingSelf = true
+		t.mu.Unlock()
+		if t.onBusyGap != nil {
+			t.onBusyGap()
+		}
+		return nil
+	}
+	t.mu.Unlock()
+	return t.startSelfTestAfterSignIn()
 }
 
 // finishJob records the outcome of the step that just ended and starts a self-test that was

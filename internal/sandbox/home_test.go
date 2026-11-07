@@ -180,8 +180,17 @@ func TestNeedsUserSelfTestState(t *testing.T) {
 	h.mu.Unlock()
 	st, _ := h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
 	self := step(t, st, "selftest")
-	if self["state"] != "needs_user" || self["action"] != "selftest" || !strings.Contains(fmtReason(self), "Sign in") {
+	if self["state"] != "needs_user" || self["action"] != "selftest" || self["reason"] != "Sign in to Claude, then run it again." {
 		t.Fatalf("%#v", self)
+	}
+	h.mu.Lock()
+	h.state["selftest"] = "failed"
+	h.mu.Unlock()
+	st, _ = h.Handle(homeproto.Envelope{Op: "t3-setup.status", Token: "tok"})
+	self = step(t, st, "selftest")
+	rows, _ := self["projects"].([]map[string]any)
+	if self["reason"] != "1 of 1 roles failed." || len(rows) != 1 || rows[0]["reason"] != "The role VM did not start." || rows[0]["state"] != "failed" {
+		t.Fatalf("step %#v row %#v", self, rows)
 	}
 }
 

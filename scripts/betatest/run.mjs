@@ -222,14 +222,47 @@ page.on("pageerror", (err) => consoleErrors.push(redact(err.message)));
 page.on("console", (msg) => {
   if (msg.type() === "error") consoleErrors.push(redact(msg.text()));
 });
+// An action button (Sign in, Run self-test, and the rest) has to move the page by itself.
+// A flow that navigates or reloads after one of those fails, so a harness reload cannot hide a dead button.
+const navGate = { acted: false, bad: "" };
+await page.exposeBinding("__rubiSawAction", () => { navGate.acted = true; });
+await page.addInitScript(() => {
+  addEventListener("click", (ev) => {
+    const b = ev.target && ev.target.closest && ev.target.closest("button");
+    if (!b) return;
+    const t = (b.innerText || "").replace(/\s+/g, " ").trim();
+    if (/^(Sign in|Sign in again|Get a new sign-in link|Run self-test|Run the self-test again|Set up everything|OK|Cancel|Cancel signing in|Cancel the self-test)$/.test(t)) {
+      window.__rubiActed = true;
+      window.__rubiSawAction();
+    }
+  }, true);
+});
+page.on("framenavigated", (frame) => {
+  if (frame === page.mainFrame() && navGate.acted) navGate.bad = frame.url();
+});
 
 async function flow(name, fn, opts = {}) {
   if (opts.needsReal && !realPlugin) {
     record({ name, status: "blocked", reason: "the T3 Agents plugin from GitHub was not built; the in-repo stand-in is not treated as that plugin" });
     return;
   }
+  const origGoto = page.goto.bind(page);
+  const origReload = page.reload.bind(page);
+  navGate.acted = false;
+  navGate.bad = "";
+  await page.evaluate(() => { window.__rubiActed = false; }).catch(() => {});
+  page.goto = async (...args) => {
+    const acted = await page.evaluate(() => window.__rubiActed === true).catch(() => navGate.acted);
+    if (acted || navGate.acted) throw new Error("this flow navigates after an action button; the page has to update itself");
+    return origGoto(...args);
+  };
+  page.reload = async (...args) => {
+    if (navGate.acted) throw new Error("this flow reloads after an action button; the page has to update itself");
+    return origReload(...args);
+  };
   try {
     await fn();
+    if (navGate.bad) throw new Error("this flow navigated after an action button");
     const h1 = await cardTitle(page).catch(() => "");
     if (/Something.s wrong/.test(h1) && !opts.allowError) {
       throw new Error("page says Something's wrong: " + h1);
@@ -238,6 +271,9 @@ async function flow(name, fn, opts = {}) {
   } catch (err) {
     await shot(page, "fail-" + name.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)).catch(() => {});
     record({ name, status: "fail", error: err.message });
+  } finally {
+    page.goto = origGoto;
+    page.reload = origReload;
   }
 }
 
@@ -414,7 +450,7 @@ await flow("T3 setup steps advance", async () => {
   await page.waitForTimeout(2500);
   const refresh = page.getByRole("button", { name: "Refresh", exact: true });
   if (await refresh.count()) await refresh.click();
-  for (const heading of [/Container service/, /Runner image/, /T3 installed and pinned/, /T3 paired with Rubi/]) {
+  for (const heading of [/Container service/, /Runner image/, /T3 installed, pinned and running/, /T3 paired with Rubi Home/]) {
     const sec = page.locator(".view-section", { has: page.getByRole("heading", { name: heading }) });
     try {
       await sec.locator(".status-badge", { hasText: /^done$/ }).waitFor({ timeout: 15000 });
@@ -432,7 +468,7 @@ await flow("T3 setup steps advance", async () => {
   const waitingCard = await page.locator(".card").innerText();
   if (/https?:\/\//.test(waitingCard)) throw new Error("a setup row prints the raw sign-in URL");
   if (/Sign-in waiting for the browser/i.test(waitingCard)) throw new Error("duplicate sign-in waiting row");
-  const loginSec = page.locator(".view-section", { has: page.getByRole("heading", { name: /Provider sign-in/ }) });
+  const loginSec = page.locator(".view-section", { has: page.getByRole("heading", { name: /Claude sign-in/ }) });
   if (await loginSec.locator(".view-text strong").count()) throw new Error("a single role is shown as its own row");
   await shot(page, "18-signin-waiting");
   await phoneChecks(page, "sign-in waiting");
@@ -492,15 +528,17 @@ await flow("a wrong code fails the sign-in and can be retried", async () => {
   await page.getByRole("dialog").locator("input").fill("not-the-sandbox-code");
   await page.getByRole("button", { name: "OK" }).click();
   await page.getByText("Signing in...").waitFor({ timeout: 25000 });
-  await page.getByText("The sign-in failed: that code was not accepted.").waitFor({ timeout: 25000 });
-  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+  await page.getByText("The sign-in failed: that code was not accepted.").first().waitFor({ timeout: 25000 });
+  const setupBox = page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) });
+  await setupBox.getByText("Next: get a new sign-in link.").waitFor();
+  const foldedFail = await page.locator(".view-section h2", { hasText: "Apple container" }).isVisible().catch(() => false);
+  addCheck("finished steps fold on a failed sign-in", foldedFail === false, foldedFail ? "Apple container is still on screen" : "");
+  if (foldedFail) throw new Error("finished steps stay open after a wrong code");
+  await page.getByRole("button", { name: "Get a new sign-in link" }).waitFor();
   await shot(page, "21b-wrong-code");
-  await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.waitForTimeout(2500);
-  const retry = mcp("rubi_link", { purpose: "setup:t3agents" });
-  if (!retry.url) throw new Error("no setup link");
-  await page.goto(retry.url);
+  await page.getByRole("button", { name: "Get a new sign-in link" }).click();
   await page.getByRole("button", { name: "Open the sign-in page" }).waitFor({ timeout: 20000 });
+  await shot(page, "21c-signin-retry");
 }, { needsReal: true });
 
 await flow("paste the code", async () => {
@@ -512,6 +550,7 @@ await flow("paste the code", async () => {
   const setupBox = page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) });
   await setupBox.getByText("Signing in to Claude").waitFor();
   await setupBox.getByRole("button", { name: "Cancel signing in" }).waitFor();
+  if (/buttons below wait/.test(await setupBox.innerText())) throw new Error("the running box tells you to wait when Cancel is right there");
   const foldedWhile = await page.locator(".view-section h2", { hasText: "Apple container" }).isVisible().catch(() => false);
   addCheck("finished steps fold while a step runs", foldedWhile === false, foldedWhile ? "Apple container is still on screen" : "");
   if (foldedWhile) throw new Error("finished steps stay open while signing in");
@@ -579,6 +618,7 @@ await flow("self-test ran with sign-in and can be run again", async () => {
   addCheck("collapsed Details has no empty gap on the ready screen", readyGap >= -2 && readyGap <= 32, `gap ${Math.round(readyGap)}px`);
   if (readyGap > 32) throw new Error("collapsed Details leaves a gap of " + Math.round(readyGap) + "px");
   await page.getByRole("button", { name: "Run the self-test again" }).click();
+  await page.getByText("Running the self-test").first().waitFor({ timeout: 20000 });
   await page.locator(".ready-banner", { hasText: "is ready" }).waitFor({ timeout: 25000 });
   await page.getByText(/Setup steps \(7\/7 done\)/).waitFor({ timeout: 25000 });
   await shot(page, "23-ready");
@@ -587,23 +627,33 @@ await flow("self-test ran with sign-in and can be run again", async () => {
 }, { needsReal: true });
 
 await flow("a failed self-test explains itself and can be retried", async () => {
+  await page.locator(".ready-banner").waitFor({ timeout: 20000 });
+  await page.getByText(/Setup steps \(7\/7 done\)/).waitFor();
   await page.locator(".setup-fold > summary").click();
   await page.getByRole("button", { name: "Sign in again" }).click();
-  await page.waitForTimeout(2500);
-  const again = mcp("rubi_link", { purpose: "setup:t3agents" });
-  if (!again.url) throw new Error("no setup link");
-  await page.goto(again.url);
   await page.getByRole("button", { name: "Paste the code" }).waitFor({ timeout: 20000 });
   await page.getByRole("button", { name: "Paste the code" }).click();
   await page.getByRole("dialog").locator("input").fill("sandbox-selftest-fail");
   await page.getByRole("button", { name: "OK" }).click();
-  await page.getByText("The self-test failed: the role VM did not start.").waitFor({ timeout: 30000 });
-  await page.getByRole("button", { name: "Run self-test" }).waitFor();
+  await page.getByText("1 of 1 roles failed.").first().waitFor({ timeout: 30000 });
+  await page.getByText("The role VM did not start.").first().waitFor();
+  const setupBox = page.locator(".view-section", { has: page.getByRole("heading", { name: "Setup", exact: true }) });
+  await setupBox.getByText("Next: run the self-test.").waitFor();
+  const run = page.getByRole("button", { name: "Run self-test" });
+  const againBtn = page.getByRole("button", { name: "Sign in again" });
+  await run.waitFor();
+  await againBtn.waitFor();
+  const runCls = await run.evaluate((el) => el.className);
+  const againCls = await againBtn.evaluate((el) => el.className);
+  if (!String(runCls).includes("primary")) throw new Error("Run self-test is not the primary button");
+  if (!String(againCls).includes("quiet")) throw new Error("Sign in again is not the quieter button");
+  const foldedFail = await page.locator(".view-section h2", { hasText: "Apple container" }).isVisible().catch(() => false);
+  addCheck("finished steps fold on a failed self-test", foldedFail === false, foldedFail ? "Apple container is still on screen" : "");
+  if (foldedFail) throw new Error("finished steps stay open after a failed self-test");
   await shot(page, "25-selftest-failed");
-  await page.getByRole("button", { name: "Run self-test" }).click();
-  await page.waitForTimeout(2500);
-  const after = mcp("rubi_link", { purpose: "setup:t3agents" });
-  await page.goto(after.url);
+  await run.click();
+  await page.getByText("Running the self-test").first().waitFor({ timeout: 20000 });
+  await shot(page, "25b-selftest-retry");
   await page.locator(".ready-banner").waitFor({ timeout: 30000 });
 }, { needsReal: true });
 

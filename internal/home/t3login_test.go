@@ -631,6 +631,38 @@ func TestSignInCompletionStartsTheSelfTest(t *testing.T) {
 	}
 }
 
+func TestSelfTestQueueSurvivesTheJobEndingInTheGap(t *testing.T) {
+	l, _, _, _ := loginLife(t)
+	l.h.T3.mu.Lock()
+	l.h.T3.job = &t3Job{Step: T3StepInstall, Started: time.Now()}
+	l.h.T3.mu.Unlock()
+	var gapErr string
+	l.h.T3.onBusyGap = func() {
+		// The busy step ends in the gap after it was observed. The queue is already set,
+		// so this start is not missed.
+		l.h.T3.opMu.Lock()
+		l.h.T3.finishJob(T3StepInstall, nil)
+		l.h.T3.mu.Lock()
+		switch {
+		case l.h.T3.pendingSelf:
+			gapErr = "the self-test was still only queued after the busy step ended"
+		case l.h.T3.job == nil || l.h.T3.job.Step != T3StepSelfTest:
+			gapErr = fmt.Sprintf("self-test did not start: %#v", l.h.T3.job)
+		}
+		l.h.T3.mu.Unlock()
+		l.h.T3.opMu.Unlock()
+	}
+	if err := l.h.T3.startSelfTestAfterSignIn(); err != nil {
+		t.Fatal(err)
+	}
+	if gapErr != "" {
+		t.Fatal(gapErr)
+	}
+	if !errors.Is(&setupBusyError{Step: T3StepInstall}, errSetupBusy) {
+		t.Fatal("busy error is not errSetupBusy")
+	}
+}
+
 func TestSelfTestQueuesBehindABusyStep(t *testing.T) {
 	l, _, _, _ := loginLife(t)
 	l.h.T3.mu.Lock()
