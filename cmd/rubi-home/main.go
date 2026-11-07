@@ -54,6 +54,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/microvm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/hostguard"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
 	"github.com/Deikus-LXXVII/rubi/internal/watch"
@@ -274,6 +275,11 @@ func waitLimit(args []string) time.Duration {
 }
 
 func run(h *home.Helper) {
+	// Other processes of this user (on a shared computer: other tenants' tools) can't read this process's memory,
+	// where it holds keys; root still can (hostguard, docs/plans/t3-cloud-agents.md slice 2).
+	if err := hostguard.SetNonDumpable(); err != nil {
+		log.Printf("couldn't mark Rubi Home non-dumpable: %v", err)
+	}
 	key, err := h.RelayKey()
 	if err != nil {
 		log.Fatal(err)

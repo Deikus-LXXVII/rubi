@@ -32,6 +32,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/hostguard"
 	"github.com/Deikus-LXXVII/rubi/internal/identity"
 	"github.com/Deikus-LXXVII/rubi/internal/library/libsig"
 	"github.com/Deikus-LXXVII/rubi/internal/relay"
@@ -87,6 +88,9 @@ type Config struct {
 	// AgentAllowBypass says whether agent sessions may run in bypassPermissions or dontAsk (default true;
 	// the plugin still decides every tool call and approves loosening a mode with a passkey).
 	AgentAllowBypass *bool `json:"agent_allow_bypass,omitempty"`
+	// MemoryRisk is the owner's one-time acceptance, on a computer whose kernel has no Yama, that root there can
+	// read the agents' memory (hostguard.RiskText). It holds only for the computer and kernel it names.
+	MemoryRisk *MemoryRisk `json:"memory_risk,omitempty"`
 	// AgentDefaultMode ("maximum", "medium" (default) or "light") is the usage mode of a Bot met for the
 	// first time and of the sessions the user starts from the panel; AgentBotModes has the mode of each Bot
 	// (by the Bot id the plugin passes). Presets for how much a Bot may run at once: see agent/usage.go. The
@@ -145,6 +149,7 @@ type Helper struct {
 	// vmOverride, when set, makes the agents' VM instead of the backend's, and backendOverride the VM backend itself (seams
 	// for tests).
 	vmOverride      func(agent.Project) agent.VM
+	hostProbe       func() (hostguard.Host, error) // tests: the computer's memory protection (hostguard.Probe when nil)
 	backendOverride func() agent.VMBackend
 	// Shortcuts runs the shortcuts command (a seam for tests).
 	Shortcuts func(ctx context.Context, args ...string) ([]byte, error)

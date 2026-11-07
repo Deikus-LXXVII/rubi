@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Rubi Home on a shared Linux computer** (groundwork for running T3 there). Rubi Home marks itself non-dumpable, so other processes of the same user can't read its memory. It doesn't start T3 when less than about 800 MiB of memory is free, and says so. It can tell whether the kernel keeps processes from reading each other's memory (Yama `ptrace_scope` 3), and records a one-time acceptance, bound to the computer and its kernel, where the kernel has no Yama.
+
 ## v0.14.2 (2026-11-07)
 
 Fixes from trying T3 Agents setup on a phone, and a disposable copy of Rubi to try changes on before they reach you.
