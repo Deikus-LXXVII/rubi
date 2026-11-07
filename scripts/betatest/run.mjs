@@ -7,6 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { inflateSync } from "node:zlib";
 import { chromium } from "playwright";
+import { checkPasteAfterRefresh } from "./paste-after-refresh.mjs";
 
 const dir = process.env.RUBI_SANDBOX_DIR;
 const repo = process.env.RUBI_REPO;
@@ -486,6 +487,12 @@ await flow("T3 setup steps advance", async () => {
   if (await loginSec.locator(".view-text strong").count()) throw new Error("a single role is shown as its own row");
   await shot(page, "18-signin-waiting");
   await phoneChecks(page, "sign-in waiting");
+}, { needsReal: true });
+
+await flow("paste code still works after unchanged refreshes in Chromium and WebKit", async () => {
+  const results = await checkPasteAfterRefresh({ mcp, out, pub });
+  for (const result of results) addCheck(result.name, result.ok, result.detail);
+  if (results.some((r) => !r.ok)) throw new Error("paste-after-refresh regression; see checks");
 }, { needsReal: true });
 
 await flow("open and copy the full sign-in link on the phone", async () => {

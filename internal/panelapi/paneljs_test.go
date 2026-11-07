@@ -174,3 +174,49 @@ func jsonLine(out []byte) []byte {
 	}
 	return last
 }
+
+// An unchanged refresh keeps the DOM, so its existing action handlers must keep
+// owning the view too. Exercise the real refresh path, including a late response.
+func TestUnchangedPluginRefreshKeepsActionOwner(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not installed")
+	}
+	app, err := os.ReadFile("../../panel/js/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(app)
+	start := strings.Index(source, "async function pluginViewScreen(")
+	if start < 0 {
+		t.Fatal("plugin view missing")
+	}
+	end := strings.Index(source[start:], "  const same = chatKey === key;")
+	if end < 0 {
+		t.Fatal("plugin view refresh path missing")
+	}
+	prefix := source[start:start+end] + "\n}"
+	script := `
+const owner = () => {};
+let currentView = owner, chatKey = JSON.stringify(["t3agents", {}]), viewJSON = JSON.stringify({refresh: 3});
+let armed = 0;
+const viewRefresh = {arm: () => armed++, cancel: () => {}};
+const errorBox = () => ({});
+const unchanged = (a,b,c,d) => a === c && b === d;
+` + prefix + `
+const ctx = {client: {call: async () => ({refresh: 3})}};
+await pluginViewScreen(ctx, "t3agents", "T3 Agents", () => {}, {}, true);
+if (currentView !== owner || armed !== 1) throw new Error("unchanged refresh retired the existing button handlers");
+let reply;
+const waiting = pluginViewScreen({client: {call: () => new Promise(r => reply = r)}}, "t3agents", "T3 Agents", () => {}, {}, true);
+const other = () => {};
+currentView = other;
+reply({refresh: 3});
+await waiting;
+if (currentView !== other || armed !== 1) throw new Error("late refresh stole another page");
+`
+	out, err := exec.Command(node, "--no-warnings", "--input-type=module", "-e", script).CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, out)
+	}
+}
