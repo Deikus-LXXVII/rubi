@@ -30,11 +30,15 @@ func (h *Helper) SyncT3Instances() (t3vm.SyncResult, error) {
 	if err != nil {
 		return t3vm.SyncResult{}, err
 	}
-	var want []t3vm.RoleInstance
-	for _, r := range h.Agent.T3Roles() {
-		want = append(want, t3vm.RoleInstance{ID: r.ID, Name: r.Name, ClaudeDir: r.ClaudeDir, ProjectDir: r.ProjectDir})
+	agentExec := c.AgentSandbox.AgentExec
+	if agentExec == "" {
+		agentExec = filepath.Join(filepath.Dir(self), "rubi-agent-exec")
 	}
-	return t3vm.SyncInstances(t3vm.InstanceOptions{T3Base: c.T3BaseDir, Dir: h.Dir, RubiHome: self, Projects: h.T3.syncProjects()}, want)
+	var want []t3vm.SandboxRole
+	for _, r := range h.Agent.T3Roles() {
+		want = append(want, t3vm.SandboxRole{ID: r.ID, Name: r.Name, Project: r.Project, ClaudeDir: r.ClaudeDir, ProjectDir: r.ProjectDir})
+	}
+	return t3vm.SyncSandboxInstances(t3vm.InstanceOptions{T3Base: c.T3BaseDir, Dir: h.Dir, Projects: h.T3.syncProjects()}, agentExec, want)
 }
 
 // ServeAgentVM serves the T3 session socket until ctx ends (T3Home.Run starts it with the T3 server it runs; for a server

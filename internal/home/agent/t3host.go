@@ -201,7 +201,7 @@ func (m *Manager) Emit(it Item) {
 
 // T3RoleRef names a role for a T3 instance.
 type T3RoleRef struct {
-	ID, Name, ClaudeDir string
+	ID, Name, ClaudeDir, Project string
 	// ProjectDir is the folder the role is pinned to ("" when its project's folder isn't the one it was made for).
 	ProjectDir string
 }
@@ -219,6 +219,7 @@ func (m *Manager) T3Roles() []T3RoleRef {
 		ref := T3RoleRef{ID: row.ID, Name: row.Name, ClaudeDir: filepath.Join(m.opt.Dir, RolesDir, row.ID, "claude")}
 		if r, err := m.roles.Get(row.ID, 0); err == nil && m.roleBoundTo(r, r.Project) == nil {
 			ref.ProjectDir = m.projectDir(r.Project)
+			ref.Project = r.Project
 		}
 		out = append(out, ref)
 	}

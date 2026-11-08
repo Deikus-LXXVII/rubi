@@ -604,3 +604,16 @@ func (s *Store) commit(r *Role, content map[string][]byte) (created []string, er
 	}
 	return created, s.writeIndex(r)
 }
+
+// ReadCurrent reads the committed role without creating directories or repairing the store.
+func ReadCurrent(dir, id string) (*Role, error) {
+	if !IsID(id) {
+		return nil, errors.New("bad role id")
+	}
+	s := &Store{opt: Options{Dir: dir}}
+	ix, err := s.readIndex(id)
+	if err != nil {
+		return nil, err
+	}
+	return s.readVersion(id, ix.Version)
+}

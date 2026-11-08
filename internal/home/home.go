@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
@@ -62,6 +63,8 @@ type Config struct {
 	// "claude-agent") may work in, one project each, mounted at /work. Default none. Encrypted per-project
 	// volumes are a later milestone (agent-runner.md); for now these are plain directories.
 	AgentProjects []string `json:"agent_projects,omitempty"`
+	// AgentSandbox pins installed sandbox tools and provider CLIs. Never inherited from PATH.
+	AgentSandbox agentsandbox.Installation `json:"agent_sandbox,omitempty"`
 	// AgentGitHosts are the git hosts the agent's proxy allows and the credential helper serves, for
 	// example "git.example.com".
 	AgentGitHosts []string `json:"agent_git_hosts,omitempty"`

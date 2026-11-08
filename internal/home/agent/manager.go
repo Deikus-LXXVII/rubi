@@ -432,10 +432,16 @@ var slugRE = regexp.MustCompile(`[^a-z0-9]+`)
 // directory, or that is, or contains, a protected one (the helper's own directory holds its keys) is
 // skipped. The id is the directory's name, made unique with a number.
 func (m *Manager) projects() []Project {
+	return ConfiguredProjects(m.opt.Dir, m.opt.Protected, m.opt.Projects())
+}
+
+// ConfiguredProjects resolves the configured project list without starting a manager or repairing stores.
+func ConfiguredProjects(dir string, protected, configured []string) []Project {
+	m := &Manager{opt: Options{Dir: dir, Protected: protected}}
 	var out []Project
 	seen := map[string]bool{}
 	dirs := map[string]bool{}
-	for _, d := range m.opt.Projects() {
+	for _, d := range configured {
 		if !filepath.IsAbs(d) {
 			continue
 		}

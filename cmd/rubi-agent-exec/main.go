@@ -9,23 +9,29 @@ import (
 	"os"
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
+	"github.com/Deikus-LXXVII/rubi/internal/home"
 )
 
 func main() {
-	config := flag.String("config", "", "trusted launch configuration JSON")
+	config := flag.String("config", "", "trusted project binding JSON")
 	flag.Parse()
 	f, err := os.Open(*config)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rubi-agent-exec: cannot open trusted configuration")
 		os.Exit(125)
 	}
-	var launch agentsandbox.Launch
+	var binding agentsandbox.Binding
 	d := json.NewDecoder(f)
 	d.DisallowUnknownFields()
-	err = d.Decode(&launch)
+	err = d.Decode(&binding)
 	f.Close()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rubi-agent-exec: invalid trusted configuration")
+		os.Exit(125)
+	}
+	launch, err := home.ResolveAgentLaunch(binding, *config)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "rubi-agent-exec:", err)
 		os.Exit(125)
 	}
 	// Provider protocol arguments are appended individually, never shell-joined.
