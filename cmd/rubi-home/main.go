@@ -288,14 +288,21 @@ func runStart(dir string) int {
 		fmt.Fprintf(os.Stderr, "rubi-home: can't find this binary: %v\n", err)
 		return 1
 	}
-	already, err := home.StartSupervisor(home.SuperviseEnv{Dir: dir, Exe: exe})
+	e := home.SuperviseEnv{Dir: dir, Exe: exe}
+	if homeDir, err := home.UserHome(); err == nil {
+		e.SystemStarts = home.NewAutostart(home.AutostartEnv{Home: homeDir, UID: os.Getuid()}).Loaded
+	}
+	res, err := home.StartSupervisor(e)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "rubi-home start: %v\n", err)
 		return 1
 	}
-	if already {
+	switch res {
+	case home.StartedBySystem:
+		fmt.Println("Rubi Home is started by the system.")
+	case home.AlreadyRunning:
 		fmt.Println("Rubi Home is already running.")
-	} else {
+	default:
 		fmt.Println("Rubi Home is running.")
 	}
 	return 0

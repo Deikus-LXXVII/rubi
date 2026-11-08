@@ -31,7 +31,19 @@ type SuperviseEnv struct {
 	// Grace is how long a stopping supervisor waits for the run to end before it kills it (superviseGrace when 0).
 	Grace time.Duration
 	Logf  func(format string, args ...any)
+	// SystemStarts says whether the system starts Rubi Home (a LaunchAgent, a systemd user unit, a Scheduled Task):
+	// then start leaves it to the system, since a supervisor's run would only wait on that run's lock.
+	SystemStarts func(ctx context.Context) bool
 }
+
+// StartResult is what StartSupervisor did.
+type StartResult int
+
+const (
+	StartedNow      StartResult = iota // a supervisor was started
+	AlreadyRunning                     // a supervisor was running
+	StartedBySystem                    // the system starts Rubi Home; nothing was started
+)
 
 const (
 	superviseSteady = time.Minute
@@ -207,18 +219,26 @@ func superviseOnce(ctx context.Context, e SuperviseEnv, args []string, grace tim
 	return <-done
 }
 
-// StartSupervisor is `rubi-home start`: it starts a detached supervisor unless one runs, and waits until that one
-// holds the lock. already is true when one was running.
-func StartSupervisor(e SuperviseEnv) (already bool, err error) {
+// StartSupervisor is `rubi-home start`: unless the system starts Rubi Home or a supervisor runs, it starts a detached
+// supervisor and waits until that one holds the lock.
+func StartSupervisor(e SuperviseEnv) (StartResult, error) {
 	if SupervisorRunning(e.Dir) {
-		return true, nil
+		return AlreadyRunning, nil
+	}
+	if e.SystemStarts != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bySystem := e.SystemStarts(ctx)
+		cancel()
+		if bySystem {
+			return StartedBySystem, nil
+		}
 	}
 	if err := os.MkdirAll(e.Dir, 0o700); err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	lf, err := openSupervisorLog(e.Dir)
 	if err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	defer lf.Close()
 	args := e.Args
@@ -230,27 +250,27 @@ func StartSupervisor(e SuperviseEnv) (already bool, err error) {
 	cmd.Stdout, cmd.Stderr = lf, lf
 	cmd.Dir = "/"
 	if err := detach(cmd); err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	if err := cmd.Start(); err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
 	deadline := time.After(10 * time.Second)
 	for {
 		if SupervisorRunning(e.Dir) {
-			return false, nil // the goroutine above stays waiting on it; start is a short command that ends now
+			return StartedNow, nil // the goroutine above stays waiting on it; start is a short command that ends now
 		}
 		select {
 		case <-exited:
 			// It lost the race to another start (which now runs) or failed: the log says which.
 			if SupervisorRunning(e.Dir) {
-				return true, nil
+				return AlreadyRunning, nil
 			}
-			return false, fmt.Errorf("the supervisor ended at once; see %s", SupervisorLogPath(e.Dir))
+			return StartedNow, fmt.Errorf("the supervisor ended at once; see %s", SupervisorLogPath(e.Dir))
 		case <-deadline:
-			return false, fmt.Errorf("the supervisor didn't come up; see %s", SupervisorLogPath(e.Dir))
+			return StartedNow, fmt.Errorf("the supervisor didn't come up; see %s", SupervisorLogPath(e.Dir))
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

@@ -210,9 +210,9 @@ func TestSuperviseKillsARunThatWontStop(t *testing.T) {
 func TestStartSupervisor(t *testing.T) {
 	dir := t.TempDir()
 	e := helperEnv(t, "hold", dir)
-	already, err := StartSupervisor(e)
-	if err != nil || already {
-		t.Fatalf("start = %v, %v", already, err)
+	res, err := StartSupervisor(e)
+	if err != nil || res != StartedNow {
+		t.Fatalf("start = %v, %v", res, err)
 	}
 	t.Cleanup(func() {
 		if s := starts(dir); len(s) > 0 {
@@ -226,8 +226,9 @@ func TestStartSupervisor(t *testing.T) {
 	if sid, _ := unix.Getsid(pid); sid != pid {
 		t.Errorf("the supervisor's session is %d; want its own (%d)", sid, pid)
 	}
-	if already, err := StartSupervisor(e); err != nil || !already {
-		t.Errorf("a second start = %v, %v; want already running", already, err)
+	e.SystemStarts = func(context.Context) bool { t.Error("the system was asked although a supervisor runs"); return true }
+	if res, err := StartSupervisor(e); err != nil || res != AlreadyRunning {
+		t.Errorf("a second start = %v, %v; want already running", res, err)
 	}
 	if len(starts(dir)) != 1 {
 		t.Error("a second start started another supervisor")
@@ -324,4 +325,16 @@ func TestSupervisorLockOutlastsAProbe(t *testing.T) {
 		t.Fatalf("a supervisor gave up because of a probe: %v", err)
 	}
 	l.Close()
+}
+
+func TestStartSupervisorLeavesItToTheSystem(t *testing.T) {
+	dir := t.TempDir()
+	e := helperEnv(t, "hold", dir)
+	e.SystemStarts = func(context.Context) bool { return true }
+	if res, err := StartSupervisor(e); err != nil || res != StartedBySystem {
+		t.Fatalf("start where the system starts Rubi Home = %v, %v", res, err)
+	}
+	if len(starts(dir)) != 0 || SupervisorRunning(dir) {
+		t.Error("a supervisor was started beside the system's start")
+	}
 }
