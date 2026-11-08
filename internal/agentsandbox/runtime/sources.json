@@ -1,0 +1,47 @@
+{
+  "node": "v24.22.2",
+  "ripgrep": "15.1.0",
+  "socat": "1.8.1.3",
+  "assets": {
+    "node-linux-amd64": {
+      "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-linux-x64.tar.gz",
+      "sha256": "361718c444e49af2ca5a110c83ba6a8901143f23ab285ebbef0341f391f482a9"
+    },
+    "node-linux-arm64": {
+      "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-linux-arm64.tar.gz",
+      "sha256": "95c264150aceb7f3437a29fd6984924f5f8d1511ea3cbd6c508b83f6c555dae2"
+    },
+    "node-darwin-amd64": {
+      "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-x64.tar.gz",
+      "sha256": "d5e336d588c45be0c37dbd52cc29895593009ca4997a77a1fd02815131ed0e52"
+    },
+    "node-darwin-arm64": {
+      "url": "https://nodejs.org/dist/v24.22.2/node-v24.22.2-darwin-arm64.tar.gz",
+      "sha256": "aa9549349e47dffaa42dcf95d6e06ade8c4bdafc980979883b88767670df385a"
+    },
+    "rg-linux-amd64": {
+      "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz",
+      "sha256": "1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599"
+    },
+    "rg-linux-arm64": {
+      "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-aarch64-unknown-linux-gnu.tar.gz",
+      "sha256": "2b661c6ef508e902f388e9098d9c4c5aca72c87b55922d94abdba830b4dc885e"
+    },
+    "rg-darwin-amd64": {
+      "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-apple-darwin.tar.gz",
+      "sha256": "64811cb24e77cac3057d6c40b63ac9becf9082eedd54ca411b475b755d334882"
+    },
+    "rg-darwin-arm64": {
+      "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-aarch64-apple-darwin.tar.gz",
+      "sha256": "378e973289176ca0c6054054ee7f631a065874a352bf43f0fa60ef079b6ba715"
+    },
+    "socat-source": {
+      "url": "https://distfiles.macports.org/socat/socat-1.8.1.3.tar.bz2",
+      "sha256": "25bc6476292b2e614220989c77b0b6fca87bb2525d9747b31a6639b1fb602418"
+    }
+  },
+  "recipes": {
+    "build.py": "43519617d1ff2a42af66720a6f4032149eea1fe6679f99c229f38af990442596",
+    "seal-macos.py": "db9a128cedc374349be11e85781a1ad09aecdec34a85b789062b013d7124b08e"
+  }
+}

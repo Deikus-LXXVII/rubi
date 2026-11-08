@@ -122,16 +122,59 @@ Native T3/OpenCode state/credentials remain within its private writable state.
 The earlier [boundary findings](design/t3-srt-provider-boundaries.md) are historical;
 the executable mechanisms above supersede their "not connected" status.
 
-### Installation metadata (not installed by this slice)
+### Release runtime and installation metadata
 
-`Config.AgentSandbox` (`agent_sandbox`) supplies an absolute `agent_exec`, `srt`,
-trusted `search_path`, narrow `runtime_read` trees, and `providers[driver]` entries
-with absolute `cli`, `runtime_read` and `allowed_domains` (Cursor uses the pinned
-T3 runtime rather than a CLI). `agent_exec` defaults to
-the sibling `rubi-agent-exec` when writing shims; all other dependencies must be
-explicitly provisioned. These fields contain installation paths/domains, never
-credential values; the optional credential metadata contains only file paths.
-This slice does not modify any live config or install dependencies.
+Linux and macOS release tarballs now include `rubi-agent-exec` and
+`srt-runtime/<pin>/<os>-<arch>/` beside `rubi-home`. The universal Mac app includes
+both CPU runtimes and a universal launcher in `Contents/MacOS`. The existing
+signed archive checksums authenticate the entire distribution; no runtime
+network installation, npm lifecycle scripts or unpinned `curl | sh` is used.
+Windows archives remain single-executable: sandbox routes stay unsupported.
+
+Pinned inputs are in `internal/agentsandbox/runtime/`: srt **0.0.81**, its complete
+npm lockfile (including transitive integrity hashes), Node **24.22.2**, ripgrep
+**15.1.0**, socat **1.8.1.3**, and SHA-256s for every native source/asset and the
+build/signing recipes. The install pin hashes the lockfile and these source
+pins. Changes to either recipe require updating its checksum; a build refuses a
+stale recipe pin. Old pin directories are retained, not overwritten while in use.
+Node/rg licences, npm licences and socat's GPL source archive plus exact build
+instructions accompany the binaries. Socat disables optional TLS/readline/libwrap
+support; it provides srt's plain socket transport, not a general TLS client.
+It links system glibc dynamically (no statically linked LGPL libc). Release
+Linux builds use Ubuntu 22.04: **glibc 2.35+**, Linux amd64/arm64. Node also requires
+its normal system libraries. Linux **bwrap remains a system dependency**; missing
+bubblewrap or unusable namespaces refuse with no unconfined fallback. macOS uses
+system `/usr/bin/sandbox-exec`; Node's supported macOS baseline still applies.
+
+`ResolveRuntime` follows the real executable's installation path, never cwd,
+project metadata or an agent-controlled PATH. A present bundle must have the
+compiled pin, completion marker and required regular executable files. Broken,
+missing-current-pin or symlinked runtime trees refuse rather than choosing a
+system srt. A complete runtime supplies absolute Node/srt paths, trusted bundled
+rg/socat first on PATH, and a narrow read-only runtime grant. Existing project,
+private-state and credential-file overlap checks apply to that grant too; placing
+the runtime in agent-writable folders refuses. Install-time manifests verify every
+file and reject checksum changes, unlisted files, symlinks and traversal paths.
+Manifests are integrity checks, not a substitute for the signed outer archive.
+
+The shell installer copies companions only after the existing signature/checksum
+verification; the Mac app self-installer copies its adjacent companions too.
+Both use the new binary's `runtime-install SOURCE DEST` helper (no config loading,
+pairing or daemon access), stage immutable runtime trees, and atomically replace
+the launcher before the main binary. Missing/corrupt companions refuse the main
+binary replacement. A previously valid tree is reused only after verification.
+Mac signing preserves nested helpers' entitlements/runtime flags (including
+Node JIT), refreshes runtime checksums **after** signing, then seals the app;
+the Mac release job smoke-checks its sealed native Node.
+
+`Config.AgentSandbox` (`agent_sandbox`) still supplies absolute provider CLI paths,
+trusted extra `search_path`, narrow extra `runtime_read` and provider
+`allowed_domains`. `agent_exec` defaults to sibling `rubi-agent-exec` when writing
+shims. The bundled srt/Node/rg/socat need no per-user path entries. A source build
+with **no adjacent runtime tree** can still explicitly provision `srt` and its
+trusted dependencies; without either a bundle or explicit srt it refuses. Provider
+CLI/T3 installations, credentials and network domains remain explicit: this does
+not import sign-ins, enable providers or change any live settings.
 
 The caller provisions an existing 0700 settings directory, project directories,
 provider login directory, and a private temporary directory. The settings
@@ -208,9 +251,6 @@ compatibility.
 
 ## Follow-up integration decisions
 
-- Install and pin `@anthropic-ai/sandbox-runtime` (spike tested 0.0.81), Node and
-  OS dependencies in Rubi Home releases for Linux and macOS. Keep the install
-  tree separate from projects and login/tmp folders. No auto-install is added.
 - Validate authenticated real CLIs and each provider's login/state conventions.
   Per-role login directories are not automatically populated from shared credentials.
   Ambient environment-based keys and T3 environment overrides are not inherited;
@@ -227,10 +267,30 @@ compatibility.
 - Bridge cleanup is cancellation/control-pipe/process-group based; SIGINT/SIGTERM
   stops OpenCode supervision, but arbitrary signal fidelity/graceful provider
   shutdown and crash-time removal of outer srt temporary directories remain open.
-- Package pinned srt/Node/socat/rg and keep runtime assets separate from credentials.
-  External plugin/UI provider-selection schemas may need their own rollout; the
+- Native macOS codesigning/sandbox-exec and Linux arm64 packaging still need CI/
+  platform execution; the local native dry-run is Linux amd64 only.
+- External plugin/UI provider-selection schemas may need their own rollout; the
   Rubi Home operation accepts the selector without patching T3 Code.
 
 Directory bindings hash the canonical existing absolute directory, matching
 project discovery across macOS temporary-root aliases. Missing paths refuse; a
 retargeted project symlink invalidates the old binding.
+
+### Disposable release dry-run
+
+```
+python3 scripts/srt-runtime/build.py --platform linux-amd64 --dest /tmp/rubi-stage
+# Build both Go executables into /tmp/rubi-stage; never use a live install directory.
+/tmp/rubi-stage/rubi-home runtime-install /tmp/rubi-stage /tmp/rubi-install/bin
+RUBI_BUNDLED_RUNTIME_TEST=/tmp/rubi-stage/rubi-home \
+  go test ./internal/agentsandbox -run TestBundledRuntimeSRTIntegration -count=1
+```
+
+The builder needs Python with tar extraction filters, curl, npm, a C compiler and
+make; Linux arm64 uses `--cc aarch64-linux-gnu-gcc`. It never publishes. The local
+Linux amd64 dry-run built the real pinned closure, assembled a release archive,
+installed into a disposable directory, and ran real bwrap+srt probes with bundled
+Node/rg/socat. Providers in isolation probes remain fixtures; this is not an
+additional authenticated Cursor/OpenCode model turn. Runtime resolution/install
+regressions also cover executable aliases, missing dependencies, tampering and
+agent-writable runtime refusal. No macOS signing execution is claimed on Linux.

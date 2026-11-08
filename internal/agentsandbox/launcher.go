@@ -84,6 +84,14 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		return 0, fmt.Errorf("srt unsupported on this platform")
 	}
+	self, e := os.Executable()
+	if e != nil {
+		return 0, e
+	}
+	l, e = ResolveRuntime(l, self)
+	if e != nil {
+		return 0, e
+	}
 	srt, e := executable(l.SRT)
 	if e != nil {
 		return 0, fmt.Errorf("srt missing or not executable: %w", e)
@@ -98,10 +106,6 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	protected := append([]string{l.SettingsDir, srt, cli}, l.Protected...)
 	if l.ConfigPath != "" {
 		protected = append(protected, l.ConfigPath)
-	}
-	self, e := os.Executable()
-	if e != nil {
-		return 0, e
 	}
 	protected = append(protected, self)
 	for _, dir := range l.SearchPath {
@@ -119,6 +123,9 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	for _, dep := range deps {
 		p, e := find(dep, l.SearchPath)
 		if e != nil {
+			if dep == "bwrap" {
+				return 0, errors.New("sandbox: bwrap missing: system bubblewrap is required on Linux; install it before starting an agent (no unconfined fallback)")
+			}
 			return 0, e
 		}
 		protected = append(protected, p)

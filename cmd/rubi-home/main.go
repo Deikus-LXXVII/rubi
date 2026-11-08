@@ -53,6 +53,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"github.com/Deikus-LXXVII/rubi/internal/home"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/microvm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
@@ -94,6 +95,16 @@ func main() {
 		return
 	}
 	switch os.Args[1] {
+	case "runtime-install": // internal installer path; never opens config or contacts a daemon
+		if len(os.Args) != 4 {
+			fmt.Fprintln(os.Stderr, "runtime-install requires source and destination directories")
+			os.Exit(2)
+		}
+		if err := agentsandbox.InstallRuntimeCompanions(os.Args[2], os.Args[3]); err != nil {
+			fmt.Fprintln(os.Stderr, "runtime-install:", err)
+			os.Exit(1)
+		}
+		return
 	case "claude-mcp": // Claude Code's MCP server: talks to the helper on its socket, reads no configuration
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		err := home.RunClaudeMCP(ctx, home.ClaudeSocketPath(mustDir()))

@@ -99,25 +99,6 @@ func resolveAgentLaunch(b agentsandbox.Binding, bindingPath string, projectServe
 	}
 	sensitive = append(sensitive, credentialFiles...)
 	runtimeRead := append(append([]string{}, install.RuntimeRead...), provider.RuntimeRead...)
-	for _, path := range runtimeRead {
-		real, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return l, errors.New("sandbox: runtime read path missing")
-		}
-		for _, root := range []string{filepath.Join(b.HomeDir, agent.RolesDir), filepath.Join(b.HomeDir, "config.json"), filepath.Join(b.HomeDir, "t3", "sandbox")} {
-			if agent.Within(real, root) || agent.Within(root, real) {
-				return l, errors.New("sandbox: runtime read grant overlaps private Rubi state")
-			}
-		}
-		for _, p := range projects {
-			if agent.Within(p.Dir, real) || agent.Within(real, p.Dir) {
-				return l, errors.New("sandbox: runtime read grant overlaps a configured project")
-			}
-		}
-	}
-	if err := checkCredentialReadGrants(install, runtimeRead); err != nil {
-		return l, err
-	}
 	l = agentsandbox.Launch{
 		Policy: agentsandbox.Policy{Projects: []string{project}, Home: filepath.Join(base, "home"), Login: login,
 			Tmp: filepath.Join(base, "tmp"), SensitiveRoots: sensitive, RuntimeRead: runtimeRead,
@@ -138,6 +119,33 @@ func resolveAgentLaunch(b agentsandbox.Binding, bindingPath string, projectServe
 		if real, err := filepath.EvalSymlinks(cwd); err == nil && agent.Within(real, project) {
 			l.Cwd = real
 		}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return l, err
+	}
+	l, err = agentsandbox.ResolveRuntime(l, self)
+	if err != nil {
+		return l, err
+	}
+	for _, path := range l.Policy.RuntimeRead {
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return l, errors.New("sandbox: runtime read path missing")
+		}
+		for _, root := range []string{filepath.Join(b.HomeDir, agent.RolesDir), filepath.Join(b.HomeDir, "config.json"), filepath.Join(b.HomeDir, "t3", "sandbox")} {
+			if agent.Within(real, root) || agent.Within(root, real) {
+				return l, errors.New("sandbox: runtime read grant overlaps private Rubi state")
+			}
+		}
+		for _, p := range projects {
+			if agent.Within(p.Dir, real) || agent.Within(real, p.Dir) {
+				return l, errors.New("sandbox: runtime read grant overlaps a configured project")
+			}
+		}
+	}
+	if err := checkCredentialReadGrants(install, l.Policy.RuntimeRead); err != nil {
+		return l, err
 	}
 	return l, nil
 }
