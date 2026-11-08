@@ -62,6 +62,9 @@ func newMsgID() string {
 
 // handleAgent serves one t3-agent.* op.
 func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessage) (any, error) {
+	if strings.HasPrefix(op, "t3-agent.task.") {
+		return t.handleTask(ctx, op, args)
+	}
 	name := strings.TrimPrefix(op, "t3-agent.")
 	switch {
 	case strings.HasPrefix(name, "role."):
@@ -81,21 +84,23 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 		return t.status(ctx)
 	}
 	var in struct {
-		Task      bool   `json:"task"`
-		Project   string `json:"project"`
-		Role      string `json:"role"`
-		ID        string `json:"id"`
-		Limit     int    `json:"limit"`
-		Prompt    string `json:"prompt"`
-		Text      string `json:"text"`
-		Name      string `json:"name"`
-		From      string `json:"from"`
-		Mode      string `json:"mode"`
-		Steer     bool   `json:"steer"`
-		Bot       string `json:"bot"`
-		Model     string `json:"model"`
-		Provider  string `json:"provider"`
-		MessageID string `json:"message_id"`
+		Task         bool              `json:"task"`
+		Publish      *agenttask.Target `json:"publish"`
+		PublishProof string            `json:"publish_proof"`
+		Project      string            `json:"project"`
+		Role         string            `json:"role"`
+		ID           string            `json:"id"`
+		Limit        int               `json:"limit"`
+		Prompt       string            `json:"prompt"`
+		Text         string            `json:"text"`
+		Name         string            `json:"name"`
+		From         string            `json:"from"`
+		Mode         string            `json:"mode"`
+		Steer        bool              `json:"steer"`
+		Bot          string            `json:"bot"`
+		Model        string            `json:"model"`
+		Provider     string            `json:"provider"`
+		MessageID    string            `json:"message_id"`
 	}
 	if len(args) > 0 && string(args) != "null" && json.Unmarshal(args, &in) != nil {
 		return nil, errors.New("bad arguments")
@@ -115,7 +120,7 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 		}
 		return t.messages(ctx, in.Project, in.Role, in.ID, in.Limit)
 	case "start":
-		return t.start(ctx, startIn{in.Project, in.Role, in.Prompt, in.Name, in.From, in.Mode, in.Bot, in.Model, in.MessageID, in.Provider, in.Task})
+		return t.start(ctx, startIn{project: in.Project, role: in.Role, prompt: in.Prompt, name: in.Name, from: in.From, mode: in.Mode, bot: in.Bot, model: in.Model, messageID: in.MessageID, provider: in.Provider, task: in.Task, publish: in.Publish, proof: in.PublishProof})
 	case "send":
 		if !validT3ThreadID(in.ID) {
 			return nil, errors.New("bad session id")
@@ -344,6 +349,8 @@ func (t *T3Home) messages(ctx context.Context, project, role, id string, limit i
 type startIn struct {
 	project, role, prompt, name, from, mode, bot, model, messageID, provider string
 	task                                                                     bool
+	publish                                                                  *agenttask.Target
+	proof                                                                    string
 }
 
 func firstLine(s string, n int) string {
@@ -416,6 +423,10 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 			return nil, err
 		}
 	}
+	if in.task {
+		t.taskMu.Lock()
+		defer t.taskMu.Unlock()
+	}
 	if strings.TrimSpace(in.prompt) == "" {
 		return nil, errors.New("the prompt is empty")
 	}
@@ -454,13 +465,50 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 	}
 	var workspace agenttask.Workspace
 	dir := r.ProjectDir
+	replay := false
 	if in.task {
-		if err := t.checkCaps(r.Project, r.ID, in.bot); err != nil {
-			return nil, err
+		if in.publish != nil {
+			if err := in.publish.Validate(); err != nil {
+				return nil, err
+			}
+			if in.proof == "" || in.messageID == "" {
+				return nil, errors.New("task: publishing requires a core-confirmed target and stable message ID")
+			}
 		}
-		workspace, err = agenttask.Prepare(ctx, t.h.Dir, r.ProjectDir, r.Project, r.ID)
-		if err != nil {
-			return nil, err
+		if in.messageID == "" {
+			in.messageID = newMsgID()
+		}
+		if in.model == "" {
+			in.model = t.Model
+		}
+		in.project = r.Project
+		in.provider = provider
+		spec := in.saved()
+		prior, found, e := t.taskStore().Find(ctx, spec)
+		if e != nil {
+			return nil, e
+		}
+		replay = found
+		if found {
+			if prior.Phase != agenttask.Starting {
+				return taskStartResult(prior), nil
+			}
+			workspace, e = agenttask.Resolve(t.h.Dir, prior.ID, r.Project, r.ID, roles.DirHash(r.ProjectDir))
+			if e != nil {
+				_, _ = t.taskStore().Outcome(ctx, prior.ID, prior.Thread, agenttask.Failed)
+				return nil, e
+			}
+		} else {
+			if err := t.checkCaps(r.Project, r.ID, in.bot); err != nil {
+				return nil, err
+			}
+			workspace, e = agenttask.Prepare(ctx, t.h.Dir, r.ProjectDir, r.Project, r.ID)
+			if e != nil {
+				return nil, e
+			}
+			if e = t.taskStore().Create(ctx, workspace, spec); e != nil {
+				return nil, e
+			}
 		}
 		dir = workspace.Dir
 	}
@@ -469,8 +517,10 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 		return nil, err
 	}
 	t.h.Agent.SeeBot(in.bot)
-	if err := t.checkCaps(r.Project, r.ID, in.bot); err != nil {
-		return nil, err
+	if !replay {
+		if err := t.checkCaps(r.Project, r.ID, in.bot); err != nil {
+			return nil, err
+		}
 	}
 	var pid string
 	if provider == "cursor" {
@@ -511,9 +561,23 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 	now := t.now().UTC()
 	th := t3Thread{ID: run.ThreadID, Project: r.Project, Role: r.ID, Name: title, Bot: in.bot, Mode: claude, Runtime: string(eff),
 		Task: workspace.ID, Branch: workspace.Branch, Provider: provider, Environment: environmentFor(provider, dir), Created: now, LastActivity: now, Running: true, RunID: run.RunID, To: toOf(in.from, in.bot), ReplyTo: []string{mid}}
-	if err := t.threads.add(th); err != nil {
+	if old, exists := t.threads.get(th.ID); exists {
+		if old.Task != th.Task || old.Role != th.Role || old.Project != th.Project {
+			return nil, errors.New("task: native receipt belongs to another session")
+		}
+		th = old
+	} else if err := t.threads.add(th); err != nil {
 		_ = cl.Interrupt(ctx, run.ThreadID)
 		return nil, err
+	}
+	if th.Task != "" {
+		phase := agenttask.Running
+		if !th.Running {
+			phase = taskThreadOutcome(th)
+		}
+		if _, err := t.taskStore().Outcome(ctx, th.Task, th.ID, phase); err != nil {
+			return nil, err
+		}
 	}
 	t.emitStatus(th, "busy")
 	t.startWatch(th.ID)
@@ -524,7 +588,7 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 	return result, nil
 }
 
-func (t *T3Home) send(ctx context.Context, project, role, id, text, from, bot, messageID string, steer bool) (any, error) {
+func (t *T3Home) sendDirect(ctx context.Context, project, role, id, text, from, bot, messageID string, steer bool) (any, error) {
 	th, err := t.ownOpen(project, role, id)
 	if err != nil {
 		return nil, err
@@ -559,6 +623,7 @@ func (t *T3Home) send(ctx context.Context, project, role, id, text, from, bot, m
 	}
 	t.threads.update(id, func(x *t3Thread) {
 		x.Running, x.To, x.LastActivity = true, toOf(from, bot), t.now().UTC()
+		x.TaskOutcome = ""
 		if run.RunID != "" {
 			x.RunID = run.RunID
 		}
@@ -593,7 +658,7 @@ func (t *T3Home) rename(ctx context.Context, project, role, id, name string) (an
 	return map[string]any{"ok": true}, nil
 }
 
-func (t *T3Home) fork(ctx context.Context, project, role, id, name string) (any, error) {
+func (t *T3Home) forkDirect(ctx context.Context, project, role, id, name string) (any, error) {
 	th, err := t.ownOpen(project, role, id)
 	if err != nil {
 		return nil, err
@@ -636,6 +701,9 @@ func (t *T3Home) interrupt(ctx context.Context, project, role, id string) (any, 
 	if err != nil {
 		return nil, err
 	}
+	if th.Task != "" {
+		return t.stopTask(ctx, th.Task)
+	}
 	cl, err := t.readyForStop(ctx, th)
 	if err != nil {
 		return nil, err
@@ -652,6 +720,11 @@ func (t *T3Home) closeThread(ctx context.Context, project, role, id string) (any
 	th, err := t.own(project, role, id)
 	if err != nil {
 		return nil, err
+	}
+	if th.Task != "" {
+		if _, err := t.stopTask(ctx, th.Task); err != nil {
+			return nil, err
+		}
 	}
 	if th.Running {
 		if cl, readyErr := t.readyForStop(ctx, th); readyErr == nil {
@@ -773,11 +846,11 @@ func (t *T3Home) emitStatus(th t3Thread, state string) {
 
 func (t *T3Home) stopWatch(id string) {
 	t.mu.Lock()
-	cancel := t.watch[id]
+	watch := t.watch[id]
 	delete(t.watch, id)
 	t.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if watch != nil {
+		watch.cancel()
 	}
 }
 
@@ -800,19 +873,25 @@ func (t *T3Home) startWatch(id string) {
 	if th.Provider == "cursor" {
 		parent = projectBase
 	}
-	if _, on := t.watch[id]; on || parent == nil {
+	if _, on := t.watch[id]; on || parent == nil || parent.Err() != nil || t.watchPaused {
 		t.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(parent)
-	t.watch[id] = cancel
+	watch := &t3Watch{cancel: cancel, done: make(chan struct{})}
+	t.watch[id] = watch
+	t.watchWG.Add(1)
 	t.mu.Unlock()
 	go func() {
 		defer func() {
-			t.mu.Lock()
-			delete(t.watch, id)
-			t.mu.Unlock()
 			cancel()
+			t.mu.Lock()
+			if t.watch[id] == watch {
+				delete(t.watch, id)
+			}
+			t.mu.Unlock()
+			close(watch.done)
+			t.watchWG.Done()
 		}()
 		t.watchThread(ctx, id)
 	}()
@@ -834,7 +913,7 @@ func (t *T3Home) watchThread(ctx context.Context, id string) {
 		if !ok || th.Closed || !th.Running {
 			return
 		}
-		cl, readyErr := t.readyForThread(ctx, th)
+		cl, readyErr := t.readyForTaskWatch(ctx, th)
 		if readyErr != nil {
 			return // T3 went away; the next start resumes the watch
 		}
@@ -867,6 +946,9 @@ func (t *T3Home) watchThread(ctx context.Context, id string) {
 
 // finishTurn emits the item for a run that ended. It reports whether the watch is over (no newer run was sent).
 func (t *T3Home) finishTurn(ctx context.Context, cl *t3.Client, id string, w t3.WaitResult) (over bool) {
+	if ctx.Err() != nil {
+		return true
+	}
 	th, ok := t.threads.get(id)
 	if !ok {
 		return true
@@ -890,6 +972,9 @@ func (t *T3Home) finishTurn(ctx context.Context, cl *t3.Client, id string, w t3.
 			text = any
 		}
 	}
+	if ctx.Err() != nil {
+		return true
+	}
 	truncated := false
 	if r := []rune(text); len(r) > maxResultRunes {
 		text, truncated = string(r[:maxResultRunes]), true
@@ -904,15 +989,38 @@ func (t *T3Home) finishTurn(ctx context.Context, cl *t3.Client, id string, w t3.
 	}
 	raw, _ := json.Marshal(map[string]any{"session_id": id, "task": th.Task, "branch": th.Branch, "kind": "result", "subtype": subtype, "is_error": w.Status == "failed",
 		"text": text, "to": th.To, "in_reply_to": reply, "truncated": truncated, "run_id": w.RunID})
-	t.h.Agent.Emit(agent.Item{Type: "event", Project: th.Project, Role: th.Role, SessionID: id, Event: raw})
 	over = true
 	cur, _ := t.threads.update(id, func(x *t3Thread) {
-		x.LastPos, x.LastActivity, x.ReplyTo = pos, t.now().UTC(), nil
+		x.LastActivity = t.now().UTC()
 		if x.RunID != "" && x.RunID != w.RunID {
 			return // a message sent meanwhile started a newer run: stay on it
 		}
+		x.LastPos, x.ReplyTo = pos, nil
 		x.Running, x.RunID = false, ""
+		x.TaskOutcome = w.Status
 	})
+	if th.Task != "" && !cur.Running {
+		phase := agenttask.Waiting
+		if w.Status == "failed" {
+			phase = agenttask.Failed
+		} else if w.Status == "cancelled" || w.Status == "interrupted" {
+			phase = agenttask.Stopped
+		} else {
+			for _, other := range t.threads.snapshot() {
+				if other.Task == th.Task && other.Running && !other.Closed {
+					phase = agenttask.Running
+				}
+			}
+		}
+		if state, err := t.taskStore().Outcome(ctx, th.Task, th.ID, phase); err == nil && state.Phase.Terminal() {
+			if state.Phase == agenttask.Failed || state.Phase == agenttask.Stopped {
+				_, _ = t.stopTask(ctx, state.ID)
+			} else {
+				t.emitTaskResult(state)
+			}
+		}
+	}
+	t.h.Agent.Emit(agent.Item{Type: "event", Project: th.Project, Role: th.Role, SessionID: id, Event: raw})
 	if cur.Running {
 		over = false
 	} else {

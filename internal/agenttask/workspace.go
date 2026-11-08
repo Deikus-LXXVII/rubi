@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -77,17 +79,33 @@ func git(ctx context.Context, dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 func configHash(dir string) (string, error) {
-	p := filepath.Join(dir, ".git", "config")
-	st, err := os.Lstat(p)
-	if err != nil || !st.Mode().IsRegular() {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
 		return "", errors.New("task: unsafe git configuration")
 	}
-	b, err := os.ReadFile(p)
+	defer root.Close()
+	b, err := readMetadata(root, ".git/config", 1<<20)
 	if err != nil {
-		return "", err
+		return "", errors.New("task: unsafe git configuration")
 	}
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:]), nil
+}
+func readMetadata(root *os.Root, path string, max int64) ([]byte, error) {
+	f, err := root.OpenFile(path, os.O_RDONLY|fsx.NonBlock, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Size() > max {
+		return nil, errors.New("task: unsafe or oversized Git metadata")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil || int64(len(b)) > max {
+		return nil, errors.New("task: unsafe or oversized Git metadata")
+	}
+	return b, nil
 }
 
 // Prepare copies committed HEAD, never dirty/untracked files. --no-local avoids

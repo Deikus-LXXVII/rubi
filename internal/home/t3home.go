@@ -51,7 +51,15 @@ const (
 )
 
 // T3Home is Rubi Home's T3: installation, server, pairing and the paired client.
+type t3Watch struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type T3Home struct {
+	watchWG        sync.WaitGroup
+	watchPaused    bool
+	taskMu         sync.Mutex
 	projectMu      sync.Mutex
 	projectServers map[string]*projectT3
 	projectStop    context.CancelFunc
@@ -118,7 +126,7 @@ type T3Home struct {
 
 	threads t3Threads
 	projMu  sync.Mutex // one project lookup/creation at a time
-	watch   map[string]context.CancelFunc
+	watch   map[string]*t3Watch
 }
 
 type t3Job struct {
@@ -132,7 +140,7 @@ type t3Failure struct {
 }
 
 func newT3Home(h *Helper) *T3Home {
-	t := &T3Home{h: h, Ceiling: t3.FullAccess, Model: "claude-sonnet-4-6", base: context.Background(), watch: map[string]context.CancelFunc{}}
+	t := &T3Home{h: h, Ceiling: t3.FullAccess, Model: "claude-sonnet-4-6", base: context.Background(), watch: map[string]*t3Watch{}}
 	t.threads.path = filepath.Join(t.root(), "threads.json")
 	return t
 }
@@ -200,6 +208,7 @@ func (t *T3Home) Run(ctx context.Context) {
 			}
 		}()
 	}
+	t.recoverTasks(ctx)
 	for _, th := range t.threads.open("", "") {
 		if th.Provider == "cursor" && th.Running {
 			t.startWatch(th.ID)
@@ -282,6 +291,9 @@ func (t *T3Home) Start(ctx context.Context) error {
 }
 
 func (t *T3Home) startLocked(ctx context.Context) error {
+	t.mu.Lock()
+	t.watchPaused = false
+	t.mu.Unlock()
 	pin, err := t.pin()
 	if err != nil {
 		return err
@@ -303,6 +315,7 @@ func (t *T3Home) startLocked(ctx context.Context) error {
 		}
 	}
 	t.startSessions()
+	t.recoverTasks(ctx)
 	t.resumeWatchers()
 	return nil
 }
@@ -445,7 +458,6 @@ func (t *T3Home) startSessions() {
 
 // Stop ends the session socket, the watchers and the server, and forgets the client. It is safe to call twice.
 func (t *T3Home) Stop() {
-	t.stopProjectServers()
 	t.opMu.Lock()
 	defer t.opMu.Unlock()
 	t.stopLocked()
@@ -455,11 +467,20 @@ func (t *T3Home) stopLocked() {
 	t.mu.Lock()
 	stop, srv, cl, done := t.runStop, t.srv, t.cl, t.sessDone
 	t.runStop, t.runCtx, t.srv, t.cl, t.sessDone = nil, nil, nil, nil, nil
-	t.watch = map[string]context.CancelFunc{}
+	t.watchPaused = true
+	watches := make([]*t3Watch, 0, len(t.watch))
+	for _, w := range t.watch {
+		watches = append(watches, w)
+	}
 	t.mu.Unlock()
+	for _, w := range watches {
+		w.cancel()
+	}
 	if stop != nil {
 		stop()
 	}
+	t.watchWG.Wait()
+	t.stopProjectServers()
 	if done != nil {
 		select {
 		case <-done:
@@ -472,6 +493,11 @@ func (t *T3Home) stopLocked() {
 	if srv != nil {
 		srv.Stop()
 	}
+	// Later explicit Cursor work can start its independent project server. A
+	// stopped Home's cancelled base context still prevents any new watcher.
+	t.mu.Lock()
+	t.watchPaused = false
+	t.mu.Unlock()
 }
 
 // ---- pairing ----

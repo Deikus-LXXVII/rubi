@@ -10,10 +10,23 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentbridge"
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
+	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
 	"github.com/Deikus-LXXVII/rubi/internal/home"
 )
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--git-credential-helper" {
+		f := os.NewFile(3, "credential")
+		if f == nil {
+			os.Exit(125)
+		}
+		defer f.Close()
+		if err := agenttask.CredentialHelper(os.Args[2], f, os.Stdin, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "rubi-git: credential request refused")
+			os.Exit(125)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--bridge-relay" {
 		if err := agentbridge.Relay(os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "rubi-relay:", err)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if len(os.Args) == 3 && os.Args[1] == "--git-credential-helper" {
+		main()
+		return
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "--bridge-fake" {
 		fakeBridgeService()
 		return
@@ -226,5 +231,38 @@ func TestUnroutedProvidersRefuseBeforeExecution(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestGitCredentialFDEntrypoint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		return
+	} // inherited Unix descriptors are unsupported there; task admission refuses earlier
+	helper, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if _, err = io.WriteString(w, "fake-fd-only-credential"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	quote := "'" + strings.ReplaceAll(helper, "'", "'\\''") + "'"
+	cmd := exec.Command("/usr/bin/git", "-c", "credential.helper=", "-c", "credential.helper=!"+quote+" --git-credential-helper", "credential", "fill")
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0"}
+	cmd.ExtraFiles = []*os.File{r}
+	cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
+	out, err := cmd.Output()
+	if err != nil || !strings.Contains(string(out), "password=fake-fd-only-credential") {
+		t.Fatal("real Git/helper inherited descriptor exchange failed", err)
+	}
+	for _, arg := range append(cmd.Args, cmd.Env...) {
+		if strings.Contains(arg, "fake-fd-only-credential") {
+			t.Fatal("credential reached argv/environment")
+		}
 	}
 }
