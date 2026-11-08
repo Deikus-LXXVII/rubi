@@ -24,7 +24,12 @@ const InstancePrefix = "claude-"
 type RoleInstance struct {
 	ID, Name  string
 	ClaudeDir string // the role's config directory: the instance's homePath
+	// ProjectDir is the project the role is pinned to: its instance is turned on only in T3's project of that folder.
+	ProjectDir string
 }
+
+// T3Project is one of T3's projects: its id and its workspace root.
+type T3Project struct{ ID, Root string }
 
 // InstanceOptions say where things are.
 type InstanceOptions struct {
@@ -34,6 +39,11 @@ type InstanceOptions struct {
 	Dir string
 	// RubiHome is the path of the rubi-home binary the shims run.
 	RubiHome string
+	// Projects are T3's projects, when known. Then each role's instance is on only in its own project (T3's
+	// projectSettingsOverrides, which T3 checks when a thread is dispatched) and off everywhere else. Other providers'
+	// settings are left as they are. Unknown (nil): no project setting is written or changed, and a new instance is off.
+	// Known but empty: no project is the role's, so the instances are off.
+	Projects []T3Project
 }
 
 // SyncResult says what a sync changed.
@@ -41,10 +51,16 @@ type SyncResult struct {
 	Added, Updated, Removed []string
 	// Skipped names instances that have a role's id but are not Home's: they are left as they are.
 	Skipped []string
+	// Projects says the per-project settings changed.
+	Projects bool
+	// ProjectsKnown says T3's projects were known, so each role's switch in them was written (or was right already).
+	ProjectsKnown bool
 }
 
 // Changed says whether the settings file was written.
-func (r SyncResult) Changed() bool { return len(r.Added)+len(r.Updated)+len(r.Removed) > 0 }
+func (r SyncResult) Changed() bool {
+	return len(r.Added)+len(r.Updated)+len(r.Removed) > 0 || r.Projects
+}
 
 func (o InstanceOptions) shimDir() string { return filepath.Join(o.Dir, "t3", "bin") }
 func (o InstanceOptions) settingsPath() string {
@@ -169,6 +185,14 @@ func (o InstanceOptions) syncOnce(want []RoleInstance, raw []byte) ([]byte, Sync
 			return nil, res, fmt.Errorf("t3vm: T3's providerInstances aren't an object, left alone: %w", err)
 		}
 	}
+	var po *projectOverrides
+	if o.Projects != nil {
+		res.ProjectsKnown = true
+		var err error
+		if po, err = readProjectOverrides(top); err != nil {
+			return nil, res, err
+		}
+	}
 	shims := o.shimDir()
 	// ours: the entry is Home's when its binary is a shim in Home's folder and the key is that shim's name. A copy of
 	// Home's entry under another key (the user duplicated it) is the user's.
@@ -218,8 +242,10 @@ func (o InstanceOptions) syncOnce(want []RoleInstance, raw []byte) ([]byte, Sync
 		}
 		cfg["binaryPath"], cfg["homePath"] = jstr(shim), jstr(r.ClaudeDir)
 		entry["driver"], entry["displayName"], entry["config"] = jstr("claudeAgent"), jstr(r.Name), mustMarshal(cfg)
-		if _, ok := entry["enabled"]; !ok {
-			entry["enabled"] = json.RawMessage("true")
+		// Off for every project but where a project setting turns it on. A new instance is off too while T3's projects
+		// aren't known: a role is pinned to its folder, and the next sync with them turns it on there.
+		if _, ok := entry["enabled"]; o.Projects != nil || !ok {
+			entry["enabled"] = json.RawMessage("false")
 		}
 		delete(entry, "environment") // Home gives a session its environment; an instance carries none
 		nb := mustMarshal(entry)
@@ -244,6 +270,9 @@ func (o InstanceOptions) syncOnce(want []RoleInstance, raw []byte) ([]byte, Sync
 		}
 	}
 	sort.Strings(res.Removed)
+	if o.Projects != nil {
+		res.Projects = o.syncProjects(top, po, want, wanted, insts)
+	}
 	if !res.Changed() {
 		return nil, res, nil
 	}
@@ -269,4 +298,102 @@ func mustMarshal(v any) json.RawMessage {
 func jsonEqual(a, b json.RawMessage) bool {
 	var x, y any
 	return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && string(mustMarshal(x)) == string(mustMarshal(y))
+}
+
+// sameDir says whether a and b are one folder: the same path, or the same once their symlinks are followed (Home's
+// check when it finds a role's T3 project, so a project it uses is the one the role is turned on in).
+func sameDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ra, ea := filepath.EvalSymlinks(a)
+	rb, eb := filepath.EvalSymlinks(b)
+	return ea == nil && eb == nil && ra == rb
+}
+
+// projectOverrides is T3's per-project settings, each project's provider switches read out: the project sync changes
+// only those. It refuses settings it can't read, before the sync writes or removes any shim.
+type projectOverrides struct {
+	ovs map[string]map[string]json.RawMessage
+	pis map[string]map[string]json.RawMessage // project id → provider instance id → its setting
+}
+
+func readProjectOverrides(top map[string]json.RawMessage) (*projectOverrides, error) {
+	po := &projectOverrides{ovs: map[string]map[string]json.RawMessage{}, pis: map[string]map[string]json.RawMessage{}}
+	if b, ok := top["projectSettingsOverrides"]; ok && string(b) != "null" {
+		if err := json.Unmarshal(b, &po.ovs); err != nil {
+			return nil, fmt.Errorf("t3vm: T3's projectSettingsOverrides aren't an object, left alone: %w", err)
+		}
+	}
+	for id, ov := range po.ovs {
+		if ov == nil {
+			continue
+		}
+		pis := map[string]json.RawMessage{}
+		if b, ok := ov["providerInstances"]; ok && string(b) != "null" {
+			if err := json.Unmarshal(b, &pis); err != nil {
+				return nil, fmt.Errorf("t3vm: the provider settings of T3's project %s aren't an object, left alone: %w", id, err)
+			}
+		}
+		po.pis[id] = pis
+	}
+	return po, nil
+}
+
+// syncProjects writes, in each of T3's projects, whether each role's instance is on: on only in the project of the
+// role's own folder, off in every other (a choice made in T3 for another project doesn't stay: the role is pinned to its
+// folder). The switch of a role instance that no longer exists goes from every project, also one T3 didn't list. Other
+// project settings, other providers' among them, stay as they are. insts is the instances after the sync. It says
+// whether anything changed.
+func (o InstanceOptions) syncProjects(top map[string]json.RawMessage, po *projectOverrides, want []RoleInstance, wanted map[string]bool, insts map[string]json.RawMessage) bool {
+	on := json.RawMessage(`{"enabled":true}`)
+	off := json.RawMessage(`{"enabled":false}`)
+	dirty := map[string]bool{}
+	for _, p := range o.Projects {
+		if p.ID == "" {
+			continue
+		}
+		pis := po.pis[p.ID]
+		if pis == nil {
+			pis = map[string]json.RawMessage{}
+		}
+		for _, r := range want {
+			id := InstancePrefix + r.ID
+			if !wanted[id] {
+				continue
+			}
+			v := off
+			if r.ProjectDir != "" && sameDir(r.ProjectDir, p.Root) {
+				v = on
+			}
+			if old, ok := pis[id]; !ok || !jsonEqual(old, v) {
+				pis[id] = v
+				dirty[p.ID] = true
+			}
+		}
+		po.pis[p.ID] = pis
+	}
+	for pid, pis := range po.pis {
+		for id := range pis {
+			// a role's switch (the key is a role instance's) whose instance is gone; a key with an instance that isn't
+			// Home's is the user's, and stays
+			if _, exists := insts[id]; !exists && !wanted[id] && strings.HasPrefix(id, InstancePrefix) && roles.IsID(strings.TrimPrefix(id, InstancePrefix)) {
+				delete(pis, id)
+				dirty[pid] = true
+			}
+		}
+	}
+	if len(dirty) == 0 {
+		return false
+	}
+	for pid := range dirty {
+		ov := po.ovs[pid]
+		if ov == nil {
+			ov = map[string]json.RawMessage{}
+		}
+		ov["providerInstances"] = mustMarshal(po.pis[pid])
+		po.ovs[pid] = ov
+	}
+	top["projectSettingsOverrides"] = mustMarshal(po.ovs)
+	return true
 }

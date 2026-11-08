@@ -15,8 +15,10 @@ func TestSweepKillsALeftProcess(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "web")
 	_ = os.Mkdir(dir, 0o700)
-	left := exec.Command("/bin/sh", "-c", "sleep 30", filepath.Join(dir, "fs0.sock"))
-	other := exec.Command("/bin/sh", "-c", "sleep 30", "/elsewhere/fs1.sock")
+	// "; true" keeps the shell from becoming sleep (a shell may exec a lone last command), which would drop the folder
+	// from the command line the sweep reads
+	left := exec.Command("/bin/sh", "-c", "sleep 30; true", filepath.Join(dir, "fs0.sock"))
+	other := exec.Command("/bin/sh", "-c", "sleep 30; true", "/elsewhere/fs1.sock")
 	for _, c := range []*exec.Cmd{left, other} {
 		if err := c.Start(); err != nil {
 			t.Fatal(err)

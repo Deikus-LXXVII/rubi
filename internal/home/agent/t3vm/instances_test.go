@@ -49,7 +49,7 @@ func instances(m map[string]any) map[string]map[string]any {
 
 func TestSyncInstancesWritesOneInstanceAndShimPerRole(t *testing.T) {
 	o, path := instFixture(t, "")
-	want := []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/agent-roles/r_aaaaaa01/claude"}, {"r_aaaaaa02", "Builder's", "/h/agent-roles/r_aaaaaa02/claude"}}
+	want := []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/agent-roles/r_aaaaaa01/claude", ""}, {"r_aaaaaa02", "Builder's", "/h/agent-roles/r_aaaaaa02/claude", ""}}
 	res, err := SyncInstances(o, want)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestSyncInstancesWritesOneInstanceAndShimPerRole(t *testing.T) {
 	in := instances(readSettings(t, path))
 	e := in["claude-r_aaaaaa01"]
 	cfg := e["config"].(map[string]any)
-	if e["driver"] != "claudeAgent" || e["displayName"] != "Reviewer" || e["enabled"] != true ||
+	if e["driver"] != "claudeAgent" || e["displayName"] != "Reviewer" || e["enabled"] != false ||
 		cfg["binaryPath"] != o.ShimPath("r_aaaaaa01") || cfg["homePath"] != "/h/agent-roles/r_aaaaaa01/claude" || e["environment"] != nil {
 		t.Fatalf("instance: %v", e)
 	}
@@ -117,7 +117,7 @@ func TestSyncInstancesKeepsEverythingItDidNotWrite(t *testing.T) {
 	o, path := instFixture(t, `{"theme":"dark","providerInstances":{
 		"claude-mine":{"driver":"claudeAgent","displayName":"Mine","config":{"binaryPath":"/usr/local/bin/claude"},"extra":{"a":1}},
 		"codex":{"driver":"codex","config":{}}},"other":[1,2]}`)
-	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}}); err != nil {
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}}); err != nil {
 		t.Fatal(err)
 	}
 	m := readSettings(t, path)
@@ -144,7 +144,7 @@ func TestSyncInstancesKeepsEverythingItDidNotWrite(t *testing.T) {
 
 func TestSyncInstancesLeavesAForeignInstanceWithARolesIDAlone(t *testing.T) {
 	o, path := instFixture(t, `{"providerInstances":{"claude-r_aaaaaa01":{"driver":"claudeAgent","displayName":"Theirs","config":{"binaryPath":"/usr/local/bin/claude","homePath":"/x"}}}}`)
-	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}})
+	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}})
 	if err != nil || !reflect.DeepEqual(res.Skipped, []string{"claude-r_aaaaaa01"}) || res.Changed() {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -159,7 +159,7 @@ func TestSyncInstancesLeavesAForeignInstanceWithARolesIDAlone(t *testing.T) {
 
 func TestSyncInstancesUpdatesWhatChangedAndKeepsT3sAdditions(t *testing.T) {
 	o, path := instFixture(t, "")
-	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}}); err != nil {
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}}); err != nil {
 		t.Fatal(err)
 	}
 	// T3 (or the user) adds fields to the entry; the user also tries an environment
@@ -172,7 +172,7 @@ func TestSyncInstancesUpdatesWhatChangedAndKeepsT3sAdditions(t *testing.T) {
 	b, _ := json.Marshal(m)
 	os.WriteFile(path, b, 0o600)
 
-	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer v2", "/h/c2"}})
+	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer v2", "/h/c2", ""}})
 	if err != nil || !reflect.DeepEqual(res.Updated, []string{"claude-r_aaaaaa01"}) {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -188,7 +188,7 @@ func TestSyncInstancesUpdatesWhatChangedAndKeepsT3sAdditions(t *testing.T) {
 	}
 	// nothing changed: nothing written
 	fi1, _ := os.Stat(path)
-	res, err = SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer v2", "/h/c2"}})
+	res, err = SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer v2", "/h/c2", ""}})
 	fi2, _ := os.Stat(path)
 	if err != nil || res.Changed() || !fi1.ModTime().Equal(fi2.ModTime()) {
 		t.Fatalf("an unchanged sync wrote: %+v %v", res, err)
@@ -198,7 +198,7 @@ func TestSyncInstancesUpdatesWhatChangedAndKeepsT3sAdditions(t *testing.T) {
 func TestSyncInstancesRefusesSettingsItCannotRead(t *testing.T) {
 	for name, body := range map[string]string{"not json": `{"providerInstances":`, "instances not an object": `{"providerInstances":[1]}`} {
 		o, path := instFixture(t, body)
-		if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R", "/h/c"}}); err == nil {
+		if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R", "/h/c", ""}}); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 		if b, _ := os.ReadFile(path); string(b) != body {
@@ -206,10 +206,10 @@ func TestSyncInstancesRefusesSettingsItCannotRead(t *testing.T) {
 		}
 	}
 	o, _ := instFixture(t, "")
-	if _, err := SyncInstances(o, []RoleInstance{{"bad id", "R", "/h/c"}}); err == nil {
+	if _, err := SyncInstances(o, []RoleInstance{{"bad id", "R", "/h/c", ""}}); err == nil {
 		t.Error("a bad role id was accepted")
 	}
-	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R", "relative"}}); err == nil {
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R", "relative", ""}}); err == nil {
 		t.Error("a relative config directory was accepted")
 	}
 }
@@ -217,7 +217,7 @@ func TestSyncInstancesRefusesSettingsItCannotRead(t *testing.T) {
 // A copy of Home's entry under another key is the user's: a sync neither changes nor removes it, nor the shim.
 func TestSyncInstancesLeavesACopyOfItsEntryUnderAnotherKey(t *testing.T) {
 	o, path := instFixture(t, "")
-	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}}); err != nil {
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}}); err != nil {
 		t.Fatal(err)
 	}
 	m := readSettings(t, path)
@@ -236,14 +236,14 @@ func TestSyncInstancesLeavesACopyOfItsEntryUnderAnotherKey(t *testing.T) {
 	}
 	// the same with the role still there: the copy is not Home's, and is not updated
 	o2, path2 := instFixture(t, "")
-	SyncInstances(o2, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}})
+	SyncInstances(o2, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}})
 	m = readSettings(t, path2)
 	cp := instances(m)["claude-r_aaaaaa01"]
 	cp["displayName"] = "My own"
 	m["providerInstances"].(map[string]any)["my-copy"] = cp
 	b, _ = json.Marshal(m)
 	os.WriteFile(path2, b, 0o600)
-	if _, err := SyncInstances(o2, []RoleInstance{{"r_aaaaaa01", "Renamed", "/h/c"}}); err != nil {
+	if _, err := SyncInstances(o2, []RoleInstance{{"r_aaaaaa01", "Renamed", "/h/c", ""}}); err != nil {
 		t.Fatal(err)
 	}
 	in = instances(readSettings(t, path2))
@@ -300,7 +300,7 @@ func TestSyncInstancesDoesNotOverwriteAConcurrentChange(t *testing.T) {
 		}
 	}
 	defer func() { beforeRename = nil }()
-	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}})
+	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}})
 	if err != nil || len(res.Added) != 1 {
 		t.Fatalf("%+v %v", res, err)
 	}
@@ -319,7 +319,7 @@ func TestSyncInstancesGivesUpWhenTheFileNeverSettles(t *testing.T) {
 	i := 0
 	beforeRename = func() { i++; os.WriteFile(path, []byte(`{"n":`+string(rune('0'+i%10))+`}`), 0o600) }
 	defer func() { beforeRename = nil }()
-	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}}); err == nil {
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}}); err == nil {
 		t.Fatal("no error for a file that keeps changing")
 	}
 	if ents, _ := os.ReadDir(filepath.Dir(path)); len(ents) != 1 {
@@ -340,7 +340,7 @@ func TestSyncInstancesWritesThroughASymlinkedSettingsFile(t *testing.T) {
 	if err := os.Symlink(real, path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c"}}); err != nil {
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c", ""}}); err != nil {
 		t.Fatal(err)
 	}
 	if fi, err := os.Lstat(path); err != nil || fi.Mode()&os.ModeSymlink == 0 {
@@ -349,5 +349,247 @@ func TestSyncInstancesWritesThroughASymlinkedSettingsFile(t *testing.T) {
 	b, _ := os.ReadFile(real)
 	if !strings.Contains(string(b), "claude-r_aaaaaa01") || !strings.Contains(string(b), `"theme": "dark"`) {
 		t.Fatalf("the real file: %s", b)
+	}
+}
+
+func projectInstances(t *testing.T, m map[string]any, project string) map[string]any {
+	t.Helper()
+	ovs, _ := m["projectSettingsOverrides"].(map[string]any)
+	ov, _ := ovs[project].(map[string]any)
+	pis, _ := ov["providerInstances"].(map[string]any)
+	return pis
+}
+
+func enabledIn(pis map[string]any, id string) (bool, bool) {
+	e, ok := pis[id].(map[string]any)
+	if !ok {
+		return false, false
+	}
+	v, ok := e["enabled"].(bool)
+	return v, ok
+}
+
+// With T3's projects known, a role's instance is off globally and on only in the project of its own folder (followed
+// through symlinks); a role pinned to no folder is on nowhere.
+func TestSyncInstancesTurnsARoleOnOnlyInItsProject(t *testing.T) {
+	o, path := instFixture(t, "")
+	d := t.TempDir()
+	a, b := filepath.Join(d, "a"), filepath.Join(d, "b")
+	for _, p := range []string{a, b} {
+		if err := os.Mkdir(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(d, "a-link")
+	if err := os.Symlink(a, link); err != nil {
+		t.Fatal(err)
+	}
+	o.Projects = []T3Project{{ID: "pa", Root: link}, {ID: "pb", Root: b}}
+	want := []RoleInstance{{"r_aaaaaa01", "Reviewer", "/h/c1", a}, {"r_aaaaaa02", "Builder", "/h/c2", b}, {"r_aaaaaa03", "Loose", "/h/c3", ""}}
+	res, err := SyncInstances(o, want)
+	if err != nil || !res.Projects || !res.Changed() {
+		t.Fatalf("%+v %v", res, err)
+	}
+	m := readSettings(t, path)
+	for id, e := range instances(m) {
+		if e["enabled"] != false {
+			t.Errorf("%s is on globally: %v", id, e["enabled"])
+		}
+	}
+	for _, c := range []struct {
+		project, id string
+		on          bool
+	}{
+		{"pa", "claude-r_aaaaaa01", true}, {"pa", "claude-r_aaaaaa02", false}, {"pa", "claude-r_aaaaaa03", false},
+		{"pb", "claude-r_aaaaaa01", false}, {"pb", "claude-r_aaaaaa02", true}, {"pb", "claude-r_aaaaaa03", false},
+	} {
+		if on, ok := enabledIn(projectInstances(t, m, c.project), c.id); !ok || on != c.on {
+			t.Errorf("%s in %s: on=%v set=%v, want on=%v", c.id, c.project, on, ok, c.on)
+		}
+	}
+	// an instance switched on globally (in T3) is off again at the next sync: only its project turns it on
+	m["providerInstances"].(map[string]any)["claude-r_aaaaaa02"].(map[string]any)["enabled"] = true
+	if bs, _ := json.Marshal(m); os.WriteFile(path, bs, 0o600) != nil {
+		t.Fatal("write")
+	}
+	if res, err := SyncInstances(o, want); err != nil || !reflect.DeepEqual(res.Updated, []string{"claude-r_aaaaaa02"}) {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if e := instances(readSettings(t, path))["claude-r_aaaaaa02"]; e["enabled"] != false {
+		t.Errorf("an instance switched on globally stayed on: %v", e["enabled"])
+	}
+	// the same again: nothing to write
+	fi1, _ := os.Stat(path)
+	res, err = SyncInstances(o, want)
+	fi2, _ := os.Stat(path)
+	if err != nil || res.Changed() || !fi1.ModTime().Equal(fi2.ModTime()) {
+		t.Fatalf("an unchanged sync wrote: %+v %v", res, err)
+	}
+}
+
+// The project sync changes only the role instances' switches: other providers' settings and other project settings
+// stay, and a removed role's switch goes from every project.
+func TestSyncInstancesProjectSettingsKeepWhatTheyDidNotWrite(t *testing.T) {
+	o, path := instFixture(t, "")
+	root := t.TempDir()
+	o.Projects = []T3Project{{ID: "p1", Root: root}}
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", root}, {"r_aaaaaa02", "R2", "/h/c2", root}}); err != nil {
+		t.Fatal(err)
+	}
+	m := readSettings(t, path)
+	ov := m["projectSettingsOverrides"].(map[string]any)["p1"].(map[string]any)
+	ov["theme"] = "light"
+	pis := ov["providerInstances"].(map[string]any)
+	pis["cursor"] = map[string]any{"enabled": true}
+	pis["codex"] = map[string]any{"enabled": false, "note": "mine"}
+	m["projectSettingsOverrides"].(map[string]any)["elsewhere"] = map[string]any{"x": 1}
+	bs, _ := json.Marshal(m)
+	if err := os.WriteFile(path, bs, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", root}})
+	if err != nil || !reflect.DeepEqual(res.Removed, []string{"claude-r_aaaaaa02"}) {
+		t.Fatalf("%+v %v", res, err)
+	}
+	m = readSettings(t, path)
+	p1 := projectInstances(t, m, "p1")
+	if _, ok := p1["claude-r_aaaaaa02"]; ok {
+		t.Error("a removed role's switch stayed")
+	}
+	if on, _ := enabledIn(p1, "claude-r_aaaaaa01"); !on {
+		t.Error("the role's own switch went")
+	}
+	if !reflect.DeepEqual(p1["cursor"], map[string]any{"enabled": true}) || !reflect.DeepEqual(p1["codex"], map[string]any{"enabled": false, "note": "mine"}) {
+		t.Errorf("other providers' settings changed: %v", p1)
+	}
+	ovs := m["projectSettingsOverrides"].(map[string]any)
+	if ovs["p1"].(map[string]any)["theme"] != "light" || !reflect.DeepEqual(ovs["elsewhere"], map[string]any{"x": float64(1)}) {
+		t.Errorf("other project settings changed: %v", ovs)
+	}
+}
+
+// Without T3's projects (T3 not paired or not answering) no project setting is written; a new instance is off (its
+// project turns it on at the next sync with the projects) and an existing one keeps its switch.
+func TestSyncInstancesWithoutProjectsWritesNoProjectSettings(t *testing.T) {
+	o, path := instFixture(t, `{"projectSettingsOverrides":{"p1":{"providerInstances":{"claude-r_aaaaaa01":{"enabled":true}}}}}`)
+	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R", "/h/c", "/somewhere"}})
+	if err != nil || res.Projects {
+		t.Fatalf("%+v %v", res, err)
+	}
+	m := readSettings(t, path)
+	if instances(m)["claude-r_aaaaaa01"]["enabled"] != false {
+		t.Error("a new instance is on with no projects known")
+	}
+	if on, ok := enabledIn(projectInstances(t, m, "p1"), "claude-r_aaaaaa01"); !ok || !on {
+		t.Error("a project setting changed with no projects known")
+	}
+	m["providerInstances"].(map[string]any)["claude-r_aaaaaa01"].(map[string]any)["enabled"] = true
+	b, _ := json.Marshal(m)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R", "/h/c", "/somewhere"}}); err != nil || res.Changed() {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if instances(readSettings(t, path))["claude-r_aaaaaa01"]["enabled"] != true {
+		t.Error("an existing instance's switch changed with no projects known")
+	}
+}
+
+// A role removed while T3's projects weren't known loses its switches at the next sync that knows them, in every
+// project (also one T3 no longer lists); a user's own instance whose key looks like a role's keeps them.
+func TestSyncInstancesDropsTheSwitchesOfAGoneRoleLater(t *testing.T) {
+	root := t.TempDir()
+	o, path := instFixture(t, "")
+	o.Projects = []T3Project{{ID: "p1", Root: root}}
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", root}, {"r_aaaaaa02", "R2", "/h/c2", root}}); err != nil {
+		t.Fatal(err)
+	}
+	m := readSettings(t, path)
+	m["projectSettingsOverrides"].(map[string]any)["unlisted"] = map[string]any{"providerInstances": map[string]any{"claude-r_aaaaaa02": map[string]any{"enabled": true}}}
+	m["providerInstances"].(map[string]any)["claude-r_aaaaaa09"] = map[string]any{"driver": "claudeAgent", "config": map[string]any{"binaryPath": "/usr/local/bin/claude"}}
+	m["projectSettingsOverrides"].(map[string]any)["p1"].(map[string]any)["providerInstances"].(map[string]any)["claude-r_aaaaaa09"] = map[string]any{"enabled": true}
+	b, _ := json.Marshal(m)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	o.Projects = nil
+	if res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", root}}); err != nil || len(res.Removed) != 1 {
+		t.Fatalf("%+v %v", res, err)
+	}
+	if _, ok := projectInstances(t, readSettings(t, path), "p1")["claude-r_aaaaaa02"]; !ok {
+		t.Fatal("a project setting changed with no projects known")
+	}
+	o.Projects = []T3Project{{ID: "p1", Root: root}}
+	res, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", root}})
+	if err != nil || !res.Projects {
+		t.Fatalf("%+v %v", res, err)
+	}
+	m = readSettings(t, path)
+	for _, pid := range []string{"p1", "unlisted"} {
+		if _, ok := projectInstances(t, m, pid)["claude-r_aaaaaa02"]; ok {
+			t.Errorf("the gone role's switch stayed in %s", pid)
+		}
+	}
+	if on, ok := enabledIn(projectInstances(t, m, "p1"), "claude-r_aaaaaa09"); !ok || !on {
+		t.Error("the user's own instance lost its switch")
+	}
+}
+
+// Project settings it can't read stop the sync before any shim is written or removed.
+func TestSyncInstancesTouchesNoShimWhenProjectSettingsAreUnreadable(t *testing.T) {
+	root := t.TempDir()
+	o, path := instFixture(t, "")
+	o.Projects = []T3Project{{ID: "p1", Root: root}}
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", root}}); err != nil {
+		t.Fatal(err)
+	}
+	m := readSettings(t, path)
+	m["projectSettingsOverrides"].(map[string]any)["p2"] = map[string]any{"providerInstances": "x"}
+	b, _ := json.Marshal(m)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa02", "R2", "/h/c2", root}}); err == nil {
+		t.Fatal("accepted")
+	}
+	if _, err := os.Stat(o.ShimPath("r_aaaaaa01")); err != nil {
+		t.Error("the removed role's shim went although nothing was written")
+	}
+	if _, err := os.Stat(o.ShimPath("r_aaaaaa02")); err == nil {
+		t.Error("a new role's shim was written although nothing was written")
+	}
+}
+
+// Only the projects whose switches changed are written: settings of a project T3 didn't list stay as they are, even
+// an empty one; a project listed twice is one project.
+func TestSyncInstancesWritesOnlyTheProjectsItChanged(t *testing.T) {
+	root := t.TempDir()
+	o, path := instFixture(t, `{"projectSettingsOverrides":{"p3":{"providerInstances":null}}}`)
+	o.Projects = []T3Project{{ID: "p1", Root: root}, {ID: "p1", Root: root}}
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", root}}); err != nil {
+		t.Fatal(err)
+	}
+	m := readSettings(t, path)
+	ovs := m["projectSettingsOverrides"].(map[string]any)
+	if !reflect.DeepEqual(ovs["p3"], map[string]any{"providerInstances": nil}) {
+		t.Errorf("an unchanged project was rewritten: %v", ovs["p3"])
+	}
+	if on, ok := enabledIn(projectInstances(t, m, "p1"), "claude-r_aaaaaa01"); !ok || !on {
+		t.Errorf("the role's project: %v", ovs["p1"])
+	}
+}
+
+// A project's folder matches the role's by path even when it can't be resolved (gone, or not readable), as Home's own
+// check does when it finds the role's project.
+func TestSyncInstancesMatchesAnUnresolvableFolderByPath(t *testing.T) {
+	o, path := instFixture(t, "")
+	gone := filepath.Join(t.TempDir(), "gone", "proj")
+	o.Projects = []T3Project{{ID: "p1", Root: gone + "/"}}
+	if _, err := SyncInstances(o, []RoleInstance{{"r_aaaaaa01", "R1", "/h/c1", gone}}); err != nil {
+		t.Fatal(err)
+	}
+	if on, ok := enabledIn(projectInstances(t, readSettings(t, path), "p1"), "claude-r_aaaaaa01"); !ok || !on {
+		t.Error("the role is off in the project of its own folder")
 	}
 }

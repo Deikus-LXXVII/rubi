@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 )
@@ -12,9 +13,15 @@ import (
 // AgentVMSocketPath is the T3 session socket in dir (`rubi-home agent-vm` talks to it).
 func AgentVMSocketPath(dir string) string { return t3vm.SocketPath(dir) }
 
+// t3InstancesMu makes one sync of T3's instances at a time: each computes from the roles it read, and an earlier one
+// retrying on the file (its write raced another) would remove what a later one added.
+var t3InstancesMu sync.Mutex
+
 // SyncT3Instances writes T3's provider instances for the roles that exist now (t3vm.SyncInstances) and returns what
 // it changed. It does nothing while no T3 server is configured.
 func (h *Helper) SyncT3Instances() (t3vm.SyncResult, error) {
+	t3InstancesMu.Lock()
+	defer t3InstancesMu.Unlock()
 	c := h.Fresh()
 	if c.T3Port == 0 || c.T3BaseDir == "" {
 		return t3vm.SyncResult{}, nil
@@ -25,9 +32,9 @@ func (h *Helper) SyncT3Instances() (t3vm.SyncResult, error) {
 	}
 	var want []t3vm.RoleInstance
 	for _, r := range h.Agent.T3Roles() {
-		want = append(want, t3vm.RoleInstance{ID: r.ID, Name: r.Name, ClaudeDir: r.ClaudeDir})
+		want = append(want, t3vm.RoleInstance{ID: r.ID, Name: r.Name, ClaudeDir: r.ClaudeDir, ProjectDir: r.ProjectDir})
 	}
-	return t3vm.SyncInstances(t3vm.InstanceOptions{T3Base: c.T3BaseDir, Dir: h.Dir, RubiHome: self}, want)
+	return t3vm.SyncInstances(t3vm.InstanceOptions{T3Base: c.T3BaseDir, Dir: h.Dir, RubiHome: self, Projects: h.T3.syncProjects()}, want)
 }
 
 // ServeAgentVM serves the T3 session socket until ctx ends (T3Home.Run starts it with the T3 server it runs; for a server

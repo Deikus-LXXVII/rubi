@@ -28,8 +28,12 @@ func TestT3RoleIsTheRoleOfItsProjectWithItsDirectories(t *testing.T) {
 		r.ClaudeDir != filepath.Join(base, "claude") || r.ContentDir != filepath.Join(base, "content") || r.MaxMode != "full-access" {
 		t.Fatalf("role: %+v", r)
 	}
-	if got := re.m.T3Roles(); len(got) != 1 || got[0].ID != id || got[0].Name != "reviewer" || got[0].ClaudeDir != r.ClaudeDir {
+	got := re.m.T3Roles()
+	if len(got) != 1 || got[0].ID != id || got[0].Name != "reviewer" || got[0].ClaudeDir != r.ClaudeDir {
 		t.Fatalf("roles: %+v", got)
+	}
+	if real, _ := filepath.EvalSymlinks(got[0].ProjectDir); real != proj {
+		t.Fatalf("the role's project folder: %q, want %q", got[0].ProjectDir, proj)
 	}
 }
 
@@ -267,6 +271,10 @@ func TestT3RoleRefusesARoleMadeForAnotherDirectory(t *testing.T) {
 			r.Release()
 		}
 		t.Fatalf("a role of another directory was accepted: %v", err)
+	}
+	// listed for T3 still (its instance exists), but pinned to no folder: no project turns it on
+	if got := re.m.T3Roles(); len(got) != 1 || got[0].ProjectDir != "" {
+		t.Fatalf("roles: %+v", got)
 	}
 }
 
