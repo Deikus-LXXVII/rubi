@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/microvm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
@@ -102,5 +103,30 @@ func TestSessionHostNeedsFilesKVMAndMemory(t *testing.T) {
 	b.kvm = func() (bool, string) { return false, "no KVM" }
 	if err := h.Ready(); err == nil {
 		t.Error("ready without KVM")
+	}
+}
+
+// Starts close together each reserve their memory: the free memory must hold all of them, until their warm-up is over.
+func TestSessionHostReservesMemoryOfRecentStarts(t *testing.T) {
+	b := &MicroVMBackend{files: microVMFiles{Root: t.TempDir(), Version: "v1", Arch: microvm.X86_64},
+		kvm: func() (bool, string) { return true, "" }}
+	_ = os.MkdirAll(b.files.dir(), 0o700)
+	_ = os.WriteFile(filepath.Join(b.files.dir(), microVMComplete), []byte("v1\n"), 0o600)
+	clock := time.Unix(1000, 0)
+	b.now = func() time.Time { return clock }
+	b.memAvailable = func() (int, bool) { return 2*SessionVMMemory + sessionMemoryMargin, true }
+	h := b.StreamSessions()
+	// the boots themselves fail (no QEMU here); what is counted is the reservation made before them
+	_, _ = h.StartSessionVM(context.Background(), "rubi-t3-a", nil)
+	if err := h.Ready(); err != nil {
+		t.Fatalf("room for a second: %v", err)
+	}
+	_, _ = h.StartSessionVM(context.Background(), "rubi-t3-b", nil)
+	if err := h.Ready(); err == nil {
+		t.Error("a third fits in memory for two")
+	}
+	clock = clock.Add(sessionWarmup)
+	if err := h.Ready(); err != nil {
+		t.Errorf("after the warm-up: %v", err)
 	}
 }

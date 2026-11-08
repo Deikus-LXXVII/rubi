@@ -3,6 +3,7 @@
 package guest
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -59,6 +60,9 @@ func LoopbackUp() error {
 // MountShare mounts one virtio-fs share; never with set-user-id programs or device files.
 func MountShare(m Mount) error {
 	if err := os.MkdirAll(m.Target, 0o755); err != nil {
+		if errors.Is(err, unix.EROFS) {
+			return fmt.Errorf("the mount point %s can't be made: the root is read-only (the writable layer over it didn't come up)", m.Target)
+		}
 		return err
 	}
 	flags := uintptr(unix.MS_NOSUID | unix.MS_NODEV)

@@ -128,6 +128,9 @@ func Run(socket, role string, claudeArgs []string, stdout, stderr io.Writer, o C
 	}
 	_ = conn.SetDeadline(time.Time{})
 	if rep.Stream {
+		if len(rep.ExecArgv) != 0 {
+			return fail("Rubi Home's answer was not understood")
+		}
 		in := o.Stdin
 		if in == nil {
 			in = os.Stdin

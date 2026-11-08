@@ -197,11 +197,11 @@ func (s *Server) startStream(ctx context.Context, end func(), req StartRequest) 
 }
 
 // serveStream runs the session's process and relays it over the shim's connection until either ends.
-func (s *Server) serveStream(ses *session, in io.Reader, w io.Writer) {
+func (s *Server) serveStream(ctx context.Context, ses *session, in io.Reader, w io.Writer) {
 	st := ses.stream
 	out := &streamOut{w: w}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	p, err := st.vm.ExecIn(ctx, st.dir, st.env, st.argv, out.stderrWriter())
+	ectx, cancel := context.WithTimeout(ctx, time.Minute)
+	p, err := st.vm.ExecIn(ectx, st.dir, st.env, st.argv, out.stderrWriter())
 	cancel()
 	if err != nil {
 		s.opt.Logf("t3vm: running claude in the session's VM: %v", err)
@@ -209,7 +209,7 @@ func (s *Server) serveStream(ses *session, in io.Reader, w io.Writer) {
 		_ = out.write(chunkExit, []byte{0, 0, 0, 1})
 		return
 	}
-	if err := streamServer(in, out, p); err != nil {
+	if err := streamServer(ctx, in, out, p); err != nil {
 		s.opt.Logf("t3vm: session of role %s: %v", ses.role, err)
 	}
 }
@@ -241,6 +241,8 @@ func (s *Server) probeVersionStream(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("asking the image for claude's version: %w", err)
 	}
 	defer p.Close()
+	stop := context.AfterFunc(ctx, func() { _ = p.Close() }) // a hung claude doesn't hold the probe past its time
+	defer stop()
 	out, err := io.ReadAll(io.LimitReader(p, 4096))
 	if err != nil {
 		return "", err

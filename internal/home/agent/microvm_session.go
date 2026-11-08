@@ -25,24 +25,55 @@ func (b *MicroVMBackend) StreamSessions() StreamSessionHost { return microSessio
 
 type microSessions struct{ b *MicroVMBackend }
 
+// sessionWarmup is how long a new session VM's memory counts as taken although the computer doesn't show it yet (a
+// guest touches its memory as it runs).
+const sessionWarmup = time.Minute
+
 func (s microSessions) Ready() error {
+	s.b.sessMu.Lock()
+	defer s.b.sessMu.Unlock()
+	return s.readyLocked()
+}
+
+// readyLocked is Ready with sessMu held: the free memory must hold a new VM besides those started within the warm-up.
+func (s microSessions) readyLocked() error {
 	if err := s.b.ready(); err != nil {
 		return err
 	}
+	now := time.Now
+	if s.b.now != nil {
+		now = s.b.now
+	}
+	recent := s.b.recentSessions[:0]
+	for _, t := range s.b.recentSessions {
+		if now().Sub(t) < sessionWarmup {
+			recent = append(recent, t)
+		}
+	}
+	s.b.recentSessions = recent
 	avail := s.b.memAvailable
 	if avail == nil {
 		avail = hostguard.MemAvailable
 	}
-	if mib, ok := avail(); ok && mib < SessionVMMemory+sessionMemoryMargin {
-		return fmt.Errorf("only %d MiB of memory are free; a session VM needs %d MiB", mib, SessionVMMemory+sessionMemoryMargin)
+	need := (len(recent)+1)*SessionVMMemory + sessionMemoryMargin
+	if mib, ok := avail(); ok && mib < need {
+		return fmt.Errorf("only %d MiB of memory are free; a session VM needs %d MiB", mib, need-len(recent)*SessionVMMemory)
 	}
 	return nil
 }
 
 func (s microSessions) StartSessionVM(ctx context.Context, name string, mounts []Mount) (SessionVM, error) {
-	if err := s.Ready(); err != nil {
+	s.b.sessMu.Lock()
+	if err := s.readyLocked(); err != nil {
+		s.b.sessMu.Unlock()
 		return nil, err
 	}
+	now := time.Now
+	if s.b.now != nil {
+		now = s.b.now
+	}
+	s.b.recentSessions = append(s.b.recentSessions, now()) // reserved before the boot, so starts at once can't all pass
+	s.b.sessMu.Unlock()
 	return startSessionVM(ctx, s.b.New(Project{}).(*MicroVM), name, mounts)
 }
 

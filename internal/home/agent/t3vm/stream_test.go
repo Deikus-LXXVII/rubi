@@ -3,6 +3,7 @@ package t3vm
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -74,7 +75,7 @@ func pair(t *testing.T, code int) (shim net.Conn, proc *fakeProc, served chan er
 	out := &streamOut{w: b}
 	proc = newFakeProc(code, out.stderrWriter())
 	served = make(chan error, 1)
-	go func() { served <- streamServer(b, out, proc) }()
+	go func() { served <- streamServer(context.Background(), b, out, proc) }()
 	return a, proc, served
 }
 
@@ -204,7 +205,7 @@ func TestClientStreamsWhenHomeSaysSo(t *testing.T) {
 		first.Write(append(b, '\n'))
 		_ = writeChunk(&first, chunkStdout, []byte(">"))
 		c.Write(first.Bytes())
-		_ = streamServer(br, out, p)
+		_ = streamServer(context.Background(), br, out, p)
 	}()
 	var stdout, stderr bytes.Buffer
 	o := ClientOptions{

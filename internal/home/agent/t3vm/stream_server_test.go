@@ -1,16 +1,20 @@
 package t3vm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 )
@@ -20,18 +24,35 @@ type fakeStreamHost struct {
 	mu       sync.Mutex
 	readyErr error
 	startErr error
-	execErr  error // given to every VM it starts
+	execErr  error         // given to every VM it starts
+	gate     chan struct{} // when set, a start waits for it (or for its context)
+	verOut   string        // what claude --version prints ("HANG": it never answers)
+	late     time.Duration // when set, the session's process writes its output only after this long
 	vms      []*fakeSessionVM
 }
 
 func (h *fakeStreamHost) Ready() error { h.mu.Lock(); defer h.mu.Unlock(); return h.readyErr }
 func (h *fakeStreamHost) StartSessionVM(ctx context.Context, name string, mounts []agent.Mount) (agent.SessionVM, error) {
 	h.mu.Lock()
+	gate := h.gate
+	h.mu.Unlock()
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.startErr != nil {
 		return nil, h.startErr
 	}
-	vm := &fakeSessionVM{name: name, mounts: mounts, code: 5, out: "VERSION 9.9\n", execErr: h.execErr}
+	out := "VERSION 9.9\n"
+	if h.verOut != "" {
+		out = h.verOut
+	}
+	vm := &fakeSessionVM{name: name, mounts: mounts, code: 5, out: out, execErr: h.execErr, late: h.late}
 	h.vms = append(h.vms, vm)
 	return vm, nil
 }
@@ -51,6 +72,8 @@ type fakeSessionVM struct {
 	code    int
 	out     string
 	execErr error
+	late    time.Duration
+	procs   []*fakeProc
 }
 
 type fakeExec struct {
@@ -80,10 +103,22 @@ func (v *fakeSessionVM) ExecIn(ctx context.Context, dir string, env map[string]s
 	if stderr == nil {
 		stderr = io.Discard
 	}
+	if argv[0] == "hang" {
+		return &hangProc{closed: make(chan struct{})}, nil
+	}
 	if slices.Contains(argv, "--version") {
+		if v.out == "HANG" {
+			return &hangProc{closed: make(chan struct{})}, nil
+		}
 		return &versionProc{out: strings.NewReader(v.out)}, nil
 	}
-	return sessionProc{newFakeProc(v.code, stderr)}, nil
+	if v.late > 0 {
+		lp := &lateProc{delay: v.late, out: "LATE"}
+		return lp, nil
+	}
+	fp := newFakeProc(v.code, stderr)
+	v.procs = append(v.procs, fp)
+	return sessionProc{fp}, nil
 }
 func (v *fakeSessionVM) Stop(context.Context) error {
 	v.mu.Lock()
@@ -269,5 +304,186 @@ func TestSessionSpecMountsKeepThePolicyApart(t *testing.T) {
 	bad.T3Port = 3129
 	if _, err := bad.Mounts(pol); err == nil {
 		t.Error("a forwarder port was accepted as T3's")
+	}
+}
+
+// lateProc ignores stdin, writes out after delay, then ends with 0.
+type lateProc struct {
+	delay time.Duration
+	out   string
+	once  sync.Once
+	r     io.Reader
+	done  chan struct{}
+}
+
+func (p *lateProc) Read(b []byte) (int, error) {
+	p.once.Do(func() { time.Sleep(p.delay); p.r = strings.NewReader(p.out) })
+	return p.r.Read(b)
+}
+func (*lateProc) Write(b []byte) (int, error) { return len(b), nil }
+func (*lateProc) CloseWrite() error           { return nil }
+func (*lateProc) Close() error                { return nil }
+func (*lateProc) Wait() (int, error)          { return 0, nil }
+func (*lateProc) Done() <-chan struct{}       { return make(chan struct{}) }
+
+// The answer's write deadline doesn't bound the session: output that comes later still reaches the shim.
+func TestStreamedSessionOutputHasNoDeadline(t *testing.T) {
+	old := replyLimit
+	replyLimit = 50 * time.Millisecond
+	t.Cleanup(func() { replyLimit = old })
+	w, h := streamWorld(t)
+	h.late = 300 * time.Millisecond
+	if code, out, errOut := w.runShim("", nil, w.argv()...); code != 0 || out != "LATE" {
+		t.Errorf("exit %d, stdout %q, stderr %q", code, out, errOut)
+	}
+}
+
+// Home stopping ends a streamed session's process and Serve returns.
+func TestStreamedSessionEndsWhenHomeStops(t *testing.T) {
+	w, h := streamWorld(t)
+	done := make(chan int, 1)
+	go func() {
+		// stdin that never ends: the process runs until something ends it
+		pr, _ := io.Pipe()
+		var stdout, stderr bytes.Buffer
+		o := ClientOptions{ExecTool: "container", Stdin: pr, Getwd: func() (string, error) { return w.cwd, nil },
+			Environ: func() []string { return nil }}
+		done <- Run(w.sock, testRole, w.argv(), &stdout, &stderr, o)
+	}()
+	eventually(t, "the process started", func() bool {
+		vms := h.all()
+		if len(vms) == 0 {
+			return false
+		}
+		vms[0].mu.Lock()
+		defer vms[0].mu.Unlock()
+		return len(vms[0].procs) == 1
+	})
+	if err := w.stop(); err != nil {
+		t.Fatal(err)
+	}
+	vm := h.all()[0]
+	vm.mu.Lock()
+	p := vm.procs[0]
+	vm.mu.Unlock()
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if !closed {
+		t.Error("the process runs on after Home stopped")
+	}
+	if s, _ := vm.snap(); !s {
+		t.Error("the VM runs on after Home stopped")
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Error("the shim was left waiting")
+	}
+}
+
+// A shim that leaves while its VM starts ends the start: the VM is not left running and nothing is executed.
+func TestStreamedStartEndsWhenTheShimLeaves(t *testing.T) {
+	w, h := streamWorld(t)
+	h.gate = make(chan struct{})
+	c, err := net.Dial("unix", w.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(StartRequest{Op: "session.start", Role: testRole, Cwd: w.cwd, Argv: w.argv()})
+	_, _ = c.Write(append(b, '\n'))
+	time.Sleep(200 * time.Millisecond) // the start waits at the gate
+	c.Close()
+	eventually(t, "the role released", func() bool { return w.be.releasedCount() >= 1 })
+	if vms := h.all(); len(vms) != 0 {
+		t.Errorf("%d VMs started for a shim that left", len(vms))
+	}
+}
+
+// Data before the answer is not the protocol: the start is ended.
+func TestStreamedStartRefusesEarlyData(t *testing.T) {
+	w, h := streamWorld(t)
+	h.gate = make(chan struct{})
+	c, err := net.Dial("unix", w.sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	b, _ := json.Marshal(StartRequest{Op: "session.start", Role: testRole, Cwd: w.cwd, Argv: w.argv()})
+	_, _ = c.Write(append(append(b, '\n'), 'x'))
+	eventually(t, "the role released", func() bool { return w.be.releasedCount() >= 1 })
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	line, _ := bufio.NewReader(c).ReadBytes('\n')
+	var rep StartReply
+	_ = json.Unmarshal(line, &rep)
+	if rep.OK {
+		t.Error("a session started after early data")
+	}
+}
+
+func TestClientRefusesAStreamWithACommand(t *testing.T) {
+	home := newFakeHome(t, StartReply{OK: true, Stream: true, ExecArgv: []string{"container", "exec", "x"}})
+	var stderr bytes.Buffer
+	o := ClientOptions{ExecTool: "container", Getwd: func() (string, error) { return "/w", nil }, Environ: func() []string { return nil },
+		Exec: func(string, []string, []string, *os.File) error { t.Error("ran a tool"); return errors.New("no") }}
+	if code := Run(home.sock, testRole, []string{"-p"}, io.Discard, &stderr, o); code == 0 {
+		t.Error("a stream answer with a command was taken")
+	}
+}
+
+// hangProc never prints or ends until it is closed.
+type hangProc struct {
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (p *hangProc) Read([]byte) (int, error)  { <-p.closed; return 0, io.EOF }
+func (*hangProc) Write(b []byte) (int, error) { return len(b), nil }
+func (*hangProc) CloseWrite() error           { return nil }
+func (p *hangProc) Close() error              { p.once.Do(func() { close(p.closed) }); return nil }
+func (p *hangProc) Wait() (int, error)        { <-p.closed; return -1, nil }
+func (p *hangProc) Done() <-chan struct{}     { return p.closed }
+
+// A claude --version that never answers doesn't hold the probe past its time: it fails, and its VM is stopped.
+func TestStreamedVersionProbeHasADeadline(t *testing.T) {
+	old := versionLimit
+	versionLimit = 300 * time.Millisecond
+	t.Cleanup(func() { versionLimit = old })
+	w, h := streamWorld(t)
+	h.verOut = "HANG"
+	start := time.Now()
+	if code, _, _ := w.runShim("", nil, "--version"); code == 0 {
+		t.Error("a hung version probe answered")
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("the version probe outlived its limit")
+	}
+	vm := h.all()[0]
+	eventually(t, "the probe's VM stopped", func() bool { s, _ := vm.snap(); return s })
+}
+
+// The self-test's probe in a streamed session VM: the command runs in the project folder; one that never ends is ended
+// at the probe's limit, and the VM is stopped either way.
+func TestStreamedProbe(t *testing.T) {
+	w, h := streamWorld(t)
+	if _, err := w.srv.Probe(context.Background(), testRole, []string{"sh"}); err == nil || !strings.Contains(err.Error(), "ended with 5") {
+		t.Errorf("a failing command: %v", err)
+	}
+	vm := h.all()[0]
+	if s, ex := vm.snap(); !s || len(ex) != 1 || ex[0].dir != w.project || ex[0].argv[0] != "sh" {
+		t.Errorf("stopped %v, execs %+v", s, ex)
+	}
+	old := probeLimit
+	probeLimit = 300 * time.Millisecond
+	t.Cleanup(func() { probeLimit = old })
+	start := time.Now()
+	if _, err := w.srv.Probe(context.Background(), testRole, []string{"hang"}); err == nil {
+		t.Error("a hung probe succeeded")
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Error("the probe outlived its limit")
+	}
+	if s, _ := h.all()[1].snap(); !s {
+		t.Error("the hung probe's VM runs on")
 	}
 }

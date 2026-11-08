@@ -7,6 +7,7 @@ package t3vm
 // stdout, its stderr and, last, its exit status. Closing the connection from the shim's side ends the process.
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -150,8 +151,8 @@ func (e stderrChunks) Write(b []byte) (int, error) {
 }
 
 // streamServer relays the shim's stdin to p and p's stdout to the shim, then sends p's exit status. It returns when p
-// has ended and its status is sent, or when the shim is gone (then p is ended). The caller closes conn.
-func streamServer(conn io.Reader, out *streamOut, p StreamProc) error {
+// has ended and its status is sent, or when the shim is gone or ctx ends (then p is ended). The caller closes conn.
+func streamServer(ctx context.Context, conn io.Reader, out *streamOut, p StreamProc) error {
 	shimGone := make(chan struct{})
 	go func() {
 		defer close(shimGone)
@@ -200,6 +201,11 @@ func streamServer(conn io.Reader, out *streamOut, p StreamProc) error {
 		_ = p.Close()
 		<-copied
 		return errors.New("t3vm: the shim left before the process ended")
+	case <-ctx.Done():
+		// Home ends the session (its pipe keeps failing, or Home stops): the process goes with it.
+		_ = p.Close()
+		<-copied
+		return errors.New("t3vm: the session was ended")
 	}
 	code, err := p.Wait()
 	if err != nil {

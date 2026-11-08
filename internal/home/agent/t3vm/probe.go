@@ -16,7 +16,7 @@ import (
 )
 
 // probeLimit bounds a probe VM's whole life.
-const probeLimit = 5 * time.Minute
+var probeLimit = 5 * time.Minute // a var for tests
 
 // Version is claude's version in the image, asked as `claude --version` through a shim is (OpVersion).
 func (s *Server) Version(ctx context.Context, role string) (string, error) {
@@ -66,6 +66,8 @@ func (s *Server) probeStream(ctx context.Context, cancel func(), roleID, dir str
 		return nil, err
 	}
 	defer p.Close()
+	stop := context.AfterFunc(ctx, func() { _ = p.Close() })
+	defer stop()
 	_ = p.CloseWrite()
 	out, err := io.ReadAll(io.LimitReader(p, 1<<20))
 	if err != nil {

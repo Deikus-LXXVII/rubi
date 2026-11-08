@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
@@ -241,13 +242,17 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	}
 }
 
-func reply(conn net.Conn, r StartReply) {
-	_ = conn.SetWriteDeadline(time.Now().Add(readLimit))
+// replyLimit bounds the write of Home's answer (a var for tests).
+var replyLimit = readLimit
+
+func reply(conn net.Conn, r StartReply) error {
+	_ = conn.SetWriteDeadline(time.Now().Add(replyLimit))
 	b, _ := json.Marshal(r)
-	_, _ = conn.Write(append(b, '\n'))
+	_, err := conn.Write(append(b, '\n'))
+	return err
 }
 
-func refuse(conn net.Conn, why string) { reply(conn, StartReply{Error: why}) }
+func refuse(conn net.Conn, why string) { _ = reply(conn, StartReply{Error: why}) }
 
 // ServeConn handles one shim from its request to the end of its session. It closes conn.
 func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
@@ -294,10 +299,26 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 	defer cancel()
 	gone := make(chan struct{})
 	streamed := s.opt.Stream != nil && req.Op != OpVersion
+	var stopWatch func()
 	if streamed {
-		// The shim relays its stdin only after the answer, and the relay reads the connection then; a shim that leaves
-		// while its VM starts is noticed when the relay begins.
-		close(gone)
+		// The shim sends nothing until the answer, when the relay starts reading the connection. Until then a watcher
+		// only peeks: the shim leaving (or sending early) ends the start, as on the container path.
+		var stopping atomic.Bool
+		go func() {
+			defer close(gone)
+			if _, err := br.Peek(1); !stopping.Load() {
+				if err == nil {
+					s.opt.Logf("t3vm: a shim sent data before its answer; ending its session")
+				}
+				cancel()
+			}
+		}()
+		stopWatch = func() {
+			stopping.Store(true)
+			_ = conn.SetReadDeadline(time.Now())
+			<-gone
+			_ = conn.SetReadDeadline(time.Time{})
+		}
 	} else {
 		go func() {
 			defer close(gone)
@@ -316,7 +337,7 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 			refuse(conn, err.Error())
 			return
 		}
-		reply(conn, StartReply{OK: true, Output: out})
+		_ = reply(conn, StartReply{OK: true, Output: out})
 		return
 	}
 
@@ -343,11 +364,16 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 		delete(s.sessions, ses)
 		s.mu.Unlock()
 	}()
-	reply(conn, rep)
 	if streamed {
-		s.serveStream(ses, br, conn)
+		stopWatch()
+		if reply(conn, rep) != nil {
+			return
+		}
+		_ = conn.SetWriteDeadline(time.Time{}) // the session's output has no deadline: T3 reads it as it comes
+		s.serveStream(sctx, ses, br, conn)
 		return
 	}
+	_ = reply(conn, rep)
 	select {
 	case <-gone:
 	case <-sctx.Done():
@@ -357,6 +383,9 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 // versionRetry is how long a failed version probe is remembered (T3 asks often; a broken image would otherwise be
 // started over and over).
 var versionRetry = 30 * time.Second
+
+// versionLimit bounds one version probe (a var for tests).
+var versionLimit = 2 * time.Minute
 
 type verCall struct {
 	done chan struct{}
@@ -399,7 +428,7 @@ func (s *Server) version(ctx context.Context, req StartRequest) (string, error) 
 		call = &verCall{done: make(chan struct{})}
 		s.verCalls[image] = call
 		go func() {
-			pctx, cancel := context.WithTimeout(s.baseCtx(), 2*time.Minute)
+			pctx, cancel := context.WithTimeout(s.baseCtx(), versionLimit)
 			defer cancel()
 			out, err := s.probeVersion(pctx, image)
 			s.mu.Lock()

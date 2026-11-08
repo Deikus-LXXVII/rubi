@@ -8,6 +8,8 @@ import (
 	"log"
 	"path/filepath"
 	"runtime"
+	"sync"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/microvm"
 )
@@ -25,6 +27,11 @@ type MicroVMBackend struct {
 	landlock func() error
 	// memAvailable is the computer's free memory in MiB (hostguard.MemAvailable when nil); a seam for tests.
 	memAvailable func() (int, bool)
+	// sessMu guards recentSessions: when session VMs started, in the last sessionWarmup (their memory is not yet in
+	// use, so the computer's free memory doesn't show it).
+	sessMu         sync.Mutex
+	recentSessions []time.Time
+	now            func() time.Time
 }
 
 // NewMicroVMBackend is the Linux backend of Rubi Home version (its files are that release's) whose binary is exe.
