@@ -13,7 +13,10 @@ import (
 
 func fixture(t *testing.T) (Policy, string) {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := func(p string) string {
 		v := filepath.Join(root, p)
 		if err := os.MkdirAll(v, 0700); err != nil {
@@ -173,5 +176,22 @@ func TestMissingDependencies(t *testing.T) {
 				t.Fatal("preflight wrote settings")
 			}
 		})
+	}
+}
+
+func TestBuildCanonicalizesSymlinkedPaths(t *testing.T) {
+	p, settings := fixture(t)
+	project := p.Projects[0]
+	alias := filepath.Join(t.TempDir(), "project-alias")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Skip(err)
+	}
+	p.Projects[0] = alias
+	got, err := Build(p, []string{settings})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(got.Filesystem.AllowWrite, project) || contains(got.Filesystem.AllowWrite, alias) {
+		t.Fatal("policy did not use the canonical project binding")
 	}
 }
