@@ -30,10 +30,13 @@ type Launch struct {
 	SRT, CLI   string
 	Args       []string
 	// SearchPath is trusted installation configuration, not inherited PATH.
-	SearchPath    []string
-	Mode          Mode
-	Protected     []string
-	Provider, Cwd string
+	SearchPath      []string
+	Mode            Mode
+	Protected       []string
+	Provider, Cwd   string
+	CredentialsFile string
+	// Control is a supervisor-owned srt lifetime pipe, never a provider descriptor.
+	Control *os.File
 }
 
 func environment(parent []string, home, tmp, path string) []string {
@@ -161,8 +164,16 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 		return 0, closeErr
 	}
 	tmp, _ := canonical(l.Policy.Tmp)
-	args := append([]string{"--settings", f.Name(), "--", envCLI, "TMPDIR=" + tmp, cli}, l.Args...)
+	args := []string{"--settings", f.Name()}
+	if l.Control != nil {
+		args = append(args, "--control-fd", "3")
+	}
+	args = append(args, "--", envCLI, "TMPDIR="+tmp, cli)
+	args = append(args, l.Args...)
 	cmd := exec.CommandContext(ctx, srt, args...)
+	if l.Control != nil {
+		cmd.ExtraFiles = []*os.File{l.Control}
+	}
 	cmd.Dir = settings.Filesystem.AllowWrite[0]
 	if l.Cwd != "" {
 		cwd, err := canonical(l.Cwd)

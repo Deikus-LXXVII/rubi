@@ -19,10 +19,12 @@ import (
 const maxT3Threads = 2000
 
 type t3Thread struct {
-	ID      string `json:"id"`
-	Project string `json:"project"`
-	Role    string `json:"role"`
-	Name    string `json:"name,omitempty"`
+	ID          string `json:"id"`
+	Provider    string `json:"provider,omitempty"`
+	Environment string `json:"environment,omitempty"`
+	Project     string `json:"project"`
+	Role        string `json:"role"`
+	Name        string `json:"name,omitempty"`
 	// Bot is the Bot that started the thread ("" = the user's own).
 	Bot string `json:"bot,omitempty"`
 	// Mode is the claude-agent spelling of the permission mode the thread was started in (after clamping).

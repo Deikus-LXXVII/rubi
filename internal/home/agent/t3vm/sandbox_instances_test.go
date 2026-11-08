@@ -149,3 +149,46 @@ func TestSandboxInstancesRemoveOrphanedProjectSwitch(t *testing.T) {
 		t.Fatal("orphan switches not cleaned selectively")
 	}
 }
+
+func TestManagedOpenCodeCannotUseRemoteURLOrWeakAuthentication(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	os.Mkdir(project, 0700)
+	o := InstanceOptions{Dir: filepath.Join(root, "rubi"), T3Base: filepath.Join(root, "t3")}
+	role := SandboxRole{ID: "r_aaaaaa01", Project: "project", ProjectDir: project, ClaudeDir: filepath.Join(root, "login")}
+	if _, err := SyncSandboxInstances(o, "/bin/true", []SandboxRole{role}); err != nil {
+		t.Fatal(err)
+	}
+	path := o.settingsPath()
+	raw, _ := os.ReadFile(path)
+	var settings map[string]json.RawMessage
+	json.Unmarshal(raw, &settings)
+	var instances map[string]map[string]json.RawMessage
+	json.Unmarshal(settings["providerInstances"], &instances)
+	entry := instances[sandboxInstanceID(role.ID, "opencode")]
+	var cfg map[string]any
+	json.Unmarshal(entry["config"], &cfg)
+	password, _ := cfg["serverPassword"].(string)
+	if len(password) < 32 {
+		t.Fatal("strong bridge authentication not provisioned")
+	}
+	cfg["serverUrl"] = "http://untrusted.invalid"
+	cfg["serverPassword"] = "weak"
+	entry["config"] = mustMarshal(cfg)
+	settings["providerInstances"] = mustMarshal(instances)
+	os.WriteFile(path, mustMarshal(settings), 0600)
+	if _, err := SyncSandboxInstances(o, "/bin/true", []SandboxRole{role}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = os.ReadFile(path)
+	json.Unmarshal(raw, &settings)
+	json.Unmarshal(settings["providerInstances"], &instances)
+	json.Unmarshal(instances[sandboxInstanceID(role.ID, "opencode")]["config"], &cfg)
+	password, _ = cfg["serverPassword"].(string)
+	if cfg["serverUrl"] != "" || len(password) < 32 {
+		t.Fatal("remote transport or weak authentication survived sync")
+	}
+	if res, err := SyncSandboxInstances(o, "/bin/true", []SandboxRole{role}); err != nil || res.Changed() {
+		t.Fatal("bridge credentials rotated unnecessarily")
+	}
+}
