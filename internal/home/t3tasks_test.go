@@ -482,3 +482,35 @@ func TestT3TaskReplacingWatcherKeepsNewGenerationOwned(t *testing.T) {
 		}
 	}
 }
+
+func TestT3TaskEndedEventIsExplicitlyRequesterAddressedAndRedacted(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
+	l, role := agentLife(t)
+	id := "task_0123456789abcdef01234567"
+	s := agenttask.State{Version: 1, ID: id, Workspace: agenttask.Workspace{ID: id, Project: "my-project", Role: role, Branch: "rubi/" + id}, Spec: agenttask.Spec{Project: "my-project", Role: role, From: "requester-only", Bot: "bot-one", MessageID: "original-message", Prompt: "private task prompt", Proof: "private mandate proof"}, Phase: agenttask.Failed, Thread: "owned-thread"}
+	l.t3.emitTaskResult(s)
+	items := nextItems(t, l.h, 1)
+	found := false
+	for _, item := range items {
+		var event map[string]any
+		if json.Unmarshal(item.Event, &event) != nil || event["kind"] != "task_result" {
+			continue
+		}
+		found = true
+		if event["to"] != "requester-only" || event["event_id"] != id+":terminal" || event["bot"] != "bot-one" {
+			t.Fatal("ended result could fall back to broad delivery")
+		}
+		replies, _ := event["in_reply_to"].([]any)
+		if len(replies) != 1 || replies[0] != "original-message" {
+			t.Fatal("ended result lost original request binding")
+		}
+		if strings.Contains(string(item.Event), "private task prompt") || strings.Contains(string(item.Event), "private mandate proof") {
+			t.Fatal("ended event exposed private state")
+		}
+	}
+	if !found {
+		t.Fatal("no ended event delivered")
+	}
+}

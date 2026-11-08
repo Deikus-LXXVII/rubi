@@ -317,7 +317,7 @@ func (t *T3Home) publisherHelperFrom(self string) (string, error) {
 	return p, nil
 }
 func (t *T3Home) emitTaskResult(s agenttask.State) {
-	raw, _ := json.Marshal(map[string]any{"kind": "task_result", "event_id": s.EventID(), "task": s.Public(), "from": s.Spec.From, "bot": s.Spec.Bot})
+	raw, _ := json.Marshal(map[string]any{"kind": "task_result", "event_id": s.EventID(), "task": s.Public(), "from": s.Spec.From, "bot": s.Spec.Bot, "to": toOf(s.Spec.From, s.Spec.Bot), "in_reply_to": []string{s.Spec.MessageID}})
 	t.h.Agent.Emit(agent.Item{Type: "event", Project: s.Spec.Project, Role: s.Spec.Role, SessionID: s.Thread, Event: raw})
 }
 
