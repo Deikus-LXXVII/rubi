@@ -47,6 +47,11 @@ type AutostartResult struct {
 // errAutostartWrite marks a failure to write the definition (as opposed to loading it), for the sentence the user sees.
 var errAutostartWrite = errors.New("writing the start-at-login definition")
 
+// ErrNoServiceManager is what a form returns when this user has no service manager to start Rubi Home (no systemd, or
+// no user session to reach it) and none was set up before: Rubi Home's own supervisor is the way then
+// (InstallAutostartOrSupervise).
+var ErrNoServiceManager = errors.New("this computer has no service manager for this user")
+
 // ErrNeedsElevation is what a form returns when the system would need administrator rights for what was asked: it asked
 // for none and changed nothing.
 var ErrNeedsElevation = errors.New("this needs administrator rights, which Rubi Home does not ask for")

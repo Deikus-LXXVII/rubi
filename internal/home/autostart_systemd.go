@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -45,7 +46,11 @@ func systemdAutostart(env AutostartEnv) Autostart {
 		}
 		out, err := env.run(ctx, "", name, append([]string{"--user"}, args...)...)
 		if err != nil {
-			return fmt.Errorf("systemd (user) %s: %w%s", strings.Join(args, " "), err, systemdHint(out+stderrOf(err)))
+			hint := systemdHint(out + stderrOf(err))
+			if hint != "" {
+				err = errors.Join(err, errNoUserBus)
+			}
+			return fmt.Errorf("systemd (user) %s: %w%s", strings.Join(args, " "), err, hint)
 		}
 		return nil
 	}
@@ -55,14 +60,26 @@ func systemdAutostart(env AutostartEnv) Autostart {
 			if err != nil {
 				return AutostartResult{}, fmt.Errorf("%w: %w", errAutostartWrite, err)
 			}
+			_, statErr := os.Lstat(unitPath)
+			hadUnit := statErr == nil
 			if _, err := env.LookPath("systemctl"); err != nil {
-				return AutostartResult{}, errors.New("this computer has no systemd to start Rubi Home at login")
+				err := errors.New("this computer has no systemd to start Rubi Home at login")
+				if !hadUnit {
+					err = fmt.Errorf("%w (%w)", err, ErrNoServiceManager)
+				}
+				return AutostartResult{}, err
 			}
 			if err := writeFileReplace(unitPath, []byte(unit), 0o644); err != nil {
 				return AutostartResult{}, fmt.Errorf("%w: %w", errAutostartWrite, err)
 			}
 			for _, args := range [][]string{{"daemon-reload"}, {"enable", "--now", systemdUnitName}, {"restart", systemdUnitName}} {
 				if err := ctl(ctx, args...); err != nil {
+					if !hadUnit && errors.Is(err, errNoUserBus) {
+						// No user manager to reach, and none was set up before: take back the unit nothing will run
+						// (a later login session would start it beside the supervisor).
+						_ = removeFile(unitPath)
+						err = fmt.Errorf("%w (%w)", err, ErrNoServiceManager)
+					}
 					return AutostartResult{}, err
 				}
 			}
@@ -80,6 +97,9 @@ func systemdAutostart(env AutostartEnv) Autostart {
 		loaded: func(ctx context.Context) bool { return ctl(ctx, "is-active", "--quiet", systemdUnitName) == nil },
 	}
 }
+
+// errNoUserBus marks a systemctl failure for want of a user manager to talk to.
+var errNoUserBus = errors.New("no systemd user session")
 
 // systemdHint helps with the one failure that is not a bug: no user manager to talk to (a session with no login).
 func systemdHint(out string) string {

@@ -79,6 +79,7 @@ func Run(ctx context.Context, layout paths.Layout) error {
 		return err
 	}
 	go checkUpdates(ctx, c)
+	keepHome(ctx)      // Rubi Home, where it is installed and nothing else starts it (homestart)
 	go c.RunWatch(ctx) // beats to the watchers the user chose (core/watchdog.go)
 
 	go func() {

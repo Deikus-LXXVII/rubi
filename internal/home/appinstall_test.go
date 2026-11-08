@@ -3,6 +3,7 @@ package home
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -316,3 +317,24 @@ type fakeRemove struct {
 }
 
 func (f *fakeRemove) Remove(context.Context) error { f.n++; return nil }
+
+func TestInstallAutostartOrSupervise(t *testing.T) {
+	home, _ := filepath.EvalSymlinks(t.TempDir())
+	bin := filepath.Join(home, "bin", "rubi-home")
+	os.MkdirAll(filepath.Dir(bin), 0o755)
+	os.WriteFile(bin, []byte("x"), 0o755)
+	starts := 0
+	start := func() error { starts++; return nil }
+	f := &fakeAutostart{}
+	if sup, err := InstallAutostartOrSupervise(context.Background(), f, home, bin, start); sup || err != nil || starts != 0 {
+		t.Errorf("with a service manager: %v %v, %d starts", sup, err, starts)
+	}
+	f.installErr = fmt.Errorf("systemd: %w", ErrNoServiceManager)
+	if sup, err := InstallAutostartOrSupervise(context.Background(), f, home, bin, start); !sup || err != nil || starts != 1 {
+		t.Errorf("without one: %v %v, %d starts", sup, err, starts)
+	}
+	f.installErr = ErrNeedsElevation
+	if sup, err := InstallAutostartOrSupervise(context.Background(), f, home, bin, start); sup || !errors.Is(err, ErrNeedsElevation) || starts != 1 {
+		t.Errorf("another failure: %v %v, %d starts", sup, err, starts)
+	}
+}

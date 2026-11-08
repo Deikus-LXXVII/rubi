@@ -28,15 +28,32 @@ type SuperviseEnv struct {
 	Backoff func(n int) time.Duration
 	// Steady is how long a run must last for the next restart to count as the first again (superviseSteady when 0).
 	Steady time.Duration
+	// BinaryPoll is how often the supervisor looks whether Exe was replaced (an update), to restart the run on the new
+	// binary (superviseBinaryPoll when 0).
+	BinaryPoll time.Duration
 	// Grace is how long a stopping supervisor waits for the run to end before it kills it (superviseGrace when 0).
 	Grace time.Duration
 	Logf  func(format string, args ...any)
+	// SystemStarts says whether the system starts Rubi Home (a LaunchAgent, a systemd user unit, a Scheduled Task):
+	// then start leaves it to the system, since a supervisor's run would only wait on that run's lock.
+	SystemStarts func(ctx context.Context) bool
 }
+
+// StartResult is what StartSupervisor did.
+type StartResult int
+
+const (
+	StartedNow      StartResult = iota // a supervisor was started
+	AlreadyRunning                     // a supervisor was running
+	StartedBySystem                    // the system starts Rubi Home; nothing was started
+)
 
 const (
 	superviseSteady = time.Minute
 	superviseGrace  = 30 * time.Second
-	superviseLogMax = 10 << 20
+	// superviseBinaryPoll is how often the binary is checked for an update.
+	superviseBinaryPoll = 30 * time.Second
+	superviseLogMax     = 10 << 20
 )
 
 // SupervisorLockPath is the file the one supervisor of a Rubi Home folder holds locked.
@@ -163,6 +180,11 @@ func Supervise(ctx context.Context, e SuperviseEnv) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		if errors.Is(err, errBinaryChanged) {
+			e.logf("rubi-home supervisor: the binary was replaced; starting the run again on the new one")
+			quick = 0
+			continue
+		}
 		if time.Since(began) >= steady {
 			quick = 0
 		}
@@ -177,13 +199,28 @@ func Supervise(ctx context.Context, e SuperviseEnv) error {
 	}
 }
 
-// superviseOnce runs args once, with the log as its output, until it ends or ctx does.
+// errBinaryChanged ends a run whose binary was replaced.
+var errBinaryChanged = errors.New("the binary was replaced")
+
+// sameBinary reports whether the file at path is still the one a was read from (same file, size and time).
+func sameBinary(a os.FileInfo, path string) bool {
+	b, err := os.Stat(path)
+	return err != nil || (os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime()))
+}
+
+// superviseOnce runs args once, with the log as its output, until it ends or ctx does, or Exe is replaced (then it
+// stops the run and returns errBinaryChanged).
 func superviseOnce(ctx context.Context, e SuperviseEnv, args []string, grace time.Duration) error {
 	lf, err := openSupervisorLog(e.Dir)
 	if err != nil {
 		return err
 	}
 	defer lf.Close()
+	bin, binErr := os.Stat(e.Exe)
+	poll := e.BinaryPoll
+	if poll <= 0 {
+		poll = superviseBinaryPoll
+	}
 	cmd := exec.Command(e.Exe, args...)
 	cmd.Env = e.Env
 	cmd.Stdout, cmd.Stderr = lf, lf
@@ -192,33 +229,61 @@ func superviseOnce(ctx context.Context, e SuperviseEnv, args []string, grace tim
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
+	tick := time.NewTicker(poll)
+	defer tick.Stop()
+	changed := false
+wait:
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			break wait
+		case <-tick.C:
+			// A binary being replaced (missing for a moment) counts as unchanged until the new one is there.
+			if binErr == nil && !sameBinary(bin, e.Exe) {
+				changed = true
+				break wait
+			}
+		}
 	}
 	_ = terminate(cmd.Process)
 	select {
 	case err := <-done:
-		return err
+		return stopped(err, changed)
 	case <-time.After(grace):
 	}
 	_ = cmd.Process.Kill()
-	return <-done
+	return stopped(<-done, changed)
 }
 
-// StartSupervisor is `rubi-home start`: it starts a detached supervisor unless one runs, and waits until that one
-// holds the lock. already is true when one was running.
-func StartSupervisor(e SuperviseEnv) (already bool, err error) {
+func stopped(err error, changed bool) error {
+	if changed {
+		return errBinaryChanged
+	}
+	return err
+}
+
+// StartSupervisor is `rubi-home start`: unless the system starts Rubi Home or a supervisor runs, it starts a detached
+// supervisor and waits until that one holds the lock.
+func StartSupervisor(e SuperviseEnv) (StartResult, error) {
 	if SupervisorRunning(e.Dir) {
-		return true, nil
+		return AlreadyRunning, nil
+	}
+	if e.SystemStarts != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		bySystem := e.SystemStarts(ctx)
+		cancel()
+		if bySystem {
+			return StartedBySystem, nil
+		}
 	}
 	if err := os.MkdirAll(e.Dir, 0o700); err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	lf, err := openSupervisorLog(e.Dir)
 	if err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	defer lf.Close()
 	args := e.Args
@@ -230,27 +295,27 @@ func StartSupervisor(e SuperviseEnv) (already bool, err error) {
 	cmd.Stdout, cmd.Stderr = lf, lf
 	cmd.Dir = "/"
 	if err := detach(cmd); err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	if err := cmd.Start(); err != nil {
-		return false, err
+		return StartedNow, err
 	}
 	exited := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(exited) }()
 	deadline := time.After(10 * time.Second)
 	for {
 		if SupervisorRunning(e.Dir) {
-			return false, nil // the goroutine above stays waiting on it; start is a short command that ends now
+			return StartedNow, nil // the goroutine above stays waiting on it; start is a short command that ends now
 		}
 		select {
 		case <-exited:
 			// It lost the race to another start (which now runs) or failed: the log says which.
 			if SupervisorRunning(e.Dir) {
-				return true, nil
+				return AlreadyRunning, nil
 			}
-			return false, fmt.Errorf("the supervisor ended at once; see %s", SupervisorLogPath(e.Dir))
+			return StartedNow, fmt.Errorf("the supervisor ended at once; see %s", SupervisorLogPath(e.Dir))
 		case <-deadline:
-			return false, fmt.Errorf("the supervisor didn't come up; see %s", SupervisorLogPath(e.Dir))
+			return StartedNow, fmt.Errorf("the supervisor didn't come up; see %s", SupervisorLogPath(e.Dir))
 		case <-time.After(50 * time.Millisecond):
 		}
 	}

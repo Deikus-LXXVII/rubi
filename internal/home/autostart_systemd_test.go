@@ -189,3 +189,48 @@ func TestSystemdRestartRemoveLoaded(t *testing.T) {
 		t.Error("the unit file stayed")
 	}
 }
+
+// Where there is no systemd to reach and no unit from before, the form says there is no service manager (and leaves no
+// unit behind); where a unit was set up before, it is the old error, so nothing starts beside that unit's Rubi Home.
+func TestSystemdWithNoUserManagerSaysSo(t *testing.T) {
+	_, as, home := sysRig(t, "other")
+	if _, err := as.Install(context.Background(), AutostartSpec{Bin: "/a/rubi-home"}); !errors.Is(err, ErrNoServiceManager) {
+		t.Errorf("no systemctl, no unit: %v", err)
+	}
+	unit := filepath.Join(home, ".config", "systemd", "user", "rubi-home.service")
+	os.MkdirAll(filepath.Dir(unit), 0o755)
+	os.WriteFile(unit, []byte("old"), 0o644)
+	if _, err := as.Install(context.Background(), AutostartSpec{Bin: "/a/rubi-home"}); err == nil || errors.Is(err, ErrNoServiceManager) {
+		t.Errorf("no systemctl, a unit from before: %v", err)
+	}
+
+	_, nobus := exec.Command("sh", "-c", "echo 'Failed to connect to bus: No such file or directory' >&2; exit 1").Output()
+	if nobus == nil {
+		t.Skip("no sh")
+	}
+	p, as, home := sysRig(t)
+	unit = filepath.Join(home, ".config", "systemd", "user", "rubi-home.service")
+	p.err["/bin/systemctl"] = nobus
+	_, err := as.Install(context.Background(), AutostartSpec{Bin: "/a/rubi-home"})
+	if !errors.Is(err, ErrNoServiceManager) || !strings.Contains(err.Error(), "loginctl enable-linger") {
+		t.Errorf("no bus, no unit: %v", err)
+	}
+	if _, err := os.Lstat(unit); err == nil {
+		t.Error("a unit nothing will run was left behind")
+	}
+	os.MkdirAll(filepath.Dir(unit), 0o755)
+	os.WriteFile(unit, []byte("old"), 0o644)
+	if _, err := as.Install(context.Background(), AutostartSpec{Bin: "/a/rubi-home"}); err == nil || errors.Is(err, ErrNoServiceManager) {
+		t.Errorf("no bus, a unit from before: %v", err)
+	}
+	if _, err := os.Lstat(unit); err != nil {
+		t.Error("the unit from before was taken away")
+	}
+	// Another failure (not the bus) is no reason for the supervisor.
+	_, other := exec.Command("sh", "-c", "echo 'Unit file is masked' >&2; exit 1").Output()
+	p2, as2, _ := sysRig(t)
+	p2.err["/bin/systemctl"] = other
+	if _, err := as2.Install(context.Background(), AutostartSpec{Bin: "/a/rubi-home"}); err == nil || errors.Is(err, ErrNoServiceManager) {
+		t.Errorf("another systemctl failure: %v", err)
+	}
+}
