@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/hostguard"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
@@ -379,6 +380,27 @@ func (t *T3Home) adoptServer(ctx context.Context, version string) bool {
 	t.mu.Unlock()
 	log.Printf("T3: took over the server an earlier run left (pid %d)", srv.Pid())
 	return true
+}
+
+// syncProjects is T3's projects for the instance sync (nil while T3 isn't paired or doesn't answer: then no project
+// setting is changed).
+func (t *T3Home) syncProjects() []t3vm.T3Project {
+	cl := t.client()
+	if cl == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(t.baseCtx(), 15*time.Second)
+	defer cancel()
+	ps, err := cl.Projects(ctx)
+	if err != nil {
+		log.Printf("T3 projects (for the role instances): %v", err)
+		return nil
+	}
+	out := make([]t3vm.T3Project, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, t3vm.T3Project{ID: p.ID, Root: p.WorkspaceRoot})
+	}
+	return out
 }
 
 // startSessions serves the session socket (and writes the role instances) while the server runs.

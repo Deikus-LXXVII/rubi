@@ -274,6 +274,37 @@ func TestT3AgentRolePutSyncsTheInstances(t *testing.T) {
 	}
 }
 
+// Starting a session in a project T3 didn't have turns the role's instance on in that project (the project is made after
+// the last sync) and leaves it off globally.
+func TestT3AgentStartTurnsTheRoleOnInItsNewProject(t *testing.T) {
+	l, role := agentLife(t)
+	startThread(t, l, role, nil)
+	ps := l.fake.Projects()
+	if len(ps) != 1 {
+		t.Fatalf("projects: %+v", ps)
+	}
+	b, err := os.ReadFile(filepath.Join(l.h.Fresh().T3BaseDir, "userdata", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var s struct {
+		ProviderInstances        map[string]struct{ Enabled *bool }
+		ProjectSettingsOverrides map[string]struct {
+			ProviderInstances map[string]struct{ Enabled *bool }
+		}
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatal(err)
+	}
+	id := "claude-" + role
+	if e := s.ProviderInstances[id].Enabled; e == nil || *e {
+		t.Errorf("the instance globally: %v", e)
+	}
+	if e := s.ProjectSettingsOverrides[ps[0].ID].ProviderInstances[id].Enabled; e == nil || !*e {
+		t.Errorf("the instance in its project: %s", b)
+	}
+}
+
 // A tool ask arrives through the same queue as before and decide answers it.
 func TestT3AgentNextAndDecide(t *testing.T) {
 	l, role := agentLife(t)

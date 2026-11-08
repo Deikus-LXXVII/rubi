@@ -650,6 +650,22 @@ func (t *T3Home) ensureProject(ctx context.Context, cl *t3.Client, dir, title st
 	if dir == "" || !filepath.IsAbs(dir) {
 		return "", errors.New("the role's project folder isn't known")
 	}
+	id, err := t.findOrMakeProject(ctx, cl, dir, title)
+	if err != nil {
+		return "", err
+	}
+	// The role's instance is on only in its project's settings, which a project made since the last sync (here, or by
+	// the user in T3) doesn't have yet. An unchanged sync writes nothing.
+	if sr, err := t.h.SyncT3Instances(); err != nil {
+		log.Printf("T3 role instances: %v", err)
+	} else if sr.Changed() {
+		log.Printf("T3 role instances: added %v, updated %v, removed %v", sr.Added, sr.Updated, sr.Removed)
+	}
+	return id, nil
+}
+
+// findOrMakeProject is ensureProject's lookup, one at a time so a folder isn't made twice.
+func (t *T3Home) findOrMakeProject(ctx context.Context, cl *t3.Client, dir, title string) (string, error) {
 	t.projMu.Lock()
 	defer t.projMu.Unlock()
 	ps, err := cl.Projects(ctx)

@@ -200,7 +200,11 @@ func (m *Manager) Emit(it Item) {
 }
 
 // T3RoleRef names a role for a T3 instance.
-type T3RoleRef struct{ ID, Name, ClaudeDir string }
+type T3RoleRef struct {
+	ID, Name, ClaudeDir string
+	// ProjectDir is the folder the role is pinned to ("" when its project's folder isn't the one it was made for).
+	ProjectDir string
+}
 
 // T3Roles lists the active isolated roles of every project (the legacy roles have no directories of their own).
 func (m *Manager) T3Roles() []T3RoleRef {
@@ -212,7 +216,11 @@ func (m *Manager) T3Roles() []T3RoleRef {
 		if row.Legacy || row.Status != "active" {
 			continue
 		}
-		out = append(out, T3RoleRef{ID: row.ID, Name: row.Name, ClaudeDir: filepath.Join(m.opt.Dir, RolesDir, row.ID, "claude")})
+		ref := T3RoleRef{ID: row.ID, Name: row.Name, ClaudeDir: filepath.Join(m.opt.Dir, RolesDir, row.ID, "claude")}
+		if r, err := m.roles.Get(row.ID, 0); err == nil && m.roleBoundTo(r, r.Project) == nil {
+			ref.ProjectDir = m.projectDir(r.Project)
+		}
+		out = append(out, ref)
 	}
 	return out
 }
