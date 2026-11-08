@@ -46,6 +46,14 @@ app="$work/Rubi Home.app"
 mkdir -p "$app/Contents/MacOS"
 cp "$binary" "$app/Contents/MacOS/rubi-home"
 chmod 755 "$app/Contents/MacOS/rubi-home"
+# Release companions stay adjacent to the executable, just as in the tarball.
+# Bare development binaries retain the existing two-file app build.
+companions=$(dirname "$binary")
+if [ -d "$companions/srt-runtime" ]; then
+  [ -x "$companions/rubi-agent-exec" ] || fail "sandbox launcher is missing"
+  cp "$companions/rubi-agent-exec" "$app/Contents/MacOS/rubi-agent-exec"
+  cp -R "$companions/srt-runtime" "$app/Contents/MacOS/srt-runtime"
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -72,6 +80,7 @@ case "${RUBI_APP_SIGN:-}" in
   "") ;;
   adhoc)
     command -v codesign >/dev/null 2>&1 || fail "RUBI_APP_SIGN=adhoc needs codesign (macOS)"
+    python3 "$(dirname "$0")/srt-runtime/seal-macos.py" "$app" || fail "sandbox runtime signing failed"
     out=$(codesign --sign - --force --timestamp=none "$app" 2>&1) || fail "codesign failed: $out"
     out=$(codesign --verify --strict "$app" 2>&1) || fail "the signed app does not verify: $out"
     ;;

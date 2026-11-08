@@ -478,7 +478,9 @@ func TestReleaseChecksTheSignatureWithTheInstallersCode(t *testing.T) {
 	if sign < 0 || run < sign || pub < run {
 		t.Errorf("the release must verify with openssl (%d), then with the installer's code (%d), then publish (%d)", sign, run, pub)
 	}
-	if !strings.Contains(rel, "runs-on: ubuntu-latest") {
+	// Both GitHub-hosted Ubuntu images include PowerShell. The fixed image
+	// keeps the bundled socat's glibc baseline stable across latest-image rolls.
+	if !strings.Contains(rel, "runs-on: ubuntu-latest") && !strings.Contains(rel, "runs-on: ubuntu-22.04") {
 		t.Error("the release job is not on a runner that has pwsh")
 	}
 }

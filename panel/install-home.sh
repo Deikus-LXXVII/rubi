@@ -137,6 +137,10 @@ say "signature and checksum verified"
 mkdir -p "$DIR/bin" "$DIR/logs"
 chmod 700 "$DIR" "$DIR/bin" # only you may change the binary: Rubi runs it where there is no service manager
 tar -xzf "$tmp/$archive" -C "$tmp" rubi-home
+if tar -tzf "$tmp/$archive" | grep -q '^srt-runtime/'; then
+  tar -xzf "$tmp/$archive" -C "$tmp" rubi-agent-exec srt-runtime
+  "$tmp/rubi-home" runtime-install "$tmp" "$DIR/bin" || fail "sandbox runtime installation failed; not replacing Rubi Home"
+fi
 mv "$tmp/rubi-home" "$DIR/bin/rubi-home.new"
 chmod 755 "$DIR/bin/rubi-home.new"
 mv -f "$DIR/bin/rubi-home.new" "$DIR/bin/rubi-home"

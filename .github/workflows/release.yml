@@ -21,6 +21,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+
       - name: Build the Mac app
         # One universal binary (Apple silicon and Intel) in one app, so the user has one download to choose.
         run: |
@@ -32,10 +36,19 @@ jobs:
             CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath \
               -ldflags "-s -w -buildid= -X github.com/Deikus-LXXVII/rubi/internal/version.Version=${GITHUB_REF_NAME}" \
               -o "$out/rubi-home" ./cmd/rubi-home
+            CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -trimpath -ldflags "-s -w -buildid=" -o "$out/rubi-agent-exec" ./cmd/rubi-agent-exec
+            python3 scripts/srt-runtime/build.py --platform "darwin-$arch" --dest work/home-darwin-universal
           done
+          lipo -create -output work/home-darwin-universal/rubi-agent-exec work/home-darwin-arm64/rubi-agent-exec work/home-darwin-amd64/rubi-agent-exec
+          test -d work/home-darwin-universal/srt-runtime
           lipo -create -output work/home-darwin-universal/rubi-home work/home-darwin-arm64/rubi-home work/home-darwin-amd64/rubi-home
           lipo -archs work/home-darwin-universal/rubi-home
           RUBI_APP_SIGN=adhoc sh scripts/build-home-app.sh "$GITHUB_REF_NAME" universal work/home-darwin-universal/rubi-home app
+          # Check the sealed native Node too: re-signing must retain JIT entitlements.
+          mkdir -p work/mac-app-smoke
+          unzip -q "app/rubi-home-${GITHUB_REF_NAME}-macos-universal.zip" -d work/mac-app-smoke
+          pin=$(python3 -c 'import runpy; print(runpy.run_path("scripts/srt-runtime/build.py")["identity"]())')
+          "work/mac-app-smoke/Rubi Home.app/Contents/MacOS/srt-runtime/$pin/darwin-$(go env GOARCH)/bin/node" -e 'let f=x=>x+1; for(let i=0;i<100000;i++) if(f(i)!==i+1) process.exit(1)'
           # The app is signed ad hoc only: the project does not plan a Developer ID signature, so macOS asks for
           # "Open Anyway" on the first open. The Mac app is the fallback for users without a Bot; the Bot installs
           # Rubi Home without it. See docs/design/rubi-home.md ("The Mac app")
@@ -127,12 +140,18 @@ jobs:
 
   release:
     needs: [mac-app, windows-check, microvm]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+      - name: Runtime build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu make
 
       - name: Test
         run: go test -race ./...
@@ -182,7 +201,10 @@ jobs:
             CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
               -ldflags "-s -w -buildid= -X github.com/Deikus-LXXVII/rubi/internal/version.Version=${GITHUB_REF_NAME}" \
               -o "$out/rubi-home" ./cmd/rubi-home
-            tar --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$out" -czf "dist/rubi-home-${GITHUB_REF_NAME}-$os-$arch.tar.gz" rubi-home
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -buildid=" -o "$out/rubi-agent-exec" ./cmd/rubi-agent-exec
+            cc=cc; if [ "$os-$arch" = linux-arm64 ]; then cc=aarch64-linux-gnu-gcc; fi
+            python3 scripts/srt-runtime/build.py --platform "$os-$arch" --dest "$out" --cc "$cc"
+            tar --owner=0 --group=0 --numeric-owner --mtime=@0 -C "$out" -czf "dist/rubi-home-${GITHUB_REF_NAME}-$os-$arch.tar.gz" rubi-home rubi-agent-exec srt-runtime
           done
           # The Mac app zips came from the mac-app job (above, in dist/), the Windows zips from the windows-home job; the
           # tar.gz files stay for the script installer and Linux.

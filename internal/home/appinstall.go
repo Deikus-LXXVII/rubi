@@ -14,6 +14,8 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/home/fsx"
 	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 	"github.com/Deikus-LXXVII/rubi/internal/version"
+
+	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 )
 
 // What Finder does with the Mac app: it runs Contents/MacOS/rubi-home with no arguments (very old macOS adds
@@ -276,6 +278,9 @@ func installBinary(env AppEnv, dir string) (installResult, error) {
 	}
 	if fi, err := os.Lstat(dst); err == nil && fi.Mode().IsRegular() {
 		if dstSum, err := fileSum(dst); err == nil && dstSum == srcSum {
+			if err := agentsandbox.InstallRuntimeCompanions(filepath.Dir(env.Exe), filepath.Dir(dst)); err != nil {
+				return res, err
+			}
 			return res, nil
 		}
 		v, verr := env.Version(dst) // only ever a regular file: a symlink could point at anything
@@ -315,6 +320,9 @@ func installBinary(env AppEnv, dir string) (installResult, error) {
 		return res, err
 	}
 	if err := tmp.Close(); err != nil {
+		return res, err
+	}
+	if err := agentsandbox.InstallRuntimeCompanions(filepath.Dir(env.Exe), filepath.Dir(dst)); err != nil {
 		return res, err
 	}
 	if err := os.Rename(tmp.Name(), dst); err != nil {
