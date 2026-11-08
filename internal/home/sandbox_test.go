@@ -15,7 +15,10 @@ import (
 
 func sandboxFixture(t *testing.T) (agentsandbox.Binding, Config, string, string) {
 	t.Helper()
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := filepath.Join(root, "rubi")
 	a := filepath.Join(root, "project-a")
 	b := filepath.Join(root, "project-b")
@@ -31,7 +34,7 @@ func sandboxFixture(t *testing.T) (agentsandbox.Binding, Config, string, string)
 	rd := filepath.Join(dir, agent.RolesDir, r.ID)
 	writeSandboxJSON(t, filepath.Join(rd, "versions", "1.json"), r)
 	writeSandboxJSON(t, filepath.Join(rd, "index.json"), r)
-	_, err := t3vm.SyncSandboxInstances(t3vm.InstanceOptions{T3Base: filepath.Join(root, "t3"), Dir: dir, Projects: []t3vm.T3Project{{ID: "ta", Root: a}, {ID: "tb", Root: b}}}, "/usr/bin/true", []t3vm.SandboxRole{{ID: r.ID, Name: "Test", Project: r.Project, ProjectDir: a, ClaudeDir: filepath.Join(rd, "claude")}})
+	_, err = t3vm.SyncSandboxInstances(t3vm.InstanceOptions{T3Base: filepath.Join(root, "t3"), Dir: dir, Projects: []t3vm.T3Project{{ID: "ta", Root: a}, {ID: "tb", Root: b}}}, "/usr/bin/true", []t3vm.SandboxRole{{ID: r.ID, Name: "Test", Project: r.Project, ProjectDir: a, ClaudeDir: filepath.Join(rd, "claude")}})
 	if err != nil {
 		t.Fatal(err)
 	}
