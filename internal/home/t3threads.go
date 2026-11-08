@@ -12,6 +12,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 )
@@ -20,6 +22,8 @@ const maxT3Threads = 2000
 
 type t3Thread struct {
 	ID          string `json:"id"`
+	Task        string `json:"task,omitempty"`
+	Branch      string `json:"branch,omitempty"`
 	Provider    string `json:"provider,omitempty"`
 	Environment string `json:"environment,omitempty"`
 	Project     string `json:"project"`
@@ -172,4 +176,18 @@ func (s *t3Threads) counts(project, role, bot string) t3Counts {
 		}
 	}
 	return c
+}
+
+// T3 thread IDs are opaque RPC identifiers, never filesystem names. Native MCP
+// launches use mcp:launch:<digest>, unlike the legacy runner's filename IDs.
+func validT3ThreadID(id string) bool {
+	if id == "" || len(id) > 512 || !utf8.ValidString(id) {
+		return false
+	}
+	for _, r := range id {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
 }

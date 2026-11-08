@@ -4,6 +4,7 @@ package agentsandbox
 // The hash pins a role to the directory it was created for, even if project IDs shift.
 type Binding struct {
 	HomeDir, Role, Project, DirHash, Provider string
+	Task                                      string `json:"Task,omitempty"`
 }
 
 // Installation is owner-controlled installation metadata, never discovered via the agent's PATH.

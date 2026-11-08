@@ -16,10 +16,12 @@ import (
 	"log"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
+	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
@@ -79,6 +81,7 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 		return t.status(ctx)
 	}
 	var in struct {
+		Task      bool   `json:"task"`
 		Project   string `json:"project"`
 		Role      string `json:"role"`
 		ID        string `json:"id"`
@@ -107,14 +110,14 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 	case "sessions":
 		return t.sessions(in.Project, in.Role), nil
 	case "messages":
-		if !agent.OkID(in.ID) {
+		if !validT3ThreadID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
 		return t.messages(ctx, in.Project, in.Role, in.ID, in.Limit)
 	case "start":
-		return t.start(ctx, startIn{in.Project, in.Role, in.Prompt, in.Name, in.From, in.Mode, in.Bot, in.Model, in.MessageID, in.Provider})
+		return t.start(ctx, startIn{in.Project, in.Role, in.Prompt, in.Name, in.From, in.Mode, in.Bot, in.Model, in.MessageID, in.Provider, in.Task})
 	case "send":
-		if !agent.OkID(in.ID) {
+		if !validT3ThreadID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
 		if strings.TrimSpace(in.Text) == "" {
@@ -125,27 +128,27 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 		}
 		return t.send(ctx, in.Project, in.Role, in.ID, in.Text, in.From, in.Bot, in.MessageID, in.Steer)
 	case "rename":
-		if !agent.OkID(in.ID) || strings.TrimSpace(in.Name) == "" {
+		if !validT3ThreadID(in.ID) || strings.TrimSpace(in.Name) == "" {
 			return nil, errors.New("a session id and a name are needed")
 		}
 		return t.rename(ctx, in.Project, in.Role, in.ID, in.Name)
 	case "fork":
-		if !agent.OkID(in.ID) {
+		if !validT3ThreadID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
 		return t.fork(ctx, in.Project, in.Role, in.ID, in.Name)
 	case "interrupt":
-		if !agent.OkID(in.ID) {
+		if !validT3ThreadID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
 		return t.interrupt(ctx, in.Project, in.Role, in.ID)
 	case "close":
-		if !agent.OkID(in.ID) {
+		if !validT3ThreadID(in.ID) {
 			return nil, errors.New("bad session id")
 		}
 		return t.closeThread(ctx, in.Project, in.Role, in.ID)
 	case "mode":
-		if in.Mode == "" || !agent.OkID(in.ID) {
+		if in.Mode == "" || !validT3ThreadID(in.ID) {
 			return nil, errors.New("a session id and a valid mode are needed")
 		}
 		return t.setMode(ctx, in.Project, in.Role, in.ID, in.Mode)
@@ -244,7 +247,9 @@ func (t *T3Home) projects() any {
 func (t *T3Home) sessions(project, role string) any {
 	type row struct {
 		ID           string    `json:"id"`
-		Dir          string    `json:"dir"` // the project's real path (the VM mounts it at the same path)
+		Dir          string    `json:"dir"` // the trusted session workspace, never an ambient cwd
+		Task         string    `json:"task,omitempty"`
+		Branch       string    `json:"branch,omitempty"`
 		Name         string    `json:"name"`
 		Created      time.Time `json:"created"`
 		LastActivity time.Time `json:"last_activity"`
@@ -257,7 +262,15 @@ func (t *T3Home) sessions(project, role string) any {
 		dirs[r.Project] = r.Dir
 	}
 	for _, th := range t.threads.open(project, role) {
-		rows = append(rows, row{th.ID, dirs[th.Project], th.Name, th.Created.UTC(), th.LastActivity.UTC(), th.Mode, th.Running})
+		dir := dirs[th.Project]
+		if th.Task != "" {
+			w, err := agenttask.Resolve(t.h.Dir, th.Task, th.Project, th.Role, roles.DirHash(dir))
+			dir = ""
+			if err == nil {
+				dir = w.Dir
+			}
+		}
+		rows = append(rows, row{ID: th.ID, Dir: dir, Task: th.Task, Branch: th.Branch, Name: th.Name, Created: th.Created.UTC(), LastActivity: th.LastActivity.UTC(), Mode: th.Mode, Busy: th.Running})
 	}
 	return map[string]any{"sessions": rows}
 }
@@ -328,7 +341,10 @@ func (t *T3Home) messages(ctx context.Context, project, role, id string, limit i
 
 // ---- start, send ----
 
-type startIn struct{ project, role, prompt, name, from, mode, bot, model, messageID, provider string }
+type startIn struct {
+	project, role, prompt, name, from, mode, bot, model, messageID, provider string
+	task                                                                     bool
+}
 
 func firstLine(s string, n int) string {
 	s = strings.TrimSpace(s)
@@ -391,6 +407,15 @@ func (t *T3Home) clampMode(mode string, ceiling string) (sel agent.T3ModeSel, ef
 }
 
 func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
+	return t.startOnPlatform(ctx, in, runtime.GOOS)
+}
+
+func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (any, error) {
+	if in.task {
+		if err := agenttask.CheckPlatform(goos); err != nil {
+			return nil, err
+		}
+	}
 	if strings.TrimSpace(in.prompt) == "" {
 		return nil, errors.New("the prompt is empty")
 	}
@@ -403,8 +428,8 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	if in.model != "" && !modelRE.MatchString(in.model) {
 		return nil, errors.New("bad model name")
 	}
-	// The role: it must exist, be active and be made for this project folder as it is now; the unpin is at once, the
-	// session's own VM pins it again when it starts.
+	// The role must be active and bound to the configured source directory.
+	// The launcher rechecks this binding before every provider process starts.
 	r, err := t.h.Agent.T3Role(in.role)
 	if err != nil {
 		return nil, err
@@ -427,7 +452,19 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	if provider != "claudeAgent" && in.model == "" {
 		return nil, errors.New("say which model to use for this provider")
 	}
-	cl, err := t.readyForProvider(ctx, r.Project, r.ID, provider, "")
+	var workspace agenttask.Workspace
+	dir := r.ProjectDir
+	if in.task {
+		if err := t.checkCaps(r.Project, r.ID, in.bot); err != nil {
+			return nil, err
+		}
+		workspace, err = agenttask.Prepare(ctx, t.h.Dir, r.ProjectDir, r.Project, r.ID)
+		if err != nil {
+			return nil, err
+		}
+		dir = workspace.Dir
+	}
+	cl, err := t.readyForTaskProvider(ctx, r.Project, r.ID, provider, "", workspace.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -437,9 +474,9 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	}
 	var pid string
 	if provider == "cursor" {
-		pid, err = t.findOrMakeProject(ctx, cl, r.ProjectDir, r.Project)
+		pid, err = t.findOrMakeProject(ctx, cl, dir, r.Project)
 	} else {
-		pid, err = t.ensureProject(ctx, cl, r.ProjectDir, r.Project)
+		pid, err = t.ensureProject(ctx, cl, dir, r.Project)
 	}
 	if err != nil {
 		return nil, err
@@ -460,6 +497,9 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	if provider != "claudeAgent" {
 		instance = "rubi-" + strings.ToLower(provider) + "-" + r.ID
 	}
+	if workspace.ID != "" && provider != "cursor" {
+		instance += "-" + workspace.ID
+	}
 	run, err := cl.Launch(ctx, t3.LaunchIn{ProjectID: pid, Title: title, Instance: instance, Model: model, Mode: eff,
 		Plan: sel.Plan, Message: labelled(in.from, in.prompt), RequestID: mid})
 	if err != nil {
@@ -470,14 +510,18 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	}
 	now := t.now().UTC()
 	th := t3Thread{ID: run.ThreadID, Project: r.Project, Role: r.ID, Name: title, Bot: in.bot, Mode: claude, Runtime: string(eff),
-		Provider: provider, Environment: environmentFor(provider, r.ProjectDir), Created: now, LastActivity: now, Running: true, RunID: run.RunID, To: toOf(in.from, in.bot), ReplyTo: []string{mid}}
+		Task: workspace.ID, Branch: workspace.Branch, Provider: provider, Environment: environmentFor(provider, dir), Created: now, LastActivity: now, Running: true, RunID: run.RunID, To: toOf(in.from, in.bot), ReplyTo: []string{mid}}
 	if err := t.threads.add(th); err != nil {
 		_ = cl.Interrupt(ctx, run.ThreadID)
 		return nil, err
 	}
 	t.emitStatus(th, "busy")
 	t.startWatch(th.ID)
-	return map[string]any{"id": th.ID}, nil
+	result := map[string]any{"id": th.ID}
+	if workspace.ID != "" {
+		result["task"], result["branch"], result["base_commit"] = workspace.ID, workspace.Branch, workspace.BaseCommit
+	}
+	return result, nil
 }
 
 func (t *T3Home) send(ctx context.Context, project, role, id, text, from, bot, messageID string, steer bool) (any, error) {
@@ -580,7 +624,7 @@ func (t *T3Home) fork(ctx context.Context, project, role, id, name string) (any,
 	}
 	now := t.now().UTC()
 	f := t3Thread{ID: nid, Project: th.Project, Role: th.Role, Name: title, Bot: th.Bot, Mode: th.Mode, Runtime: th.Runtime,
-		Created: now, LastActivity: now, LastPos: pos, Provider: th.Provider, Environment: th.Environment}
+		Created: now, LastActivity: now, LastPos: pos, Provider: th.Provider, Environment: th.Environment, Task: th.Task, Branch: th.Branch}
 	if err := t.threads.add(f); err != nil {
 		return nil, err
 	}
@@ -592,7 +636,7 @@ func (t *T3Home) interrupt(ctx context.Context, project, role, id string) (any, 
 	if err != nil {
 		return nil, err
 	}
-	cl, err := t.readyForThread(ctx, th)
+	cl, err := t.readyForStop(ctx, th)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +654,7 @@ func (t *T3Home) closeThread(ctx context.Context, project, role, id string) (any
 		return nil, err
 	}
 	if th.Running {
-		if cl, readyErr := t.readyForThread(ctx, th); readyErr == nil {
+		if cl, readyErr := t.readyForStop(ctx, th); readyErr == nil {
 			if err := cl.Interrupt(ctx, id); err != nil {
 				log.Printf("T3 close: interrupting %s: %v", clipStr(id, 40), err)
 			}
@@ -858,7 +902,7 @@ func (t *T3Home) finishTurn(ctx context.Context, cl *t3.Client, id string, w t3.
 	if reply == nil {
 		reply = []string{}
 	}
-	raw, _ := json.Marshal(map[string]any{"session_id": id, "kind": "result", "subtype": subtype, "is_error": w.Status == "failed",
+	raw, _ := json.Marshal(map[string]any{"session_id": id, "task": th.Task, "branch": th.Branch, "kind": "result", "subtype": subtype, "is_error": w.Status == "failed",
 		"text": text, "to": th.To, "in_reply_to": reply, "truncated": truncated, "run_id": w.RunID})
 	t.h.Agent.Emit(agent.Item{Type: "event", Project: th.Project, Role: th.Role, SessionID: id, Event: raw})
 	over = true

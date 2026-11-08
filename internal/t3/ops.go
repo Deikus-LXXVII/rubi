@@ -6,6 +6,7 @@ package t3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -187,9 +188,26 @@ func (c *Client) Launch(ctx context.Context, l LaunchIn) (Run, error) {
 		l.RequestID = id
 	}
 	var r Run
-	err := c.call(ctx, toolThreadLaunch, in{l.ProjectID, l.Title, sel{l.Instance, l.Model}, Clamp(l.Mode, c.ceiling), interaction, l.Message, l.RequestID}, &r)
-	if err != nil {
-		return r, err
+	args := in{l.ProjectID, l.Title, sel{l.Instance, l.Model}, Clamp(l.Mode, c.ceiling), interaction, l.Message, l.RequestID}
+	// T3 reloads an externally written settings file after a debounced watch.
+	// Retry only its exact side-effect-free enablement preflight rejection, not
+	// provider failures or transport ambiguity. Keep the command receipt ID.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := c.call(ctx, toolThreadLaunch, args, &r)
+		if err == nil {
+			break
+		}
+		if !disabledBeforeLaunch(err, l.ProjectID, l.Instance) || !time.Now().Before(deadline) {
+			return r, err
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return r, ctx.Err()
+		case <-timer.C:
+		}
 	}
 	// Defense in depth: T3 must have taken the clamped mode.
 	th, _, err := c.Read(ctx, r.ThreadID, 0)
@@ -200,6 +218,19 @@ func (c *Client) Launch(ctx context.Context, l LaunchIn) (Run, error) {
 		return r, fmt.Errorf("t3: thread %s runs in mode %q, above the ceiling %s", r.ThreadID, th.RuntimeMode, c.ceiling)
 	}
 	return r, nil
+}
+
+func disabledBeforeLaunch(err error, project, instance string) bool {
+	var tool *ToolError
+	var failure struct {
+		Tag     string `json:"_tag"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	return errors.As(err, &tool) && tool.Tool == toolThreadLaunch &&
+		json.Unmarshal([]byte(tool.Message), &failure) == nil &&
+		failure.Tag == "OrchestratorMcpFailure" && failure.Code == "invalid_request" &&
+		failure.Message == fmt.Sprintf("Provider instance %q is disabled for project %s.", instance, project)
 }
 
 // newRequestID makes an id for an idempotent request.

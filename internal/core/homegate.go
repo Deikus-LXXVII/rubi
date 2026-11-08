@@ -99,8 +99,9 @@ func homeOp(op string) string {
 
 // execGrant is an approval of a plugin whose execute is running: the user has decided it.
 type execGrant struct {
-	kind    string
-	payload json.RawMessage
+	kind     string
+	payload  json.RawMessage
+	taskUsed bool
 }
 
 // beginExec records that plugin's execute for an approval of kind is running with payload; the returned func ends it.
@@ -134,6 +135,10 @@ func (c *Core) beginExec(plugin, kind string, payload json.RawMessage) func() {
 // replaced by core's own map from each attested id to its approval kind, which Home uses to keep an id from covering
 // more than its kind allows (roles/approvals.go).
 func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.RawMessage, error) {
+	return c.attestHomeCallForDevice(plugin, "", op, args)
+}
+
+func (c *Core) attestHomeCallForDevice(plugin, device, op string, args json.RawMessage) (json.RawMessage, error) {
 	ns := kindNS(plugin)
 	switch homeOp(op) {
 	case opFsList:
@@ -142,6 +147,19 @@ func (c *Core) attestHomeCall(plugin, op string, args json.RawMessage) (json.Raw
 	case opHueForget:
 		// A plugin that could forget the pin could then pair a look-alike device: the pin is what stops it.
 		return nil, errors.New("Rubi refused: forgetting a Hue Bridge's certificate is done by the user, in the Rubi panel")
+	case "claude-agent.start":
+		if err := noFoldedDuplicates(args); err != nil {
+			return nil, errors.New("Rubi refused: ambiguous task arguments")
+		}
+		var in struct {
+			Task bool `json:"task"`
+		}
+		if json.Unmarshal(args, &in) != nil {
+			return nil, errors.New("Rubi refused: bad task arguments")
+		}
+		if in.Task {
+			return args, c.attestTaskStart(plugin, device, args)
+		}
 	case opRolePut:
 		// encoding/json matches keys ignoring case (Unicode folding too: the Kelvin sign is a k), and which of two
 		// such keys wins depends on their order. Core checks one reading and forwards the original, so two keys that
@@ -434,4 +452,46 @@ func foldCheckValue(dec *json.Decoder, depth int) error {
 		return err
 	}
 	return nil
+}
+
+// A repository task is an explicit, single-use mandate, not a provider tool ask.
+// Its execute may create exactly one task with precisely the confirmed arguments.
+func (c *Core) attestTaskStart(plugin, device string, args json.RawMessage) error {
+	denied := errors.New("Rubi refused: confirm this exact repository task first")
+	if plugin != plugins.OfficialT3PluginID || device == "" {
+		return denied
+	}
+	var want map[string]json.RawMessage
+	if json.Unmarshal(args, &want) != nil {
+		return denied
+	}
+	canonical, err := json.Marshal(want)
+	if err != nil {
+		return denied
+	}
+	c.execMu.Lock()
+	defer c.execMu.Unlock()
+	for _, g := range c.execs[plugin] {
+		if g.kind != "t3agents.task_start" || g.taskUsed || noFoldedDuplicates(g.payload) != nil {
+			continue
+		}
+		var mandate struct {
+			Device string          `json:"device"`
+			Args   json.RawMessage `json:"args"`
+		}
+		if json.Unmarshal(g.payload, &mandate) != nil || mandate.Device != device || noFoldedDuplicates(mandate.Args) != nil {
+			continue
+		}
+		var got map[string]json.RawMessage
+		if json.Unmarshal(mandate.Args, &got) != nil {
+			continue
+		}
+		payload, err := json.Marshal(got)
+		if err != nil || !bytes.Equal(payload, canonical) {
+			continue
+		}
+		g.taskUsed = true
+		return nil
+	}
+	return denied
 }

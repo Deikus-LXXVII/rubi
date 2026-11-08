@@ -31,7 +31,7 @@ var homeCapabilities = map[string]string{"hue": "Philips Hue", "shortcuts": "Sho
 	"claude-start":    "starting a new Claude Code session on that computer with a first message; in sessions that skip permission prompts, Claude can run any command there without asking",
 	"claude-agent":    "running Claude agents in a virtual machine on that computer: starting and steering their sessions, approving or denying each tool call, and allowing git pushes with your credentials",
 	"agent-setup":     "setting up Claude agents on that computer: installing Apple's container tool (macOS asks for the administrator password itself), creating their network, building their image, adding project folders and signing in to Claude in their virtual machine",
-	"t3-agent":        "running Claude agents through T3 in a virtual machine on that computer: starting and steering their sessions, approving or denying each tool call, and allowing git pushes with your credentials",
+	"t3-agent":        "running T3 provider agents in project-confined sandboxes on that computer: starting and steering sessions, and creating isolated repository task copies",
 	"t3-setup":        "setting up Claude agents through T3 on that computer: downloading and starting the pinned T3 server and Node (checked against fixed hashes), pairing with it, installing Apple's container tool (macOS asks for the administrator password itself), creating its network, building the image, adding project folders and signing in to Claude in the virtual machine"}
 
 type deviceClients struct {
@@ -437,13 +437,25 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 	if !ok {
 		return nil, fmt.Errorf("the manifest doesn't allow Rubi Home operation %q", op)
 	}
-	args, err := c.attestHomeCall(plugin, op, args)
+	var dev *vault.Device
+	var err error
+	deviceID := ""
+	if homeOp(op) == "claude-agent.start" {
+		dev, err = c.device(ref)
+		if err != nil {
+			return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeNotPaired, Message: err.Error()}
+		}
+		deviceID = dev.ID
+	}
+	args, err = c.attestHomeCallForDevice(plugin, deviceID, op, args)
 	if err != nil {
 		return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeFailed, Message: err.Error()}
 	}
-	dev, err := c.device(ref)
-	if err != nil {
-		return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeNotPaired, Message: err.Error()}
+	if dev == nil {
+		dev, err = c.device(ref)
+		if err != nil {
+			return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeNotPaired, Message: err.Error()}
+		}
 	}
 	cl, err := c.deviceClient(dev)
 	if err != nil {

@@ -67,6 +67,8 @@ type Fake struct {
 	WrongRoot string
 	// SendDelivery is the "delivery" a send reports.
 	SendDelivery string
+	// ThreadIDPrefix exercises native opaque IDs rather than runner filename IDs.
+	ThreadIDPrefix string
 }
 
 var tools = []string{"t3_project_list", "t3_project_create", "t3_thread_launch", "t3_thread_send", "t3_thread_wait", "t3_thread_read",
@@ -150,6 +152,9 @@ func (f *Fake) Projects() []Project {
 }
 
 func (f *Fake) next(prefix string) string {
+	if prefix == "thr" && f.ThreadIDPrefix != "" {
+		prefix = f.ThreadIDPrefix
+	}
 	f.seq++
 	return fmt.Sprintf("%s-%d", prefix, f.seq)
 }

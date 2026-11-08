@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 )
 
@@ -37,6 +39,24 @@ func (h *Helper) SyncT3Instances() (t3vm.SyncResult, error) {
 	var want []t3vm.SandboxRole
 	for _, r := range h.Agent.T3Roles() {
 		want = append(want, t3vm.SandboxRole{ID: r.ID, Name: r.Name, Project: r.Project, ClaudeDir: r.ClaudeDir, ProjectDir: r.ProjectDir})
+	}
+	tasks, err := agenttask.List(h.Dir)
+	if err != nil {
+		return t3vm.SyncResult{}, err
+	}
+	originals := append([]t3vm.SandboxRole(nil), want...)
+	for _, w := range tasks {
+		for _, r := range originals {
+			if r.ID != w.Role || r.Project != w.Project {
+				continue
+			}
+			resolved, err := agenttask.Resolve(h.Dir, w.ID, r.Project, r.ID, roles.DirHash(r.ProjectDir))
+			if err != nil {
+				continue
+			}
+			r.Task, r.Workspace = w.ID, resolved.Dir
+			want = append(want, r)
+		}
 	}
 	return t3vm.SyncSandboxInstances(t3vm.InstanceOptions{T3Base: c.T3BaseDir, Dir: h.Dir, Projects: h.T3.syncProjects()}, agentExec, want)
 }
