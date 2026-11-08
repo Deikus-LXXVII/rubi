@@ -364,7 +364,7 @@ func TestT3TaskStoppedCursorCannotRestartAProjectServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := agenttask.Spec{Project: w.Project, Role: w.Role, Prompt: "work", From: "phone", MessageID: "cursor-restart", Provider: "cursor"}
+	spec := agenttask.Spec{Supervision: 1, Project: w.Project, Role: w.Role, Prompt: "work", From: "phone", MessageID: "cursor-restart", Provider: "cursor"}
 	if err := l.t3.taskStore().Create(context.Background(), w, spec); err != nil {
 		t.Fatal(err)
 	}
@@ -400,11 +400,26 @@ func TestT3TaskUnknownLaunchCancellationNeverClaimsAConfirmedInterruption(t *tes
 		t.Fatal("missing intent")
 	}
 	id := states[0].ID
-	if _, err := l.t3.stopTask(context.Background(), id); err == nil || !strings.Contains(err.Error(), "interruption unconfirmed") {
-		t.Fatal("unknown native run reported stopped", err)
+	lease, err := l.t3.taskStore().Admit(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Close()
+	cancelCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err = l.t3.stopTask(cancelCtx, id); err == nil {
+		t.Fatal("stop acknowledged a live unknown launcher")
+	}
+	<-lease.Context().Done()
+	lease.Close()
+	if _, err = l.t3.stopTask(context.Background(), id); err != nil {
+		t.Fatal("drained unknown launch not confirmed", err)
+	}
+	if _, err = l.t3.taskStore().Admit(context.Background(), id); err == nil {
+		t.Fatal("cancelled late launch admitted")
 	}
 	state, _ := l.t3.taskStore().Get(context.Background(), id)
-	if state.Phase != agenttask.Stopped || state.Error == "" {
+	if state.Phase != agenttask.Stopped || state.TerminalAt.IsZero() {
 		t.Fatal("cancellation mandate not durable")
 	}
 	calls := len(l.fake.Calls("t3_thread_launch"))
@@ -512,5 +527,120 @@ func TestT3TaskEndedEventIsExplicitlyRequesterAddressedAndRedacted(t *testing.T)
 	}
 	if !found {
 		t.Fatal("no ended event delivered")
+	}
+}
+
+func TestT3TaskStatusReportCannotFinalizeANewerAppend(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
+	l, role := agentLife(t)
+	initTaskRepo(t, l.proj)
+	id := startThread(t, l, role, map[string]any{"task": true, "auto_finish": true, "mode": "bypassPermissions", "from": "requester"})
+	th, _ := l.t3.threads.get(id)
+	l.fake.Complete(id, "completed", "Work done\nSTATUS: PASS\nCOMMIT: none\nEVIDENCE: fixture tests passed")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		v, _ := l.t3.threads.get(id)
+		if !v.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("turn did not finish")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	out, err := handle(t, l.h, "tok", "t3-agent.task.status", map[string]any{"id": th.Task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary := out["summary"].(map[string]any)
+	if summary["status"] != "PASS" {
+		t.Fatal("explicit completion report missing")
+	}
+	if _, err = handle(t, l.h, "tok", "t3-agent.task.append", map[string]any{"id": th.Task, "text": "one more change", "from": "phone"}); err != nil {
+		t.Fatal(err)
+	}
+	out, err = handle(t, l.h, "tok", "t3-agent.task.status", map[string]any{"id": th.Task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary = out["summary"].(map[string]any)
+	if summary["status"] == "PASS" {
+		t.Fatal("stale PASS finalized a newer turn")
+	}
+	if _, err = handle(t, l.h, "tok", "t3-agent.task.stop", map[string]any{"id": th.Task}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = handle(t, l.h, "tok", "t3-agent.task.append", map[string]any{"id": th.Task, "text": "restart", "from": "phone"}); err == nil {
+		t.Fatal("ended mandate revived")
+	}
+}
+func TestT3TaskRejectsLegacyHelperBeforeCreatingACopy(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
+	l, role := agentLife(t)
+	initTaskRepo(t, l.proj)
+	l.t3.TaskSupervisor = nil
+	helper := filepath.Join(t.TempDir(), "old-helper")
+	if err := os.WriteFile(helper, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.h.Update(func(c *Config) { c.AgentSandbox.AgentExec = helper }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle(t, l.h, "tok", "t3-agent.start", map[string]any{"task": true, "role": role, "prompt": "work"}); err == nil {
+		t.Fatal("old untracked helper allowed")
+	}
+	states, _ := l.t3.taskStore().List(context.Background())
+	if len(states) != 0 || len(l.fake.Calls("t3_thread_launch")) != 0 {
+		t.Fatal("refusal created a task/native thread")
+	}
+}
+
+func TestT3TaskQuiescentNativeCleanupFailureDoesNotConsumeCapacity(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
+	l, role := agentLife(t)
+	initTaskRepo(t, l.proj)
+	id := startThread(t, l, role, map[string]any{"task": true})
+	th, _ := l.t3.threads.get(id)
+	l.fake.Fail("t3_thread_interrupt", "native server temporarily unavailable")
+	out, err := l.t3.stopTask(context.Background(), th.Task)
+	if err != nil || out.(map[string]any)["native_cleanup_pending"] != true {
+		t.Fatal("proved stop confused with native cleanup", err)
+	}
+	current, _ := l.t3.threads.get(id)
+	if current.Running || !current.NativeCleanupPending {
+		t.Fatal("quiescent task retained running capacity or lost cleanup intent")
+	}
+	l.fake.Fail("t3_thread_interrupt", "")
+	l.t3.recoverTasks(context.Background())
+	current, _ = l.t3.threads.get(id)
+	if current.Running || current.NativeCleanupPending {
+		t.Fatal("restart reconciliation lost native cleanup intent")
+	}
+}
+
+func TestT3AutomaticTaskRefusesInteractiveOrClampedModeBeforeCreatingWork(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
+	l, role := agentLife(t)
+	initTaskRepo(t, l.proj)
+	for _, mode := range []string{"", "bypassPermissions"} {
+		if mode != "" {
+			l.t3.Ceiling = t3.AutoAcceptEdits
+		}
+		_, err := handle(t, l.h, "tok", "t3-agent.start", map[string]any{"role": role, "task": true, "auto_finish": true, "mode": mode, "prompt": "work"})
+		if err == nil {
+			t.Fatal("interactive/clamped unattended task accepted")
+		}
+		states, _ := l.t3.taskStore().List(context.Background())
+		if len(states) != 0 || len(l.fake.Calls("t3_thread_launch")) != 0 {
+			t.Fatal("unattended mode refusal created work")
+		}
 	}
 }

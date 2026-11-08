@@ -616,7 +616,7 @@ func (h *Helper) Handle(ctx context.Context, env homeproto.Envelope) (any, error
 		"claude-agent.role.list", "claude-agent.role.get", "claude-agent.role.history", "claude-agent.role.diff", "claude-agent.role.put",
 		"claude-agent.ssh.scan", "claude-agent.ssh.register", "claude-agent.ssh.list", "claude-agent.ssh.remove", "claude-agent.ssh.audit":
 		return h.Agent.Handle(ctx, env.Op, env.Args)
-	case "t3-agent.task.inspect", "t3-agent.task.status", "t3-agent.task.stop", "t3-agent.task.publish", "t3-agent.projects", "t3-agent.sessions", "t3-agent.messages", "t3-agent.start", "t3-agent.send",
+	case "t3-agent.task.ack", "t3-agent.task.capabilities", "t3-agent.task.list", "t3-agent.task.append", "t3-agent.task.inspect", "t3-agent.task.status", "t3-agent.task.stop", "t3-agent.task.publish", "t3-agent.projects", "t3-agent.sessions", "t3-agent.messages", "t3-agent.start", "t3-agent.send",
 		"t3-agent.rename", "t3-agent.fork", "t3-agent.interrupt", "t3-agent.close", "t3-agent.mode",
 		"t3-agent.next", "t3-agent.decide", "t3-agent.status", "t3-agent.usage_mode", "t3-agent.limits",
 		"t3-agent.role.list", "t3-agent.role.get", "t3-agent.role.history", "t3-agent.role.diff", "t3-agent.role.put",

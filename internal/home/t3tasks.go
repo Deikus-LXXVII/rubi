@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
@@ -16,10 +18,10 @@ import (
 
 func (t *T3Home) taskStore() agenttask.Store { return agenttask.Store{Home: t.h.Dir} }
 func (in startIn) saved() agenttask.Spec {
-	return agenttask.Spec{Project: in.project, Role: in.role, Prompt: in.prompt, Name: in.name, From: in.from, Mode: in.mode, Bot: in.bot, Model: in.model, MessageID: in.messageID, Provider: in.provider, Target: in.publish, Proof: in.proof}
+	return agenttask.Spec{Supervision: 1, AutoFinish: in.autoFinish, Project: in.project, Role: in.role, Prompt: in.prompt, Name: in.name, From: in.from, Mode: in.mode, Bot: in.bot, Model: in.model, MessageID: in.messageID, Provider: in.provider, Target: in.publish, Proof: in.proof}
 }
 func taskInput(s agenttask.Spec) startIn {
-	return startIn{project: s.Project, role: s.Role, prompt: s.Prompt, name: s.Name, from: s.From, mode: s.Mode, bot: s.Bot, model: s.Model, messageID: s.MessageID, provider: s.Provider, task: true, publish: s.Target, proof: s.Proof}
+	return startIn{autoFinish: s.AutoFinish, project: s.Project, role: s.Role, prompt: s.Prompt, name: s.Name, from: s.From, mode: s.Mode, bot: s.Bot, model: s.Model, messageID: s.MessageID, provider: s.Provider, task: true, publish: s.Target, proof: s.Proof}
 }
 func taskStartResult(s agenttask.State) any {
 	return map[string]any{"id": s.Thread, "task": s.ID, "branch": s.Workspace.Branch, "phase": s.Phase, "project": s.Spec.Project, "role": s.Spec.Role}
@@ -61,6 +63,7 @@ func (t *T3Home) taskCommand(ctx context.Context, id string, cmd agenttask.Comma
 		if tx.State.Pending != nil && !reflect.DeepEqual(*tx.State.Pending, cmd) {
 			return errors.New("task: previous operation requires recovery")
 		}
+		tx.State.Summary = agenttask.Summary{}
 		tx.State.Pending = &cmd
 		tx.State.Phase = agenttask.Running
 		if err := tx.Save(); err != nil {
@@ -95,17 +98,7 @@ func (t *T3Home) stopTask(ctx context.Context, id string) (any, error) {
 		if tx.State.Phase.Terminal() {
 			return nil
 		}
-		if tx.State.Phase == agenttask.Starting && tx.State.Thread == "" {
-			for _, th := range t.threads.snapshot() {
-				if th.Task == id {
-					tx.State.Thread = th.ID
-					break
-				}
-			}
-			if tx.State.Thread == "" {
-				tx.State.Error = "task: cancellation recorded; native launch outcome unresolved, interruption unconfirmed"
-			}
-		}
+
 		tx.State.Phase = agenttask.Stopped
 		tx.State.Pending = nil
 		return tx.Save()
@@ -113,15 +106,17 @@ func (t *T3Home) stopTask(ctx context.Context, id string) (any, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	if state, e := t.taskStore().Get(ctx, id); e != nil && !os.IsNotExist(e) {
+
+	// The fence is durable before draining launchers; this includes unknown native IDs.
+	drain, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if e := t.taskStore().Quiesce(drain, id); e != nil {
 		return nil, e
-	} else if e == nil && state.Phase == agenttask.Stopped && state.Thread == "" && state.Error != "" {
-		t.emitTaskResult(state)
-		return nil, errors.New(state.Error)
 	}
+
 	var stopErr error
 	for _, th := range t.threads.snapshot() {
-		if th.Task != id || th.Closed || !th.Running {
+		if th.Task != id || th.Closed || (!th.Running && !th.NativeCleanupPending) {
 			continue
 		}
 		if th.Provider == "cursor" {
@@ -141,19 +136,22 @@ func (t *T3Home) stopTask(ctx context.Context, id string) (any, error) {
 		}
 		if e != nil {
 			stopErr = errors.New("task: stop recorded; provider interruption pending, retry")
+			// Execution is already kernel-confirmed stopped. Do not consume
+			// role capacity forever merely because native metadata is offline.
+			t.stopWatch(th.ID)
+			_, _ = t.threads.update(th.ID, func(v *t3Thread) { v.Running = false; v.NativeCleanupPending = true; v.TaskOutcome = "interrupted" })
 			continue
 		}
+		_, _ = t.threads.update(th.ID, func(v *t3Thread) { v.NativeCleanupPending = false })
 		// Keep the watcher: it delivers the native cancelled result to the latest
 		// requester and clears Running only when T3 confirms the run has ended.
 		t.startWatch(th.ID)
 	}
-	if stopErr != nil {
-		return nil, stopErr
-	}
+
 	if state, e := t.taskStore().Get(ctx, id); e == nil && state.Phase.Terminal() {
 		t.emitTaskResult(state)
 	}
-	return map[string]any{"ok": true, "task": id, "stopped": true}, nil
+	return map[string]any{"ok": true, "task": id, "stopped": true, "native_cleanup_pending": stopErr != nil}, nil
 }
 
 // Recovery reuses T3's native clientRequestId receipts. Transfer/fork has no such
@@ -239,9 +237,35 @@ func (t *T3Home) recoverTasks(ctx context.Context) {
 	}
 }
 func (t *T3Home) handleTask(ctx context.Context, op string, args json.RawMessage) (any, error) {
+	if op == "t3-agent.task.capabilities" {
+		autonomous := agenttask.CheckPlatform(runtime.GOOS) == nil && t.Ceiling == t3.FullAccess && t.h.Agent != nil
+		if autonomous {
+			_, err := t.h.Agent.T3Mode("bypassPermissions")
+			autonomous = err == nil
+		}
+		return map[string]any{"version": 1, "supported": agenttask.CheckPlatform(runtime.GOOS) == nil, "supervision": 1, "autonomous": autonomous}, nil
+	}
+	if op == "t3-agent.task.list" {
+		states, err := t.taskStore().List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]agenttask.State, 0, len(states))
+		for _, state := range states {
+			state, _ = t.refreshTaskReport(ctx, state)
+			out = append(out, t.publicTaskState(ctx, state))
+		}
+		return map[string]any{"tasks": out}, nil
+	}
+
 	var in struct {
-		ID    string `json:"id"`
-		Token string `json:"token"`
+		ID        string `json:"id"`
+		EventID   string `json:"event_id"`
+		Token     string `json:"token"`
+		Text      string `json:"text"`
+		From      string `json:"from"`
+		Bot       string `json:"bot"`
+		MessageID string `json:"message_id"`
 	}
 	if json.Unmarshal(args, &in) != nil || !agenttask.ValidID(in.ID) {
 		return nil, errors.New("task: valid ID required")
@@ -253,8 +277,19 @@ func (t *T3Home) handleTask(ctx context.Context, op string, args json.RawMessage
 	switch op {
 	case "t3-agent.task.inspect":
 		return s, nil // encrypted Core broker only; never exposed by plugin broker
+	case "t3-agent.task.ack":
+		return map[string]any{"ok": true}, t.taskStore().AcknowledgeResult(ctx, in.ID, in.EventID)
 	case "t3-agent.task.status":
-		return s.Public(), nil
+		s, err = t.refreshTaskReport(ctx, s)
+		return t.publicTaskState(ctx, s), err
+	case "t3-agent.task.append":
+		if s.Thread == "" {
+			return nil, errors.New("task: launch receipt pending; append refused")
+		}
+		if len(in.Text) == 0 || len([]rune(in.Text)) > 4000 || in.From == "" || !agent.OkBot(in.Bot) {
+			return nil, errors.New("task: valid requester and 1–4000 characters required")
+		}
+		return t.send(ctx, s.Spec.Project, s.Spec.Role, s.Thread, in.Text, in.From, in.Bot, in.MessageID, true)
 	case "t3-agent.task.stop":
 		return t.stopTask(ctx, in.ID)
 	case "t3-agent.task.publish":
@@ -278,7 +313,7 @@ func (t *T3Home) handleTask(ctx context.Context, op string, args json.RawMessage
 			return nil, err
 		}
 		t.emitTaskResult(done)
-		return done.Public(), nil
+		return t.publicTaskState(ctx, done), nil
 	default:
 		return nil, errors.New("task: unknown operation")
 	}
@@ -360,4 +395,46 @@ func (t *T3Home) readyForTaskWatch(ctx context.Context, th t3Thread) (cl *t3.Cli
 		return e
 	})
 	return
+}
+
+// Read the current persisted native outcome under the task mutation lock. An
+// append clears TaskReport; an old PASS must never finish a newer running turn.
+func (t *T3Home) refreshTaskReport(ctx context.Context, s agenttask.State) (agenttask.State, error) {
+	err := t.taskStore().With(ctx, s.ID, func(tx *agenttask.Tx) error {
+		s = tx.State
+		if !s.Phase.Mutable() || s.Pending != nil {
+			return nil
+		}
+		th, ok := t.threads.get(s.Thread)
+		if !ok || th.Task != s.ID || th.Running || th.TaskOutcome != "completed" {
+			return nil
+		}
+		for _, v := range t.threads.snapshot() {
+			if v.Task == s.ID && v.Running {
+				return nil
+			}
+		}
+		summary := agenttask.ReportFromText(th.TaskReport)
+		if reflect.DeepEqual(summary, s.Summary) {
+			return nil
+		}
+		tx.State.Summary = summary
+		if err := tx.Save(); err != nil {
+			return err
+		}
+		s = tx.State
+		return nil
+	})
+	return s, err
+}
+
+func (t *T3Home) publicTaskState(ctx context.Context, s agenttask.State) agenttask.State {
+	s = s.Public()
+	if s.Phase.Terminal() {
+		drain, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
+		s.ExecutionStopped = t.taskStore().Quiesce(drain, s.ID) == nil
+		s.ResultDelivered = t.taskStore().ResultAcknowledged(ctx, s.ID)
+		cancel()
+	}
+	return s
 }

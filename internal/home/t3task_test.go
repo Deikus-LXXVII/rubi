@@ -197,7 +197,7 @@ func assertUnsupportedTaskPlatform(t *testing.T) bool {
 func TestT3TaskUnsupportedPlatformRefusesBeforeProjectDiscovery(t *testing.T) {
 	// A nil Home intentionally has no project/role/config services. This runs on
 	// Linux too and would panic if the platform gate moved behind those services.
-	for _, goos := range []string{"windows", "freebsd", "plan9"} {
+	for _, goos := range []string{"darwin", "windows", "freebsd", "plan9"} {
 		t.Run(goos, func(t *testing.T) {
 			_, err := (&T3Home{}).startOnPlatform(context.Background(), startIn{task: true, prompt: "work", role: "missing"}, goos)
 			if err == nil || !strings.Contains(err.Error(), "repository tasks are not supported on "+goos) {

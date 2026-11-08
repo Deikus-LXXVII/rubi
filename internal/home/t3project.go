@@ -177,9 +177,24 @@ func (t *T3Home) readyForTaskProvider(ctx context.Context, project, role, provid
 	for _, scope := range t3.PairingScopes(string(t.Ceiling)) {
 		pair = append(pair, "--scope", scope)
 	}
-	process, ready, err := agentbridge.Start(t.baseCtx(), l, relay, agentbridge.Bootstrap{Command: command, PairCommand: pair, Environment: credentials, Port: projectPort})
+	life := t.baseCtx()
+	var lease *agenttask.Lease
+	if task != "" {
+		lease, err = t.taskStore().Admit(life, task)
+		if err != nil {
+			return nil, err
+		}
+		life = lease.Context()
+	}
+	process, ready, err := agentbridge.Start(life, l, relay, agentbridge.Bootstrap{Command: command, PairCommand: pair, Environment: credentials, Port: projectPort})
 	if err != nil {
+		if lease != nil {
+			lease.Close()
+		}
 		return nil, err
+	}
+	if lease != nil {
+		go func() { <-process.Done(); lease.Close() }()
 	}
 	url := "http://127.0.0.1:" + strconv.Itoa(projectPort)
 	tok, err := t3.Pair(ctx, &http.Client{Transport: process, Timeout: 30 * time.Second}, url, ready.Credential, string(t.Ceiling), "Rubi project")

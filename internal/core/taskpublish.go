@@ -111,3 +111,22 @@ func (c *Core) publishTask(ctx context.Context, plugin, device string, args json
 	}
 	return out, nil
 }
+
+// Ticket links are minted by Core, never by Home or agent-produced text. They
+// open only the official plugin setup page; a setup ticket cannot drive settings.
+func (c *Core) taskPanelReply(op string, out json.RawMessage) json.RawMessage {
+	if op != "t3-agent.task.status" && op != "t3-agent.task.publish" {
+		return out
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(out, &obj) != nil || obj == nil {
+		return out
+	}
+	if link, err := c.Link("setup:" + plugins.OfficialT3PluginID); err == nil {
+		obj["panel_url"], _ = json.Marshal(link)
+		if b, e := json.Marshal(obj); e == nil {
+			return b
+		}
+	}
+	return out
+}

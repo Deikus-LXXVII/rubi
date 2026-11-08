@@ -10,7 +10,7 @@ if "--version" in sys.argv:
     sys.exit(0)
 if "--help" in sys.argv:
     sys.exit(0)
-thread_id = "fixture-thread"
+thread_id = "fixture-"+__import__("uuid").uuid4().hex
 root = pathlib.Path.cwd()
 thread = dict(id=thread_id,sessionId=thread_id,projectId=None,forkedFromId=None,
     preview="",ephemeral=False,modelProvider="openai",createdAt=int(time.time()),
@@ -19,12 +19,25 @@ thread = dict(id=thread_id,sessionId=thread_id,projectId=None,forkedFromId=None,
     agentNickname=None,agentRole=None,gitInfo=None,name=None,turns=[])
 turn_count=0
 active_turn=None
+heartbeat_started=False
+def heartbeat():
+    global heartbeat_started
+    if heartbeat_started: return
+    heartbeat_started=True
+    if os.fork() == 0:
+        os.setsid()
+        for fd in [0,1,2]: os.close(fd)
+        while True:
+            (root/"fixture-heartbeat").write_text(str(time.monotonic_ns()))
+            time.sleep(0.02)
 for line in sys.stdin:
     request=json.loads(line);method=request.get("method","");params=request.get("params") or {}
     with (root/"fixture-methods").open("a") as f:f.write(method+"\n")
     if "id" not in request:continue
     result={}
-    if method=="initialize":result=dict(userAgent="codex-cli/0.156.1",codexHome=os.environ.get("HOME"),platformFamily="unix",platformOs="linux")
+    if method=="initialize":
+        heartbeat()
+        result=dict(userAgent="codex-cli/0.156.1",codexHome=os.environ.get("HOME"),platformFamily="unix",platformOs="linux")
     elif method=="account/read":result={"account":{"type":"apiKey"},"requiresOpenaiAuth":False}
     elif method=="account/rateLimits/read":result={"rateLimits":{"primary":None,"secondary":None,"credits":None,"planType":"plus"},"rateLimitsByLimitId":None}
     elif method=="model/list":result={"data":[dict(id="gpt-5.4",model="gpt-5.4",displayName="Fixture",description="Fixture",hidden=False,isDefault=True,supportedReasoningEfforts=[dict(reasoningEffort="medium",description="Fixture")],defaultReasoningEffort="medium",inputModalities=["text"],supportsPersonality=False)],"nextCursor":None}
@@ -46,6 +59,8 @@ for line in sys.stdin:
         emit({"method":"turn/started","params":{"threadId":thread_id,"turn":turn}})
         if "hold-fixture" in json.dumps(params):
             active_turn=turn
+            # The initialize-time helper escapes the outer process group but
+            # not bwrap's PID namespace; it must die on a confirmed stop.
             (root/"fixture-held").write_text("held")
             continue
         stage="probe-config"

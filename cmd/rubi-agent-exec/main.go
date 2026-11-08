@@ -7,6 +7,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentbridge"
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
@@ -15,6 +17,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--task-supervision-version" {
+		fmt.Fprintln(os.Stdout, "1")
+		return
+	}
 	if len(os.Args) == 3 && os.Args[1] == "--git-credential-helper" {
 		f := os.NewFile(3, "credential")
 		if f == nil {
@@ -58,12 +64,31 @@ func main() {
 	// Provider protocol arguments are appended individually, never shell-joined.
 	launch.ConfigPath = *config
 	launch.Args = append(launch.Args, flag.Args()...)
-	var code int
-	if binding.Provider == "opencode" && len(launch.Args) > 0 && launch.Args[0] == "serve" {
-		code, err = serveOpenCode(context.Background(), launch)
-	} else {
-		code, err = agentsandbox.Run(context.Background(), launch, os.Stdin, os.Stdout, os.Stderr)
+	ctx := context.Background()
+	if binding.Task != "" {
+		life, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		lease, e := (agenttask.Store{Home: binding.HomeDir}).Admit(life, binding.Task)
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "rubi-agent-exec:", e)
+			os.Exit(125)
+		}
+		// main uses os.Exit below, so close explicitly after the process is reaped.
+		ctx = lease.Context()
+		runTask(ctx, launch, binding, func() { lease.Close(); stop() })
+		return
 	}
+	runTask(ctx, launch, binding, func() {})
+}
+
+func runTask(ctx context.Context, launch agentsandbox.Launch, binding agentsandbox.Binding, cleanup func()) {
+	var code int
+	var err error
+	if binding.Provider == "opencode" && len(launch.Args) > 0 && launch.Args[0] == "serve" {
+		code, err = serveOpenCode(ctx, launch)
+	} else {
+		code, err = agentsandbox.Run(ctx, launch, os.Stdin, os.Stdout, os.Stderr)
+	}
+	cleanup()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "rubi-agent-exec:", err)
 		os.Exit(125)

@@ -32,17 +32,19 @@ type t3Thread struct {
 	// Bot is the Bot that started the thread ("" = the user's own).
 	Bot string `json:"bot,omitempty"`
 	// Mode is the claude-agent spelling of the permission mode the thread was started in (after clamping).
-	Mode         string    `json:"mode"`
-	Runtime      string    `json:"runtime"`
-	Created      time.Time `json:"created"`
-	LastActivity time.Time `json:"last_activity"`
-	Closed       bool      `json:"closed,omitempty"`
-	Running      bool      `json:"running,omitempty"`
-	RunID        string    `json:"run_id,omitempty"`
-	TaskOutcome  string    `json:"task_outcome,omitempty"`
-	To           string    `json:"to,omitempty"`       // who the next finished turn answers: the sender of the last message
-	ReplyTo      []string  `json:"reply_to,omitempty"` // ids of the messages since the last finished turn
-	LastPos      int       `json:"last_pos"`           // the last item of the thread already seen
+	Mode                 string    `json:"mode"`
+	Runtime              string    `json:"runtime"`
+	Created              time.Time `json:"created"`
+	LastActivity         time.Time `json:"last_activity"`
+	Closed               bool      `json:"closed,omitempty"`
+	Running              bool      `json:"running,omitempty"`
+	RunID                string    `json:"run_id,omitempty"`
+	NativeCleanupPending bool      `json:"native_cleanup_pending,omitempty"`
+	TaskReport           string    `json:"task_report,omitempty"`
+	TaskOutcome          string    `json:"task_outcome,omitempty"`
+	To                   string    `json:"to,omitempty"`       // who the next finished turn answers: the sender of the last message
+	ReplyTo              []string  `json:"reply_to,omitempty"` // ids of the messages since the last finished turn
+	LastPos              int       `json:"last_pos"`           // the last item of the thread already seen
 }
 
 type t3Threads struct {

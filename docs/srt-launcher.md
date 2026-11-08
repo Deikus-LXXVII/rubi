@@ -32,15 +32,14 @@ The adapter checks that config, role records, shims, bindings and runtime remain
 outside writable trees before launching. Missing tools/provider installation
 fail with exit 125; no VM or unconfined fallback is used by these shims.
 
-### Repository task copies (groundwork, not yet phone-to-PR)
+### Repository task copies
 
-Repository tasks require a Linux or macOS Rubi Home, matching the supported
-srt backends and trusted Unix Git launcher. Windows (and unknown operating
-systems) refuses a task before role/project lookup or repository preparation;
-there is no unconfined Git/copy fallback. Windows CI's temporary project lives
-under protected `AppData/Local/Temp`: its rejection is intentional, not a reason
-to loosen the protected-directory filter. This does not disable unrelated
-Windows helper/scheduled-task functionality.
+Repository tasks require Linux: confirmed stop needs bubblewrap's private PID
+namespace teardown plus an owned process group. macOS and Windows refuse before
+project lookup, workspace creation or native launch. Standalone macOS srt sessions
+remain supported; Cursor/OpenCode project bridges already require Linux. This is
+an intentional fail-closed task-only restriction until strong macOS descendant
+supervision is implemented, not an unconfined fallback.
 
 Home `t3-agent.start` may opt into `task: true`. The response adds `task`,
 `branch` and `base_commit`. An ordinary session keeps its existing behavior.
@@ -438,9 +437,12 @@ creation, avoiding duplicates; publication never calls a merge endpoint.
 
 Terminal state transitions are exactly-once/idempotent; event transport is
 **at-least-once**, with stable `<task-id>:terminal` identity. Home re-emits ended
-task results during recovery. The next official task-card/message consumer must
-deduplicate this identity and wire explicit finalization/retry after task work;
-this backend alone is not the complete unattended phone-to-PR product.
+task results during recovery. The official companion plugin polls durable task
+status, emits only to the original requester, then acknowledges the exact terminal
+event through Home. A fsynced per-task delivery sidecar survives plugin/Home
+restart without changing the immutable outcome or growing one plugin-state map.
+A crash between emit and acknowledgement can still duplicate transport delivery;
+consumers deduplicate the stable device/task event identity.
 
 Verification in this slice uses real Git + a disposable bare remote and a mock
 GitHub API (including lost POST response), fake vault credentials and a mock Home
@@ -458,18 +460,100 @@ Stopped/failed Cursor recovery never provisions a replacement project server
 just to observe an ended run. Stop also serializes with admission, so an
 inflight native launch cannot finish after cancellation without being interrupted.
 
-### Upstream cancellation limitation
+### Supervised cancellation without a native receipt
 
-If a launch response is lost **before Home learns any native thread ID**, Home
-cannot safely replay that launch after cancellation: the replay might create new
-work rather than look up an existing receipt. Cancellation durably seals the
-mandate and returns **interruption unconfirmed**, never a successful stop or a
-publication. Recovery does not replay a cancelled launch. An already accepted
-unknown native run may still finish inside its assigned sandbox; reconciling or
-terminating it requires a supported native receipt/thread lookup or trusted
-launcher process bookkeeping in a follow-up. Known-thread interruption, normal
-launch/send recovery and stop-versus-inflight-admission are covered here. This
-limitation is not represented as a fully stopped worker in the API response.
+New tasks require an adjacent/configured `rubi-agent-exec` that answers
+`--task-supervision-version` with `1`. Home probes it before creating a copy.
+The plugin probes `t3-agent.task.capabilities` before approval **and** execution;
+it never falls back to an old Home that might ignore `task:true` and edit source.
+Core, Home, helper and companion plugin must be updated together.
+
+Every actual task CLI launch obtains a private, fsynced OS-lock lease outside
+sandbox read/write grants. Cursor holds a lease for its entire project server;
+OpenCode's shim holds it for its whole bridge/backend lifetime. Admission and
+stop share a gate separate from the journal lock: save the stop/publication fence,
+then drain all already-admitted launchers; subsequent native launches refuse.
+A guardian polls the atomic journal even when Home does not know a native thread
+ID. A lease is acknowledged only after runtime process cleanup, never just when
+the cancellation context fires. Publication drains leases before snapshotting,
+so an idle CLI's background work cannot race the snapshot.
+
+Task runtimes additionally become PID 1 in an outer private Linux PID/user
+namespace, mapping **only** the current host UID/GID and preserving that identity
+(no introduced root UID; root-refusing CLIs must continue to work). Fixed system
+util-linux `unshare` mounts private namespace-local procfs; otherwise bwrap's
+`/proc/PID/ns` lookup addresses the wrong namespace. Temporary namespace-only
+mount/setpcap ambient capabilities are cleared by fixed system util-linux
+`setpriv` (inheritable/ambient/bounding all dropped) **before** srt exec. Provider
+UID preservation and zero effective/permitted/inheritable/ambient capabilities
+are checked in the real srt boundary test. Linux finishes
+reaping this PID 1 only after every namespace process exits, including `setsid`
+and double-fork descendants. A process-group signal alone would not prove that.
+Missing util-linux or disabled user/mount namespaces refuse; no weaker fallback.
+The creator OS thread stays locked until reaping; a kernel parent-death signal
+also kills the namespace if its guardian crashes (the incomplete receipt still
+remains unconfirmed, never fabricated). Standalone sessions retain process-group
+cleanup without this task-only condition.
+A non-reaping `waitid(WNOWAIT)` retains child identity until final signaling,
+avoiding recycled-PID signals. SIGTERM of the shim reaps before its receipt.
+
+`stopped` means the mandate ended. Status separately exposes `execution_stopped`;
+Stop succeeds only after cleanup receipts confirm quiescence. Native interrupt
+bookkeeping may remain pending after all execution is proved stopped, reported
+as `native_cleanup_pending`. No cancelled start is replayed just to discover an ID.
+An abandoned incomplete receipt (trusted guardian killed/crashed before cleanup)
+or a pre-supervision legacy task remains **interruption unconfirmed**: an unlocked
+file or absent PID is not proof. Those exceptional cases still need trusted
+operator/owned-instance reconciliation; no API silently discards that evidence.
+
+### Official actions, cards and automatic retry
+
+Companion source: `Deikus-LXXVII/rubi-t3agents`, branch
+`citri/t3-agents-task-ui` (a separate repository/bundle, not a T3 fork).
+
+- `t3agents_task_start`: one locked strong `t3agents.task_start` confirmation for
+  exact device/project/role, brief/provider/model, private copy/new `rubi/task_*`
+  branch and optional `{repository,base,account}` publication target. Agent text
+  cannot alter that scope. Starts are limited per verified requester and globally.
+  The approval also explicitly includes native `bypassPermissions` **inside the
+  existing project srt boundary**. Home refuses before creating work if existing
+  host/role/global ceilings do not allow full-access. It never silently downgrades
+  an unattended task into a native permission dialog, and never changes settings
+  or relaxes filesystem/network sandbox policy.
+- `t3agents_task_status`, `_append`, `_stop`: original verified requester only;
+  panel actions belong to the authenticated user. Appends have stable request IDs,
+  bounded text and rate limits; ended/sealed tasks cannot restart.
+- `t3agents_task_accounts`: stable account IDs/labels only. Optional fine-grained
+  `github_token` is entered in the masked panel account setup and kept in the
+  encrypted vault. Select only the approved repos; Contents/Pull requests
+  read/write. The plugin never places it in settings, task args or provider state;
+  Core's existing broker resolves it at use time. Empty setup supports local tasks.
+- Native task cards show work, frozen Git diff-stat, **agent-reported** test evidence,
+  branch/commit, cleanup status and a canonical PR link; append/stop work on phone.
+  Plugin text uses the existing declarative text-node renderer, never agent HTML.
+  Core mints full `https://rubi-panel.com/` setup links (no relative/bare fragments).
+- Home periodically reconciles durable intents. The plugin retries finalization/
+  publication from durable Home status, including `publishing`/`pushed` after a
+  lost reply, rather than caching tasks only in memory. Only an approved
+  `auto_finish` mandate with an explicit final `STATUS: PASS`, `COMMIT: ...` and
+  `EVIDENCE: ...` report auto-seals an idle task. Ordinary answers/questions do not;
+  `ISSUES`/`BLOCKED` stay waiting. A new append clears the old report. Evidence is
+  labelled as an agent claim, not independent test attestation.
+
+Security: existing E2E/ticket authentication, replay checks and narrow setup/view
+permissions remain. Browser RPC additionally rejects foreign/null Origins before
+processing; non-browser encrypted transports remain supported. No cookie auth or
+CSRF bypass/new unauthenticated task endpoint is introduced. PR URLs must match
+exact approved GitHub owner/repo/pull/number; executable URLs/HTML are never used.
+The panel static check has 0 FAIL; its unchanged pre-existing warnings concern
+pins-only storage, existing CSP, demo URLs and cosmetic randomness.
+
+This is not yet one combined phone→MCP→native T3→mock-GitHub acceptance run.
+Native Home tests use real unmodified T3/srt/bwrap/Git plus an account-free fake
+Codex; publication tests use real bare Git and a mock GitHub API. Plugin tests use
+fake Home/vault data. No real account or live daemon/settings are touched.
+Obsolete VM/microVM setup/session-server startup cleanup is deliberately deferred:
+that path still serves legacy callers and should be removed in its own slice.
 
 Home shutdown cancels and joins every watcher (including Cursor's independent
 project-context watchers) before returning or removing project servers. Watcher

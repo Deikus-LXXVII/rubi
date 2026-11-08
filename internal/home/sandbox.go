@@ -1,6 +1,7 @@
 package home
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,6 +69,10 @@ func resolveAgentLaunch(b agentsandbox.Binding, bindingPath string, projectServe
 		}
 	}
 	if b.Task != "" {
+		state, err := (agenttask.Store{Home: b.HomeDir}).Get(context.Background(), b.Task)
+		if err != nil || !state.Phase.Mutable() {
+			return l, errors.New("sandbox: task mandate missing, sealed or ended")
+		}
 		w, err := agenttask.Resolve(b.HomeDir, b.Task, b.Project, b.Role, b.DirHash)
 		if err != nil {
 			return l, err
@@ -118,6 +123,7 @@ func resolveAgentLaunch(b agentsandbox.Binding, bindingPath string, projectServe
 		SRT: install.SRT, CLI: provider.CLI, SearchPath: install.SearchPath,
 	}
 	l.Protected = []string{filepath.Join(b.HomeDir, "config.json"), filepath.Join(b.HomeDir, agent.RolesDir, b.Role, "index.json"), filepath.Join(b.HomeDir, agent.RolesDir, b.Role, "versions"), filepath.Join(b.HomeDir, "t3", "bin")}
+	l.OwnProcessTree = b.Task != ""
 	l.Provider = b.Provider
 	l.CredentialsFile = provider.CredentialsFile
 	if file := provider.ProjectCredentials[b.Project]; file != "" {

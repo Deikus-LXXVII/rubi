@@ -28,11 +28,12 @@ var idRE = regexp.MustCompile(`^task_[0-9a-f]{24}$`)
 
 func ValidID(id string) bool { return idRE.MatchString(id) }
 
-// CheckPlatform matches the launcher boundary: Windows has no supported srt
-// isolation backend, and repository preparation relies on trusted Unix git.
+// CheckPlatform requires kernel-owned PID namespace teardown for task-wide stop.
+// macOS standalone srt sessions remain supported; repository tasks fail closed
+// until a comparably strong descendant-ownership supervisor is implemented.
 func CheckPlatform(goos string) error {
-	if goos != "linux" && goos != "darwin" {
-		return fmt.Errorf("repository tasks are not supported on %s: srt isolation requires Linux or macOS; select a Linux or macOS Rubi Home", goos)
+	if goos != "linux" {
+		return fmt.Errorf("repository tasks are not supported on %s: supervised task cancellation requires Linux bubblewrap PID namespaces (standalone macOS srt sessions remain available)", goos)
 	}
 	return nil
 }
