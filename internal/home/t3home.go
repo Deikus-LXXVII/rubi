@@ -57,9 +57,11 @@ type t3Watch struct {
 }
 
 type T3Home struct {
-	watchWG        sync.WaitGroup
-	watchPaused    bool
-	taskMu         sync.Mutex
+	watchWG     sync.WaitGroup
+	watchPaused bool
+	taskMu      sync.Mutex
+	// TaskSupervisor replaces the adjacent helper capability probe in fake-native tests.
+	TaskSupervisor func(context.Context) error
 	projectMu      sync.Mutex
 	projectServers map[string]*projectT3
 	projectStop    context.CancelFunc
@@ -214,7 +216,19 @@ func (t *T3Home) Run(ctx context.Context) {
 			t.startWatch(th.ID)
 		}
 	}
-	<-ctx.Done()
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
+reconcile:
+	for {
+		select {
+		case <-ctx.Done():
+			break reconcile
+		case <-tick.C:
+			retry, cancel := context.WithTimeout(ctx, 45*time.Second)
+			t.recoverTasks(retry)
+			cancel()
+		}
+	}
 	t.Wait()
 	t.Stop()
 }

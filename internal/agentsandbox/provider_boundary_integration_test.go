@@ -64,6 +64,7 @@ func providerBoundaryFixture(t *testing.T) (Launch, string) {
 
 func TestInProcessHostBoundarySRTProbe(t *testing.T) {
 	l, other := providerBoundaryFixture(t)
+	l.OwnProcessTree = true
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +73,13 @@ func TestInProcessHostBoundarySRTProbe(t *testing.T) {
 	// This fake models direct fs + spawned-shell work in the SDK host process.
 	// No cursor-agent binary is invoked, just as T3's current SDK path doesn't invoke one.
 	script := `const fs=require('fs'),cp=require('child_process'),assert=require('assert');
-const [project,other,home,network]=process.argv.slice(1);
+const [project,other,home,network,uid]=process.argv.slice(1);
+assert.equal(process.getuid(),Number(uid),"provider UID changed (root-refusing CLIs would break)");
+const status=fs.readFileSync('/proc/self/status','utf8');
+for(const field of ['CapInh','CapPrm','CapEff','CapAmb']) {
+ const match=status.match(new RegExp('^'+field+':\\s*([0-9a-f]+)$','m'));
+ assert(match && BigInt('0x'+match[1])===0n,'provider inherited capabilities: '+field);
+}
 assert.equal(process.cwd(),project);
 for(const path of [other+'/marker',home+'/.ssh/fixture-secret']) {
  assert(!fs.existsSync(path),'outside file visible');
@@ -88,7 +95,7 @@ if(network==='1') {
  assert(result.stderr.toString().includes('403'),'not an allow-list refusal');
 }
 process.stdout.write('in-process-boundary-ok');`
-	l.Args = []string{"-e", script, l.Policy.Projects[0], other, l.Policy.Home, os.Getenv("RUBI_SRT_NETWORK_TEST")}
+	l.Args = []string{"-e", script, l.Policy.Projects[0], other, l.Policy.Home, os.Getenv("RUBI_SRT_NETWORK_TEST"), strconv.Itoa(os.Getuid())}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var out, stderr bytes.Buffer

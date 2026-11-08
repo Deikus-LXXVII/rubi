@@ -379,6 +379,9 @@ func (p Publisher) Publish(ctx context.Context, id, token string) (out State, er
 				return e
 			}
 		}
+		if e := p.Store.Quiesce(ctx, s.ID); e != nil {
+			return e
+		}
 		dir := filepath.Join(p.Store.Home, "t3", "task-snapshots", s.ID)
 		if s.Commit == "" {
 			var e error
@@ -390,6 +393,11 @@ func (p Publisher) Publish(ctx context.Context, id, token string) (out State, er
 				out = *s
 				return e
 			}
+			diff, e := trustedGit(ctx, dir, "diff", "--stat", "--no-ext-diff", "--no-textconv", s.Workspace.BaseCommit, s.Commit, "--")
+			if e != nil {
+				return errors.New("task: frozen diff summary unavailable")
+			}
+			s.Summary.Diff = clipReport(diff, 8192)
 			if e = tx.Save(); e != nil {
 				return e
 			}

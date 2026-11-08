@@ -37,6 +37,8 @@ type Launch struct {
 	CredentialsFile string
 	// Control is a supervisor-owned srt lifetime pipe, never a provider descriptor.
 	Control *os.File
+	// OwnProcessTree requires a kernel-owned lifetime for all detached descendants.
+	OwnProcessTree bool
 }
 
 func environment(parent []string, home, tmp, path string) []string {
@@ -178,6 +180,9 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	args = append(args, "--", envCLI, "TMPDIR="+tmp, cli)
 	args = append(args, l.Args...)
 	cmd := exec.CommandContext(ctx, srt, args...)
+	if runtime.GOOS == "linux" {
+		cmd.Cancel = nil
+	}
 	if l.Control != nil {
 		cmd.ExtraFiles = []*os.File{l.Control}
 	}
@@ -205,7 +210,7 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	cmd.Stdin = in
 	cmd.Stdout = out
 	cmd.Stderr = stderr
-	e = cmd.Run()
+	e = runConfined(ctx, cmd, l.OwnProcessTree)
 	if e == nil {
 		return 0, nil
 	}

@@ -19,6 +19,7 @@ import (
 func agentLife(t *testing.T) (*life, string) {
 	t.Helper()
 	l := newLife(t)
+	l.t3.TaskSupervisor = func(context.Context) error { return nil }
 	role := putRole(t, l.h, "reviewer")
 	zero := 0
 	if err := l.h.Update(func(c *Config) { c.AgentMaxSessionsPerProfile, c.AgentMaxSessions = 20, &zero }); err != nil {

@@ -432,7 +432,7 @@ func hookResultAudit(result string) (event, reason string) {
 // homeCall runs one helper operation for a plugin, within what its manifest declares.
 func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, ref, op string, args json.RawMessage) (json.RawMessage, error) {
 	if strings.HasPrefix(homeOp(op), "claude-agent.task.") {
-		if plugin != plugins.OfficialT3PluginID || (op != "t3-agent.task.status" && op != "t3-agent.task.publish" && op != "t3-agent.task.stop") {
+		if plugin != plugins.OfficialT3PluginID || (op != "t3-agent.task.ack" && op != "t3-agent.task.capabilities" && op != "t3-agent.task.list" && op != "t3-agent.task.append" && op != "t3-agent.task.status" && op != "t3-agent.task.publish" && op != "t3-agent.task.stop") {
 			return nil, errors.New("task: broker-only operation refused")
 		}
 	}
@@ -475,7 +475,8 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 		}
 	}
 	if op == "t3-agent.task.publish" {
-		return c.publishTask(ctx, plugin, dev.ID, args, cl)
+		out, e := c.publishTask(ctx, plugin, dev.ID, args, cl)
+		return c.taskPanelReply(op, out), e
 	}
 	var out json.RawMessage
 	if err := cl.Call(ctx, op, args, &out); err != nil {
@@ -491,7 +492,7 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 		}
 		return nil, &rubiplugin.Error{Code: code, Message: dev.Name + ": " + err.Error()}
 	}
-	return out, nil
+	return c.taskPanelReply(op, out), nil
 }
 
 // botSudoResult is the result of a hook installation where no one can be asked for the administrator password on that

@@ -86,6 +86,7 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 	var in struct {
 		Task         bool              `json:"task"`
 		Publish      *agenttask.Target `json:"publish"`
+		AutoFinish   bool              `json:"auto_finish"`
 		PublishProof string            `json:"publish_proof"`
 		Project      string            `json:"project"`
 		Role         string            `json:"role"`
@@ -120,7 +121,7 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 		}
 		return t.messages(ctx, in.Project, in.Role, in.ID, in.Limit)
 	case "start":
-		return t.start(ctx, startIn{project: in.Project, role: in.Role, prompt: in.Prompt, name: in.Name, from: in.From, mode: in.Mode, bot: in.Bot, model: in.Model, messageID: in.MessageID, provider: in.Provider, task: in.Task, publish: in.Publish, proof: in.PublishProof})
+		return t.start(ctx, startIn{project: in.Project, role: in.Role, prompt: in.Prompt, name: in.Name, from: in.From, mode: in.Mode, bot: in.Bot, model: in.Model, messageID: in.MessageID, provider: in.Provider, task: in.Task, autoFinish: in.AutoFinish, publish: in.Publish, proof: in.PublishProof})
 	case "send":
 		if !validT3ThreadID(in.ID) {
 			return nil, errors.New("bad session id")
@@ -349,6 +350,7 @@ func (t *T3Home) messages(ctx context.Context, project, role, id string, limit i
 type startIn struct {
 	project, role, prompt, name, from, mode, bot, model, messageID, provider string
 	task                                                                     bool
+	autoFinish                                                               bool
 	publish                                                                  *agenttask.Target
 	proof                                                                    string
 }
@@ -422,6 +424,13 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 		if err := agenttask.CheckPlatform(goos); err != nil {
 			return nil, err
 		}
+		probe := t.verifyTaskSupervisor
+		if t.TaskSupervisor != nil {
+			probe = t.TaskSupervisor
+		}
+		if err := probe(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if in.task {
 		t.taskMu.Lock()
@@ -452,6 +461,12 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 	sel, eff, claude, err := t.clampMode(in.mode, r.MaxMode)
 	if err != nil {
 		return nil, err
+	}
+	// An unattended task must not silently wait on an unhandled native approval.
+	// The single strong task approval includes this mode; existing host/role
+	// ceilings still apply and are never raised by a task request.
+	if in.task && in.autoFinish && (in.mode != "bypassPermissions" || eff != t3.FullAccess) {
+		return nil, errors.New("task: unattended tasks require explicitly approved full-access native mode within srt; this Home or role ceiling does not permit it")
 	}
 	provider := in.provider
 	if provider == "" {
@@ -624,6 +639,7 @@ func (t *T3Home) sendDirect(ctx context.Context, project, role, id, text, from, 
 	t.threads.update(id, func(x *t3Thread) {
 		x.Running, x.To, x.LastActivity = true, toOf(from, bot), t.now().UTC()
 		x.TaskOutcome = ""
+		x.TaskReport = ""
 		if run.RunID != "" {
 			x.RunID = run.RunID
 		}
@@ -979,6 +995,11 @@ func (t *T3Home) finishTurn(ctx context.Context, cl *t3.Client, id string, w t3.
 	if r := []rune(text); len(r) > maxResultRunes {
 		text, truncated = string(r[:maxResultRunes]), true
 	}
+	if th.Task != "" {
+		if state, e := t.taskStore().Get(ctx, th.Task); e == nil && state.Phase == agenttask.Stopped {
+			w.Status = "cancelled"
+		}
+	}
 	subtype := w.Status
 	if subtype == "completed" {
 		subtype = "success"
@@ -998,6 +1019,9 @@ func (t *T3Home) finishTurn(ctx context.Context, cl *t3.Client, id string, w t3.
 		x.LastPos, x.ReplyTo = pos, nil
 		x.Running, x.RunID = false, ""
 		x.TaskOutcome = w.Status
+		if w.Status == "completed" && !truncated {
+			x.TaskReport = text
+		}
 	})
 	if th.Task != "" && !cur.Running {
 		phase := agenttask.Waiting

@@ -27,7 +27,7 @@ func taskFixture(t *testing.T) (Store, Workspace) {
 		t.Fatal(err)
 	}
 	st := Store{Home: home}
-	spec := Spec{Project: w.Project, Role: w.Role, Prompt: "private prompt", From: "requester", MessageID: "request-one", Target: &Target{Repository: "owner/repo", Base: "main", Account: "fixture"}, Proof: "fake-proof"}
+	spec := Spec{Supervision: 1, Project: w.Project, Role: w.Role, Prompt: "private prompt", From: "requester", MessageID: "request-one", Target: &Target{Repository: "owner/repo", Base: "main", Account: "fixture"}, Proof: "fake-proof"}
 	if err := st.Create(context.Background(), w, spec); err != nil {
 		t.Fatal(err)
 	}

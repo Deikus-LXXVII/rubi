@@ -150,6 +150,13 @@ func (s *Server) cors(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) rpc(w http.ResponseWriter, r *http.Request) {
+	// No cookie authentication is involved, but a browser request must still
+	// originate at the configured panel. Relay/non-browser E2E requests have no Origin.
+	if origin := r.Header.Get("Origin"); origin != "" && origin != s.core.PanelOrigin {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+
 	s.cors(w, r)
 	w.Header().Set("Cache-Control", "no-store")
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBody))

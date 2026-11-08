@@ -47,19 +47,28 @@ func (t Target) Validate() error {
 	return nil
 }
 
+type Summary struct {
+	Work   string `json:"work,omitempty"`
+	Tests  string `json:"tests,omitempty"` // Agent-reported evidence, not independently verified.
+	Diff   string `json:"diff,omitempty"`
+	Status string `json:"status,omitempty"`
+}
+
 type Spec struct {
-	Project   string  `json:"project"`
-	Role      string  `json:"role"`
-	Prompt    string  `json:"prompt"`
-	Name      string  `json:"name,omitempty"`
-	From      string  `json:"from"`
-	Mode      string  `json:"mode,omitempty"`
-	Bot       string  `json:"bot,omitempty"`
-	Model     string  `json:"model,omitempty"`
-	MessageID string  `json:"message_id"`
-	Provider  string  `json:"provider,omitempty"`
-	Target    *Target `json:"publish,omitempty"`
-	Proof     string  `json:"publish_proof,omitempty"`
+	Supervision int     `json:"sandbox_supervision,omitempty"`
+	AutoFinish  bool    `json:"auto_finish,omitempty"`
+	Project     string  `json:"project"`
+	Role        string  `json:"role"`
+	Prompt      string  `json:"prompt"`
+	Name        string  `json:"name,omitempty"`
+	From        string  `json:"from"`
+	Mode        string  `json:"mode,omitempty"`
+	Bot         string  `json:"bot,omitempty"`
+	Model       string  `json:"model,omitempty"`
+	MessageID   string  `json:"message_id"`
+	Provider    string  `json:"provider,omitempty"`
+	Target      *Target `json:"publish,omitempty"`
+	Proof       string  `json:"publish_proof,omitempty"`
 }
 type Command struct {
 	Kind    string `json:"kind"`
@@ -71,19 +80,23 @@ type Command struct {
 	Steer   bool   `json:"steer,omitempty"`
 }
 type State struct {
-	Version    int       `json:"version"`
-	ID         string    `json:"id"`
-	Workspace  Workspace `json:"workspace"`
-	Spec       Spec      `json:"spec"`
-	Phase      Phase     `json:"phase"`
-	Thread     string    `json:"thread,omitempty"`
-	Pending    *Command  `json:"pending,omitempty"`
-	Commit     string    `json:"commit,omitempty"`
-	PR         string    `json:"pr,omitempty"`
-	Error      string    `json:"error,omitempty"`
-	Revision   uint64    `json:"revision"`
-	Updated    time.Time `json:"updated"`
-	TerminalAt time.Time `json:"terminal_at,omitempty"`
+	ResultDelivered bool `json:"result_delivered,omitempty"`
+	// Presentation-only acknowledgement, derived from trusted launcher receipts.
+	ExecutionStopped bool      `json:"execution_stopped,omitempty"`
+	Summary          Summary   `json:"summary"`
+	Version          int       `json:"version"`
+	ID               string    `json:"id"`
+	Workspace        Workspace `json:"workspace"`
+	Spec             Spec      `json:"spec"`
+	Phase            Phase     `json:"phase"`
+	Thread           string    `json:"thread,omitempty"`
+	Pending          *Command  `json:"pending,omitempty"`
+	Commit           string    `json:"commit,omitempty"`
+	PR               string    `json:"pr,omitempty"`
+	Error            string    `json:"error,omitempty"`
+	Revision         uint64    `json:"revision"`
+	Updated          time.Time `json:"updated"`
+	TerminalAt       time.Time `json:"terminal_at,omitempty"`
 }
 
 func (s State) Public() State {
