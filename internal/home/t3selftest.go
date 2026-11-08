@@ -195,7 +195,11 @@ func (t *T3Home) selfTestRole(ctx context.Context, r agent.T3ProjectRow) selfRow
 	if err != nil {
 		return fail("can't find rubi-home: %v", err)
 	}
-	want, err := t3vm.ShimScript(self, t.h.Dir, r.Role)
+	agentExec := t.h.Fresh().AgentSandbox.AgentExec
+	if agentExec == "" {
+		agentExec = filepath.Join(filepath.Dir(self), "rubi-agent-exec")
+	}
+	want, err := t3vm.SandboxShimScript(agentExec, filepath.Join(t.h.Dir, "t3", "sandbox", r.Role, "claudeAgent", "binding.json"))
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -203,7 +207,8 @@ func (t *T3Home) selfTestRole(ctx context.Context, r agent.T3ProjectRow) selfRow
 	if err != nil || string(got) != string(want) {
 		return fail("the shim of %s is missing or out of date (change the role again to write it)", inst)
 	}
-	ok("the shim of %s is in place and runs this rubi-home", inst)
+	ok("the shim of %s is in place and runs rubi-agent-exec", inst)
+	lines = append(lines, "note: the following legacy VM diagnostics do not verify the new srt execution path")
 
 	vctx, vcancel := context.WithTimeout(ctx, 3*time.Minute)
 	v, err := t.vmVersion(vctx, r.Role)

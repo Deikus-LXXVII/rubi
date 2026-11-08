@@ -124,11 +124,16 @@ func TestFakeRuntimeArgvStdioExit(t *testing.T) {
 		}
 	}
 	srt := filepath.Join(runtimeDir, "srt")
-	script := "#!/bin/sh\n[ \"$1\" = --settings ] || exit 90\n[ -f \"$2\" ] || exit 91\n[ \"$3\" = -- ] || exit 92\nshift 4\n[ \"$1\" = 'a b;$(false)' ] || exit 93\ncat\nprintf 'stderr' >&2\nexit 17\n"
+	script := "#!/bin/sh\n[ \"$1\" = --settings ] || exit 90\n[ -f \"$2\" ] || exit 91\n[ \"$3\" = -- ] || exit 92\nshift 3\nexec \"$@\"\n"
 	if e := os.WriteFile(srt, []byte(script), 0700); e != nil {
 		t.Fatal(e)
 	}
-	l := Launch{Policy: p, SettingsDir: settings, SRT: srt, CLI: "/bin/true", SearchPath: []string{runtimeDir, "/usr/bin", "/bin"}, Args: []string{"a b;$(false)"}}
+	cli := filepath.Join(runtimeDir, "provider")
+	provider := "#!/bin/sh\n[ \"$1\" = 'a b;$(false)' ] || exit 93\ncat\nprintf 'stderr' >&2\nexit 17\n"
+	if e := os.WriteFile(cli, []byte(provider), 0700); e != nil {
+		t.Fatal(e)
+	}
+	l := Launch{Policy: p, SettingsDir: settings, SRT: srt, CLI: cli, SearchPath: []string{runtimeDir, "/usr/bin", "/bin"}, Args: []string{"a b;$(false)"}}
 	var out, errout bytes.Buffer
 	code, e := Run(context.Background(), l, strings.NewReader("{\"ok\":true}\n"), &out, &errout)
 	if e != nil || code != 17 || out.String() != "{\"ok\":true}\n" || errout.String() != "stderr" {

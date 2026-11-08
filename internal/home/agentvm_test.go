@@ -3,6 +3,7 @@ package home
 import (
 	"context"
 	"encoding/json"
+	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,7 +43,13 @@ func TestSyncT3InstancesWritesTheRolesInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := h.SyncT3Instances()
-	if err != nil || len(res.Added) != 1 || res.Added[0] != "claude-"+id {
+	n := 0
+	for _, route := range agentsandbox.ProviderRoutes {
+		if route.BinaryField != "" {
+			n++
+		}
+	}
+	if err != nil || len(res.Added) != n || res.Added[0] != "claude-"+id {
 		t.Fatalf("%+v %v", res, err)
 	}
 	b, err := os.ReadFile(filepath.Join(base, "userdata", "settings.json"))
@@ -59,7 +66,7 @@ func TestSyncT3InstancesWritesTheRolesInstances(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := s.ProviderInstances["claude-"+id]
-	if in.Driver != "claudeAgent" || in.DisplayName != "reviewer" || in.Config.HomePath != filepath.Join(h.Dir, "agent-roles", id, "claude") ||
+	if in.Driver != "claudeAgent" || in.DisplayName != "reviewer · claudeAgent" || in.Config.HomePath != filepath.Join(h.Dir, "agent-roles", id, "claude") ||
 		in.Config.BinaryPath != filepath.Join(h.Dir, "t3", "bin", "claude-"+id) {
 		t.Fatalf("instance: %+v", in)
 	}

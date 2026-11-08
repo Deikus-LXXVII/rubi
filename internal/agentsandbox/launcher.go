@@ -30,8 +30,10 @@ type Launch struct {
 	SRT, CLI   string
 	Args       []string
 	// SearchPath is trusted installation configuration, not inherited PATH.
-	SearchPath []string
-	Mode       Mode
+	SearchPath    []string
+	Mode          Mode
+	Protected     []string
+	Provider, Cwd string
 }
 
 func environment(parent []string, home, tmp, path string) []string {
@@ -90,7 +92,7 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	if len(l.SearchPath) == 0 {
 		return 0, fmt.Errorf("trusted sandbox search path is required")
 	}
-	protected := []string{l.SettingsDir, srt, cli}
+	protected := append([]string{l.SettingsDir, srt, cli}, l.Protected...)
 	if l.ConfigPath != "" {
 		protected = append(protected, l.ConfigPath)
 	}
@@ -127,6 +129,20 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	if !info.IsDir() || info.Mode().Perm()&0077 != 0 {
 		return 0, fmt.Errorf("settings directory must be private (0700) and not a symlink")
 	}
+	// srt creates proxy Unix sockets below TMPDIR. Role/config paths can exceed
+	// sockaddr_un's path limit; use a short private outer runtime directory while
+	// preserving the provider's configured writable tmp inside the sandbox.
+	proxyTmp, e := os.MkdirTemp("/tmp", "rs-")
+	if e != nil {
+		return 0, e
+	}
+	defer os.RemoveAll(proxyTmp)
+	protected = append(protected, proxyTmp)
+	envCLI, e := executable("/usr/bin/env")
+	if e != nil {
+		return 0, e
+	}
+	protected = append(protected, envCLI)
 	settings, e := Build(l.Policy, protected)
 	if e != nil {
 		return 0, e
@@ -144,12 +160,30 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	if closeErr != nil {
 		return 0, closeErr
 	}
-	args := append([]string{"--settings", f.Name(), "--", cli}, l.Args...)
+	tmp, _ := canonical(l.Policy.Tmp)
+	args := append([]string{"--settings", f.Name(), "--", envCLI, "TMPDIR=" + tmp, cli}, l.Args...)
 	cmd := exec.CommandContext(ctx, srt, args...)
 	cmd.Dir = settings.Filesystem.AllowWrite[0]
+	if l.Cwd != "" {
+		cwd, err := canonical(l.Cwd)
+		if err != nil {
+			return 0, err
+		}
+		if !within(cmd.Dir, cwd) {
+			return 0, fmt.Errorf("session cwd is outside the bound project")
+		}
+		cmd.Dir = cwd
+	}
 	home, _ := canonical(l.Policy.Home)
-	tmp, _ := canonical(l.Policy.Tmp)
-	cmd.Env = environment(os.Environ(), home, tmp, strings.Join(l.SearchPath, string(os.PathListSeparator)))
+
+	cmd.Env = environment(os.Environ(), home, proxyTmp, strings.Join(l.SearchPath, string(os.PathListSeparator)))
+	switch l.Provider {
+	case "claudeAgent":
+		cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+l.Policy.Login)
+	case "codex":
+		cmd.Env = append(cmd.Env, "CODEX_HOME="+l.Policy.Login)
+	}
+	cmd.Env = append(cmd.Env, "XDG_CONFIG_HOME="+l.Policy.Login, "XDG_DATA_HOME="+l.Policy.Login, "XDG_CACHE_HOME="+l.Policy.Login)
 	cmd.Stdin = in
 	cmd.Stdout = out
 	cmd.Stderr = stderr
