@@ -230,3 +230,7 @@ compatibility.
 - Package pinned srt/Node/socat/rg and keep runtime assets separate from credentials.
   External plugin/UI provider-selection schemas may need their own rollout; the
   Rubi Home operation accepts the selector without patching T3 Code.
+
+Directory bindings hash the canonical existing absolute directory, matching
+project discovery across macOS temporary-root aliases. Missing paths refuse; a
+retargeted project symlink invalidates the old binding.

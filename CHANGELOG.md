@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Canonical project bindings on macOS.** Directory hashes resolve existing absolute directories before hashing, matching project discovery across `/var` aliases. Missing paths refuse and symlink retargets invalidate bindings; Linux regressions reproduce the temporary-root failure.
+
 - **Cursor and OpenCode now have executable srt routes on Linux.** Cursor runs in a project-private unmodified T3 server, reached through inherited pipes with native pairing/OAuth; sessions retain their trusted project binding. Servers start on demand, survive only while needed and retain private state. OpenCode v1/v2 use a private confined server behind an authenticated streaming bridge; remote-URL bypasses and missing credentials fail closed. Provider credentials are provisioned explicitly and enter only through the private pipe, never argv/logs. Existing shared CLI routes and personal T3 settings remain unchanged. Real bwrap+srt tests cover isolation, denied network/ingress, streaming and cleanup; disposable native T3/OpenCode v1/v2 readiness passes. Authenticated model turns, macOS bridge support and dependency packaging remain follow-ups.
 
 - **T3 provider shims use the host srt launcher.** Rubi-managed instances are pinned to their role/project; every launch rechecks Rubi's configured folders and the role's directory hash, then generates private srt settings. Missing projects/tools fail closed. CLI-based providers use fixed binary shims (ACP uses a local-command shim); Cursor's in-process SDK uses the separate project-server boundary above; OpenCode's HTTP transport uses the private bridge. Personal T3 instances are left alone. Installation packaging, real-provider authentication and migration of the old VM setup diagnostics remain follow-ups.
