@@ -20,7 +20,7 @@ func ResolveAgentLaunch(b agentsandbox.Binding, bindingPath string) (agentsandbo
 		return l, errors.New("sandbox: missing project binding")
 	}
 	if _, ok := agentsandbox.Route(b.Provider); !ok {
-		return l, fmt.Errorf("sandbox: provider %s has no supported sandbox launch hook", b.Provider)
+		return l, fmt.Errorf("sandbox: %s: %s", b.Provider, agentsandbox.RouteBlocker(b.Provider))
 	}
 	data, err := os.ReadFile(filepath.Join(b.HomeDir, "config.json"))
 	if err != nil {

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Cursor/OpenCode confinement investigation (not enabled).** Refusals now explain the execution boundary: Cursor runs inside the shared T3 server, while OpenCode needs a private authenticated transport. Documented a non-fork project-environment option and a bridge design (including OpenCode v1/v2 auth differences). Disposable real-srt probes cover in-process filesystem/network confinement and cross-project loopback isolation; fake CLIs cannot enable either route. No real Cursor/OpenCode session or bridge is connected by this change.
+
 - **T3 provider shims use the host srt launcher.** Rubi-managed instances are pinned to their role/project; every launch rechecks Rubi's configured folders and the role's directory hash, then generates private srt settings. Missing projects/tools fail closed. CLI-based providers use fixed binary shims (ACP uses a local-command shim); Cursor's SDK and OpenCode's HTTP transport are not exposed as Rubi-managed instances until they have a safe confinement path. Personal T3 instances are left alone. Installation packaging, real-provider authentication and migration of the old VM setup diagnostics remain follow-ups.
 
 - **Rubi Home on a shared Linux computer** (groundwork for running T3 there). Rubi Home marks itself non-dumpable, so other processes of the same user can't read its memory. It doesn't start T3 when less than about 800 MiB of memory is free, and says so. It can tell whether the kernel keeps processes from reading each other's memory (Yama `ptrace_scope` 3), and records a one-time acceptance, bound to the computer and its kernel, where the kernel has no Yama.

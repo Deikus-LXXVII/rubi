@@ -26,8 +26,8 @@ type Provider struct {
 type ProviderRoute struct{ Driver, BinaryField string }
 
 // Cursor's current SDK launches in-process and ignores binaryPath for sessions.
-// OpenCode uses a loopback HTTP server that srt's isolated network cannot expose.
-// It must remain disabled on Rubi-managed instances until T3 exposes a confinement hook.
+// OpenCode needs an authenticated transport across srt's network boundary.
+// Neither driver is exposed until its actual execution boundary is connected.
 var ProviderRoutes = []ProviderRoute{
 	{"claudeAgent", "binaryPath"}, {"codex", "binaryPath"},
 	{"grok", "binaryPath"}, {"fx", "binaryPath"}, {"opencode", ""},
@@ -42,4 +42,16 @@ func Route(driver string) (ProviderRoute, bool) {
 		}
 	}
 	return ProviderRoute{}, false
+}
+
+// RouteBlocker explains why an installed CLI is not enough to enable a driver.
+func RouteBlocker(driver string) string {
+	switch driver {
+	case "cursor":
+		return "Cursor executes inside the shared T3 server; a CLI shim cannot confine its file tools (requires an isolated T3 server or an upstream execution hook)"
+	case "opencode":
+		return "OpenCode requires an authenticated private HTTP bridge across the srt network boundary; a binaryPath shim alone is not a safe connection"
+	default:
+		return "provider has no supported sandbox launch hook"
+	}
 }

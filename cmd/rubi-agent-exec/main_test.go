@@ -151,3 +151,77 @@ sys.exit(17)
 		t.Fatalf("removed project launched: %v %q", err, data)
 	}
 }
+
+// CLI installation and provider arguments must not turn an unconfined SDK/HTTP
+// route into a runnable Rubi-managed session. Exercise the actual entrypoint.
+func TestUnroutedProvidersRefuseBeforeExecution(t *testing.T) {
+	for _, tc := range []struct{ driver, reason string }{
+		{"cursor", "shared T3 server"},
+		{"opencode", "authenticated private HTTP bridge"},
+	} {
+		t.Run(tc.driver, func(t *testing.T) {
+			for _, missing := range []bool{false, true} {
+				t.Run(map[bool]string{false: "configured_project", true: "missing_project"}[missing], func(t *testing.T) {
+					root := t.TempDir()
+					homeDir := filepath.Join(root, "rubi")
+					a, b := filepath.Join(root, "project-a"), filepath.Join(root, "project-b")
+					for _, d := range []string{homeDir, a, b} {
+						if err := os.MkdirAll(d, 0700); err != nil {
+							t.Fatal(err)
+						}
+					}
+					write := func(path string, v any) {
+						t.Helper()
+						if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+							t.Fatal(err)
+						}
+						data, err := json.Marshal(v)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(path, data, 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					marker := filepath.Join(root, "must-not-run")
+					fakeCLI := filepath.Join(root, "fake-provider")
+					if err := os.WriteFile(fakeCLI, []byte("#!/bin/sh\nprintf launched > '"+marker+"'\nexit 97\n"), 0700); err != nil {
+						t.Fatal(err)
+					}
+					projects := []string{a, b}
+					if missing {
+						projects = []string{b}
+					}
+					install := agentsandbox.Installation{SRT: fakeCLI, Providers: map[string]agentsandbox.Provider{tc.driver: {CLI: fakeCLI}}}
+					write(filepath.Join(homeDir, "config.json"), map[string]any{"agent_projects": projects, "agent_sandbox": install})
+					role := roles.Role{ID: "r_aaaaaa01", Project: "project-a", DirHash: roles.DirHash(a), Status: "active", Version: 1}
+					roleDir := filepath.Join(homeDir, "agent-roles", role.ID)
+					write(filepath.Join(roleDir, "index.json"), role)
+					write(filepath.Join(roleDir, "versions", "1.json"), role)
+					bindingPath := filepath.Join(homeDir, "binding.json")
+					write(bindingPath, agentsandbox.Binding{HomeDir: homeDir, Role: role.ID, Project: role.Project, DirHash: role.DirHash, Provider: tc.driver})
+					self, err := os.Executable()
+					if err != nil {
+						t.Fatal(err)
+					}
+					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					cmd := exec.CommandContext(ctx, self, "--config", bindingPath, "--", "--project", b)
+					cmd.Dir = b
+					cmd.Env = append(os.Environ(), "RUBI_AGENT_EXEC_TEST=1")
+					var stdout, stderr bytes.Buffer
+					cmd.Stdout = &stdout
+					cmd.Stderr = &stderr
+					err = cmd.Run()
+					var exit *exec.ExitError
+					if !errors.As(err, &exit) || exit.ExitCode() != 125 || stdout.Len() != 0 || !strings.Contains(stderr.String(), tc.driver) || !strings.Contains(stderr.String(), tc.reason) {
+						t.Fatalf("route did not refuse clearly: err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+					}
+					if _, err := os.Stat(marker); !os.IsNotExist(err) {
+						t.Fatal("refused route executed provider/runtime")
+					}
+				})
+			}
+		})
+	}
+}

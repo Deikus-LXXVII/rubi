@@ -42,7 +42,7 @@ Inspected T3 source: `pingdotgg/t3code` revision `e11c2fdc` (Nightly).
 | Codex | `binaryPath`, `setupMode: existing` | shim; isolated CODEX_HOME |
 | Grok, Fx, Kiro, Pi, Muse, Antigravity | `binaryPath` | shim |
 | ACP Registry | `source: local`, `commandPath` | shim; installed local command only |
-| Cursor | SDK session runner ignores `binaryPath` | **not exposed**, resolver refuses |
+| Cursor | in-process SDK; legacy `binaryPath` is ignored | **not exposed**; isolated environment or execution hook needed |
 | OpenCode | local HTTP/SSE server or remote server URL | **not exposed**; no safe host-to-srt transport bridge yet |
 | Unknown future driver | unknown | resolver refuses |
 
@@ -50,6 +50,15 @@ No Rubi-managed Cursor/OpenCode instance is created: a disabled SDK instance
 could otherwise be enabled without passing any shim. Personal instances still
 work normally and are **not** a Rubi confinement promise. This is a route-level
 implementation, not proof of real-provider compatibility. No fork of T3 is used.
+
+**Cursor/OpenCode follow-up:** investigation confirmed that these “instances” are
+settings in one shared T3 process, not project-isolated servers. Cursor requires
+a whole-process boundary; OpenCode requires an authenticated bridge across srt's
+private loopback. Both still refuse to launch, with provider-specific errors.
+See [execution-boundary findings and options](design/t3-srt-provider-boundaries.md)
+for the supported per-project environment direction, OpenCode v1/v2 authentication
+differences, bridge design and explicitly fake-provider test evidence. No actual
+Cursor/OpenCode session is connected by this follow-up.
 
 ### Installation metadata (not installed by this slice)
 
@@ -98,13 +107,13 @@ this version uses a child process, not Unix process replacement.
 
 ```
 go vet ./...
-go test ./...
-go test -race ./internal/agentsandbox ./internal/home/agent/t3vm
+go test ./... -count=1
+go test -race ./internal/agentsandbox ./internal/home ./internal/home/agent/t3vm -count=1
 PATH=/workspace/srt-spike/bin:/workspace/srt-spike/node_modules/.bin:$PATH \
   go test -v ./cmd/rubi-agent-exec -run TestBoundShimSRTIntegration -count=1
 PATH=/workspace/srt-spike/bin:/workspace/srt-spike/node_modules/.bin:$PATH \
   RUBI_SRT_NETWORK_TEST=1 go test -v ./internal/agentsandbox \
-  -run TestSRTIntegration -count=1
+  -run 'TestSRTIntegration|TestInProcessHostBoundarySRTProbe|TestOpenCodePrivateLoopbackBoundarySRTProbe' -count=1
 ```
 
 The integration test skips only when srt is absent or the OS is unsupported;
@@ -128,5 +137,6 @@ All fixtures use a disposable HOME. No real provider credentials are used.
   Add trusted resolution for them only with an explicit isolation design.
 - Exercise a real provider CLI and macOS sandbox-exec on disposable fixtures.
 - Define signal forwarding/process-group cleanup before daemon supervision.
-- Add upstream-supported confinement hooks for Cursor and a transport solution
-  for OpenCode before exposing either as a Rubi-managed provider.
+- Choose the isolated per-project T3 environment design (or wait for an upstream
+  execution hook) for Cursor, and implement/authenticate OpenCode's bridge before
+  exposing either as a Rubi-managed provider. See the linked findings.
