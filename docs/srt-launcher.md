@@ -32,6 +32,67 @@ The adapter checks that config, role records, shims, bindings and runtime remain
 outside writable trees before launching. Missing tools/provider installation
 fail with exit 125; no VM or unconfined fallback is used by these shims.
 
+### Repository task copies (groundwork, not yet phone-to-PR)
+
+Home `t3-agent.start` may opt into `task: true`. The response adds `task`,
+`branch` and `base_commit`. An ordinary session keeps its existing behavior.
+Core permits the task option only during the official `t3agents.task_start`
+confirmed execution. Its payload must be `{device: <stable Home ID>, args:
+<exact Home start arguments>}`. Provider, model, source project, role, prompt,
+requester and every other argument are compared; the mandate is consumed once.
+A device alias cannot redirect an approval to another paired computer. This
+execution contract is groundwork: the official plugin's source/manifest is
+outside this repository and does not yet expose the new task action.
+
+`internal/agenttask` makes an **independent clone**, not a linked git worktree:
+`clone --no-local --no-hardlinks --no-checkout --single-branch`. A linked worktree
+would require granting the original common Git directory and its main/other
+refs. The copy uses captured committed HEAD, branch `rubi/task_<random ID>`, a
+local task identity, no remote, no inherited global/system Git configuration,
+no source hooks/templates, no credentials and no network during preparation.
+Dirty and untracked source files are neither copied nor changed. The enrolled
+folder must be the root of an independent repository with a committed HEAD;
+linked worktrees, shared/alternate object stores and symlinked Git metadata
+fail closed. Git must be installed at `/usr/bin/git`.
+
+Private immutable task records are `<Home>/t3/tasks/<ID>.json`; writable copies
+are `<Home>/t3/workspaces/<ID>`. The task ID in the trusted binding resolves the
+copy; neither cwd, environment, prompt nor caller-supplied paths do so. Every
+launch checks project/role/source hash, private directory modes, fixed branch
+name, Git configuration hash and an independent regular Git metadata tree.
+Changing Git configuration or replacing metadata prevents host-side reuse.
+The original enrolled project stays denied. Task shims/settings have separate
+ID-qualified paths, and Cursor's environment key hashes the copy rather than
+the source. Other providers keep their shared T3 server. Fork/append retain the
+task binding; stopping uses only the already-owned authenticated client so a
+damaged copy cannot disable the stop control. Provider login storage remains
+role-scoped; task GitHub publishing credentials are never supplied to providers.
+
+Native T3 watches settings with a debounce. A freshly written instance switch
+can therefore briefly be rejected. Rubi retries only the exact native
+`invalid_request` disabled-instance **preflight** for the same project/instance,
+for at most two seconds, with unchanged arguments and command-receipt ID.
+Other failures and ambiguous transport errors are not treated as permission
+probes; there is no fallback or global enablement.
+
+Session listings identify the task copy and branch, not the source checkout.
+Completed-turn events retain task/branch and requester identity. Native opaque
+`mcp:launch:...` thread IDs are accepted by phone controls without treating them
+as legacy runner filesystem names; exact persisted ownership is still checked. A completed
+turn is **not** a trusted finished repository task: durable finalization,
+stop-vs-publish serialization, vault-backed exact-branch push, PR creation,
+task-specific panel cards and cleanup remain separate work. Records/copies are
+retained; do not use this groundwork as an unattended publishing service.
+See the maintained gap audit in `docs/plans/t3-agents-gap.md`.
+
+The opt-in `TestNativeT3TaskCopyCommitsThroughSandboxedCodex` uses
+`RUBI_REAL_T3` (unmodified pinned native executable), `RUBI_REAL_RELAY` (locally
+built launcher), and real srt/Node/socat/rg on PATH. It creates only disposable
+Home/T3 state and generated fake secret fixtures, using a synthetic Codex
+app-server rather than an account/model. Denied directories can be private
+writable tmpfs shadows; confinement assertions check inaccessible host contents
+and unchanged host files, not merely whether a shadow write returned success.
+
 ### Upstream providers
 
 Inspected T3 source: `pingdotgg/t3code` revision `e11c2fdc` (Nightly).

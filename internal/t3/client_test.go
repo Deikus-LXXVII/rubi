@@ -2,6 +2,7 @@ package t3
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -398,5 +399,64 @@ func TestRenameSendModeWaitRunAndPlanSendOnlyWhatTheToolsDeclare(t *testing.T) {
 	}
 	if got := f.lastOf("t3_thread_launch").Args; got["interactionMode"] != nil {
 		t.Errorf("a launch without plan sent an interaction mode: %v", got)
+	}
+}
+
+func TestLaunchWaitsForNativeSettingsWithoutDuplicatingTheCommand(t *testing.T) {
+	f := newFake(t, allTools...)
+	var requests []map[string]any
+	f.reply[toolThreadLaunch] = func(a map[string]any) (any, string) {
+		requests = append(requests, a)
+		if len(requests) < 3 {
+			b, _ := json.Marshal(map[string]any{"_tag": "OrchestratorMcpFailure", "code": "invalid_request", "message": `Provider instance "i" is disabled for project p.`})
+			return nil, string(b)
+		}
+		return map[string]any{"threadId": "thread", "status": "running"}, ""
+	}
+	f.reply[toolThreadRead] = func(map[string]any) (any, string) {
+		return map[string]any{"thread": map[string]any{"threadId": "thread", "runtimeMode": "auto"}}, ""
+	}
+	_, err := f.client(Auto).Launch(context.Background(), LaunchIn{ProjectID: "p", Instance: "i", Mode: Auto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 3 {
+		t.Fatalf("launch attempts = %d", len(requests))
+	}
+	for _, a := range requests {
+		if !reflect.DeepEqual(a, requests[0]) || a["clientRequestId"] == "" {
+			t.Fatal("changed confirmed args or command ID")
+		}
+	}
+}
+
+func TestLaunchDoesNotRetryProviderFailureOrForeignEnablementRejection(t *testing.T) {
+	for _, msg := range []string{
+		`{"_tag":"OrchestratorMcpFailure","code":"provider_unavailable","message":"provider failed"}`,
+		`{"_tag":"OrchestratorMcpFailure","code":"invalid_request","message":"Provider instance \"other\" is disabled for project p."}`,
+		`{"_tag":"OrchestratorMcpFailure","code":"invalid_request","message":"Provider instance \"i\" is disabled for project other."}`,
+	} {
+		t.Run(msg, func(t *testing.T) {
+			f := newFake(t, allTools...)
+			calls := 0
+			f.reply[toolThreadLaunch] = func(map[string]any) (any, string) { calls++; return nil, msg }
+			_, err := f.client(Auto).Launch(context.Background(), LaunchIn{ProjectID: "p", Instance: "i", Mode: Auto})
+			if err == nil || calls != 1 {
+				t.Fatal("retried a potentially side-effecting or foreign failure")
+			}
+		})
+	}
+}
+
+func TestLaunchEnablementWaitHonorsCancellation(t *testing.T) {
+	f := newFake(t, allTools...)
+	f.reply[toolThreadLaunch] = func(map[string]any) (any, string) {
+		return nil, `{"_tag":"OrchestratorMcpFailure","code":"invalid_request","message":"Provider instance \"i\" is disabled for project p."}`
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	_, err := f.client(Auto).Launch(ctx, LaunchIn{ProjectID: "p", Instance: "i", Mode: Auto})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("did not cancel preflight wait: %v", err)
 	}
 }

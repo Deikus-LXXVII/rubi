@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
+	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 )
@@ -66,6 +67,13 @@ func resolveAgentLaunch(b agentsandbox.Binding, bindingPath string, projectServe
 			return l, errors.New("sandbox: overlapping configured projects cannot be isolated")
 		}
 	}
+	if b.Task != "" {
+		w, err := agenttask.Resolve(b.HomeDir, b.Task, b.Project, b.Role, b.DirHash)
+		if err != nil {
+			return l, err
+		}
+		project = w.Dir
+	}
 	sensitive := []string{b.HomeDir}
 	if c.T3BaseDir != "" {
 		sensitive = append(sensitive, c.T3BaseDir)
@@ -83,6 +91,9 @@ func resolveAgentLaunch(b agentsandbox.Binding, bindingPath string, projectServe
 	}
 	base := filepath.Join(b.HomeDir, "t3", "sandbox", b.Role, b.Provider)
 	login := filepath.Join(base, "login")
+	if b.Task != "" {
+		base = filepath.Join(base, "tasks", b.Task)
+	}
 	if b.Provider == "claudeAgent" {
 		login = filepath.Join(b.HomeDir, agent.RolesDir, b.Role, "claude")
 	}

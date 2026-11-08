@@ -11,11 +11,12 @@ import (
 	"strings"
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
+	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 )
 
 // SandboxRole is resolved by Rubi's manager, not from T3's workspace or a prompt.
-type SandboxRole struct{ ID, Name, Project, ProjectDir, ClaudeDir string }
+type SandboxRole struct{ ID, Name, Project, ProjectDir, ClaudeDir, Task, Workspace string }
 
 func sandboxInstanceID(role, driver string) string {
 	if driver == "claudeAgent" {
@@ -111,6 +112,12 @@ func (o InstanceOptions) sandboxOnce(agentExec string, want []SandboxRole, raw [
 				continue
 			}
 			id := sandboxInstanceID(r.ID, route.Driver)
+			if r.Task != "" {
+				if !agenttask.ValidID(r.Task) {
+					return nil, res, errors.New("sandbox: invalid task binding")
+				}
+				id += "-" + r.Task
+			}
 			old, exists := insts[id]
 			if exists && !ours(id, old) {
 				res.Skipped = append(res.Skipped, id)
@@ -122,6 +129,9 @@ func (o InstanceOptions) sandboxOnce(agentExec string, want []SandboxRole, raw [
 			if route.Driver == "claudeAgent" {
 				login = r.ClaudeDir
 			}
+			if r.Task != "" {
+				base = filepath.Join(base, "tasks", r.Task)
+			}
 			for _, dir := range []string{o.shimDir(), base, filepath.Join(base, "settings"), filepath.Join(base, "home"), filepath.Join(base, "tmp"), login} {
 				if err := os.MkdirAll(dir, 0700); err != nil {
 					return nil, res, err
@@ -131,7 +141,7 @@ func (o InstanceOptions) sandboxOnce(agentExec string, want []SandboxRole, raw [
 					return nil, res, errors.New("sandbox: runtime directories must be private and not symlinks")
 				}
 			}
-			binding := agentsandbox.Binding{HomeDir: o.Dir, Role: r.ID, Project: r.Project, DirHash: roles.DirHash(r.ProjectDir), Provider: route.Driver}
+			binding := agentsandbox.Binding{HomeDir: o.Dir, Role: r.ID, Project: r.Project, DirHash: roles.DirHash(r.ProjectDir), Provider: route.Driver, Task: r.Task}
 			// An unresolved role remains disabled; the resolver also refuses the empty project.
 			if r.ProjectDir == "" {
 				binding.DirHash = ""
@@ -206,7 +216,11 @@ func (o InstanceOptions) sandboxOnce(agentExec string, want []SandboxRole, raw [
 			for pid, pis := range po.pis {
 				enabled := false
 				for _, p := range o.Projects {
-					if p.ID == pid && r.ProjectDir != "" && sameDir(r.ProjectDir, p.Root) && route.BinaryField != "" {
+					root := r.ProjectDir
+					if r.Task != "" {
+						root = r.Workspace
+					}
+					if p.ID == pid && root != "" && sameDir(root, p.Root) && route.BinaryField != "" {
 						enabled = true
 					}
 				}

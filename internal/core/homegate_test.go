@@ -323,3 +323,65 @@ func TestHomeGateSSHRegisterRefusesFoldedDuplicateKeys(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestHomeGateRepositoryTaskNeedsOneExactConfirmation(t *testing.T) {
+	c := &Core{}
+	args := json.RawMessage(`{"task":true,"project":"a","role":"r","provider":"codex","model":"fixture","prompt":"change file","from":"requester"}`)
+	if err := attest(c, "t3agents", "t3-agent.start", args); err == nil {
+		t.Fatal("task without approval")
+	}
+	mandate, _ := json.Marshal(map[string]any{"device": "device-a", "args": args})
+	end := c.beginExec("t3agents", "t3agents.task_start", mandate)
+	altered := json.RawMessage(`{"task":true,"project":"b","role":"r","provider":"codex","model":"fixture","prompt":"change file","from":"requester"}`)
+	if err := attest(c, "t3agents", "t3-agent.start", altered); err == nil {
+		t.Fatal("different project spent mandate")
+	}
+	if _, err := c.attestHomeCallForDevice("t3agents", "device-b", "t3-agent.start", args); err == nil {
+		t.Fatal("another device spent mandate")
+	}
+	if _, err := c.attestHomeCallForDevice("t3agents", "device-a", "t3-agent.start", altered); err == nil {
+		t.Fatal("different args spent mandate")
+	}
+	if _, err := c.attestHomeCallForDevice("t3agents", "device-a", "t3-agent.start", args); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.attestHomeCallForDevice("t3agents", "device-a", "t3-agent.start", args); err == nil {
+		t.Fatal("one confirmation created two tasks")
+	}
+	end()
+	end = c.beginExec("other", "t3agents.task_start", args)
+	defer end()
+	if err := attest(c, "other", "t3-agent.start", args); err == nil {
+		t.Fatal("foreign plugin task")
+	}
+	duplicate := json.RawMessage(`{"task":false,"Task":true}`)
+	if err := attest(c, "t3agents", "t3-agent.start", duplicate); err == nil {
+		t.Fatal("folded task flag bypass")
+	}
+	if err := attest(c, "t3agents", "t3-agent.start", json.RawMessage(`{"prompt":"legacy session"}`)); err != nil {
+		t.Fatal("ordinary T3 session regressed", err)
+	}
+}
+
+func TestHomeGateTaskMandateIsAtomic(t *testing.T) {
+	c := &Core{}
+	args := json.RawMessage(`{"task":true,"role":"r","prompt":"one task"}`)
+	payload, _ := json.Marshal(map[string]any{"device": "home-a", "args": args})
+	defer c.beginExec("t3agents", "t3agents.task_start", payload)()
+	results := make(chan bool, 10)
+	for range 10 {
+		go func() {
+			_, err := c.attestHomeCallForDevice("t3agents", "home-a", "t3-agent.start", args)
+			results <- err == nil
+		}()
+	}
+	accepted := 0
+	for range 10 {
+		if <-results {
+			accepted++
+		}
+	}
+	if accepted != 1 {
+		t.Fatalf("one confirmation started %d tasks", accepted)
+	}
+}

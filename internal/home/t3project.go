@@ -14,6 +14,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentbridge"
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
+	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
@@ -33,9 +34,26 @@ func (t *T3Home) readyForThread(ctx context.Context, th t3Thread) (*t3.Client, e
 	if th.Provider == "cursor" && th.Environment == "" {
 		return nil, errors.New("project T3: missing persisted environment binding")
 	}
-	return t.readyForProvider(ctx, th.Project, th.Role, th.Provider, th.Environment)
+	return t.readyForTaskProvider(ctx, th.Project, th.Role, th.Provider, th.Environment, th.Task)
 }
 func (t *T3Home) readyForProvider(ctx context.Context, project, role, provider, environment string) (*t3.Client, error) {
+	return t.readyForTaskProvider(ctx, project, role, provider, environment, "")
+}
+func (t *T3Home) readyForTaskProvider(ctx context.Context, project, role, provider, environment, task string) (*t3.Client, error) {
+	if task != "" {
+		r, err := t.h.Agent.T3Role(role)
+		if err != nil {
+			return nil, err
+		}
+		r.Release()
+		if project != r.Project {
+			return nil, errors.New("task: role project changed")
+		}
+		if _, err := agenttask.Resolve(t.h.Dir, task, project, role, roles.DirHash(r.ProjectDir)); err != nil {
+			return nil, err
+		}
+	}
+
 	if provider != "cursor" {
 		if provider != "" {
 			if _, ok := agentsandbox.Route(provider); !ok {
@@ -58,11 +76,20 @@ func (t *T3Home) readyForProvider(ctx context.Context, project, role, provider, 
 	if project != "" && project != r.Project {
 		return nil, errors.New("project T3: role was reassigned")
 	}
-	hash := roles.DirHash(r.ProjectDir)
+	sourceHash := roles.DirHash(r.ProjectDir)
+	workspace := r.ProjectDir
+	if task != "" {
+		w, err := agenttask.Resolve(t.h.Dir, task, r.Project, r.ID, sourceHash)
+		if err != nil {
+			return nil, err
+		}
+		workspace = w.Dir
+	}
+	hash := roles.DirHash(workspace)
 	if environment != "" && environment != hash {
 		return nil, errors.New("project T3: project folder changed; refusing to relocate a thread")
 	}
-	binding := agentsandbox.Binding{HomeDir: t.h.Dir, Role: r.ID, Project: r.Project, DirHash: hash, Provider: "cursor"}
+	binding := agentsandbox.Binding{HomeDir: t.h.Dir, Role: r.ID, Project: r.Project, DirHash: sourceHash, Provider: "cursor", Task: task}
 	// Re-resolve config and committed role even when a cached server is alive.
 	l, err := ResolveProjectServer(binding, filepath.Join(t.h.Dir, "config.json"))
 	if err != nil {
@@ -291,4 +318,22 @@ func projectPolicyKey(l agentsandbox.Launch, version string) [32]byte {
 		Search                    []string
 	}{p, l.SRT, l.CredentialsFile, version, l.SearchPath})
 	return sha256.Sum256(data)
+}
+
+// Stopping must not fail because an agent damaged its own workspace. Use only
+// the already-owned client; never restart a provider or widen a policy to stop it.
+func (t *T3Home) readyForStop(ctx context.Context, th t3Thread) (*t3.Client, error) {
+	if th.Task == "" {
+		return t.readyForThread(ctx, th)
+	}
+	if th.Provider != "cursor" {
+		return t.ready()
+	}
+	t.projectMu.Lock()
+	defer t.projectMu.Unlock()
+	server := t.projectServers[th.Environment]
+	if server == nil || !server.process.Alive() || server.binding.Task != th.Task || server.binding.Role != th.Role || server.binding.Project != th.Project {
+		return nil, errors.New("task: owned project server is not running")
+	}
+	return server.client, nil
 }
