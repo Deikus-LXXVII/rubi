@@ -68,6 +68,8 @@ type T3Home struct {
 	PickPort func() (int, error)
 	// ServeSessions serves the session socket until ctx ends (Helper.ServeAgentVM when nil).
 	ServeSessions func(ctx context.Context) error
+	// syncInstances writes T3's role instances (Helper.SyncT3Instances when nil; tests replace it).
+	syncInstances func() (t3vm.SyncResult, error)
 	// SelfPath is the rubi-home binary the role shims run (os.Executable when nil; a live test builds its own).
 	SelfPath func() (string, error)
 	// MemAvailable is the computer's free memory in MiB, ok false when unknown (hostguard.MemAvailable when nil).

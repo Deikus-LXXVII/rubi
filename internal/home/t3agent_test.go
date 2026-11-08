@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
 
@@ -302,6 +303,49 @@ func TestT3AgentStartTurnsTheRoleOnInItsNewProject(t *testing.T) {
 	}
 	if e := s.ProjectSettingsOverrides[ps[0].ID].ProviderInstances[id].Enabled; e == nil || !*e {
 		t.Errorf("the instance in its project: %s", b)
+	}
+}
+
+// When the role's instance can't be synced at a session start, the session doesn't start: no thread is launched and the
+// caller is told why.
+func TestT3AgentStartRefusedWhenTheInstanceSyncFails(t *testing.T) {
+	l, role := agentLife(t)
+	path := filepath.Join(l.h.Fresh().T3BaseDir, "userdata", "settings.json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["projectSettingsOverrides"] = map[string]any{"elsewhere": map[string]any{"providerInstances": "not an object"}}
+	b, _ = json.Marshal(m)
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = handle(t, l.h, "tok", "t3-agent.start", map[string]any{"project": "my-project", "role": role, "prompt": "do the work"})
+	if err == nil || !strings.Contains(err.Error(), "didn't start") || !strings.Contains(err.Error(), "T3 project") {
+		t.Fatalf("start with a failing sync: %v", err)
+	}
+	if n := len(l.fake.Calls("t3_thread_launch")); n != 0 {
+		t.Fatalf("a thread was launched: %d", n)
+	}
+	if rows := sessionList(t, l, role); len(rows) != 0 {
+		t.Errorf("sessions: %v", rows)
+	}
+}
+
+// A sync that couldn't read T3's projects wrote no project switch: the session doesn't start either.
+func TestT3AgentStartRefusedWhenTheSyncKnewNoProjects(t *testing.T) {
+	l, role := agentLife(t)
+	l.t3.syncInstances = func() (t3vm.SyncResult, error) { return t3vm.SyncResult{}, nil }
+	_, err := handle(t, l.h, "tok", "t3-agent.start", map[string]any{"project": "my-project", "role": role, "prompt": "do the work"})
+	if err == nil || !strings.Contains(err.Error(), "didn't start") {
+		t.Fatalf("start with no projects known: %v", err)
+	}
+	if n := len(l.fake.Calls("t3_thread_launch")); n != 0 {
+		t.Fatalf("a thread was launched: %d", n)
 	}
 }
 

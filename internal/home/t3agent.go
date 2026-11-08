@@ -655,10 +655,21 @@ func (t *T3Home) ensureProject(ctx context.Context, cl *t3.Client, dir, title st
 		return "", err
 	}
 	// The role's instance is on only in its project's settings, which a project made since the last sync (here, or by
-	// the user in T3) doesn't have yet. An unchanged sync writes nothing.
-	if sr, err := t.h.SyncT3Instances(); err != nil {
+	// the user in T3) doesn't have yet. An unchanged sync writes nothing. Without it the session doesn't start: the
+	// role's instance might be off in its project, or still on where it shouldn't be.
+	sync := t.syncInstances
+	if sync == nil {
+		sync = t.h.SyncT3Instances
+	}
+	sr, err := sync()
+	if err != nil {
 		log.Printf("T3 role instances: %v", err)
-	} else if sr.Changed() {
+		return "", fmt.Errorf("the session didn't start: Rubi Home couldn't turn the role on in its T3 project (%s)", clipStr(err.Error(), 300))
+	}
+	if !sr.ProjectsKnown {
+		return "", errors.New("the session didn't start: Rubi Home couldn't read T3's projects to turn the role on in its own; try again")
+	}
+	if sr.Changed() {
 		log.Printf("T3 role instances: added %v, updated %v, removed %v", sr.Added, sr.Updated, sr.Removed)
 	}
 	return id, nil

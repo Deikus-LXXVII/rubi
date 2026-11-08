@@ -53,6 +53,8 @@ type SyncResult struct {
 	Skipped []string
 	// Projects says the per-project settings changed.
 	Projects bool
+	// ProjectsKnown says T3's projects were known, so each role's switch in them was written (or was right already).
+	ProjectsKnown bool
 }
 
 // Changed says whether the settings file was written.
@@ -185,6 +187,7 @@ func (o InstanceOptions) syncOnce(want []RoleInstance, raw []byte) ([]byte, Sync
 	}
 	var po *projectOverrides
 	if o.Projects != nil {
+		res.ProjectsKnown = true
 		var err error
 		if po, err = readProjectOverrides(top); err != nil {
 			return nil, res, err
