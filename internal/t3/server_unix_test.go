@@ -88,6 +88,15 @@ func TestHelperProcess(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(dir, "userdata"), 0o700)
 	_ = os.WriteFile(filepath.Join(dir, "userdata", "server-runtime.json"),
 		mustJSON(map[string]any{"version": 1, "pid": pid, "port": p, "serverVersion": "9.9.9-helper"}), 0o600)
+	go func() { // a file named "deaf" in the base dir makes the server stop answering, as a hung one would
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "deaf")); err == nil {
+				ln.Close()
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
 	go func() {
 		for {
 			c, err := ln.Accept()

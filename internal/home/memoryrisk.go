@@ -29,16 +29,44 @@ func (h *Helper) probeHost() (hostguard.Host, error) {
 
 // MemoryProtection says whether keys may be unlocked on this computer now, and why not.
 func (h *Helper) MemoryProtection() (bool, string) {
+	st := h.MemoryProtectionState()
+	if !st.OK {
+		return false, st.Reason
+	}
+	return true, ""
+}
+
+// MemoryProtectionState is the memory protection as the T3 status shows it.
+type MemoryProtectionState struct {
+	Applies  bool   `json:"applies"`  // false where it isn't checked (not Linux)
+	OK       bool   `json:"ok"`       // keys may be unlocked here
+	Accepted bool   `json:"accepted"` // OK only because the owner accepted the risk on this computer and kernel
+	Reason   string `json:"reason"`   // what holds, or why keys won't unlock
+}
+
+// MemoryProtectionState reads the computer's memory protection and the owner's acceptance.
+func (h *Helper) MemoryProtectionState() MemoryProtectionState {
 	host, err := h.probeHost()
 	if err != nil {
-		return false, "Rubi Home couldn't read this computer's memory protection: " + err.Error()
+		return MemoryProtectionState{Applies: true, Reason: "Rubi Home couldn't read this computer's memory protection: " + err.Error()}
 	}
-	if host.Yama.Applicable && host.Dumpable {
-		return false, "Rubi Home couldn't make its own memory unreadable to other processes of this user"
+	if !host.Yama.Applicable {
+		return MemoryProtectionState{OK: true}
+	}
+	if host.Dumpable {
+		return MemoryProtectionState{Applies: true, Reason: "Rubi Home couldn't make its own memory unreadable to other processes of this user"}
 	}
 	r := h.Fresh().MemoryRisk
 	accepted := r != nil && r.MachineID != "" && r.MachineID == host.MachineID && r.Kernel == host.Kernel
-	return host.Yama.Decide(accepted)
+	ok, why := host.Yama.Decide(accepted)
+	st := MemoryProtectionState{Applies: true, OK: ok, Reason: why}
+	switch {
+	case ok && host.Yama.Present:
+		st.Reason = "No process can read another's memory (Yama ptrace_scope 3)."
+	case ok:
+		st.Accepted, st.Reason = true, "The owner accepted that "+hostguard.RiskText+" (this computer and kernel)."
+	}
+	return st
 }
 
 // AcceptMemoryRisk records the owner's acceptance for this computer and kernel. It is refused where nothing needs

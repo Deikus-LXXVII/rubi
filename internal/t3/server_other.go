@@ -23,3 +23,7 @@ func stop(cmd *exec.Cmd, done <-chan struct{}) {
 }
 
 func ours(pid, root int) bool { return pid == root }
+
+func stopAdopted(int, <-chan struct{}, func() bool) {}
+
+func sameUser(int) bool { return false }

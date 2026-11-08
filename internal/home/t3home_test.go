@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/hostguard"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 	"github.com/Deikus-LXXVII/rubi/internal/t3/t3test"
 )
@@ -30,6 +31,22 @@ type fakeServer struct {
 	scopes                  []string
 	node, bin, dir, rtHome  string
 	port                    int
+	// What Adopt finds: a left server of adoptVer when adoptOK.
+	adoptOK  bool
+	adoptVer string
+	adoptErr error
+	adopts   int
+}
+
+func (f *fakeServer) Adopt(context.Context) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adopts++
+	if f.adoptErr != nil || !f.adoptOK {
+		return "", false, f.adoptErr
+	}
+	f.alive = true
+	return f.adoptVer, true, nil
 }
 
 func (f *fakeServer) Start(context.Context) (string, error) {
@@ -725,5 +742,81 @@ func TestT3StartNeedsFreeMemory(t *testing.T) {
 	l.t3.MemAvailable = func() (int, bool) { return 10, true }
 	if err := l.t3.Start(context.Background()); err != nil {
 		t.Fatalf("Start on a running server: %v", err)
+	}
+}
+
+// leftServer brings T3 up once (so a port is recorded), stops it, and has the next Adopt find a left server of ver.
+func (l *life) leftServer(t *testing.T, ver string) {
+	t.Helper()
+	l.up(t)
+	l.t3.Stop()
+	l.srv.mu.Lock()
+	l.srv.adoptOK, l.srv.adoptVer, l.srv.adopts, l.srv.started, l.srv.stopped = true, ver, 0, 0, 0
+	l.srv.mu.Unlock()
+}
+
+func TestT3StartTakesOverALeftServer(t *testing.T) {
+	l := newLife(t)
+	l.leftServer(t, testVer)
+	// A left server runs already: the memory floor, which guards a new start, doesn't apply.
+	l.t3.MemAvailable = func() (int, bool) { return 10, true }
+	if err := l.t3.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if l.srv.adopts != 1 || l.srv.started != 0 || l.srv.stopped != 0 {
+		t.Errorf("adopts %d, starts %d, stops %d; want the left server taken over as it is", l.srv.adopts, l.srv.started, l.srv.stopped)
+	}
+	if !l.t3.srvAlive() || l.t3.client() == nil || l.t3.Pid() != 4242 {
+		t.Error("the taken-over server isn't running and paired")
+	}
+	l.t3.Stop()
+	if l.srv.stopped != 1 {
+		t.Error("Stop leaves the taken-over server running")
+	}
+}
+
+func TestT3StartStopsALeftServerOfAnotherVersion(t *testing.T) {
+	l := newLife(t)
+	l.leftServer(t, "0.0.1-old")
+	if err := l.t3.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if l.srv.adopts != 1 || l.srv.stopped != 1 || l.srv.started != 1 {
+		t.Errorf("adopts %d, stops %d, starts %d; want the old server stopped and a new one started", l.srv.adopts, l.srv.stopped, l.srv.started)
+	}
+}
+
+func TestT3StartAdoptsNothingWithoutARecordedPort(t *testing.T) {
+	l := newLife(t)
+	l.install(t)
+	l.srv.adoptOK, l.srv.adoptVer = true, testVer
+	if err := l.t3.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if l.srv.adopts != 0 || l.srv.started != 1 {
+		t.Errorf("adopts %d, starts %d before any port was recorded", l.srv.adopts, l.srv.started)
+	}
+}
+
+func TestT3StartWhenAdoptFails(t *testing.T) {
+	l := newLife(t)
+	l.leftServer(t, testVer)
+	l.srv.adoptErr = errors.New("boom")
+	if err := l.t3.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if l.srv.started != 1 {
+		t.Error("a failed check for a left server keeps T3 from starting")
+	}
+}
+
+func TestT3StatusShowsMemoryProtection(t *testing.T) {
+	l := newLife(t)
+	l.h.hostProbe = func() (hostguard.Host, error) {
+		return hostguard.Host{Yama: hostguard.Yama{Applicable: true, Present: true, Scope: 1}, Kernel: "k", MachineID: "m"}, nil
+	}
+	mp, ok := l.t3.Status()["memory_protection"].(MemoryProtectionState)
+	if !ok || !mp.Applies || mp.OK || !strings.Contains(mp.Reason, "ptrace_scope is 1") {
+		t.Errorf("memory_protection = %+v", mp)
 	}
 }

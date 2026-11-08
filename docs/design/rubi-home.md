@@ -170,6 +170,20 @@ Checked on macOS (Darwin 27, arm64) with the release's build flags, `codesign` r
   the fallback for users without a Bot; the Bot installs Home without it. The panel tells the user the Open Anyway
   step is expected.
 
+## On a shared Linux computer
+
+Rubi Home can host T3 on a shared Linux computer, such as a cloud box (docs/plans/t3-cloud-agents.md). Such a computer often has no service manager for its users. Its first process is a plain init, and there is no systemd user manager and no lingering. On a computer like that:
+
+- **Starting.** `rubi-home start` can run any number of times. It holds `supervisor.lock` in Rubi Home's folder, so only one supervisor runs at a time, and it starts a supervisor in its own session unless one runs already. The supervisor runs `rubi-home run` and starts it again when it ends. After a quick failure it waits 5 s, doubling up to a minute; a run that lasted a minute resets the wait. On SIGTERM it stops the run: a polite signal first, and a kill after 30 s. Output goes to `rubi-home.log`, which is private and moves to `rubi-home.log.1` past 10 MiB. Whatever starts the computer's work has to run `rubi-home start`; the computer itself offers no hook for this.
+- **One run per folder.** `rubi-home run` holds `run.lock`. A run left behind by a supervisor that was killed keeps the lock, so a new one waits 20 s for it to end and then exits. The supervisor then tries again later.
+- **A T3 server left running** by a run that crashed is taken over, not started a second time. The server leads its own process group, so it outlives the run. The next start reads `server-runtime.json` and takes the server over only if all of these hold:
+  - the process belongs to the group of a leader of the same user;
+  - the leader's command line is exactly this install's node, bin and `serve` line, which name the recorded port and folder;
+  - the port answers.
+
+  After that, Rubi Home checks the leader every 2 s, by its start time as well as its id. A stop checks the leader once more before signalling the group. A server that matches but doesn't answer is stopped, because it holds T3's state folder. A server of another version is stopped as well, and a new one starts. A root Rubi Home takes over nothing. Processes are read from `/proc` on Linux and from the kernel's process table on macOS.
+- **Memory.** `rubi-home run` makes itself non-dumpable. T3 doesn't start with less than 800 MiB free. The T3 status reports `memory_protection`, which keys depend on. It is OK where Yama `ptrace_scope` is 3. On a kernel without Yama it is OK only after the owner's one-time acceptance that root on the computer can read the agents' memory. That acceptance is bound to the computer and its kernel. The VM's QEMU and virtiofsd stay dumpable, because the flag resets on exec.
+
 ## The release-version rule
 
 Every installer and updater follows one rule, so that nobody who can change `https://rubi-panel.com/releases/latest.json` (or the response) can make a computer install an older release. An older release is genuinely signed, so a signature on the release alone does not stop a rollback.

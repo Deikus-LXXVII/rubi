@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,9 +32,14 @@ type Server struct {
 	RuntimeHome string
 
 	mu      sync.Mutex
-	cmd     *exec.Cmd
-	done    chan struct{}
+	cmd     *exec.Cmd     // the server we started; nil for an adopted one
+	pid     int           // the leader of the server's process group (our child, or the adopted server's)
+	done    chan struct{} // closed when that leader ends
 	version string
+	// adoptedStart is the adopted leader's start time, so a process that later gets its id is never taken for it.
+	adoptedStart uint64
+	// AdoptPoll is how often an adopted server is checked (adoptPoll when 0; tests shorten it).
+	AdoptPoll time.Duration
 }
 
 // UserPort is the port of the user's own T3: its desktop app scans up from there.
@@ -159,24 +165,31 @@ func (s *Server) exited() bool {
 	}
 }
 
-// Pid is the process id of the server this value started (0 when it is not running).
+// Pid is the process id of the server this value started or adopted (0 when it is not running).
 func (s *Server) Pid() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd == nil || s.cmd.Process == nil || s.exited() {
+	if s.done == nil || s.exited() {
 		return 0
 	}
-	return s.cmd.Process.Pid
+	return s.pid
 }
 
-// Alive reports whether the server process this value started is still running.
+// Alive reports whether the server process this value started or adopted is still running.
 func (s *Server) Alive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.cmd != nil && !s.exited()
+	return s.done != nil && !s.exited()
 }
 
-// Done is closed when the started server process ends. It is nil before Start.
+// Adopted reports whether the server was left by an earlier run and taken over (see Adopt).
+func (s *Server) Adopted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.done != nil && s.cmd == nil
+}
+
+// Done is closed when the started or adopted server process ends. It is nil before Start.
 func (s *Server) Done() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,14 +201,14 @@ func (s *Server) Done() <-chan struct{} {
 func (s *Server) Start(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cmd != nil {
+	if s.done != nil {
 		if !s.exited() {
 			return s.version, errors.New("t3: server already started")
 		}
 		s.stopLocked()
 	}
-	if s.Node == "" || s.Bin == "" || s.BaseDir == "" || s.Port <= 0 {
-		return "", errors.New("t3: server needs node, bin, base dir and port")
+	if err := s.settings(); err != nil {
+		return "", err
 	}
 	if err := apartFromTheUsersT3(s.BaseDir, s.Port); err != nil {
 		return "", err
@@ -219,8 +232,7 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 		return "", err
 	}
 	// exec.CommandContext would kill on ctx end; the server must outlive the start call.
-	cmd := s.command(context.Background(), "serve", "--base-dir", s.BaseDir, "--port", strconv.Itoa(s.Port),
-		"--host", "127.0.0.1", "--no-browser")
+	cmd := s.command(context.Background(), s.serveArgs()...)
 	cmd.Stdout, cmd.Stderr = lf, lf
 	cmd.WaitDelay = waitDelay
 	own(cmd)
@@ -229,7 +241,7 @@ func (s *Server) Start(ctx context.Context) (string, error) {
 	}
 	done := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(done) }()
-	s.cmd, s.done = cmd, done
+	s.cmd, s.pid, s.done = cmd, cmd.Process.Pid, done
 
 	fail := func(err error) (string, error) {
 		s.stopLocked()
@@ -281,11 +293,117 @@ func (s *Server) Stop() {
 }
 
 func (s *Server) stopLocked() {
-	if s.cmd == nil {
+	switch {
+	case s.cmd != nil:
+		stop(s.cmd, s.done)
+	case s.done != nil:
+		pid, start := s.pid, s.adoptedStart
+		stopAdopted(pid, s.done, func() bool { return s.isServer(pid, start) })
+	default:
 		return
 	}
-	stop(s.cmd, s.done)
-	s.cmd, s.done, s.version = nil, nil, ""
+	s.cmd, s.pid, s.done, s.version, s.adoptedStart = nil, 0, nil, "", 0
+}
+
+func (s *Server) settings() error {
+	if s.Node == "" || s.Bin == "" || s.BaseDir == "" || s.Port <= 0 {
+		return errors.New("t3: server needs node, bin, base dir and port")
+	}
+	return nil
+}
+
+// serveArgs are the arguments after the bin that start this server.
+func (s *Server) serveArgs() []string {
+	return []string{"serve", "--base-dir", s.BaseDir, "--port", strconv.Itoa(s.Port), "--host", "127.0.0.1", "--no-browser"}
+}
+
+// ---- adopting a server an earlier run left ----
+
+const adoptPoll = 2 * time.Second
+
+// isServer reports whether pid is, right now, this server's leader: a process of this user that leads its own
+// group, runs exactly this node, bin and serve line, and (when start is not 0) is the process seen at adoption.
+func (s *Server) isServer(pid int, start uint64) bool {
+	if pid <= 1 || !sameUser(pid) {
+		return false
+	}
+	st, err := procOf(pid)
+	if err != nil || st.PGID != pid || (start != 0 && st.Start != start) {
+		return false
+	}
+	argv, err := argvOf(pid)
+	return err == nil && slices.Equal(argv, append([]string{s.Node, s.Bin}, s.serveArgs()...))
+}
+
+// Adopt takes over the server an earlier run of Rubi Home started with these settings and left running (it
+// crashed, or was killed before it could stop the server). The runtime file names the server's process; it is
+// adopted only when that process is in the group of a leader that isServer recognises (its serve line names the
+// port and base folder), and the port answers.
+// ok is false when there is nothing to adopt. A leftover server of ours that doesn't answer is stopped (it would
+// hold T3's state folder), and ok is false then too. An adopted server is checked every AdoptPoll and stopped
+// like a started one.
+func (s *Server) Adopt(ctx context.Context) (version string, ok bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done != nil && !s.exited() {
+		return "", false, errors.New("t3: server already started")
+	}
+	if err := s.settings(); err != nil {
+		return "", false, err
+	}
+	var ri runtimeInfo
+	b, err := os.ReadFile(s.runtimeFile())
+	if err != nil || json.Unmarshal(b, &ri) != nil || ri.ServerVersion == "" || ri.PID <= 1 {
+		return "", false, nil
+	}
+	st, err := procOf(ri.PID)
+	if err != nil {
+		return "", false, nil
+	}
+	leader := st.PGID // the runtime file may name a child of the leader (the launcher runs the T3 runtime)
+	lst, err := procOf(leader)
+	if err != nil || !s.isServer(leader, lst.Start) {
+		return "", false, nil
+	}
+	done := make(chan struct{})
+	s.cmd, s.pid, s.done, s.adoptedStart = nil, leader, done, lst.Start
+	go s.watchAdopted(leader, lst.Start, done)
+	if !answers(ctx, s.Port) {
+		s.stopLocked()
+		return "", false, nil
+	}
+	s.version = ri.ServerVersion
+	return s.version, true, nil
+}
+
+// watchAdopted closes done once the adopted leader is gone (or its id names another process).
+func (s *Server) watchAdopted(pid int, start uint64, done chan struct{}) {
+	every := s.AdoptPoll
+	if every <= 0 {
+		every = adoptPoll
+	}
+	for s.isServer(pid, start) {
+		time.Sleep(every)
+	}
+	close(done)
+}
+
+// answers reports whether the port takes a connection within a few seconds.
+func answers(ctx context.Context, port int) bool {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		c, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err == nil {
+			c.Close()
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
 
 // PairingCode mints a one-time pairing code with the given scopes. The code is never logged.

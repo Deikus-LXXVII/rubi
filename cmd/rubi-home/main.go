@@ -4,6 +4,9 @@
 //	(no arguments, inside Rubi Home.app)
 //	                         what Finder runs when the user opens the app: install or update, start at login, then `open`
 //	rubi-home run            serve Rubi's requests (the LaunchAgent runs this)
+//	rubi-home start          keep `run` going where no service manager does (a shared Linux box): starts one detached
+//	                         supervisor unless one runs already; safe to run again at any time
+//	rubi-home supervise      the supervisor itself: runs `run` and starts it again when it ends
 //	rubi-home pair           print a one-time code to paste into the Rubi panel
 //	rubi-home open           what the Rubi Home app runs when the user opens it: a window to pair (or see the pairing)
 //	rubi-home status         show what is paired and allowed
@@ -123,6 +126,10 @@ func main() {
 		os.Exit(runInstallHook(os.Args[2:]))
 	case "install-autostart": // internal, run by the installer: the start at login; needs no configuration either
 		os.Exit(runInstallAutostart(os.Args[2:]))
+	case "start": // the supervisor holds the folder; `run` opens the configuration
+		os.Exit(runStart(mustDir()))
+	case "supervise":
+		os.Exit(runSupervise(mustDir()))
 	}
 	dir := mustDir()
 	var h *home.Helper
@@ -243,7 +250,7 @@ func runApp(exe string) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: rubi-home run | pair | open | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | agent-vm --role ID -- CLAUDE-ARGUMENTS... | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
+	fmt.Fprintln(os.Stderr, "usage: rubi-home run | start | supervise | pair | open | status | folder NAME | unpair | hue-forget ID | claude-hook [--wait [--wait-limit SECONDS]] | install-hook [--dry-run] [--to PATH] [--with-claude-plugin [--plugin-to PATH]] | claude-mcp | claude-send (--session ID | --name TITLE) --from NAME [--wait-reply SECONDS] | claude-send --get-reply ID | agent-vm --role ID -- CLAUDE-ARGUMENTS... | version\n       status [--hook PATH]: also checks the Claude Code hook binary (default "+home.DefaultHookBinary+", or $RUBI_HOOK_BINARY)")
 	os.Exit(2)
 }
 
@@ -274,7 +281,59 @@ func waitLimit(args []string) time.Duration {
 	return home.ClaudeWaitLimit
 }
 
+// runStart is `rubi-home start`; it returns the exit code.
+func runStart(dir string) int {
+	exe, err := home.RunningExecutable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home: can't find this binary: %v\n", err)
+		return 1
+	}
+	already, err := home.StartSupervisor(home.SuperviseEnv{Dir: dir, Exe: exe})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "rubi-home start: %v\n", err)
+		return 1
+	}
+	if already {
+		fmt.Println("Rubi Home is already running.")
+	} else {
+		fmt.Println("Rubi Home is running.")
+	}
+	return 0
+}
+
+// runSupervise is `rubi-home supervise`; it returns the exit code.
+func runSupervise(dir string) int {
+	exe, err := home.RunningExecutable()
+	if err != nil {
+		log.Printf("rubi-home supervise: can't find this binary: %v", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	err = home.Supervise(ctx, home.SuperviseEnv{Dir: dir, Exe: exe, Logf: log.Printf})
+	switch {
+	case errors.Is(err, home.ErrSupervisorRunning):
+		return 0
+	case err != nil:
+		log.Printf("rubi-home supervise: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// runLockWait is how long `run` waits for an earlier run that is still stopping (a restart) before it gives up.
+const runLockWait = 20 * time.Second
+
 func run(h *home.Helper) {
+	runLock, err := home.LockRun(h.Dir)
+	for deadline := time.Now().Add(runLockWait); errors.Is(err, home.ErrAlreadyRunning) && time.Now().Before(deadline); {
+		time.Sleep(250 * time.Millisecond)
+		runLock, err = home.LockRun(h.Dir)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer runLock.Close()
 	// Other processes of this user (on a shared computer: other tenants' tools) can't read this process's memory,
 	// where it holds keys; root still can (hostguard, docs/plans/t3-cloud-agents.md slice 2).
 	if err := hostguard.SetNonDumpable(); err != nil {
