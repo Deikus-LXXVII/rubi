@@ -207,6 +207,26 @@ func TestNativeT3TaskCopyCommitsThroughSandboxedCodex(t *testing.T) {
 	if len(l.t3.threads.snapshot()) != 2 {
 		t.Fatal("failure created an extra thread")
 	}
-	t.Log("real Home RPC -> native T3 -> task shim -> real srt -> fake Codex edits/commits; source and outside fixtures unchanged; network deny, mid-turn append, stop and requester-only failure verified")
+	completed, err := handle(t, l.h, "tok", "t3-agent.start", map[string]any{"role": role, "prompt": "Edit task-edit.txt and commit", "provider": "codex", "model": "gpt-5.4", "task": true, "from": "completion-requester"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completedEvent := resultOf(t, nextItems(t, l.h, 3))
+	if completedEvent["task"] != completed["task"] || completedEvent["is_error"] == true {
+		t.Fatal("completed task result missing")
+	}
+	finished, err := handle(t, l.h, "tok", "t3-agent.task.publish", map[string]any{"id": completed["task"]})
+	if err != nil || finished["phase"] != "finished" {
+		t.Fatal("native task could not be durably finalized", err)
+	}
+	state, err := l.t3.taskStore().Get(ctx, completed["task"].(string))
+	if err != nil || state.Commit == "" || state.Phase != agenttask.Finished {
+		t.Fatal("native finalization not persisted", err)
+	}
+	again, err := handle(t, l.h, "tok", "t3-agent.task.publish", map[string]any{"id": completed["task"]})
+	if err != nil || again["revision"] != finished["revision"] {
+		t.Fatal("native finalization retry not idempotent", err)
+	}
+	t.Log("real Home RPC -> native T3 -> task shim -> real srt -> fake Codex edits/commits; source and outside fixtures unchanged; network deny, mid-turn append, stop, requester-only failure and durable/idempotent local finalization verified")
 }
 func mustJSON(v any) []byte { b, _ := json.Marshal(v); return b }

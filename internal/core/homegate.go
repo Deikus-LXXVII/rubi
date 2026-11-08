@@ -158,7 +158,10 @@ func (c *Core) attestHomeCallForDevice(plugin, device, op string, args json.RawM
 			return nil, errors.New("Rubi refused: bad task arguments")
 		}
 		if in.Task {
-			return args, c.attestTaskStart(plugin, device, args)
+			if err := c.attestTaskStart(plugin, device, args); err != nil {
+				return nil, err
+			}
+			return c.signTaskArgs(device, args)
 		}
 	case opRolePut:
 		// encoding/json matches keys ignoring case (Unicode folding too: the Kelvin sign is a k), and which of two

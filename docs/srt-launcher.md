@@ -87,10 +87,10 @@ Session listings identify the task copy and branch, not the source checkout.
 Completed-turn events retain task/branch and requester identity. Native opaque
 `mcp:launch:...` thread IDs are accepted by phone controls without treating them
 as legacy runner filesystem names; exact persisted ownership is still checked. A completed
-turn is **not** a trusted finished repository task: durable finalization,
-stop-vs-publish serialization, vault-backed exact-branch push, PR creation,
-task-specific panel cards and cleanup remain separate work. Records/copies are
-retained; do not use this groundwork as an unattended publishing service.
+turn is **not** a trusted finished repository task: explicit finalization seals
+it. The trusted backend below now implements durable state and publishing;
+task-specific official plugin/panel actions and automatic completion wiring
+remain the next slice. Records/copies are retained; cleanup is not automatic.
 See the maintained gap audit in `docs/plans/t3-agents-gap.md`.
 
 The opt-in `TestNativeT3TaskCopyCommitsThroughSandboxedCodex` uses
@@ -363,3 +363,116 @@ Node/rg/socat. Providers in isolation probes remain fixtures; this is not an
 additional authenticated Cursor/OpenCode model turn. Runtime resolution/install
 regressions also cover executable aliases, missing dependencies, tampering and
 agent-writable runtime refusal. No macOS signing execution is claimed on Linux.
+
+
+## Durable repository-task finalization and publication
+
+A task start with publication needs an explicit `project`, `role`, `from`, stable
+`message_id`, and `publish: {repository: "owner/repo", base: "main", account:
+"connected-account-id"}` inside the **same exact confirmation** as `task: true`.
+Core adds a device-bound HMAC mandate; a caller cannot supply a proof or token.
+The account must be its stable connected-account ID, not an ambiguous label.
+Core/RubiPod resolves that account in the fixed `t3agents` vault namespace, secret
+`github_token`, at each publication attempt. A disabled integration, revoked or
+rotated token, altered target/requester/device or missing enrollment fails
+closed. The token needs only repository Contents and Pull requests write
+permissions (plus GitHub's implicit metadata read); no merge is requested.
+Connecting that account in the official plugin UI is not implemented here.
+
+Official-plugin Home operations:
+
+- `t3-agent.task.status {id}` returns redacted state: no start/append prompt,
+  signature or credential.
+- `t3-agent.task.stop {id}` durably ends the mandate and interrupts every known
+  task fork, retaining watchers to deliver native cancellation to the latest
+  requester. If T3 is unavailable, interruption remains retryable after restart;
+  a successful stop response is not fabricated for an unavailable provider.
+- `t3-agent.task.publish {id}` accepts **only the task ID** at the Core broker.
+  It re-inspects the immutable mandate, resolves the current vault credential,
+  and calls trusted Home over end-to-end encrypted RPC. The internal inspection
+  and credential-bearing operation cannot be called through plugin forwarding.
+  A task without a publish target can be finalized locally without a credential.
+
+`<Home>/t3/task-state/<id>.json` is private, fsynced and atomically replaced under
+an interprocess lock. States are `starting`, `running`, `waiting`, `publishing`,
+`pushed`, then immutable `finished`/`failed`/`stopped`. Completing a conversational
+turn means **waiting**, not task completion. Launch/send intent precedes native
+RPC and recovery reuses the same `clientRequestId`. T3 transfer/fork has no such
+receipt; an unknown fork outcome fails closed and is never replayed. Native
+thread outcomes are also persisted, closing the crash window between a completed
+turn and its task-journal update. All task forks must be idle before sealing;
+append/fork/stop and publication serialize on the same lock. After publication
+seals, stop/append are refused instead of pretending an already pushed change
+was undone. Recoverable network/auth errors retain sealed progress for an
+explicit retry by the broker; they are not misreported as completed tasks.
+
+Home never runs publishing Git against an agent-owned checkout. It reads bounded
+metadata through `os.Root`, rejects changed config, symlinks, devices/FIFOs,
+alternates/shared databases and foreign/detached HEAD, then freezes objects into
+`<Home>/t3/task-snapshots/<id>` outside provider write grants. A private bare Git
+repo must pass strict fsck, approved-base ancestry and nonempty-commit checks.
+Limits: 512 MiB compressed object bytes, 100,000 entries and bounded traversal.
+Snapshot and parent directories are synced before journal progress is saved;
+a retry uses the frozen commit even if the provider later damages its checkout.
+A sealed snapshot is never refreshed from agent changes. There is no automatic
+resource cleanup or project-code test verification/attestation yet.
+
+Production destinations are fixed to `https://github.com/<approved-repo>.git`
+and `https://api.github.com`. Git uses no user/system config, hooks, custom
+transports, source remotes, interactive authentication or redirects. It can
+conditionally **create only** `refs/heads/rubi/<task-id>`; the expected-absent
+lease (`--force-with-lease=<exact-ref>:`) is a compare-and-create, not an overwrite
+permission, and even a fast-forward over an existing ref is refused. An existing
+identical SHA is a retry receipt and is not pushed again. No other refs/tags,
+main/default branch, arbitrary refspec or merge endpoint is accepted.
+
+The installed adjacent `rubi-agent-exec` (or explicitly configured trusted path)
+implements Git's credential helper via inherited FD 3. It releases a credential
+only for HTTPS `github.com`; helper paths overlapping enrolled projects or
+provider-writable storage are refused. No token is written in the sandbox,
+Git config, snapshot, journal, argv or environment. HTTP/Git response bodies and
+credential-bearing errors are suppressed. The GitHub PR must match the approved
+repository/base, exact task branch/SHA and canonical GitHub URL. A lost PR POST
+response is reconciled by querying **all** PR states with exact head/base before
+creation, avoiding duplicates; publication never calls a merge endpoint.
+
+Terminal state transitions are exactly-once/idempotent; event transport is
+**at-least-once**, with stable `<task-id>:terminal` identity. Home re-emits ended
+task results during recovery. The next official task-card/message consumer must
+deduplicate this identity and wire explicit finalization/retry after task work;
+this backend alone is not the complete unattended phone-to-PR product.
+
+Verification in this slice uses real Git + a disposable bare remote and a mock
+GitHub API (including lost POST response), fake vault credentials and a mock Home
+broker, plus the real Git/helper FD exchange. An opt-in unmodified native T3 +
+real srt/bwrap run uses an account-free fake Codex for edits/commits, confinement,
+network denial, append/stop, failure, and durable/idempotent local finalization.
+No real provider account, GitHub token/repository or live daemon is used.
+macOS/Windows Home sources are cross-vetted; real sandbox-exec/signed-app tests
+and authenticated provider/GitHub runs remain deployment verification.
+
+Pre-journal task records from the earlier groundwork cannot be appended or
+published implicitly: they lack a durable mandate. They remain stoppable through
+the already-owned client; start a new explicitly confirmed task to continue.
+Stopped/failed Cursor recovery never provisions a replacement project server
+just to observe an ended run. Stop also serializes with admission, so an
+inflight native launch cannot finish after cancellation without being interrupted.
+
+### Upstream cancellation limitation
+
+If a launch response is lost **before Home learns any native thread ID**, Home
+cannot safely replay that launch after cancellation: the replay might create new
+work rather than look up an existing receipt. Cancellation durably seals the
+mandate and returns **interruption unconfirmed**, never a successful stop or a
+publication. Recovery does not replay a cancelled launch. An already accepted
+unknown native run may still finish inside its assigned sandbox; reconciling or
+terminating it requires a supported native receipt/thread lookup or trusted
+launcher process bookkeeping in a follow-up. Known-thread interruption, normal
+launch/send recovery and stop-versus-inflight-admission are covered here. This
+limitation is not represented as a fully stopped worker in the API response.
+
+Home shutdown cancels and joins every watcher (including Cursor's independent
+project-context watchers) before returning or removing project servers. Watcher
+generation ownership prevents an older cancelled watcher from deleting a newer
+watch. The regression test also repeats the damaged-copy stop case under the
+race detector, which exposed the earlier write-after-shutdown cleanup race.

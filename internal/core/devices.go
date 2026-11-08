@@ -16,6 +16,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/audit"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
+	"github.com/Deikus-LXXVII/rubi/internal/plugins"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
 	"github.com/Deikus-LXXVII/rubi/sdk/rubiplugin"
 )
@@ -430,6 +431,11 @@ func hookResultAudit(result string) (event, reason string) {
 
 // homeCall runs one helper operation for a plugin, within what its manifest declares.
 func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, ref, op string, args json.RawMessage) (json.RawMessage, error) {
+	if strings.HasPrefix(homeOp(op), "claude-agent.task.") {
+		if plugin != plugins.OfficialT3PluginID || (op != "t3-agent.task.status" && op != "t3-agent.task.publish" && op != "t3-agent.task.stop") {
+			return nil, errors.New("task: broker-only operation refused")
+		}
+	}
 	ok := false
 	for _, a := range allowed {
 		ok = ok || strings.HasPrefix(op, a+".")
@@ -467,6 +473,9 @@ func (c *Core) homeCall(ctx context.Context, plugin string, allowed []string, re
 		if err := c.checkProjectResolves(ctx, cl, op, args); err != nil {
 			return nil, &rubiplugin.Error{Code: rubiplugin.CodeHomeFailed, Message: err.Error()}
 		}
+	}
+	if op == "t3-agent.task.publish" {
+		return c.publishTask(ctx, plugin, dev.ID, args, cl)
 	}
 	var out json.RawMessage
 	if err := cl.Call(ctx, op, args, &out); err != nil {
