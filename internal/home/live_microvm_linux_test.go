@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -160,4 +161,62 @@ func liveProcessesNaming(dir string) []string {
 		}
 	}
 	return out
+}
+
+// TestLiveSessionVM boots a T3 session VM (agent.StreamSessionHost) with a read-write folder and a read-only folder at
+// places the root file system doesn't have (only the guest's writable layer can make their mount points), runs a process in the
+// read-write one and checks what it could and couldn't write. No model call is made. Skipped unless RUBI_AGENT_LIVE=1
+// RUBI_AGENT_LIVE_RUN=sessions (and the variables liveMicroVMNewVM needs).
+func TestLiveSessionVM(t *testing.T) {
+	if os.Getenv("RUBI_AGENT_LIVE") != "1" || os.Getenv("RUBI_AGENT_LIVE_RUN") != "sessions" {
+		t.Skip("set RUBI_AGENT_LIVE=1 RUBI_AGENT_LIVE_RUN=sessions")
+	}
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveMicroVMNewVM(t, h)
+	ss, ok := h.backend().(agent.StreamSessions)
+	if !ok {
+		t.Fatal("the microvm backend has no streamed sessions")
+	}
+	host := ss.StreamSessions()
+	if err := host.Ready(); err != nil {
+		t.Fatal(err)
+	}
+	proj, ro := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(proj, "in.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ro, "policy"), []byte("p\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	const target, roTarget = "/srv/rubi-live/project", "/etc/rubi-live"
+	vm, err := host.StartSessionVM(ctx, "rubi-t3-live-session", []agent.Mount{{Source: proj, Target: target}, {Source: ro, Target: roTarget, ReadOnly: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = vm.Stop(context.Background()) }()
+	var stderr strings.Builder
+	script := "cat in.txt; pwd; echo written > out.txt; cat " + roTarget + "/policy; " +
+		"if echo x > " + roTarget + "/policy 2>/dev/null; then echo RO-WRITABLE; fi"
+	p, err := vm.ExecIn(ctx, target, map[string]string{}, []string{"sh", "-c", script}, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(p)
+	code, _ := p.Wait()
+	got := string(out)
+	t.Logf("exit %d, stdout %q, stderr %q", code, got, stderr.String())
+	if code != 0 || !strings.Contains(got, "hello\n"+target+"\n") || !strings.Contains(got, "p\n") {
+		t.Errorf("the session's process: exit %d, %q", code, got)
+	}
+	if strings.Contains(got, "RO-WRITABLE") {
+		t.Error("the read-only folder was writable")
+	}
+	if b, err := os.ReadFile(filepath.Join(proj, "out.txt")); err != nil || string(b) != "written\n" {
+		t.Errorf("the read-write folder: %q %v", b, err)
+	}
 }

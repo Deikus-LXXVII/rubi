@@ -38,9 +38,11 @@ func (s *Server) lockAndSweep(ctx context.Context) error {
 	s.lock = f
 	sctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	names, err := s.opt.Host.ListContainers(sctx)
-	if err != nil {
-		s.opt.Logf("t3vm: not sweeping old VMs: %v", err)
+	var names []string
+	if s.opt.Host != nil { // streamed sessions' VMs are Home's own processes: the backend's Sweep ends those a crash left
+		if names, err = s.opt.Host.ListContainers(sctx); err != nil {
+			s.opt.Logf("t3vm: not sweeping old VMs: %v", err)
+		}
 	}
 	for _, n := range names {
 		if !strings.HasPrefix(n, ContainerPrefix) {

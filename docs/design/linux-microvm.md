@@ -326,7 +326,11 @@ In order; each step has its tests:
 2. The launcher: done (`microvm.Launcher`, `PrepareDir`, `Sweeper`, `ExecConfined`, Home's `vm-confine`; below).
 3. CI builds: kernel, root file system, QEMU, virtiofsd per CPU, into `SHA256SUMS`; the QEMU source archive.
 4. The backend: done (`MicroVMBackend`, above), chosen in `platformBackend` for Linux; the sign-in VM is still to do.
-5. T3 sessions: the `agent-vm` shim's stream attached to a guest exec.
+5. T3 sessions: done in code; the live run is still to do (`TestLiveSessionVM`, below). The backend has no session host for a container tool. It implements `agent.StreamSessions` instead.
+   - **The VM.** Each T3 session gets its own VM: `rubi-t3-<role>-<hex>`, 1024 MiB, refused while less than 1280 MiB is free. The VM has exactly the folders the container path's `SessionSpec` resolves, at their host paths. The managed settings and the hook script are in two folders of their own (`<Home>/t3vm/vm-etc/claude-code` and `.../rubi`), shared read-only at `/etc/claude-code` and `/etc/rubi`.
+   - **The guest's writable layer.** The guest's init puts an overlay over the read-only root, with a 256 MiB tmpfs upper layer in the VM's memory (`guest.OverlayRoot`, kernel `CONFIG_OVERLAY_FS`). With it, the guest can make mount points at any path. Without it, a session's shares fail to mount, and project VMs work as before.
+   - **The stream.** The shim doesn't exec a tool. Home answers `stream`, and both sides then exchange the guest's exec chunks over the session socket: stdin from the shim; stdout, stderr and the exit status from Home. Closing the socket ends the process.
+   - **The rest.** The proxy, the hook gate and the T3 forward go through the same network pipe as before. `claude --version` is asked of a throwaway VM with no folders and remembered.
 6. The live test on a computer with KVM: done for agents. Home's own live tests of the agent VMs (`TestLiveRoles`,
    `TestLiveSSH`, `TestLiveNetless`) run on the microvm backend on Linux, with Rubi's kernel, root file system, QEMU and
    virtiofsd installed through the setup wizard from a signed (test) release, and pass on an x86_64 test machine with
@@ -336,7 +340,7 @@ In order; each step has its tests:
    the pipe comes back after its forwarder is killed, and no QEMU or virtiofsd is left after a test. What the runs
    found: the VMs' folder on a fresh Home, loopback (the guest's init brings `lo` up; a container runtime does that),
    the role variables on every exec, and the kernel's `sit0` (its IPv6 tunnel driver is off now).
-7. Still to do: the sign-in VM and T3's session VMs on this backend, and the release wiring of the workflow.
+7. Still to do: the sign-in VM on this backend, the live run of T3 session VMs, and the release wiring of the workflow.
 
 ## Sources
 

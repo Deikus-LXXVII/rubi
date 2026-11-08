@@ -23,6 +23,11 @@ func run() {
 		fmt.Fprintln(os.Stderr, "rubi-guest: this is the init of Rubi Home's agent VM; it runs only there")
 		os.Exit(2)
 	}
+	// Before the other mounts: they are made on the new root. Without the layer the VM still works with the mount
+	// points the image has (a project VM's); a T3 session's shares at the host's paths then fail to mount.
+	if err := guest.OverlayRoot(); err != nil {
+		log.Printf("no writable layer over the root: %v", err)
+	}
 	if err := guest.InitMounts(); err != nil {
 		log.Print(err)
 		powerOff()

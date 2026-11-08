@@ -23,6 +23,8 @@ type MicroVMBackend struct {
 	// kvm and landlock read the computer; seams for tests.
 	kvm      func() (ok bool, reason string)
 	landlock func() error
+	// memAvailable is the computer's free memory in MiB (hostguard.MemAvailable when nil); a seam for tests.
+	memAvailable func() (int, bool)
 }
 
 // NewMicroVMBackend is the Linux backend of Rubi Home version (its files are that release's) whose binary is exe.

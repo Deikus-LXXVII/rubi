@@ -66,6 +66,15 @@ func FilterEnv(t3 map[string]string) map[string]string {
 // Home sets and T3 cannot change: the role's config directory, the shared sign-in folder, and the proxy variables
 // (HTTPS_PROXY, NO_PROXY; proxy holds only those two, they carry the proxy's credential and the file is 0600).
 func (s SessionSpec) EnvLines(t3 map[string]string, proxy map[string]string) ([]byte, error) {
+	env, err := s.EnvMap(t3, proxy)
+	if err != nil {
+		return nil, err
+	}
+	return agent.EnvFile(env)
+}
+
+// EnvMap is EnvLines as a map: the environment of a streamed session's process (a guest exec takes no file).
+func (s SessionSpec) EnvMap(t3 map[string]string, proxy map[string]string) (map[string]string, error) {
 	if s.ClaudeDir == "" || s.SignInDir == "" {
 		return nil, errors.New("t3vm: the environment needs the claude and sign-in directories")
 	}
@@ -78,5 +87,5 @@ func (s SessionSpec) EnvLines(t3 map[string]string, proxy map[string]string) ([]
 	}
 	env["CLAUDE_CONFIG_DIR"] = s.ClaudeDir
 	env["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = s.SignInDir
-	return agent.EnvFile(env)
+	return env, nil
 }

@@ -120,3 +120,50 @@ func awaitExit(cmd *exec.Cmd) {
 	for unix.Waitid(unix.P_PID, cmd.Process.Pid, &info, unix.WEXITED|unix.WNOWAIT, nil) == unix.EINTR {
 	}
 }
+
+// OverlayDir is where OverlayRoot builds the layer (a folder of the root file system, made when the image is built).
+const OverlayDir = "/rubi-overlay"
+
+// OverlaySize bounds what can be written over the root: a tmpfs, in the VM's own memory.
+const OverlaySize = "256m"
+
+// OverlayRoot puts a writable layer over the read-only root, before anything else is mounted: an overlay of the root
+// with a size-bounded tmpfs on top, made the new root. Mount points can then be made anywhere (a T3 session's shares
+// are at the host's own paths), and nothing is written to the root file system, which the host attaches read-only.
+// It runs as PID 1 only, with no other process.
+func OverlayRoot() error {
+	if err := unix.Mount("tmpfs", OverlayDir, "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, "mode=0700,size="+OverlaySize); err != nil {
+		return fmt.Errorf("the overlay's tmpfs: %w", err)
+	}
+	upper, work, merged := OverlayDir+"/upper", OverlayDir+"/work", OverlayDir+"/root"
+	for _, d := range []string{upper, work, merged} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			return err
+		}
+	}
+	// lowerdir=/ is the root file system's own tree: mounts on top of it (this tmpfs) are not part of it
+	if err := unix.Mount("overlay", merged, "overlay", 0, "lowerdir=/,upperdir="+upper+",workdir="+work); err != nil {
+		return fmt.Errorf("the overlay: %w", err)
+	}
+	if err := os.Chdir(merged); err != nil {
+		return err
+	}
+	const old = "rubi-old-root"
+	if err := os.Mkdir(old, 0o700); err != nil {
+		return err
+	}
+	if err := unix.PivotRoot(".", old); err != nil {
+		return fmt.Errorf("pivot_root: %w", err)
+	}
+	if err := unix.Chroot("."); err != nil {
+		return err
+	}
+	if err := os.Chdir("/"); err != nil {
+		return err
+	}
+	// the old root (and the tmpfs on it) stay reachable to the overlay only
+	if err := unix.Unmount("/"+old, unix.MNT_DETACH); err != nil {
+		return fmt.Errorf("detaching the old root: %w", err)
+	}
+	return os.Remove("/" + old)
+}

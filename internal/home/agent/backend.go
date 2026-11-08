@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"io"
 	"path/filepath"
 )
 
@@ -149,6 +150,36 @@ type SessionHost interface {
 	InspectMounts(ctx context.Context, name string) ([]ContainerMount, error)
 	StartSessionPipe(ctx context.Context, name string, spec *PipeSpec, env map[string]string, giveUp func()) (stop func(), err error)
 	RemoveContainer(ctx context.Context, name string) error
+}
+
+// StreamSessionHost is the T3 session part of a backend whose VMs Home runs itself (the Linux microVM), with no tool
+// a shim could hand its process to: the shim relays its stdio to Home, and Home to the process in the VM (t3vm's
+// streamed sessions). A backend that has it says so by implementing StreamSessions.
+type StreamSessionHost interface {
+	// Ready says whether a session VM can start now (the VM files installed, KVM usable, enough free memory).
+	Ready() error
+	// StartSessionVM boots a VM named name with exactly mounts shared, in order, and nothing else.
+	StartSessionVM(ctx context.Context, name string, mounts []Mount) (SessionVM, error)
+}
+
+// SessionVM is a running T3 session VM.
+type SessionVM interface {
+	// StartPipe runs the network pipe in the VM, serving spec's listeners; giveUp is called when it keeps failing.
+	StartPipe(ctx context.Context, spec *PipeSpec, env map[string]string, giveUp func()) (stop func(), err error)
+	// ExecIn runs argv as the runner's user in dir with env over the image's environment; its stderr goes to stderr.
+	ExecIn(ctx context.Context, dir string, env map[string]string, argv []string, stderr io.Writer) (SessionProc, error)
+	Stop(ctx context.Context) error
+}
+
+// SessionProc is a process in a session VM: reads are its stdout, writes its stdin.
+type SessionProc interface {
+	Conn
+	Wait() (int, error)
+}
+
+// StreamSessions is implemented by a backend with a StreamSessionHost.
+type StreamSessions interface {
+	StreamSessions() StreamSessionHost
 }
 
 // LoginHost starts the VM the provider sign-in runs in: no project, no network but the allow-list proxy for the sign-in hosts,

@@ -97,3 +97,17 @@ func TestT3NeedsTheBackendsSessionHost(t *testing.T) {
 		t.Error("a session socket was made")
 	}
 }
+
+// streamedBackend runs agents and T3 sessions in VMs Home runs itself (the Linux microvm): no SessionHost, but streamed
+// sessions.
+type streamedBackend struct{ agentsOnlyBackend }
+
+func (streamedBackend) StreamSessions() agent.StreamSessionHost { return nil }
+
+func TestT3IsAvailableWithStreamedSessions(t *testing.T) {
+	be := streamedBackend{agentsOnlyBackend{agent.NoBackend("unused")}}
+	got := ComputeFeatures(context.Background(), FeatureEnv{GOOS: "linux", Backend: be})
+	if !got[FeatureAgent].Available || !got[FeatureT3].Available {
+		t.Fatalf("agent %+v, t3 %+v", got[FeatureAgent], got[FeatureT3])
+	}
+}

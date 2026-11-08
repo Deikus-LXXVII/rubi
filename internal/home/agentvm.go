@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 )
 
@@ -48,13 +49,15 @@ func (h *Helper) ServeAgentVM(ctx context.Context) error {
 		log.Printf("T3 sessions: not available on this computer (%s)", av.Reason)
 		return nil
 	}
-	host := be.Sessions()
-	if host == nil {
+	opt := t3vm.Options{Dir: h.Dir, Backend: h.Agent, T3Port: c.T3Port, T3Pid: h.T3Pid,
+		Attachments: filepath.Join(c.T3BaseDir, "userdata", "attachments")}
+	if ss, ok := be.(agent.StreamSessions); ok {
+		opt.Stream = ss.StreamSessions() // VMs Home runs itself (Linux): the shim's stdio is relayed
+	} else if opt.Host = be.Sessions(); opt.Host == nil {
 		log.Printf("T3 sessions: not available on this computer (%s)", noSessionHost)
 		return nil
 	}
-	srv := t3vm.NewServer(t3vm.Options{Dir: h.Dir, Backend: h.Agent, Host: host, T3Port: c.T3Port, T3Pid: h.T3Pid,
-		Attachments: filepath.Join(c.T3BaseDir, "userdata", "attachments")})
+	srv := t3vm.NewServer(opt)
 	h.sessMu.Lock()
 	h.sess = srv
 	h.sessMu.Unlock()

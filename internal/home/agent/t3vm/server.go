@@ -74,6 +74,9 @@ type StartReply struct {
 	Container string   `json:"container,omitempty"`
 	EnvFile   string   `json:"env_file,omitempty"`
 	ExecArgv  []string `json:"exec_argv,omitempty"`
+	// Stream says the process runs in a VM Home itself runs (Linux): the shim relays its stdio on this connection
+	// (stream.go) instead of running a container tool.
+	Stream bool `json:"stream,omitempty"`
 }
 
 const (
@@ -130,6 +133,10 @@ type Options struct {
 	// it the check is the user id only, which is all that can be said about a T3 Home did not start.
 	T3Pid func() int
 	Logf  func(format string, args ...any)
+	// Stream, when set, is the backend's session host for VMs Home runs itself (Linux): sessions are streamed
+	// (stream.go) and Host is not used. StreamClaude is claude's place in its image (claudeForArch when empty).
+	Stream       agent.StreamSessionHost
+	StreamClaude string
 
 	// Hooks for tests, set only from this package's tests: testEnv is added to every session's environment (to point
 	// claude at a scripted API) and testAPI serves the VM's 127.0.0.1:3129 (the test API service of the forwarder) from a
@@ -286,13 +293,20 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	gone := make(chan struct{})
-	go func() {
-		defer close(gone)
-		defer cancel()
-		if n, _ := io.Copy(io.Discard, io.LimitReader(br, maxAfterJunk)); n >= maxAfterJunk {
-			s.opt.Logf("t3vm: a shim sent too much after its request; ending its session")
-		}
-	}()
+	streamed := s.opt.Stream != nil && req.Op != OpVersion
+	if streamed {
+		// The shim relays its stdin only after the answer, and the relay reads the connection then; a shim that leaves
+		// while its VM starts is noticed when the relay begins.
+		close(gone)
+	} else {
+		go func() {
+			defer close(gone)
+			defer cancel()
+			if n, _ := io.Copy(io.Discard, io.LimitReader(br, maxAfterJunk)); n >= maxAfterJunk {
+				s.opt.Logf("t3vm: a shim sent too much after its request; ending its session")
+			}
+		}()
+	}
 
 	if req.Op == OpVersion {
 		vctx, vcancel := context.WithTimeout(sctx, 2*time.Minute)
@@ -306,7 +320,14 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	ses, rep, err := s.start(sctx, cancel, req)
+	var ses *session
+	var rep StartReply
+	if streamed {
+		ses, err = s.startStream(sctx, cancel, req)
+		rep = StartReply{OK: true, Stream: true}
+	} else {
+		ses, rep, err = s.start(sctx, cancel, req)
+	}
 	if err != nil {
 		s.opt.Logf("t3vm: session for role %q refused: %v", clipStr(req.Role, 64), err)
 		refuse(conn, err.Error())
@@ -323,6 +344,10 @@ func (s *Server) ServeConn(ctx context.Context, conn net.Conn) {
 		s.mu.Unlock()
 	}()
 	reply(conn, rep)
+	if streamed {
+		s.serveStream(ses, br, conn)
+		return
+	}
 	select {
 	case <-gone:
 	case <-sctx.Done():
@@ -356,7 +381,10 @@ func (s *Server) version(ctx context.Context, req StartRequest) (string, error) 
 		return "", err
 	}
 	role.Release()
-	image := s.opt.Host.ImageTag()
+	image := "microvm"
+	if s.opt.Stream == nil {
+		image = s.opt.Host.ImageTag()
+	}
 	s.mu.Lock()
 	if v, ok := s.versions[image]; ok {
 		s.mu.Unlock()
@@ -410,6 +438,9 @@ func (s *Server) baseCtx() context.Context {
 }
 
 func (s *Server) probeVersion(ctx context.Context, image string) (string, error) {
+	if s.opt.Stream != nil {
+		return s.probeVersionStream(ctx)
+	}
 	if err := s.opt.Host.EnsureImage(ctx); err != nil {
 		return "", fmt.Errorf("the VM image: %w", err)
 	}
@@ -465,9 +496,10 @@ type session struct {
 	role   string
 	giveUp func()
 
-	slot  func() // frees the place under the caps
-	once  sync.Once
-	steps []func()
+	slot   func()         // frees the place under the caps
+	stream *streamSession // a streamed session: what runs once Home has answered
+	once   sync.Once
+	steps  []func()
 }
 
 // onEnd registers what teardown does, last registered first.

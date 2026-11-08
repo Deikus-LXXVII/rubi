@@ -32,6 +32,8 @@ type ClientOptions struct {
 	// ExecTool is the name of the program a command from Home may run: the VM backend's tool (agent.ExecToolName when empty;
 	// empty on a system with no backend, where no command is run).
 	ExecTool string
+	// Stdin is what a streamed session relays to the process (os.Stdin when nil).
+	Stdin io.Reader
 	// Getwd, Environ and LookPath are os.Getwd, os.Environ and exec.LookPath when nil.
 	Getwd    func() (string, error)
 	Environ  func() []string
@@ -124,10 +126,21 @@ func Run(socket, role string, claudeArgs []string, stdout, stderr io.Writer, o C
 		fmt.Fprint(stdout, rep.Output)
 		return 0
 	}
+	_ = conn.SetDeadline(time.Time{})
+	if rep.Stream {
+		in := o.Stdin
+		if in == nil {
+			in = os.Stdin
+		}
+		// Unread bytes of Home's answer (the first chunks may have come with it) are read before the connection.
+		return streamClient(struct {
+			io.Reader
+			io.Writer
+		}{io.MultiReader(br, conn), conn}, in, stdout, stderr)
+	}
 	if len(rep.ExecArgv) < 2 {
 		return fail("Rubi Home's answer had no command")
 	}
-	_ = conn.SetDeadline(time.Time{})
 	// What is run is the container tool's `exec`, at the path Home named: a confused or hostile answer must not
 	// make this process run something else.
 	tool := o.ExecTool

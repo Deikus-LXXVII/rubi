@@ -1,5 +1,7 @@
 # The mount points the guest agent mounts shares on outside /work (agent.Project.Mounts): the root file system is
 # read-only, so they are made when the image is built. The places inside /work are in the project's own share.
+# /rubi-overlay is where the guest builds the writable layer over the root at its start (guest.OverlayRoot).
 /work
 /rubi-role
 /rubi-claude
+/rubi-overlay

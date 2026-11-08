@@ -5,9 +5,13 @@ package t3vm
 // claude and removes it; Version asks the image for claude's version as the shim's first call does.
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -33,6 +37,9 @@ func (s *Server) Probe(ctx context.Context, roleID string, cmd []string) ([]byte
 	role.Release()
 	ctx, cancel := context.WithTimeout(ctx, probeLimit)
 	defer cancel()
+	if s.opt.Stream != nil {
+		return s.probeStream(ctx, cancel, roleID, dir, cmd)
+	}
 	ses, rep, err := s.start(ctx, cancel, StartRequest{Op: "session.start", Role: roleID, Cwd: dir})
 	if err != nil {
 		return nil, err
@@ -43,4 +50,44 @@ func (s *Server) Probe(ctx context.Context, roleID string, cmd []string) ([]byte
 		return nil, errors.New("t3vm: the exec line has no claude in it")
 	}
 	return s.opt.Host.RunOutput(ctx, append(slices.Clone(rep.ExecArgv[:i]), cmd...))
+}
+
+// probeStream is Probe for streamed sessions: the session's VM, with cmd run where claude would be.
+func (s *Server) probeStream(ctx context.Context, cancel func(), roleID, dir string, cmd []string) ([]byte, error) {
+	ses, err := s.startStream(ctx, cancel, StartRequest{Op: "session.start", Role: roleID, Cwd: dir})
+	if err != nil {
+		return nil, err
+	}
+	defer ses.teardown()
+	st := ses.stream
+	var stderr bytes.Buffer
+	p, err := st.vm.ExecIn(ctx, st.dir, st.env, cmd, &limited{w: &stderr, n: 4096})
+	if err != nil {
+		return nil, err
+	}
+	defer p.Close()
+	_ = p.CloseWrite()
+	out, err := io.ReadAll(io.LimitReader(p, 1<<20))
+	if err != nil {
+		return out, err
+	}
+	if code, err := p.Wait(); err != nil || code != 0 {
+		return out, fmt.Errorf("%s ended with %d: %s", cmd[0], code, clipStr(strings.TrimSpace(stderr.String()), 300))
+	}
+	return out, nil
+}
+
+// limited writes at most n bytes to w and drops the rest.
+type limited struct {
+	w io.Writer
+	n int
+}
+
+func (l *limited) Write(b []byte) (int, error) {
+	if l.n > 0 {
+		k := min(len(b), l.n)
+		_, _ = l.w.Write(b[:k])
+		l.n -= k
+	}
+	return len(b), nil
 }

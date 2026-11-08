@@ -37,6 +37,11 @@ type MicroVM struct {
 	StateDir     string
 	CPUs, Memory string
 
+	// name and shares, when set, replace the project's name and Project.Mounts: a T3 session's VM, whose shares are its
+	// workspace and Home's files at their host paths (t3vm.SessionSpec).
+	name   string
+	shares []microvm.Share
+
 	// ready says whether the VM can start now (the backend: its files installed, KVM usable); nil: always.
 	ready func() error
 	// launch starts the VM; a seam for tests (nil: Launcher.Start).
@@ -86,8 +91,15 @@ func (m *MicroVM) State() State {
 // spec is the microvm.Spec of a project's VM: its shares are Project.Mounts, in order.
 func (m *MicroVM) spec(p Project) microvm.Spec {
 	name := containerName(p)
+	if m.name != "" {
+		name = m.name
+	}
 	s := microvm.Spec{QEMU: m.QEMU, Arch: m.Arch, Name: name, Firmware: m.Firmware, Kernel: m.Kernel, Rootfs: m.Rootfs,
 		CPUs: m.CPUs, Memory: m.Memory, Dir: filepath.Join(m.StateDir, name)}
+	if m.shares != nil {
+		s.Shares = append(s.Shares, m.shares...)
+		return s
+	}
 	for _, mt := range p.Mounts() {
 		s.Shares = append(s.Shares, microvm.Share{Source: mt.Source, Target: mt.Target, ReadOnly: mt.ReadOnly})
 	}
@@ -214,6 +226,16 @@ func (m *MicroVM) exec(ctx context.Context, env map[string]string, argv []string
 }
 
 func (m *MicroVM) execLogged(ctx context.Context, env map[string]string, argv []string, logStderr bool) (Conn, error) {
+	var stderr io.Writer
+	if logStderr {
+		stderr = &stderrLog{}
+	}
+	return m.execIn(ctx, "/work", env, argv, stderr)
+}
+
+// execIn runs argv in the VM as the runner's user in dir, with the image's environment under env; its stderr goes to
+// stderr (nil drops it).
+func (m *MicroVM) execIn(ctx context.Context, dir string, env map[string]string, argv []string, stderr io.Writer) (*guest.Process, error) {
 	m.mu.Lock()
 	c, role := m.client, m.proj.Role
 	m.mu.Unlock()
@@ -232,15 +254,7 @@ func (m *MicroVM) execLogged(ctx context.Context, env map[string]string, argv []
 		all[k] = v
 	}
 	uid, _ := strconv.Atoi(runnerUID)
-	var stderr io.Writer
-	if logStderr {
-		stderr = &stderrLog{}
-	}
-	p, err := c.Exec(ctx, guest.ExecRequest{Argv: argv, Env: all, Dir: "/work", UID: uid, GID: microvm.GuestGID}, stderr)
-	if err != nil {
-		return nil, err
-	}
-	return p, nil
+	return c.Exec(ctx, guest.ExecRequest{Argv: argv, Env: all, Dir: dir, UID: uid, GID: microvm.GuestGID}, stderr)
 }
 
 // Exec implements VM; the process's stderr is dropped (a sign-in may print secrets).

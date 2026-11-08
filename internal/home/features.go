@@ -134,8 +134,8 @@ func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
 		}
 	}
 	out[FeatureAgent], out[FeatureT3] = agents, agents
-	// T3's sessions need the backend's session host; a backend may run agents before it has one (the Linux microvm)
-	if agents.Available && env.Backend.Sessions() == nil {
+	// T3's sessions need the backend's session host (or, for VMs Home runs itself, its streamed sessions)
+	if _, streamed := env.Backend.(agent.StreamSessions); agents.Available && env.Backend.Sessions() == nil && !streamed {
 		out[FeatureT3] = Feature{Reason: noSessionHost}
 	}
 	// T3 also needs a T3 build for this platform (upstream publishes none for Intel Macs)
