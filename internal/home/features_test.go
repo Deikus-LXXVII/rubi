@@ -187,10 +187,11 @@ func TestFeaturesOfThisSystem(t *testing.T) {
 			t.Errorf("%s on %s: %+v", n, runtime.GOOS, got[n])
 		}
 	}
-	// on Linux the microvm backend says (KVM and Landlock), and T3 has no session host there yet
+	// on Linux the microvm backend says (KVM and Landlock), and T3 runs wherever agents do (streamed sessions)
 	agents, t3 := silicon, silicon
 	if runtime.GOOS == "linux" {
-		agents, t3 = agent.PlatformBackend(agent.BackendConfig{}).Available(context.Background()).OK, false
+		agents = agent.PlatformBackend(agent.BackendConfig{}).Available(context.Background()).OK
+		t3 = agents
 	}
 	if got[FeatureAgent].Available != agents || got[FeatureT3].Available != t3 {
 		t.Errorf("on %s (Apple silicon %v): agent %+v, t3 %+v", runtime.GOOS, silicon, got[FeatureAgent], got[FeatureT3])
