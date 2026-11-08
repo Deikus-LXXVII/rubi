@@ -96,28 +96,30 @@ func TestFeaturesPerSystem(t *testing.T) {
 		reasons    map[string]string
 	}{
 		"macOS": {"darwin", func(*fakeDesktop) Desktop { return Desktop{} }, false, all, nil},
-		"Linux with the app registered": {"linux", func(f *fakeDesktop) Desktop { return xdgDesktop(f.env("linux", linuxTools...)) }, true, "claude-start",
-			map[string]string{"shortcuts": "it needs macOS", "apple_home": "it needs macOS", "agent": "agents don't run on Linux yet", "t3": "agents don't run on Linux yet"}},
-		"Linux without it": {"linux", func(f *fakeDesktop) Desktop { return xdgDesktop(f.env("linux", linuxTools...)) }, false, "",
+		"Linux with the app registered": {"linux", func(f *fakeDesktop) Desktop { return xdgDesktop(f.env("linux", linuxTools...)) }, true, "claude-start,t3",
+			map[string]string{"shortcuts": "it needs macOS", "apple_home": "it needs macOS", "agent": "agents don't run on Linux yet"}},
+		"Linux without it": {"linux", func(f *fakeDesktop) Desktop { return xdgDesktop(f.env("linux", linuxTools...)) }, false, "t3",
 			map[string]string{"claude-start": "the Claude desktop app isn't installed here"}},
-		"Linux with no desktop": {"linux", func(f *fakeDesktop) Desktop { return Desktop{} }, false, "",
+		"Linux with no desktop": {"linux", func(f *fakeDesktop) Desktop { return Desktop{} }, false, "t3",
 			map[string]string{"claude-start": "this computer has no desktop to open a link on"}},
 		"Windows with the app registered": {"windows", func(f *fakeDesktop) Desktop { return winDesktop(f.env("windows", windowsTools...)) }, true, "claude-start",
-			map[string]string{"shortcuts": "it needs macOS", "agent": "agents don't run on Windows yet", "t3": "agents don't run on Windows yet"}},
+			map[string]string{"shortcuts": "it needs macOS", "agent": "agents don't run on Windows yet", "t3": "host sandbox sessions are not supported on Windows"}},
 		"Windows without it": {"windows", func(f *fakeDesktop) Desktop { return winDesktop(f.env("windows", windowsTools...)) }, false, "",
 			map[string]string{"claude-start": "the Claude desktop app isn't installed here"}},
 		"an Intel Mac": {"darwin-intel", func(*fakeDesktop) Desktop { return Desktop{} }, false, "shortcuts,apple_home,claude-start",
-			map[string]string{"agent": "agents need a Mac with Apple silicon", "t3": "agents need a Mac with Apple silicon"}},
+			map[string]string{"agent": "agents need a Mac with Apple silicon", "t3": "T3 publishes no build for Intel Macs"}},
 		"another system": {"freebsd", func(f *fakeDesktop) Desktop { return Desktop{} }, false, "",
 			map[string]string{"agent": "agents don't run on this system yet"}},
 	} {
 		f := &fakeDesktop{registered: c.registered}
 		goos, backend := c.goos, backendOf(c.goos)
+		plat := ""
 		if goos == "darwin-intel" {
 			// an Intel Mac: macOS, with the backend the platform code gives there (agent's TestAnIntelMacHasNoAgents)
 			goos, backend = "darwin", agent.NoBackend("agents need a Mac with Apple silicon")
+			plat = "darwin-x64"
 		}
-		got := ComputeFeatures(ctx, FeatureEnv{GOOS: goos, Desktop: c.desktop(f), Backend: backend})
+		got := ComputeFeatures(ctx, FeatureEnv{GOOS: goos, Desktop: c.desktop(f), Backend: backend, T3Platform: plat})
 		if avail(got) != c.want {
 			t.Errorf("%s: available %q, want %q", name, avail(got), c.want)
 		}
@@ -188,9 +190,9 @@ func TestFeaturesOfThisSystem(t *testing.T) {
 		}
 	}
 	// on Linux the microvm backend says (KVM and Landlock), and T3 has no session host there yet
-	agents, t3 := silicon, silicon
+	agents, t3 := silicon, runtime.GOOS == "linux" || mac
 	if runtime.GOOS == "linux" {
-		agents, t3 = agent.PlatformBackend(agent.BackendConfig{}).Available(context.Background()).OK, false
+		agents, t3 = agent.PlatformBackend(agent.BackendConfig{}).Available(context.Background()).OK, true
 	}
 	if got[FeatureAgent].Available != agents || got[FeatureT3].Available != t3 {
 		t.Errorf("on %s (Apple silicon %v): agent %+v, t3 %+v", runtime.GOOS, silicon, got[FeatureAgent], got[FeatureT3])
@@ -380,7 +382,7 @@ func TestT3NeedsABuildForThePlatform(t *testing.T) {
 		"Intel Mac":                 {"darwin-x64", mac, false, "T3 publishes no build for Intel Macs"},
 		"Linux x64 with a backend":  {"linux-x64", mac, true, ""},
 		"Windows with a backend":    {"win32-x64", mac, true, ""},
-		"Windows without a backend": {"win32-x64", backendOf("windows"), false, "agents don't run on Windows yet"},
+		"Windows without a backend": {"win32-x64", backendOf("windows"), true, ""},
 		"a platform nobody pins":    {"plan9-mips", mac, false, "this build of Rubi Home pins no T3 download for plan9-mips"},
 		"unchecked":                 {"", mac, true, ""},
 	} {
@@ -400,5 +402,25 @@ func TestT3NeedsABuildForThePlatform(t *testing.T) {
 	}
 	if err := h.gate("claude-agent.projects"); err != nil {
 		t.Errorf("claude-agent.projects: %v", err)
+	}
+}
+
+// This failed in real Home despite fake-VM lifecycle tests passing: Linux's
+// legacy VM backend has no session host, but T3 providers now use the host srt.
+func TestT3HostSandboxDoesNotRequireAVM(t *testing.T) {
+	for _, system := range []struct {
+		os, platform string
+		want         bool
+	}{{"linux", "linux-x64", true}, {"darwin", "darwin-arm64", true}, {"windows", "win32-x64", false}, {"darwin", "darwin-x64", false}} {
+		h := helperAs(t, FeatureEnv{GOOS: system.os, T3Platform: system.platform, Backend: agent.NoBackend("retired VM backend")})
+		if h.Features()[FeatureT3].Available != system.want {
+			t.Fatalf("%s: host sandbox availability depends on retired VM", system.platform)
+		}
+		if (h.gate("t3-agent.role.put") == nil) != system.want {
+			t.Fatal("real role entry point disagrees with host capability")
+		}
+		if h.gate("claude-agent.start") == nil {
+			t.Fatal("native availability re-enabled retired VM execution")
+		}
 	}
 }

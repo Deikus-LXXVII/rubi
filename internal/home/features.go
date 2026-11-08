@@ -133,19 +133,24 @@ func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
 			agents = Feature{Reason: av.Reason}
 		}
 	}
-	out[FeatureAgent], out[FeatureT3] = agents, agents
-	// T3's sessions need the backend's session host; a backend may run agents before it has one (the Linux microvm)
-	if agents.Available && env.Backend.Sessions() == nil {
-		out[FeatureT3] = Feature{Reason: noSessionHost}
-	}
-	// T3 also needs a T3 build for this platform (upstream publishes none for Intel Macs)
-	if agents.Available && env.T3Platform != "" {
-		if pin, err := loadT3Pin(); err == nil {
-			if why := t3Unavailable(pin, env.T3Platform); why != "" {
-				out[FeatureT3] = Feature{Reason: why}
+
+	out[FeatureAgent] = agents
+	// T3 providers execute on the host through srt. Availability must not depend
+	// on the retired VM backend (Linux's microVM never had a session host).
+	native := Feature{Reason: "host sandbox sessions are not supported on " + systemName(env.GOOS)}
+	if env.GOOS == "linux" || env.GOOS == "darwin" {
+		native = Feature{Available: true}
+		if env.T3Platform != "" {
+			pin, err := loadT3Pin()
+			if err != nil {
+				native = Feature{Reason: "the pinned T3 runtime description is unavailable"}
+			} else if why := t3Unavailable(pin, env.T3Platform); why != "" {
+				native = Feature{Reason: why}
 			}
 		}
 	}
+	out[FeatureT3] = native
+
 	return out
 }
 

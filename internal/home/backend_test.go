@@ -67,12 +67,12 @@ func (agentsOnlyBackend) Available(context.Context) agent.Availability {
 }
 func (agentsOnlyBackend) Sessions() agent.SessionHost { return nil }
 
-// A backend with no session host gets agents but not T3, and the session server serves nothing on it (it would have no
-// VMs to make).
-func TestT3NeedsTheBackendsSessionHost(t *testing.T) {
+// Native T3 does not depend on the retired VM session host. The legacy socket
+// still serves nothing when its backend has no session implementation.
+func TestNativeT3DoesNotNeedTheBackendsSessionHost(t *testing.T) {
 	be := agentsOnlyBackend{agent.NoBackend("unused")}
 	got := ComputeFeatures(context.Background(), FeatureEnv{GOOS: "linux", Backend: be})
-	if !got[FeatureAgent].Available || got[FeatureT3].Available || got[FeatureT3].Reason != noSessionHost {
+	if !got[FeatureAgent].Available || !got[FeatureT3].Available {
 		t.Fatalf("agent %+v, t3 %+v", got[FeatureAgent], got[FeatureT3])
 	}
 	h, err := Open(t.TempDir())
