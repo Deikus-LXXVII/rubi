@@ -338,3 +338,35 @@ func TestStartSupervisorLeavesItToTheSystem(t *testing.T) {
 		t.Error("a supervisor was started beside the system's start")
 	}
 }
+
+func TestSuperviseRestartsTheRunOnANewBinary(t *testing.T) {
+	dir := t.TempDir()
+	e := helperEnv(t, "stay", dir)
+	exe := filepath.Join(t.TempDir(), "rubi-home")
+	b, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e.Exe, e.BinaryPoll = exe, 20*time.Millisecond
+	e.Backoff = func(int) time.Duration { return time.Hour } // a restart that isn't the update's would never come
+	supervise(t, e)
+	waitSup(t, "the run", func() bool { return len(starts(dir)) == 1 })
+	time.Sleep(100 * time.Millisecond) // unchanged: no restart
+	if len(starts(dir)) != 1 {
+		t.Fatal("the run was restarted with the binary unchanged")
+	}
+	// An update: the new binary takes the old one's place.
+	if err := os.WriteFile(exe+".new", append(b, 0), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(exe+".new", exe); err != nil {
+		t.Fatal(err)
+	}
+	waitSup(t, "the run on the new binary", func() bool { return len(starts(dir)) == 2 })
+	if _, err := os.Stat(filepath.Join(dir, "term")); err != nil {
+		t.Error("the old run wasn't asked to stop")
+	}
+}

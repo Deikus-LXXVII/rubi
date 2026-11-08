@@ -482,6 +482,28 @@ func runInstallAutostart(args []string) int {
 		return 1
 	}
 	as := home.NewAutostart(home.AutostartEnv{Home: homeDir, UID: os.Getuid()})
+	if !remove {
+		supervised, err := home.InstallAutostartOrSupervise(context.Background(), as, homeDir, bin, func() error {
+			dir, err := home.DefaultDir()
+			if err != nil {
+				return err
+			}
+			_, err = home.StartSupervisor(home.SuperviseEnv{Dir: dir, Exe: bin})
+			return err
+		})
+		if supervised && err == nil {
+			fmt.Println("This computer has no service manager for you, so Rubi Home runs under its own supervisor; Rubi starts it again when Rubi runs.")
+			return 0
+		}
+		if err != nil {
+			if errors.Is(err, home.ErrNeedsElevation) {
+				fmt.Fprintln(os.Stderr, "rubi-home: this computer needs administrator rights to start Rubi Home at login; Rubi Home does not ask for them, so it did not set that up")
+			}
+			fmt.Fprintf(os.Stderr, "rubi-home: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 	if err := home.RunInstallAutostart(context.Background(), as, homeDir, bin, remove); err != nil {
 		if errors.Is(err, home.ErrNeedsElevation) {
 			fmt.Fprintln(os.Stderr, "rubi-home: this computer needs administrator rights to start Rubi Home at login; Rubi Home does not ask for them, so it did not set that up")

@@ -135,7 +135,7 @@ expected=$(awk -v f="$archive" '$2 == f { print $1 }' "$tmp/SHA256SUMS")
 say "signature and checksum verified"
 
 mkdir -p "$DIR/bin" "$DIR/logs"
-chmod 700 "$DIR"
+chmod 700 "$DIR" "$DIR/bin" # only you may change the binary: Rubi runs it where there is no service manager
 tar -xzf "$tmp/$archive" -C "$tmp" rubi-home
 mv "$tmp/rubi-home" "$DIR/bin/rubi-home.new"
 chmod 755 "$DIR/bin/rubi-home.new"
@@ -165,16 +165,12 @@ PLIST
   launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$plist"
   say "running at login (LaunchAgent com.rubi-project.home)"
-elif command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-  # The systemd user unit is made by Rubi Home itself (the same code the apps use): the unit file, then daemon-reload,
-  # enable --now and restart, as this script used to do.
-  "$bin" install-autostart --bin "$bin" || fail "couldn't set Rubi Home up to start at login"
-  say "running as a systemd user service (for it to run without you logged in: loginctl enable-linger)"
 else
-  # No systemd user manager (a shared box whose first process is a plain init): Rubi Home's own supervisor keeps it
-  # running, and Rubi on this computer starts it again whenever Rubi runs (after a restart or an update of the box).
-  "$bin" start || fail "couldn't start Rubi Home"
-  say "running under its own supervisor (this computer has no systemd user session)"
+  # The systemd user unit is made by Rubi Home itself (the same code the apps use): the unit file, then daemon-reload,
+  # enable --now and restart, as this script used to do. Where the user has no systemd to reach (a shared box whose
+  # first process is a plain init), Rubi Home runs under its own supervisor instead, and says so.
+  "$bin" install-autostart --bin "$bin" || fail "couldn't set Rubi Home up to start at login"
+  say "running, and set up to start again by itself (as a systemd user service where this computer has one; for that to run without you logged in: loginctl enable-linger)"
 fi
 
 say "installed Rubi Home $version"

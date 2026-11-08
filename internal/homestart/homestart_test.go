@@ -38,7 +38,7 @@ func setup(t *testing.T, vars map[string]string) (Env, *fakeRun, string) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dir, _ := e.configDir()
+	dir := e.configDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func setup(t *testing.T, vars map[string]string) (Env, *fakeRun, string) {
 }
 
 func TestEnsureStartsTheInstalledRubiHome(t *testing.T) {
-	e, f, bin := setup(t, map[string]string{"USER": "u", "RUBI_HOME_DIR": "", "BOT_SECRET": "x", "LANG": "C.UTF-8"})
+	e, f, bin := setup(t, map[string]string{"TMPDIR": "/bot", "BOT_SECRET": "x", "LANG": "C.UTF-8", "XDG_RUNTIME_DIR": "/run/x"})
 	if err := Ensure(context.Background(), e); err != nil {
 		t.Fatal(err)
 	}
@@ -60,41 +60,66 @@ func TestEnsureStartsTheInstalledRubiHome(t *testing.T) {
 		t.Errorf("binary %s; want the installer's default", bin)
 	}
 	joined := strings.Join(f.env, "\n")
-	for _, want := range []string{"HOME=" + e.Home, "PATH=/usr/local/bin:/usr/bin:/bin", "USER=u", "LANG=C.UTF-8"} {
+	for _, want := range []string{"HOME=" + e.Home, "PATH=/usr/local/bin:/usr/bin:/bin", "LANG=C.UTF-8", "XDG_RUNTIME_DIR=/run/x"} {
 		if !slices.Contains(f.env, want) {
 			t.Errorf("env lacks %s", want)
 		}
 	}
-	if strings.Contains(joined, "BOT_SECRET") {
+	if strings.Contains(joined, "BOT_SECRET") || strings.Contains(joined, "TMPDIR") {
 		t.Error("the daemon's environment reached Rubi Home")
 	}
 }
 
-func TestEnsureFollowsTheInstallAndConfigFolders(t *testing.T) {
-	root := t.TempDir()
-	vars := map[string]string{"RUBI_HOME_INSTALL": filepath.Join(root, "inst"), "XDG_CONFIG_HOME": filepath.Join(root, "cfg")}
+func TestEnsureIgnoresPathsFromTheEnvironment(t *testing.T) {
+	// The daemon's environment is a Bot session's: it can't point the daemon at another binary or folder.
+	other := t.TempDir()
+	vars := map[string]string{"RUBI_HOME_INSTALL": other, "RUBI_HOME_DIR": other, "XDG_CONFIG_HOME": other, "HOME": other}
 	e, f, bin := setup(t, vars)
-	if bin != filepath.Join(root, "inst", "bin", "rubi-home") {
-		t.Errorf("binary %s", bin)
+	_ = os.MkdirAll(filepath.Join(other, "bin"), 0o755)
+	_ = os.WriteFile(filepath.Join(other, "bin", "rubi-home"), []byte("#!/bin/sh\n"), 0o755)
+	if err := Ensure(context.Background(), e); err != nil || len(f.calls) != 1 || f.calls[0][0] != bin {
+		t.Fatalf("Ensure = %v, ran %q; want only %s", err, f.calls, bin)
 	}
-	if _, err := os.Stat(filepath.Join(root, "cfg", "Rubi Home", "identity.json")); err != nil {
-		t.Errorf("config folder: %v", err)
+	for _, kv := range f.env {
+		if strings.Contains(kv, other) {
+			t.Errorf("%s reached Rubi Home", kv)
+		}
 	}
-	if err := Ensure(context.Background(), e); err != nil || len(f.calls) != 1 {
-		t.Errorf("Ensure = %v, %d runs", err, len(f.calls))
-	}
-	if !slices.Contains(f.env, "XDG_CONFIG_HOME="+vars["XDG_CONFIG_HOME"]) {
-		t.Error("Rubi Home wouldn't find its folder")
-	}
-	vars["RUBI_HOME_DIR"] = filepath.Join(root, "elsewhere")
-	if err := Ensure(context.Background(), e); !errors.Is(err, ErrNotInstalled) {
-		t.Errorf("RUBI_HOME_DIR with no Rubi Home in it: %v", err)
-	}
+}
+
+func TestEnsureChecksEveryFolderAbove(t *testing.T) {
+	t.Run("group-writable home", func(t *testing.T) {
+		e, f, _ := setup(t, nil)
+		_ = os.Chmod(e.Home, 0o775)
+		if err := Ensure(context.Background(), e); err == nil || len(f.calls) != 0 {
+			t.Errorf("Ensure = %v with %d runs; want a refusal", err, len(f.calls))
+		}
+	})
+	t.Run("install folder through a symlink", func(t *testing.T) {
+		e, f, bin := setup(t, nil)
+		inst := filepath.Dir(filepath.Dir(bin))
+		moved := filepath.Join(t.TempDir(), "inst")
+		if err := os.Rename(inst, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(moved, inst); err != nil {
+			t.Fatal(err)
+		}
+		if err := Ensure(context.Background(), e); err != nil || len(f.calls) != 1 {
+			t.Errorf("a symlink to a folder only this user can write: %v, %d runs", err, len(f.calls))
+		}
+		_ = os.Chmod(filepath.Dir(moved), 0o777)
+		t.Cleanup(func() { _ = os.Chmod(filepath.Dir(moved), 0o755) })
+		f.calls = nil
+		if err := Ensure(context.Background(), e); err == nil || len(f.calls) != 0 {
+			t.Errorf("a symlink into a folder others can write: %v, %d runs", err, len(f.calls))
+		}
+	})
 }
 
 func TestEnsureNothingInstalled(t *testing.T) {
 	e, f, bin := setup(t, nil)
-	dir, _ := e.configDir()
+	dir := e.configDir()
 	_ = os.Remove(filepath.Join(dir, "identity.json"))
 	if err := Ensure(context.Background(), e); !errors.Is(err, ErrNotInstalled) {
 		t.Errorf("not set up: %v", err)
@@ -115,10 +140,12 @@ func TestEnsureRunsOnlyWhatOnlyThisUserCouldWrite(t *testing.T) {
 		"group-writable binary": func(t *testing.T, bin string) { _ = os.Chmod(bin, 0o775) },
 		"world-writable binary": func(t *testing.T, bin string) { _ = os.Chmod(bin, 0o757) },
 		"writable folder":       func(t *testing.T, bin string) { _ = os.Chmod(filepath.Dir(bin), 0o777) },
-		"symlink": func(t *testing.T, bin string) {
-			real := bin + ".real"
-			_ = os.Rename(bin, real)
-			_ = os.Symlink(real, bin)
+		"symlink into a folder others can write": func(t *testing.T, bin string) {
+			open := filepath.Join(filepath.Dir(bin), "open")
+			_ = os.Mkdir(open, 0o755)
+			_ = os.Chmod(open, 0o777)
+			_ = os.Rename(bin, filepath.Join(open, "rubi-home"))
+			_ = os.Symlink(filepath.Join(open, "rubi-home"), bin)
 		},
 		"folder": func(t *testing.T, bin string) { _ = os.Remove(bin); _ = os.Mkdir(bin, 0o755) },
 	}
@@ -167,6 +194,7 @@ func TestKeepLogsOnce(t *testing.T) {
 	}
 	// Nothing installed is not worth a log line.
 	e2 := Env{Home: t.TempDir(), UID: os.Getuid(), Getenv: func(string) string { return "" }}
+	_ = e2.Binary()
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	cancel2()
 	logs = nil

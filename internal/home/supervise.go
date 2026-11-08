@@ -28,6 +28,9 @@ type SuperviseEnv struct {
 	Backoff func(n int) time.Duration
 	// Steady is how long a run must last for the next restart to count as the first again (superviseSteady when 0).
 	Steady time.Duration
+	// BinaryPoll is how often the supervisor looks whether Exe was replaced (an update), to restart the run on the new
+	// binary (superviseBinaryPoll when 0).
+	BinaryPoll time.Duration
 	// Grace is how long a stopping supervisor waits for the run to end before it kills it (superviseGrace when 0).
 	Grace time.Duration
 	Logf  func(format string, args ...any)
@@ -48,7 +51,9 @@ const (
 const (
 	superviseSteady = time.Minute
 	superviseGrace  = 30 * time.Second
-	superviseLogMax = 10 << 20
+	// superviseBinaryPoll is how often the binary is checked for an update.
+	superviseBinaryPoll = 30 * time.Second
+	superviseLogMax     = 10 << 20
 )
 
 // SupervisorLockPath is the file the one supervisor of a Rubi Home folder holds locked.
@@ -175,6 +180,11 @@ func Supervise(ctx context.Context, e SuperviseEnv) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		if errors.Is(err, errBinaryChanged) {
+			e.logf("rubi-home supervisor: the binary was replaced; starting the run again on the new one")
+			quick = 0
+			continue
+		}
 		if time.Since(began) >= steady {
 			quick = 0
 		}
@@ -189,13 +199,28 @@ func Supervise(ctx context.Context, e SuperviseEnv) error {
 	}
 }
 
-// superviseOnce runs args once, with the log as its output, until it ends or ctx does.
+// errBinaryChanged ends a run whose binary was replaced.
+var errBinaryChanged = errors.New("the binary was replaced")
+
+// sameBinary reports whether the file at path is still the one a was read from (same file, size and time).
+func sameBinary(a os.FileInfo, path string) bool {
+	b, err := os.Stat(path)
+	return err != nil || (os.SameFile(a, b) && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime()))
+}
+
+// superviseOnce runs args once, with the log as its output, until it ends or ctx does, or Exe is replaced (then it
+// stops the run and returns errBinaryChanged).
 func superviseOnce(ctx context.Context, e SuperviseEnv, args []string, grace time.Duration) error {
 	lf, err := openSupervisorLog(e.Dir)
 	if err != nil {
 		return err
 	}
 	defer lf.Close()
+	bin, binErr := os.Stat(e.Exe)
+	poll := e.BinaryPoll
+	if poll <= 0 {
+		poll = superviseBinaryPoll
+	}
 	cmd := exec.Command(e.Exe, args...)
 	cmd.Env = e.Env
 	cmd.Stdout, cmd.Stderr = lf, lf
@@ -204,19 +229,39 @@ func superviseOnce(ctx context.Context, e SuperviseEnv, args []string, grace tim
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
+	tick := time.NewTicker(poll)
+	defer tick.Stop()
+	changed := false
+wait:
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			break wait
+		case <-tick.C:
+			// A binary being replaced (missing for a moment) counts as unchanged until the new one is there.
+			if binErr == nil && !sameBinary(bin, e.Exe) {
+				changed = true
+				break wait
+			}
+		}
 	}
 	_ = terminate(cmd.Process)
 	select {
 	case err := <-done:
-		return err
+		return stopped(err, changed)
 	case <-time.After(grace):
 	}
 	_ = cmd.Process.Kill()
-	return <-done
+	return stopped(<-done, changed)
+}
+
+func stopped(err error, changed bool) error {
+	if changed {
+		return errBinaryChanged
+	}
+	return err
 }
 
 // StartSupervisor is `rubi-home start`: unless the system starts Rubi Home or a supervisor runs, it starts a detached

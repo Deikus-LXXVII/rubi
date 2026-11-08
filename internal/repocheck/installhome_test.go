@@ -41,7 +41,7 @@ func TestInstallHomeShDoesNotWriteTheSystemdUnitItself(t *testing.T) {
 		}
 	}
 	if b := linuxBranch(t); !strings.Contains(b, `"$bin" install-autostart --bin "$bin" || fail "couldn't set Rubi Home up to start at login"`) ||
-		!strings.Contains(b, `say "running as a systemd user service (for it to run without you logged in: loginctl enable-linger)"`) {
+		!strings.Contains(b, `say "running, and set up to start again by itself (as a systemd user service where this computer has one; for that to run without you logged in: loginctl enable-linger)"`) {
 		t.Errorf("the Linux branch:\n%s", b)
 	}
 }
@@ -88,7 +88,7 @@ echo after
 	if got, _ := os.ReadFile(log); string(got) != "install-autostart|--bin|"+bin+"|" {
 		t.Errorf("the call was %q", got)
 	}
-	if want := "rubi-home: running as a systemd user service (for it to run without you logged in: loginctl enable-linger)\nafter\n"; string(out) != want {
+	if want := "rubi-home: running, and set up to start again by itself (as a systemd user service where this computer has one; for that to run without you logged in: loginctl enable-linger)\nafter\n"; string(out) != want {
 		t.Errorf("output %q, want %q", out, want)
 	}
 
@@ -96,7 +96,7 @@ echo after
 	stub("3")
 	out, err = exec.Command("sh", script, bin).CombinedOutput()
 	if err == nil || strings.Contains(string(out), "after") || !strings.Contains(string(out), "couldn't set Rubi Home up to start at login") ||
-		strings.Contains(string(out), "running as a systemd") {
+		strings.Contains(string(out), "running, and set up") {
 		t.Errorf("a failing install-autostart: %v\n%s", err, out)
 	}
 }

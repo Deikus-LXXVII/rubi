@@ -22,8 +22,11 @@ import (
 
 // Env is what Ensure looks at; the zero values of the funcs are the real thing.
 type Env struct {
-	Home   string // the user's home folder
-	UID    int
+	// Home is the user's home folder from the account database, not $HOME: the daemon is started by a Bot's MCP
+	// session, so its environment is the Bot's, and nothing in it may choose what the daemon runs.
+	Home string
+	UID  int
+	// Getenv reads the few harmless variables passed on (LANG, XDG_RUNTIME_DIR).
 	Getenv func(string) string
 	// Run runs bin with args and env, bounded by ctx, and returns its combined output.
 	Run func(ctx context.Context, bin string, args, env []string) ([]byte, error)
@@ -36,37 +39,27 @@ func (e Env) getenv(k string) string {
 	return os.Getenv(k)
 }
 
-// Binary is the rubi-home the installer put in place for this user (install-home.sh: $RUBI_HOME_INSTALL, else
-// ~/.rubi-home, then bin/rubi-home).
-func (e Env) Binary() string {
-	dir := e.getenv("RUBI_HOME_INSTALL")
-	if dir == "" {
-		dir = hostpaths.HelperHome(e.Home)
-	}
-	return filepath.Join(dir, "bin", "rubi-home")
-}
+// Binary is the rubi-home install-home.sh puts in place by default (~/.rubi-home/bin/rubi-home). An install moved
+// elsewhere with $RUBI_HOME_INSTALL isn't started by the daemon.
+func (e Env) Binary() string { return filepath.Join(hostpaths.HelperHome(e.Home), "bin", "rubi-home") }
 
-// configDir is Rubi Home's folder (home.DefaultDir: $RUBI_HOME_DIR, else the user's config folder).
-func (e Env) configDir() (string, error) {
-	if d := e.getenv("RUBI_HOME_DIR"); d != "" {
-		return d, nil
-	}
-	if x := e.getenv("XDG_CONFIG_HOME"); filepath.IsAbs(x) {
-		return filepath.Join(x, "Rubi Home"), nil
-	}
-	if e.Home == "" {
-		return "", errors.New("no home folder")
-	}
-	return filepath.Join(e.Home, ".config", "Rubi Home"), nil
-}
+// configDir is Rubi Home's default folder on Linux (~/.config/Rubi Home); a Rubi Home given another folder with
+// $RUBI_HOME_DIR or $XDG_CONFIG_HOME isn't started by the daemon, and the run it starts uses the default.
+func (e Env) configDir() string { return filepath.Join(e.Home, ".config", "Rubi Home") }
 
 // ErrNotInstalled says there is no Rubi Home set up for this user here: nothing to start.
 var ErrNotInstalled = errors.New("no Rubi Home is set up for this user")
 
-// trusted refuses a binary the daemon must not run: not a plain file, or one that another user, or a group, could
-// have written, or in such a folder. The daemon holds the keys; it runs only what only this user could have put there.
+// trusted refuses a binary the daemon must not run: not a plain file, or one that anyone but this user (and root)
+// could have written or swapped. That covers the file and every folder above it, followed through symlinks, so no
+// one else can replace the binary between this check and its start. A root-owned folder that others may write
+// (such as /tmp) counts only with its sticky bit, which keeps them from renaming what isn't theirs.
 func trusted(path string, uid int) error {
-	for p := path; ; p = filepath.Dir(p) {
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	for p := real; ; p = filepath.Dir(p) {
 		fi, err := os.Lstat(p)
 		if err != nil {
 			return err
@@ -75,23 +68,29 @@ func trusted(path string, uid int) error {
 		if !ok {
 			return errors.New("can't read the owner")
 		}
-		if p == path && !fi.Mode().IsRegular() {
+		if p == real && !fi.Mode().IsRegular() {
 			return fmt.Errorf("%s is not a plain file", p)
 		}
-		if int(st.Uid) != uid || fi.Mode().Perm()&0o022 != 0 {
+		owner := int(st.Uid)
+		writable := fi.Mode().Perm()&0o022 != 0
+		sticky := fi.Mode()&os.ModeSticky != 0
+		switch {
+		case owner != uid && owner != 0:
+			return fmt.Errorf("%s belongs to another user", p)
+		case writable && !(owner == 0 && sticky && p != real):
 			return fmt.Errorf("%s could be changed by someone other than this user", p)
 		}
-		if p == filepath.Dir(path) { // the binary and its folder; the folders above are the user's home and its parents
+		if parent := filepath.Dir(p); parent == p {
 			return nil
 		}
 	}
 }
 
-// minimalEnv is the environment Rubi Home gets: what it needs to find its folders, and nothing of the process that
-// started the daemon (on a box that is a Bot's MCP session, whose environment may hold its secrets).
+// minimalEnv is the environment Rubi Home gets: its home folder and a plain PATH, and nothing of the process that
+// started the daemon (a Bot's MCP session, whose environment may hold its secrets).
 func (e Env) minimalEnv() []string {
 	env := []string{"HOME=" + e.Home, "PATH=/usr/local/bin:/usr/bin:/bin"}
-	for _, k := range []string{"USER", "LOGNAME", "LANG", "TMPDIR", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "RUBI_HOME_DIR"} {
+	for _, k := range []string{"LANG", "XDG_RUNTIME_DIR"} {
 		if v := e.getenv(k); v != "" {
 			env = append(env, k+"="+v)
 		}
@@ -101,11 +100,10 @@ func (e Env) minimalEnv() []string {
 
 // Ensure has the installed Rubi Home make sure it runs. ErrNotInstalled when there is none set up.
 func Ensure(ctx context.Context, e Env) error {
-	dir, err := e.configDir()
-	if err != nil {
+	if e.Home == "" {
 		return ErrNotInstalled
 	}
-	if _, err := os.Stat(filepath.Join(dir, "identity.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(e.configDir(), "identity.json")); err != nil {
 		return ErrNotInstalled
 	}
 	bin := e.Binary()

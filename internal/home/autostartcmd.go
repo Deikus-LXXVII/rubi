@@ -31,3 +31,14 @@ func RunInstallAutostart(ctx context.Context, as Autostart, homeDir, bin string,
 	_, err := as.Install(ctx, AutostartSpec{Bin: bin, Logs: logs, BinChanged: true})
 	return err
 }
+
+// InstallAutostartOrSupervise is RunInstallAutostart that falls back to start (Rubi Home's own supervisor) where this
+// user has no service manager and none was set up before (a shared box whose first process is a plain init).
+// supervised says it did.
+func InstallAutostartOrSupervise(ctx context.Context, as Autostart, homeDir, bin string, start func() error) (supervised bool, err error) {
+	err = RunInstallAutostart(ctx, as, homeDir, bin, false)
+	if !errors.Is(err, ErrNoServiceManager) || start == nil {
+		return false, err
+	}
+	return true, start()
+}
