@@ -64,7 +64,7 @@ func (e SuperviseEnv) logf(format string, args ...any) {
 var ErrSupervisorRunning = errors.New("Rubi Home is already running")
 
 // ErrAlreadyRunning says that another `rubi-home run` already serves the folder.
-var ErrAlreadyRunning = errors.New("another rubi-home run already serves this folder")
+var ErrAlreadyRunning = errors.New("Rubi Home is already running for this folder")
 
 // LockRun keeps a second `rubi-home run` off the folder: a run left by a supervisor that was killed would otherwise
 // serve beside the new supervisor's. The lock lasts while the returned file is open.
