@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 )
 
 // fakeStreamHost stands in for the microVM backend's session host.
@@ -48,6 +50,9 @@ func (h *fakeStreamHost) StartSessionVM(ctx context.Context, name string, mounts
 	if h.startErr != nil {
 		return nil, h.startErr
 	}
+	if h.readyErr != nil { // the real host checks Ready as it starts a VM
+		return nil, h.readyErr
+	}
 	out := "VERSION 9.9\n"
 	if h.verOut != "" {
 		out = h.verOut
@@ -74,6 +79,8 @@ type fakeSessionVM struct {
 	execErr error
 	late    time.Duration
 	procs   []*fakeProc
+	hook    *netpipe.Listener
+	giveUp  func()
 }
 
 type fakeExec struct {
@@ -89,6 +96,7 @@ func (v *fakeSessionVM) StartPipe(ctx context.Context, spec *agent.PipeSpec, env
 		return nil, errors.New("a pipe without its services")
 	}
 	v.pipes++
+	v.hook, v.giveUp = spec.Hook, giveUp
 	return func() {}, nil
 }
 
@@ -146,7 +154,13 @@ func (*versionProc) Close() error                 { return nil }
 func (*versionProc) Wait() (int, error)           { return 0, nil }
 func (*versionProc) Done() <-chan struct{}        { return make(chan struct{}) }
 
-func streamWorld(t *testing.T) (*world, *fakeStreamHost) {
+func streamWorld(t *testing.T) (*world, *fakeStreamHost) { return streamWorldIdle(t, 50*time.Millisecond) }
+
+// streamWorldIdle is streamWorld whose role VMs stop idle after idle (restored after the server has stopped).
+func streamWorldIdle(t *testing.T, idle time.Duration) (*world, *fakeStreamHost) {
+	old := roleVMIdle
+	roleVMIdle = idle
+	t.Cleanup(func() { roleVMIdle = old })
 	h := &fakeStreamHost{}
 	w := newWorld(t, func(o *Options) { o.Host, o.Stream, o.StreamClaude = nil, h, "/opt/sdk/claude" })
 	return w, h
@@ -181,7 +195,9 @@ func TestStreamedSessionRunsClaudeInItsVM(t *testing.T) {
 		t.Errorf("name %q, pipes %d", vm.name, vm.pipes)
 	}
 	// the folders: the workspace read-write at its own path, the role's, the policy folders read-only, nothing else
-	want := map[string]bool{w.cwd: false, w.be.role.ClaudeDir: false, w.be.role.ContentDir: true, w.att: true,
+	// the role's VM: the project's root read-write (the session runs in its own folder in it), the role's folders,
+	// T3's attachments, the policy folders read-only, nothing else
+	want := map[string]bool{w.project: false, w.be.role.ClaudeDir: false, w.be.role.ContentDir: true, w.att: true,
 		filepath.Join(w.dir, "agent-signin"): false, "/etc/claude-code": true, "/etc/rubi": true}
 	got := map[string]bool{}
 	for _, m := range vm.mounts {
@@ -470,8 +486,8 @@ func TestStreamedProbe(t *testing.T) {
 		t.Errorf("a failing command: %v", err)
 	}
 	vm := h.all()[0]
-	if s, ex := vm.snap(); !s || len(ex) != 1 || ex[0].dir != w.project || ex[0].argv[0] != "sh" {
-		t.Errorf("stopped %v, execs %+v", s, ex)
+	if _, ex := vm.snap(); len(ex) != 1 || ex[0].dir != w.project || ex[0].argv[0] != "sh" {
+		t.Errorf("execs %+v", ex)
 	}
 	old := probeLimit
 	probeLimit = 300 * time.Millisecond
@@ -483,7 +499,149 @@ func TestStreamedProbe(t *testing.T) {
 	if time.Since(start) > 10*time.Second {
 		t.Error("the probe outlived its limit")
 	}
-	if s, _ := h.all()[1].snap(); !s {
-		t.Error("the hung probe's VM runs on")
+	if len(h.all()) != 1 {
+		t.Errorf("%d VMs: the probes didn't share the role's VM", len(h.all()))
+	}
+	eventually(t, "the role's VM stopped after its idle time", func() bool { s, _ := vm.snap(); return s })
+}
+
+// shimSession runs a shim whose stdin stays open until the returned func is called; it returns the exit status channel.
+func (w *world) shimSession(sessionID, thread string) (end func(), done chan int) {
+	pr, pw := io.Pipe()
+	done = make(chan int, 1)
+	argv := t3ArgvFor(w.cwd, w.att, "bypassPermissions")
+	for i, a := range argv {
+		if strings.HasPrefix(a, "--session-id=") {
+			argv[i] = "--session-id=" + sessionID
+		}
+	}
+	go func() {
+		var stdout, stderr bytes.Buffer
+		o := ClientOptions{ExecTool: "container", Stdin: pr, Getwd: func() (string, error) { return w.cwd, nil },
+			Environ: func() []string { return []string{"T3CODE_THREAD_ID=" + thread} }}
+		done <- Run(w.sock, testRole, argv, &stdout, &stderr, o)
+	}()
+	return func() { pw.Close() }, done
+}
+
+func (v *fakeSessionVM) procCount() int { v.mu.Lock(); defer v.mu.Unlock(); return len(v.procs) }
+
+// hookAsk sends a PreToolUse input with sessionID to the VM's hook gate and returns the session the ask was filed under.
+func hookAsk(t *testing.T, w *world, vm *fakeSessionVM, sessionID string) string {
+	t.Helper()
+	vm.mu.Lock()
+	hook := vm.hook
+	vm.mu.Unlock()
+	a, b := net.Pipe()
+	if !hook.Offer(b) {
+		t.Fatal("the hook service is closed")
+	}
+	body := `{"hook_event_name":"PreToolUse","session_id":"` + sessionID + `","tool_name":"Bash","tool_input":{"command":"ls"},"tool_use_id":"tu1","cwd":"` + w.cwd + `"}`
+	req, _ := http.NewRequest("POST", "http://127.0.0.1:3130/ask", strings.NewReader(body))
+	req.Header.Set("content-type", "application/json")
+	go func() { _ = req.Write(a) }()
+	resp, err := http.ReadResponse(bufio.NewReader(a), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	a.Close()
+	w.be.mu.Lock()
+	defer w.be.mu.Unlock()
+	calls := w.be.calls
+	return calls[len(calls)-1].P.SessionID
+}
+
+// Sessions of one role share its VM; the gate files each ask under the session's T3 thread; the VM stops only after its
+// last session, and the next session gets a new one.
+func TestRoleVMIsSharedAndStopsAfterItsLastSession(t *testing.T) {
+	const idle = 300 * time.Millisecond
+	w, h := streamWorldIdle(t, idle)
+	endA, doneA := w.shimSession("sess-a", "thread-a")
+	eventually(t, "the first session runs", func() bool { vms := h.all(); return len(vms) == 1 && vms[0].procCount() == 1 })
+	endB, doneB := w.shimSession("sess-b", "thread-b")
+	vm := h.all()[0]
+	eventually(t, "the second session runs in the same VM", func() bool { return vm.procCount() == 2 })
+	if len(h.all()) != 1 {
+		t.Fatalf("%d VMs for one role", len(h.all()))
+	}
+	if got := hookAsk(t, w, vm, "sess-a"); got != "thread-a" {
+		t.Errorf("an ask of session a was filed under %q", got)
+	}
+	if got := hookAsk(t, w, vm, "sess-b"); got != "thread-b" {
+		t.Errorf("an ask of session b was filed under %q", got)
+	}
+	if got := hookAsk(t, w, vm, "someone-else"); got != "someone-else" {
+		t.Errorf("an unknown session id was filed under %q", got)
+	}
+	endA()
+	<-doneA
+	time.Sleep(2 * idle)
+	if s, _ := vm.snap(); s {
+		t.Fatal("the VM stopped while a session still ran")
+	}
+	if got := hookAsk(t, w, vm, "sess-a"); got != "sess-a" {
+		t.Errorf("an ended session's id still names its thread: %q", got)
+	}
+	endB()
+	<-doneB
+	eventually(t, "the VM stopped after its last session", func() bool { s, _ := vm.snap(); return s })
+	endC, doneC := w.shimSession("sess-c", "thread-c")
+	eventually(t, "a new VM for the next session", func() bool { vms := h.all(); return len(vms) == 2 && vms[1].procCount() == 1 })
+	endC()
+	<-doneC
+}
+
+// A claude session id already running in the role's VM is refused (two sessions can't share a thread's id).
+func TestRoleVMRefusesARunningSessionID(t *testing.T) {
+	w, h := streamWorld(t)
+	end, done := w.shimSession("dup", "t1")
+	defer func() { end(); <-done }()
+	eventually(t, "the session runs", func() bool { vms := h.all(); return len(vms) == 1 && vms[0].procCount() == 1 })
+	_, done2 := w.shimSession("dup", "t2")
+	if code := <-done2; code == 0 {
+		t.Error("a second session with the same id started")
+	}
+}
+
+// The VM's pipe giving up ends every session in it and the VM; the next session gets a new VM.
+func TestRoleVMPipeFailureEndsItsSessions(t *testing.T) {
+	w, h := streamWorld(t)
+	_, doneA := w.shimSession("a", "t1")
+	_, doneB := w.shimSession("b", "t2")
+	eventually(t, "both sessions run", func() bool { vms := h.all(); return len(vms) == 1 && vms[0].procCount() == 2 })
+	vm := h.all()[0]
+	vm.mu.Lock()
+	giveUp := vm.giveUp
+	vm.mu.Unlock()
+	giveUp()
+	for _, d := range []chan int{doneA, doneB} {
+		select {
+		case <-d:
+		case <-time.After(10 * time.Second):
+			t.Fatal("a session runs on after its VM's pipe gave up")
+		}
+	}
+	eventually(t, "the VM stopped", func() bool { s, _ := vm.snap(); return s })
+	end, done := w.shimSession("c", "t3")
+	eventually(t, "a new VM", func() bool { return len(h.all()) == 2 })
+	end()
+	<-done
+}
+
+// A VM that fails to start is not kept: the next session tries again.
+func TestRoleVMStartFailureIsNotKept(t *testing.T) {
+	w, h := streamWorld(t)
+	h.mu.Lock()
+	h.startErr = errors.New("no KVM right now")
+	h.mu.Unlock()
+	if code, _, errOut := w.runShim("", nil, w.argv()...); code == 0 || !strings.Contains(errOut, "no KVM") {
+		t.Fatalf("exit %d, %q", code, errOut)
+	}
+	h.mu.Lock()
+	h.startErr = nil
+	h.mu.Unlock()
+	if code, _, _ := w.runShim("x", nil, w.argv()...); code != 5 {
+		t.Errorf("after the failure: exit %d", code)
 	}
 }

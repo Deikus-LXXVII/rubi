@@ -48,6 +48,10 @@ type Gate struct {
 	Wait time.Duration
 	// Logf receives one line per deny that the gate made itself (never the tool input); log.Printf when nil.
 	Logf func(format string, args ...any)
+	// ThreadOf, on a VM several sessions share, is the T3 thread of a claude session id ("" when none): the session ids
+	// are those Home started claude with (--session-id), so a hook input can at most name another session of the same
+	// VM, whose asks belong to the same project and role anyway. Target.Thread is a VM's one thread instead.
+	ThreadOf func(sessionID string) string
 }
 
 // NewGate makes the gate of the VM whose calls are asked about under target.
@@ -128,7 +132,7 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.refuse(w, "no asker", "Rubi has no approval path for this session")
 		return
 	}
-	if g.target.Cwd != "" && in.Cwd != "" && in.Cwd != g.target.Cwd {
+	if g.target.Cwd != "" && in.Cwd != "" && in.Cwd != g.target.Cwd && !within(g.target.Cwd, in.Cwd) {
 		g.logf("t3vm: hook input of role %s claims cwd %q, the VM was started for %q", g.target.Role, in.Cwd, g.target.Cwd)
 	}
 	wait := g.Wait
@@ -141,6 +145,10 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	session := in.SessionID
 	if g.target.Thread != "" {
 		session = g.target.Thread
+	} else if g.ThreadOf != nil {
+		if t := g.ThreadOf(in.SessionID); t != "" {
+			session = t
+		}
 	}
 	res := g.asker.AskTool(ctx, g.target.Project, g.target.Role, agent.AskParams{
 		SessionID: session, AgentID: in.AgentID, AgentType: in.AgentType, Tool: in.ToolName, ToolUseID: in.ToolUseID,

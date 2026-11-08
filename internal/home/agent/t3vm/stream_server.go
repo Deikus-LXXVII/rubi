@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,7 +20,6 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/netpipe"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
 
@@ -120,13 +118,6 @@ func (s *Server) startStream(ctx context.Context, end func(), req StartRequest) 
 		return nil, err
 	}
 	ses.slot = release
-	name, err := NewName(role.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := o.Stream.Ready(); err != nil {
-		return nil, fmt.Errorf("the VM: %w", err)
-	}
 	files, err := s.writeFiles()
 	if err != nil {
 		return nil, err
@@ -135,63 +126,70 @@ func (s *Server) startStream(ctx context.Context, end func(), req StartRequest) 
 	if err != nil {
 		return nil, err
 	}
+	// The session's own folders are checked as the container path checks them (the workspace inside the role's project,
+	// apart from Home's files)...
 	spec := SessionSpec{
-		Name: name, Role: role.ID,
+		Name: "rubi-t3-check", Role: role.ID,
 		ClaudeDir: role.ClaudeDir, ContentDir: role.ContentDir, Cwd: req.Cwd, TrustedRoot: role.ProjectDir,
 		HelperDir: o.Dir, SignInDir: files.signIn, ReadOnly: ExtraDirs(argv, req.Cwd),
 		HookScript: files.hook, ManagedSettings: files.settings, T3Port: o.T3Port,
 	}
-	mounts, err := spec.Mounts(policyMounts) // checks the folders and their relations, as the container path's Plan
-	if err != nil {
+	if _, err := spec.Mounts(policyMounts); err != nil {
 		return nil, err
 	}
-	sctx, cancel := context.WithTimeout(ctx, startLimit)
-	defer cancel()
-	vm, err := o.Stream.StartSessionVM(sctx, name, mounts)
-	if err != nil {
-		return nil, fmt.Errorf("starting the VM: %w", err)
-	}
-	ses.onEnd(func() {
-		rctx, c := context.WithTimeout(context.Background(), stopLimit)
-		defer c()
-		if err := vm.Stop(rctx); err != nil {
-			s.opt.Logf("t3vm: stopping %s: %v", name, err)
+	sid := argv.SessionID() // the gate names a session's thread by it (T3 always passes one; a probe has none)
+	// ...and the role's VM has the project's root and T3's attachments folder: every folder a session of the role may
+	// work in or add (ClampArgv allows only the thread's folder and the attachments).
+	vmSpec := spec
+	vmSpec.Cwd, vmSpec.ReadOnly = role.ProjectDir, nil
+	if o.Attachments != "" {
+		if err := os.MkdirAll(o.Attachments, 0o700); err != nil {
+			return nil, err
 		}
-	})
-
-	proxyL, hookL, t3L := netpipe.NewListener("proxy", 16), netpipe.NewListener("hook", 16), netpipe.NewListener("t3", 16)
-	px, proxyToken, err := o.Backend.T3Proxy(role, proxyL)
+		vmSpec.ReadOnly = []string{o.Attachments}
+	}
+	v, releaseVM, err := s.pool.acquire(ctx, role.ID, func(v *roleVM) error {
+		name, err := NewName(role.ID)
+		if err != nil {
+			return err
+		}
+		vmSpec.Name = name
+		mounts, err := vmSpec.Mounts(policyMounts)
+		if err != nil {
+			return err
+		}
+		return s.startRoleVM(ctx, v, role, vmSpec, mounts)
+	}, o.Logf)
 	if err != nil {
 		return nil, err
 	}
-	ses.onEnd(func() { px.Close() })
-	hook := &http.Server{Handler: s.gate(role, req.Cwd, threadOf(req.Env)), ReadHeaderTimeout: 10 * time.Second}
-	go func() { _ = hook.Serve(hookL) }()
-	ses.onEnd(func() { hook.Close(); hookL.Close() })
-	fwd := &forwarder{dial: o.DialT3}
-	fwd.wg.Add(1)
-	go fwd.serve(t3L)
-	ses.onEnd(func() { t3L.Close(); fwd.close() })
-	stopPipe, err := vm.StartPipe(sctx, &agent.PipeSpec{Proxy: proxyL, Hook: hookL, T3: t3L}, spec.PipeEnv(), func() {
-		s.opt.Logf("t3vm: the network pipe of %s keeps failing; ending the session", name)
-		ses.giveUpNow()
-	})
-	if err != nil {
-		return nil, fmt.Errorf("the network pipe: %w", err)
+	ses.onEnd(releaseVM)
+	if sid != "" {
+		v.mu.Lock()
+		if _, taken := v.threads[sid]; taken {
+			v.mu.Unlock()
+			return nil, fmt.Errorf("t3vm: claude session %s already runs in the role's VM", clipStr(sid, 64))
+		}
+		v.threads[sid] = threadOf(req.Env)
+		v.mu.Unlock()
+		ses.onEnd(func() { v.mu.Lock(); delete(v.threads, sid); v.mu.Unlock() })
 	}
-	ses.onEnd(stopPipe)
+	// the VM stopping (its pipe failing, Home stopping) ends the session
+	stopAfter := context.AfterFunc(v.ctx, end)
+	ses.onEnd(func() { stopAfter() })
 
-	env, err := spec.EnvMap(req.Env, map[string]string{"HTTPS_PROXY": "http://rubi:" + proxyToken + "@" + agent.PipeProxyAddr, "NO_PROXY": "127.0.0.1"})
+	env, err := spec.EnvMap(req.Env, v.proxyEnv)
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range o.testEnv {
-		env[k] = v
+	for k, val := range o.testEnv {
+		env[k] = val
 	}
 	claude := o.StreamClaude
 	if claude == "" {
 		claude = claudeForArch(runtime.GOARCH)
 	}
+	vm := v.vm
 	ses.stream = &streamSession{vm: vm, dir: req.Cwd, env: env, argv: append([]string{claude}, argv.args...)}
 	return ses, nil
 }

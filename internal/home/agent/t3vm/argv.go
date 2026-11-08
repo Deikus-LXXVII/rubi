@@ -64,6 +64,21 @@ type Policy struct {
 // claude unchecked.
 type ClampedArgv struct{ args []string }
 
+// SessionID is the claude session id the arguments start or resume ("" when none).
+func (c ClampedArgv) SessionID() string {
+	for i, a := range c.args {
+		for _, f := range []string{"--session-id", "--resume"} {
+			if a == f && i+1 < len(c.args) {
+				return c.args[i+1]
+			}
+			if v, ok := strings.CutPrefix(a, f+"="); ok {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
 // Args returns a copy of the checked arguments.
 func (c ClampedArgv) Args() []string { return append([]string(nil), c.args...) }
 
