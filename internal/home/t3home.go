@@ -277,7 +277,7 @@ func (t *T3Home) startLocked(ctx context.Context) error {
 	if _, ok := t.installedNow(); !ok {
 		return errors.New("T3 isn't installed (or isn't the pinned version): run the install step of the T3 setup first")
 	}
-	if !t.srvAlive() {
+	if !t.srvAlive() && !t.adoptServer(ctx, pin.Version) {
 		if err := t.memoryForServer(); err != nil {
 			return err
 		}
@@ -335,6 +335,50 @@ func (t *T3Home) startServer(ctx context.Context, version string) error {
 	t.srv, t.runCtx, t.runStop = srv, rc, stop
 	t.mu.Unlock()
 	return nil
+}
+
+// adopter is the part of t3.Server that takes over a server an earlier run left.
+type adopter interface {
+	Adopt(ctx context.Context) (version string, ok bool, err error)
+}
+
+// adoptServer takes over the T3 server an earlier run of Rubi Home left running (it crashed or was killed before
+// it could stop it), so the agents' turns in it go on. Only a server of the recorded port and base folder, of this
+// install and of the pinned version is taken over; one of another version is stopped. It says whether a server
+// now runs.
+func (t *T3Home) adoptServer(ctx context.Context, version string) bool {
+	c := t.h.Fresh()
+	if c.T3Port <= 0 || c.T3Port == t3.UserPort {
+		return false
+	}
+	base := c.T3BaseDir
+	if base == "" {
+		base = t.defaultBase()
+	}
+	srv := t.newServer(t.nodeBin(), t.pkgBin(), base, t.runtimeHome(), c.T3Port)
+	a, ok := srv.(adopter)
+	if !ok {
+		return false
+	}
+	got, ok, err := a.Adopt(ctx)
+	if err != nil {
+		log.Printf("T3: couldn't check for a server an earlier run left: %v", err)
+		return false
+	}
+	if !ok {
+		return false
+	}
+	if got != version {
+		srv.Stop()
+		log.Printf("T3: stopped the server an earlier run left (version %s; the pinned one is %s)", clipStr(got, 40), version)
+		return false
+	}
+	rc, stop := context.WithCancel(t.baseCtx())
+	t.mu.Lock()
+	t.srv, t.runCtx, t.runStop = srv, rc, stop
+	t.mu.Unlock()
+	log.Printf("T3: took over the server an earlier run left (pid %d)", srv.Pid())
+	return true
 }
 
 // startSessions serves the session socket (and writes the role instances) while the server runs.
@@ -689,7 +733,7 @@ func (t *T3Home) Status() map[string]any {
 	out := map[string]any{
 		"installed": installed, "version": pin.Version, "node_version": pin.Node.Version, "platform": t.platform(),
 		"supported": t3Unavailable(pin, t.platform()) == "", "unsupported_reason": t3Unavailable(pin, t.platform()), "running": running, "paired": paired, "port": port, "instances": t.instances(),
-		"steps": steps, "job": nil, "error": nil,
+		"steps": steps, "job": nil, "error": nil, "memory_protection": t.h.MemoryProtectionState(),
 	}
 	if installed {
 		out["installed_version"] = in.T3Version

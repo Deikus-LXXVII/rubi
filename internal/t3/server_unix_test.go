@@ -62,8 +62,12 @@ func TestHelperProcess(t *testing.T) {
 		os.Stdout.WriteString("Pairing link: http://127.0.0.1/pair#token=FAKE-QR-TOKEN\n")
 		os.Stderr.WriteString("QR FAKE-QR-BLOCK\n")
 		os.Exit(3)
-	case "grandchild", "detached":
+	case "grandchild", "detached", "runtime-child":
 		gc := exec.Command("/bin/sleep", "60")
+		if string(mode) == "runtime-child" {
+			// Like the T3 runtime the launcher starts: in the group, its command line naming the base dir.
+			gc = exec.Command("/bin/sh", "-c", "sleep 60; :", "sh", "--base-dir", dir)
+		}
 		if string(mode) == "detached" {
 			// Out of the group, holding the server's output open.
 			gc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -80,6 +84,10 @@ func TestHelperProcess(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	pid := os.Getpid()
+	if string(mode) == "runtime-child" {
+		b, _ := os.ReadFile(filepath.Join(dir, "child.pid"))
+		pid, _ = strconv.Atoi(string(b))
+	}
 	if string(mode) == "sibling-pid" {
 		b, _ := os.ReadFile(filepath.Join(dir, "sibling.pid"))
 		pid, _ = strconv.Atoi(string(b))
@@ -88,6 +96,15 @@ func TestHelperProcess(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(dir, "userdata"), 0o700)
 	_ = os.WriteFile(filepath.Join(dir, "userdata", "server-runtime.json"),
 		mustJSON(map[string]any{"version": 1, "pid": pid, "port": p, "serverVersion": "9.9.9-helper"}), 0o600)
+	go func() { // a file named "deaf" in the base dir makes the server stop answering, as a hung one would
+		for {
+			if _, err := os.Stat(filepath.Join(dir, "deaf")); err == nil {
+				ln.Close()
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}()
 	go func() {
 		for {
 			c, err := ln.Accept()

@@ -94,3 +94,29 @@ func TestMemoryProtectionNeedsRubiHomeNonDumpable(t *testing.T) {
 		t.Fatalf("non-dumpable at scope 3: %q", why)
 	}
 }
+
+func TestMemoryProtectionState(t *testing.T) {
+	host := hostguard.Host{Yama: hostguard.Yama{Applicable: true, Present: true, Scope: 3}, Kernel: "k", MachineID: "m"}
+	h := memHelper(t, &host)
+	if st := h.MemoryProtectionState(); !st.Applies || !st.OK || st.Accepted || !strings.Contains(st.Reason, "ptrace_scope 3") {
+		t.Errorf("Yama 3: %+v", st)
+	}
+	host.Yama = hostguard.Yama{Applicable: true}
+	if st := h.MemoryProtectionState(); !st.Applies || st.OK || st.Accepted {
+		t.Errorf("no Yama, not accepted: %+v", st)
+	}
+	if err := h.AcceptMemoryRisk(); err != nil {
+		t.Fatal(err)
+	}
+	if st := h.MemoryProtectionState(); !st.OK || !st.Accepted || !strings.Contains(st.Reason, hostguard.RiskText) {
+		t.Errorf("no Yama, accepted: %+v", st)
+	}
+	host.Dumpable = true
+	if st := h.MemoryProtectionState(); st.OK || !strings.Contains(st.Reason, "unreadable") {
+		t.Errorf("dumpable: %+v", st)
+	}
+	host = hostguard.Host{}
+	if st := h.MemoryProtectionState(); st.Applies || !st.OK {
+		t.Errorf("not Linux: %+v", st)
+	}
+}

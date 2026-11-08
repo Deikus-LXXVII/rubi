@@ -4,8 +4,6 @@ package t3
 
 import (
 	"os/exec"
-	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -35,20 +33,50 @@ func stop(cmd *exec.Cmd, done <-chan struct{}) {
 	}
 }
 
-// ours reports whether pid is the process we started or one of its descendants.
+// ours reports whether pid is the process we started or one of its descendants. The parent comes from /proc on
+// Linux (a box may have no ps) and from the kernel's process table on macOS.
 func ours(pid, root int) bool {
 	for i := 0; i < 16 && pid > 1; i++ {
 		if pid == root {
 			return true
 		}
-		out, err := exec.Command("/bin/ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
+		st, err := procOf(pid)
 		if err != nil {
 			return false
 		}
-		pid, err = strconv.Atoi(strings.TrimSpace(string(out)))
-		if err != nil {
-			return false
-		}
+		pid = st.PPID
 	}
 	return pid == root
 }
+
+// stopAdopted ends the group of a server an earlier run left (it isn't our child, so there is nothing to wait
+// for: done closes when the leader is gone). still re-checks, right before the signal, that the leader is still
+// that server, so a process that got its id in the meantime is never signalled.
+func stopAdopted(pgid int, done <-chan struct{}, still func() bool) {
+	select {
+	case <-done:
+		return
+	default:
+	}
+	if !still() {
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+	// As in stop: the group id stays reserved while any member is left, so this reaches only the server's children.
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+	}
+}
+
+// sameUser reports whether this process may signal pid (as a non-root user: pid is the same user's).
+func sameUser(pid int) bool { return syscall.Geteuid() != 0 && syscall.Kill(pid, 0) == nil }
+
+func killGroup(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
+
+func isRoot() bool { return syscall.Geteuid() == 0 }

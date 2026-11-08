@@ -3,6 +3,9 @@
 ## Unreleased
 
 - **Rubi Home on a shared Linux computer** (groundwork for running T3 there). Rubi Home marks itself non-dumpable, so other processes of the same user can't read its memory. It doesn't start T3 when less than about 800 MiB of memory is free, and says so. It can tell whether the kernel keeps processes from reading each other's memory (Yama `ptrace_scope` 3), and records a one-time acceptance, bound to the computer and its kernel, where the kernel has no Yama.
+- **Rubi Home keeps running where there is no service manager** (a shared Linux computer whose first process isn't systemd). `rubi-home start` starts one supervisor in the background, or does nothing when one is running already; the supervisor runs Rubi Home and starts it again when it ends, waiting longer after each quick failure. Rubi Home writes to `rubi-home.log` in its folder there. A second `rubi-home run` on the same folder now waits for the first to end and then gives up, rather than serving beside it.
+- **A T3 server left by a crash is taken over.** When Rubi Home ended without stopping its T3 server, the next start takes that server over, so the agents' turns in it go on. It does this only after checking that the process is the server this install started, with the recorded port and folder, and that it still answers. A server of another version, or one that no longer answers, is stopped and a new one started. On Linux Rubi Home now reads processes from `/proc` and no longer needs `ps`.
+- **The T3 status says how this computer protects memory** (`memory_protection`): whether it applies, whether keys may be unlocked, whether that rests on the owner's acceptance, and why.
 
 ## v0.14.2 (2026-11-07)
 
