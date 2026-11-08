@@ -148,7 +148,7 @@ func (s *Server) startStream(ctx context.Context, end func(), req StartRequest) 
 		}
 		vmSpec.ReadOnly = []string{o.Attachments}
 	}
-	v, releaseVM, err := s.pool.acquire(ctx, role.ID, func(v *roleVM) error {
+	v, releaseVM, err := s.pool.acquire(ctx, s.baseCtx(), role.ID, func(ctx context.Context, v *roleVM) error {
 		name, err := NewName(role.ID)
 		if err != nil {
 			return err
@@ -159,7 +159,7 @@ func (s *Server) startStream(ctx context.Context, end func(), req StartRequest) 
 			return err
 		}
 		return s.startRoleVM(ctx, v, role, vmSpec, mounts)
-	}, o.Logf)
+	})
 	if err != nil {
 		return nil, err
 	}

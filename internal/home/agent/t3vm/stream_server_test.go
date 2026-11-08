@@ -154,7 +154,9 @@ func (*versionProc) Close() error                 { return nil }
 func (*versionProc) Wait() (int, error)           { return 0, nil }
 func (*versionProc) Done() <-chan struct{}        { return make(chan struct{}) }
 
-func streamWorld(t *testing.T) (*world, *fakeStreamHost) { return streamWorldIdle(t, 50*time.Millisecond) }
+func streamWorld(t *testing.T) (*world, *fakeStreamHost) {
+	return streamWorldIdle(t, 50*time.Millisecond)
+}
 
 // streamWorldIdle is streamWorld whose role VMs stop idle after idle (restored after the server has stopped).
 func streamWorldIdle(t *testing.T, idle time.Duration) (*world, *fakeStreamHost) {

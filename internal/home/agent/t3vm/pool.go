@@ -50,13 +50,20 @@ func (v *roleVM) threadOf(sessionID string) string {
 }
 
 // stop ends the VM and what serves it, once.
-func (v *roleVM) stop(logf func(string, ...any)) {
+func (v *roleVM) stop() {
 	v.mu.Lock()
 	if v.stopped {
 		v.mu.Unlock()
 		return
 	}
 	v.stopped = true
+	v.mu.Unlock()
+	v.finish()
+}
+
+// finish runs the teardown of a VM already marked stopped.
+func (v *roleVM) finish() {
+	v.mu.Lock()
 	if v.idle != nil {
 		v.idle.Stop()
 	}
@@ -67,7 +74,18 @@ func (v *roleVM) stop(logf func(string, ...any)) {
 	for i := len(steps) - 1; i >= 0; i-- {
 		steps[i]()
 	}
-	_ = logf
+}
+
+// add registers a teardown step; on a VM already stopped (its pipe gave up while it started) it runs at once.
+func (v *roleVM) add(f func()) {
+	v.mu.Lock()
+	if !v.stopped {
+		v.teardown = append(v.teardown, f)
+		v.mu.Unlock()
+		return
+	}
+	v.mu.Unlock()
+	f()
 }
 
 // vmPool holds the role VMs of a Server.
@@ -78,7 +96,9 @@ type vmPool struct {
 
 // acquire returns the role's running VM with one more session on it, starting it with start when there is none (one
 // start at a time per role; others wait for it). release ends that session's hold: the last one starts the idle timer.
-func (p *vmPool) acquire(ctx context.Context, role string, start func(v *roleVM) error, logf func(string, ...any)) (*roleVM, func(), error) {
+// The start runs under base (Home's serving lifetime), not under the caller's context: a caller that goes away doesn't
+// fail the others waiting for the same VM.
+func (p *vmPool) acquire(ctx, base context.Context, role string, start func(ctx context.Context, v *roleVM) error) (*roleVM, func(), error) {
 	for {
 		p.mu.Lock()
 		if p.vms == nil {
@@ -90,12 +110,21 @@ func (p *vmPool) acquire(ctx context.Context, role string, start func(v *roleVM)
 			v.ctx, v.cancel = context.WithCancel(context.Background())
 			p.vms[role] = v
 			p.mu.Unlock()
-			v.err = start(v)
-			if v.err != nil {
-				p.drop(v)
-				v.stop(logf)
-			}
-			close(v.ready)
+			go func() { // on its own: the caller may leave while the VM starts
+				sctx, cancel := context.WithTimeout(base, startLimit)
+				v.err = start(sctx, v)
+				cancel()
+				if v.err != nil {
+					p.drop(v)
+					v.stop()
+				}
+				close(v.ready)
+				v.mu.Lock()
+				if v.err == nil && v.refs == 0 { // nobody stayed for it: it stops when idle, as after a last session
+					p.armIdle(v)
+				}
+				v.mu.Unlock()
+			}()
 		} else {
 			p.mu.Unlock()
 		}
@@ -125,21 +154,36 @@ func (p *vmPool) acquire(ctx context.Context, role string, start func(v *roleVM)
 				v.mu.Lock()
 				defer v.mu.Unlock()
 				v.refs--
-				if v.refs == 0 && !v.stopped {
-					v.idle = time.AfterFunc(roleVMIdle, func() {
-						v.mu.Lock()
-						busy := v.refs > 0
-						v.mu.Unlock()
-						if !busy {
-							p.drop(v)
-							v.stop(logf)
-						}
-					})
+				if v.refs == 0 {
+					p.armIdle(v)
 				}
 			})
 		}
 		return v, release, nil
 	}
+}
+
+// armIdle starts v's idle timer (v.mu held, no session on it).
+func (p *vmPool) armIdle(v *roleVM) {
+	if v.stopped {
+		return
+	}
+	if v.idle != nil {
+		v.idle.Stop()
+	}
+	v.idle = time.AfterFunc(roleVMIdle, func() {
+		// decided and marked under one lock: an acquire either took the VM before (refs > 0) or sees it stopped
+		// after, and starts a new one
+		v.mu.Lock()
+		if v.refs > 0 || v.stopped {
+			v.mu.Unlock()
+			return
+		}
+		v.stopped = true
+		v.mu.Unlock()
+		p.drop(v)
+		v.finish()
+	})
 }
 
 // drop forgets v (when it is still the role's entry).
@@ -152,7 +196,7 @@ func (p *vmPool) drop(v *roleVM) {
 }
 
 // stopAll ends every role VM (Home stops serving).
-func (p *vmPool) stopAll(logf func(string, ...any)) {
+func (p *vmPool) stopAll() {
 	p.mu.Lock()
 	vms := make([]*roleVM, 0, len(p.vms))
 	for _, v := range p.vms {
@@ -162,21 +206,20 @@ func (p *vmPool) stopAll(logf func(string, ...any)) {
 	p.mu.Unlock()
 	for _, v := range vms {
 		<-v.ready
-		v.stop(logf)
+		v.stop()
 	}
 }
 
 // startRoleVM boots the role's VM with spec's folders and starts its proxy, hook gate, T3 forward and pipe.
 func (s *Server) startRoleVM(ctx context.Context, v *roleVM, role *agent.T3Role, spec SessionSpec, mounts []agent.Mount) error {
 	o := s.opt
-	sctx, cancel := context.WithTimeout(ctx, startLimit)
-	defer cancel()
+	sctx := ctx
 	vm, err := o.Stream.StartSessionVM(sctx, spec.Name, mounts)
 	if err != nil {
 		return fmt.Errorf("starting the VM: %w", err)
 	}
 	v.vm = vm
-	add := func(f func()) { v.mu.Lock(); v.teardown = append(v.teardown, f); v.mu.Unlock() }
+	add := v.add
 	add(func() {
 		rctx, c := context.WithTimeout(context.Background(), stopLimit)
 		defer c()
@@ -202,7 +245,7 @@ func (s *Server) startRoleVM(ctx context.Context, v *roleVM, role *agent.T3Role,
 	stopPipe, err := vm.StartPipe(sctx, &agent.PipeSpec{Proxy: proxyL, Hook: hookL, T3: t3L}, spec.PipeEnv(), func() {
 		o.Logf("t3vm: the network pipe of %s keeps failing; ending its sessions", spec.Name)
 		s.pool.drop(v)
-		go v.stop(o.Logf)
+		go v.stop()
 	})
 	if err != nil {
 		return fmt.Errorf("the network pipe: %w", err)

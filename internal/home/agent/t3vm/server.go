@@ -226,7 +226,7 @@ func (s *Server) Serve(ctx context.Context, path string) error {
 	stop := context.AfterFunc(ctx, func() { ln.Close() })
 	defer stop()
 	defer os.Remove(path)
-	defer s.pool.stopAll(s.opt.Logf) // after the sessions: the role VMs they shared
+	defer s.pool.stopAll() // after the sessions: the role VMs they shared
 	defer s.wg.Wait()
 	for {
 		conn, err := ln.Accept()

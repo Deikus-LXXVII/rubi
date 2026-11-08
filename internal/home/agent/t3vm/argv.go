@@ -66,8 +66,8 @@ type ClampedArgv struct{ args []string }
 
 // SessionID is the claude session id the arguments start or resume ("" when none).
 func (c ClampedArgv) SessionID() string {
-	for i, a := range c.args {
-		for _, f := range []string{"--session-id", "--resume"} {
+	for _, f := range []string{"--session-id", "--resume"} { // a new id wins over the one a fork resumes from
+		for i, a := range c.args {
 			if a == f && i+1 < len(c.args) {
 				return c.args[i+1]
 			}
