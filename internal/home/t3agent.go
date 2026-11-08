@@ -16,6 +16,7 @@ import (
 	"log"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -406,6 +407,15 @@ func (t *T3Home) clampMode(mode string, ceiling string) (sel agent.T3ModeSel, ef
 }
 
 func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
+	return t.startOnPlatform(ctx, in, runtime.GOOS)
+}
+
+func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (any, error) {
+	if in.task {
+		if err := agenttask.CheckPlatform(goos); err != nil {
+			return nil, err
+		}
+	}
 	if strings.TrimSpace(in.prompt) == "" {
 		return nil, errors.New("the prompt is empty")
 	}

@@ -248,3 +248,16 @@ func TestWorkspaceRefusesMissingOwner(t *testing.T) {
 		t.Fatal("failed prepare left a binding")
 	}
 }
+
+func TestTaskPlatformMatchesSandboxSupport(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin"} {
+		if err := CheckPlatform(goos); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, goos := range []string{"windows", "freebsd", "plan9", ""} {
+		if CheckPlatform(goos) == nil {
+			t.Fatalf("unsupported %q allowed repository creation", goos)
+		}
+	}
+}

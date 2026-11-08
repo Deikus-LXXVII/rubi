@@ -34,6 +34,14 @@ fail with exit 125; no VM or unconfined fallback is used by these shims.
 
 ### Repository task copies (groundwork, not yet phone-to-PR)
 
+Repository tasks require a Linux or macOS Rubi Home, matching the supported
+srt backends and trusted Unix Git launcher. Windows (and unknown operating
+systems) refuses a task before role/project lookup or repository preparation;
+there is no unconfined Git/copy fallback. Windows CI's temporary project lives
+under protected `AppData/Local/Temp`: its rejection is intentional, not a reason
+to loosen the protected-directory filter. This does not disable unrelated
+Windows helper/scheduled-task functionality.
+
 Home `t3-agent.start` may opt into `task: true`. The response adds `task`,
 `branch` and `base_commit`. An ordinary session keeps its existing behavior.
 Core permits the task option only during the official `t3agents.task_start`

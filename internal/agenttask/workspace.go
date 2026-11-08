@@ -9,11 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -23,6 +25,15 @@ import (
 var idRE = regexp.MustCompile(`^task_[0-9a-f]{24}$`)
 
 func ValidID(id string) bool { return idRE.MatchString(id) }
+
+// CheckPlatform matches the launcher boundary: Windows has no supported srt
+// isolation backend, and repository preparation relies on trusted Unix git.
+func CheckPlatform(goos string) error {
+	if goos != "linux" && goos != "darwin" {
+		return fmt.Errorf("repository tasks are not supported on %s: srt isolation requires Linux or macOS; select a Linux or macOS Rubi Home", goos)
+	}
+	return nil
+}
 
 type Workspace struct {
 	ID         string    `json:"id"`
@@ -83,6 +94,9 @@ func configHash(dir string) (string, error) {
 // shared object inodes/alternates; unlike a linked worktree, git commit needs no
 // access to the source repository's common gitdir. The agent gets no remote.
 func Prepare(ctx context.Context, home, source, project, role string) (w Workspace, err error) {
+	if err = CheckPlatform(runtime.GOOS); err != nil {
+		return w, err
+	}
 	if project == "" || role == "" {
 		return w, errors.New("task: missing project or role")
 	}
@@ -166,6 +180,9 @@ func Prepare(ctx context.Context, home, source, project, role string) (w Workspa
 // Resolve takes only an opaque ID and the enrolled project's trusted binding.
 // No cwd, provider environment, supplied worktree path, or source .git is used.
 func Resolve(home, id, project, role, sourceHash string) (w Workspace, err error) {
+	if err = CheckPlatform(runtime.GOOS); err != nil {
+		return w, err
+	}
 	if project == "" || role == "" {
 		return w, errors.New("task: missing project or role")
 	}

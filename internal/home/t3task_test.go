@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -36,6 +37,9 @@ func initTaskRepo(t *testing.T, dir string) {
 	taskGit(t, dir, "commit", "-m", "base")
 }
 func TestT3TaskStartPersistsPrivateCopyAndInstance(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
 	l, role := agentLife(t)
 	initTaskRepo(t, l.proj)
 	head := taskGit(t, l.proj, "rev-parse", "HEAD")
@@ -102,6 +106,9 @@ func TestT3TaskStartPersistsPrivateCopyAndInstance(t *testing.T) {
 	}
 }
 func TestT3TaskStartRefusesBeforeCreatingAThread(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
 	l, role := agentLife(t)
 	_, err := handle(t, l.h, "tok", "t3-agent.start", map[string]any{"role": role, "prompt": "work", "task": true})
 	if err == nil {
@@ -113,6 +120,9 @@ func TestT3TaskStartRefusesBeforeCreatingAThread(t *testing.T) {
 }
 
 func TestT3TaskForkKeepsBindingAndStopSurvivesDamagedCopy(t *testing.T) {
+	if assertUnsupportedTaskPlatform(t) {
+		return
+	}
 	l, role := agentLife(t)
 	initTaskRepo(t, l.proj)
 	id := startThread(t, l, role, map[string]any{"task": true})
@@ -158,5 +168,41 @@ func TestT3NativeOpaqueThreadIDSupportsPhoneControls(t *testing.T) {
 		if validT3ThreadID(bad) {
 			t.Fatal("invalid opaque ID accepted")
 		}
+	}
+}
+
+// Windows must exercise the real refusal, before its AppData/Temp project is
+// filtered or any role, git executable, workspace, or T3 thread is requested.
+func assertUnsupportedTaskPlatform(t *testing.T) bool {
+	t.Helper()
+	if agenttask.CheckPlatform(runtime.GOOS) == nil {
+		return false
+	}
+	h, _, _ := agentHelper(t)
+	_, err := handle(t, h, "tok", "t3-agent.start", map[string]any{"task": true, "role": "not-created", "prompt": "work"})
+	if err == nil || !strings.Contains(err.Error(), "repository tasks are not supported on "+runtime.GOOS) {
+		t.Fatalf("wrong unsupported-platform refusal: %v", err)
+	}
+	for _, p := range []string{filepath.Join(h.Dir, "t3", "tasks"), filepath.Join(h.Dir, "t3", "workspaces")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatal("unsupported task touched repository state")
+		}
+	}
+	if len(h.T3.threads.snapshot()) != 0 {
+		t.Fatal("unsupported task created a T3 thread")
+	}
+	return true
+}
+
+func TestT3TaskUnsupportedPlatformRefusesBeforeProjectDiscovery(t *testing.T) {
+	// A nil Home intentionally has no project/role/config services. This runs on
+	// Linux too and would panic if the platform gate moved behind those services.
+	for _, goos := range []string{"windows", "freebsd", "plan9"} {
+		t.Run(goos, func(t *testing.T) {
+			_, err := (&T3Home{}).startOnPlatform(context.Background(), startIn{task: true, prompt: "work", role: "missing"}, goos)
+			if err == nil || !strings.Contains(err.Error(), "repository tasks are not supported on "+goos) {
+				t.Fatalf("wrong refusal: %v", err)
+			}
+		})
 	}
 }
