@@ -3,7 +3,7 @@
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 if [ "$(uname -s)" != Linux ]; then echo 'SKIP: Linux-only acceptance'; exit 0; fi
-for tool in bwrap srt node unshare setpriv python3; do
+for tool in bwrap srt node unshare setpriv python3 git socat rg; do
  if ! command -v "$tool" >/dev/null 2>&1; then echo "SKIP: missing $tool"; exit 0; fi
 done
 if ! bwrap --unshare-user --ro-bind / / /bin/true >/dev/null 2>&1; then echo 'SKIP: bwrap/user namespaces unavailable'; exit 0; fi

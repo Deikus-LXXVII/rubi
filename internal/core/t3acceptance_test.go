@@ -45,7 +45,7 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 	if native == "" || helper == "" || companion == "" {
 		t.Skip("use scripts/test-t3-agents-acceptance.sh with native T3 and companion source")
 	}
-	for _, tool := range []string{"bwrap", "srt", "node", "setpriv", "unshare", "python3"} {
+	for _, tool := range []string{"bwrap", "srt", "node", "setpriv", "unshare", "python3", "git", "socat", "rg"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skip("missing acceptance dependency", tool)
 		}
@@ -76,6 +76,7 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var m map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&m)
+		m["_fixture_path"] = r.URL.Path
 		received <- m
 		w.WriteHeader(200)
 	}))
@@ -97,6 +98,7 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 	if err = c.Vault.Update(func(d *vault.Data) error {
 		d.Integrations["t3agents"] = &vault.Integration{Enabled: true, Accounts: []*vault.Account{{ID: "acceptance", Label: "Local mock GitHub", Default: true, Agents: []string{"Mail"}, Secrets: map[string]string{"github_token": fixtureToken}}}}
 		d.Agents = append(d.Agents, &vault.Agent{Name: "Mail", URL: receiver.URL + "/automations/webhook/6076a0ff-5b26-405e-82ef-d6173cd96066", Key: "fixture-receiver", Subscriptions: []string{"t3agents"}})
+		d.Agents = append(d.Agents, &vault.Agent{Name: "Observer", Default: true, URL: receiver.URL + "/automations/webhook/6f8d7afd-0e49-48f3-94de-a33ec127108a", Key: "fixture-observer", Subscriptions: []string{"t3agents"}})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -271,6 +273,26 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 		t.Fatal("real companion start failed", err)
 	}
 	defer c.Runner.StopAll()
+	// Account assignment is a fixture prerequisite. The real multi-Bot access
+	// broker grants its scoped code without a second user confirmation.
+	grant, e := c.RequestAccess(ctx, "Mail", []AccessResource{{Plugin: "t3agents", Account: "acceptance"}}, "disposable acceptance tasks", 60)
+	if e != nil || grant["status"] == "awaiting_approval" {
+		t.Fatal("preassigned fixture account was not granted")
+	}
+	accessCode := ""
+	until := time.NewTimer(10 * time.Second)
+	defer until.Stop()
+	for accessCode == "" {
+		select {
+		case m := <-received:
+			if data, ok := m["data"].(map[string]any); ok {
+				accessCode, _ = data["access_code"].(string)
+			}
+		case <-until.C:
+			t.Fatal("scoped fixture access code not delivered")
+		}
+	}
+
 	taskDir := func(id string) string {
 		t.Helper()
 		w, e := agenttask.Resolve(h.Dir, id, "my-project", role, roles.DirHash(source))
@@ -281,7 +303,7 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 	}
 	start := func(prompt string, publish bool, lost ...bool) (string, string) {
 		t.Helper()
-		args := map[string]any{"rubi_agent": "Mail", "rubi_agent_code": c.agentCodeFor("Mail"), "device": device, "project": "my-project", "role": role, "prompt": prompt, "provider": "codex", "model": "gpt-5.4"}
+		args := map[string]any{"rubi_agent": "Mail", "rubi_agent_code": c.agentCodeFor("Mail"), "rubi_access": accessCode, "device": device, "project": "my-project", "role": role, "prompt": prompt, "provider": "codex", "model": "gpt-5.4"}
 		if publish {
 			args["publish"] = map[string]string{"repository": "owner/repo", "base": "main", "account": "acceptance"}
 		}
@@ -372,6 +394,9 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 		t.Fatal("task panel card failed", err)
 	}
 	cardJSON, _ := json.Marshal(card)
+	if strings.Contains(string(cardJSON), fixtureToken) {
+		t.Fatal("credential leaked to task card")
+	}
 	if !strings.Contains(string(cardJSON), finished.PR) || !strings.Contains(string(cardJSON), "agent-reported") {
 		t.Fatal("panel omitted PR/test provenance")
 	}
@@ -386,6 +411,9 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 			case m := <-received:
 				raw, _ := json.Marshal(m)
 				if strings.Contains(string(raw), id) && strings.Contains(string(raw), "task_result") {
+					if m["_fixture_path"] != "/automations/webhook/6076a0ff-5b26-405e-82ef-d6173cd96066" {
+						t.Fatal("task result leaked to another subscribed/default Bot")
+					}
 					if !strings.Contains(string(raw), "https://rubi-panel.com/") {
 						t.Fatal("requester result omitted full panel link")
 					}
@@ -410,7 +438,7 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 			}
 			if state.Phase == want {
 				if state.Phase.Terminal() {
-					out, e := c.CallTool(ctx, "t3agents_task_status", acceptanceJSON(map[string]any{"rubi_agent": "Mail", "rubi_agent_code": c.agentCodeFor("Mail"), "device": device, "id": id}))
+					out, e := c.CallTool(ctx, "t3agents_task_status", acceptanceJSON(map[string]any{"rubi_agent": "Mail", "rubi_agent_code": c.agentCodeFor("Mail"), "rubi_access": accessCode, "device": device, "id": id}))
 					if e != nil {
 						t.Fatal("MCP task status failed", e)
 					}
@@ -435,7 +463,7 @@ func TestT3AgentsCombinedAcceptance(t *testing.T) {
 	}
 	control := func(op, id, text string) {
 		t.Helper()
-		_, e := c.CallTool(ctx, "t3agents_task_"+op, acceptanceJSON(map[string]any{"rubi_agent": "Mail", "rubi_agent_code": c.agentCodeFor("Mail"), "device": device, "id": id, "text": text}))
+		_, e := c.CallTool(ctx, "t3agents_task_"+op, acceptanceJSON(map[string]any{"rubi_agent": "Mail", "rubi_agent_code": c.agentCodeFor("Mail"), "rubi_access": accessCode, "device": device, "id": id, "text": text}))
 		if e != nil {
 			t.Fatal("real companion control failed", op, e)
 		}
