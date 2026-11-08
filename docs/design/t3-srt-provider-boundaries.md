@@ -1,5 +1,9 @@
 # Cursor and OpenCode: execution boundaries, not additional CLI shims
 
+> Historical investigation at c1057e0. The project-server and authenticated-pipe
+> mechanisms are now implemented; see [current launcher documentation](../srt-launcher.md)
+> for the supported routes, verification evidence and remaining limitations.
+
 Status: **finding / design only; neither provider is connected**. Both remain
 absent from Rubi-managed instance settings, and the launcher refuses them even
 if their CLIs are installed. Personal T3 providers are unchanged. No T3 code,

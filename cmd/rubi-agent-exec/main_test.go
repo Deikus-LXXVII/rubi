@@ -19,7 +19,11 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if os.Getenv("RUBI_AGENT_EXEC_TEST") == "1" {
+	if len(os.Args) >= 2 && os.Args[1] == "--bridge-fake" {
+		fakeBridgeService()
+		return
+	}
+	if os.Getenv("RUBI_AGENT_EXEC_TEST") == "1" || (len(os.Args) == 2 && os.Args[1] == "--bridge-relay") {
 		main()
 		return
 	}
@@ -157,7 +161,6 @@ sys.exit(17)
 func TestUnroutedProvidersRefuseBeforeExecution(t *testing.T) {
 	for _, tc := range []struct{ driver, reason string }{
 		{"cursor", "shared T3 server"},
-		{"opencode", "authenticated private HTTP bridge"},
 	} {
 		t.Run(tc.driver, func(t *testing.T) {
 			for _, missing := range []bool{false, true} {

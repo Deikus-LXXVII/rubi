@@ -17,20 +17,22 @@ type Installation struct {
 }
 
 type Provider struct {
-	CLI            string   `json:"cli"`
-	RuntimeRead    []string `json:"runtime_read"`
-	AllowedDomains []string `json:"allowed_domains"`
+	CLI                string            `json:"cli"`
+	RuntimeRead        []string          `json:"runtime_read"`
+	AllowedDomains     []string          `json:"allowed_domains"`
+	CredentialsFile    string            `json:"credentials_file,omitempty"`
+	ProjectCredentials map[string]string `json:"project_credentials,omitempty"`
 }
 
 // ProviderRoute describes the upstream setting that actually controls process launch.
 type ProviderRoute struct{ Driver, BinaryField string }
 
 // Cursor's current SDK launches in-process and ignores binaryPath for sessions.
-// OpenCode needs an authenticated transport across srt's network boundary.
-// Neither driver is exposed until its actual execution boundary is connected.
+// Cursor is routed by Rubi to a whole project server, never a shared-server shim.
+// OpenCode's shim owns an authenticated inherited-pipe bridge to its sandbox.
 var ProviderRoutes = []ProviderRoute{
 	{"claudeAgent", "binaryPath"}, {"codex", "binaryPath"},
-	{"grok", "binaryPath"}, {"fx", "binaryPath"}, {"opencode", ""},
+	{"grok", "binaryPath"}, {"fx", "binaryPath"}, {"opencode", "binaryPath"},
 	{"antigravity", "binaryPath"}, {"kiro", "binaryPath"}, {"pi", "binaryPath"},
 	{"muse", "binaryPath"}, {"acpRegistry", "commandPath"}, {"cursor", ""},
 }
@@ -48,9 +50,7 @@ func Route(driver string) (ProviderRoute, bool) {
 func RouteBlocker(driver string) string {
 	switch driver {
 	case "cursor":
-		return "Cursor executes inside the shared T3 server; a CLI shim cannot confine its file tools (requires an isolated T3 server or an upstream execution hook)"
-	case "opencode":
-		return "OpenCode requires an authenticated private HTTP bridge across the srt network boundary; a binaryPath shim alone is not a safe connection"
+		return "Cursor cannot use a CLI shim in the shared T3 server; select provider cursor through Rubi to use its sandboxed project T3 server"
 	default:
 		return "provider has no supported sandbox launch hook"
 	}

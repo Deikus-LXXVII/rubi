@@ -49,17 +49,15 @@ const (
 // New makes a client for the server at base (like http://127.0.0.1:3773). The ceiling is the highest mode
 // any request through it may use.
 func New(base string, tok Token, ceiling Mode) *Client {
+	return NewWithTransport(base, tok, ceiling, &http.Transport{DialContext: (&net.Dialer{Timeout: dialWaitMax}).DialContext, TLSHandshakeTimeout: dialWaitMax, ResponseHeaderTimeout: headerWaitMax})
+}
+
+// NewWithTransport connects through a supervisor-owned transport (e.g. inherited
+// project pipes). Authentication still has exactly the same origin/mode guard.
+func NewWithTransport(base string, tok Token, ceiling Mode, rt http.RoundTripper) *Client {
 	c := &Client{base: strings.TrimRight(base, "/"), tok: tok, ceiling: ceiling.norm()}
 	c.origin, _ = url.Parse(c.base)
-	// A dedicated transport (no environment proxy), and no redirects: the bearer goes to the base and nowhere else.
-	c.hc = &http.Client{
-		Transport: headerTransport{c, &http.Transport{
-			DialContext:           (&net.Dialer{Timeout: dialWaitMax}).DialContext,
-			TLSHandshakeTimeout:   dialWaitMax,
-			ResponseHeaderTimeout: headerWaitMax,
-		}},
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
+	c.hc = &http.Client{Transport: headerTransport{c, rt}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	return c
 }
 

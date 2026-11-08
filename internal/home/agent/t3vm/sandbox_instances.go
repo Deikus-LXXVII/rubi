@@ -1,6 +1,8 @@
 package t3vm
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +25,7 @@ func sandboxInstanceID(role, driver string) string {
 }
 
 // SyncSandboxInstances writes fixed per-role/provider shims and project switches.
-// Personal instances are untouched. Unsupported SDK/HTTP drivers are not exposed.
+// Personal instances are untouched. Cursor uses its separate project server, not a shim.
 func SyncSandboxInstances(o InstanceOptions, agentExec string, want []SandboxRole) (SyncResult, error) {
 	path := o.settingsPath()
 	if real, err := filepath.EvalSymlinks(path); err == nil {
@@ -167,6 +169,18 @@ func (o InstanceOptions) sandboxOnce(agentExec string, want []SandboxRole, raw [
 			case "codex":
 				cfg["homePath"] = login
 				cfg["setupMode"] = "existing"
+			case "opencode":
+				// A remote URL bypasses binaryPath entirely. Managed instances
+				// always own a local confined server and a strong bridge secret.
+				cfg["serverUrl"] = ""
+				password, _ := cfg["serverPassword"].(string)
+				if len(password) < 32 {
+					secret := make([]byte, 32)
+					if _, err := rand.Read(secret); err != nil {
+						return nil, res, errors.New("sandbox: cannot provision OpenCode bridge authentication")
+					}
+					cfg["serverPassword"] = base64.RawURLEncoding.EncodeToString(secret)
+				}
 			case "acpRegistry":
 				cfg["source"] = "local"
 				if _, ok := cfg["commandArgs"]; !ok {

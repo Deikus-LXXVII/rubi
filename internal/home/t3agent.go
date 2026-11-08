@@ -19,7 +19,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
@@ -89,6 +91,7 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 		Steer     bool   `json:"steer"`
 		Bot       string `json:"bot"`
 		Model     string `json:"model"`
+		Provider  string `json:"provider"`
 		MessageID string `json:"message_id"`
 	}
 	if len(args) > 0 && string(args) != "null" && json.Unmarshal(args, &in) != nil {
@@ -109,7 +112,7 @@ func (t *T3Home) handleAgent(ctx context.Context, op string, args json.RawMessag
 		}
 		return t.messages(ctx, in.Project, in.Role, in.ID, in.Limit)
 	case "start":
-		return t.start(ctx, startIn{in.Project, in.Role, in.Prompt, in.Name, in.From, in.Mode, in.Bot, in.Model, in.MessageID})
+		return t.start(ctx, startIn{in.Project, in.Role, in.Prompt, in.Name, in.From, in.Mode, in.Bot, in.Model, in.MessageID, in.Provider})
 	case "send":
 		if !agent.OkID(in.ID) {
 			return nil, errors.New("bad session id")
@@ -290,10 +293,11 @@ func readAll(ctx context.Context, cl *t3.Client, id string, after int) (t3.Threa
 // messages is claude-agent.messages: the thread's messages in the SDK's shape (type, message{role, content}), the last
 // `limit` of them (at most 500; 0 is 500).
 func (t *T3Home) messages(ctx context.Context, project, role, id string, limit int) (any, error) {
-	if _, err := t.own(project, role, id); err != nil {
+	th, err := t.own(project, role, id)
+	if err != nil {
 		return nil, err
 	}
-	cl, err := t.ready()
+	cl, err := t.readyForThread(ctx, th)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +328,7 @@ func (t *T3Home) messages(ctx context.Context, project, role, id string, limit i
 
 // ---- start, send ----
 
-type startIn struct{ project, role, prompt, name, from, mode, bot, model, messageID string }
+type startIn struct{ project, role, prompt, name, from, mode, bot, model, messageID, provider string }
 
 func firstLine(s string, n int) string {
 	s = strings.TrimSpace(s)
@@ -413,7 +417,17 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	cl, err := t.ready()
+	provider := in.provider
+	if provider == "" {
+		provider = "claudeAgent"
+	}
+	if _, ok := agentsandbox.Route(provider); !ok && provider != "cursor" {
+		return nil, errors.New("unsupported sandboxed provider")
+	}
+	if provider != "claudeAgent" && in.model == "" {
+		return nil, errors.New("say which model to use for this provider")
+	}
+	cl, err := t.readyForProvider(ctx, r.Project, r.ID, provider, "")
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +435,12 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	if err := t.checkCaps(r.Project, r.ID, in.bot); err != nil {
 		return nil, err
 	}
-	pid, err := t.ensureProject(ctx, cl, r.ProjectDir, r.Project)
+	var pid string
+	if provider == "cursor" {
+		pid, err = t.findOrMakeProject(ctx, cl, r.ProjectDir, r.Project)
+	} else {
+		pid, err = t.ensureProject(ctx, cl, r.ProjectDir, r.Project)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +456,11 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	if model == "" {
 		model = t.Model
 	}
-	run, err := cl.Launch(ctx, t3.LaunchIn{ProjectID: pid, Title: title, Instance: t3vm.InstancePrefix + r.ID, Model: model, Mode: eff,
+	instance := t3vm.InstancePrefix + r.ID
+	if provider != "claudeAgent" {
+		instance = "rubi-" + strings.ToLower(provider) + "-" + r.ID
+	}
+	run, err := cl.Launch(ctx, t3.LaunchIn{ProjectID: pid, Title: title, Instance: instance, Model: model, Mode: eff,
 		Plan: sel.Plan, Message: labelled(in.from, in.prompt), RequestID: mid})
 	if err != nil {
 		return nil, err
@@ -447,7 +470,7 @@ func (t *T3Home) start(ctx context.Context, in startIn) (any, error) {
 	}
 	now := t.now().UTC()
 	th := t3Thread{ID: run.ThreadID, Project: r.Project, Role: r.ID, Name: title, Bot: in.bot, Mode: claude, Runtime: string(eff),
-		Created: now, LastActivity: now, Running: true, RunID: run.RunID, To: toOf(in.from, in.bot), ReplyTo: []string{mid}}
+		Provider: provider, Environment: environmentFor(provider, r.ProjectDir), Created: now, LastActivity: now, Running: true, RunID: run.RunID, To: toOf(in.from, in.bot), ReplyTo: []string{mid}}
 	if err := t.threads.add(th); err != nil {
 		_ = cl.Interrupt(ctx, run.ThreadID)
 		return nil, err
@@ -468,7 +491,7 @@ func (t *T3Home) send(ctx context.Context, project, role, id, text, from, bot, m
 		return nil, err
 	}
 	r.Release()
-	cl, err := t.ready()
+	cl, err := t.readyForThread(ctx, th)
 	if err != nil {
 		return nil, err
 	}
@@ -510,10 +533,11 @@ func (t *T3Home) send(ctx context.Context, project, role, id, text, from, bot, m
 // ---- rename, fork, interrupt, close, mode ----
 
 func (t *T3Home) rename(ctx context.Context, project, role, id, name string) (any, error) {
-	if _, err := t.ownOpen(project, role, id); err != nil {
+	th, err := t.ownOpen(project, role, id)
+	if err != nil {
 		return nil, err
 	}
-	cl, err := t.ready()
+	cl, err := t.readyForThread(ctx, th)
 	if err != nil {
 		return nil, err
 	}
@@ -535,7 +559,7 @@ func (t *T3Home) fork(ctx context.Context, project, role, id, name string) (any,
 		return nil, err
 	}
 	r.Release()
-	cl, err := t.ready()
+	cl, err := t.readyForThread(ctx, th)
 	if err != nil {
 		return nil, err
 	}
@@ -556,7 +580,7 @@ func (t *T3Home) fork(ctx context.Context, project, role, id, name string) (any,
 	}
 	now := t.now().UTC()
 	f := t3Thread{ID: nid, Project: th.Project, Role: th.Role, Name: title, Bot: th.Bot, Mode: th.Mode, Runtime: th.Runtime,
-		Created: now, LastActivity: now, LastPos: pos}
+		Created: now, LastActivity: now, LastPos: pos, Provider: th.Provider, Environment: th.Environment}
 	if err := t.threads.add(f); err != nil {
 		return nil, err
 	}
@@ -564,10 +588,11 @@ func (t *T3Home) fork(ctx context.Context, project, role, id, name string) (any,
 }
 
 func (t *T3Home) interrupt(ctx context.Context, project, role, id string) (any, error) {
-	if _, err := t.ownOpen(project, role, id); err != nil {
+	th, err := t.ownOpen(project, role, id)
+	if err != nil {
 		return nil, err
 	}
-	cl, err := t.ready()
+	cl, err := t.readyForThread(ctx, th)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +610,7 @@ func (t *T3Home) closeThread(ctx context.Context, project, role, id string) (any
 		return nil, err
 	}
 	if th.Running {
-		if cl := t.client(); cl != nil {
+		if cl, readyErr := t.readyForThread(ctx, th); readyErr == nil {
 			if err := cl.Interrupt(ctx, id); err != nil {
 				log.Printf("T3 close: interrupting %s: %v", clipStr(id, 40), err)
 			}
@@ -616,7 +641,7 @@ func (t *T3Home) setMode(ctx context.Context, project, role, id, mode string) (a
 	if err != nil {
 		return nil, fmt.Errorf("a session id and a valid mode are needed: %v", err)
 	}
-	cl, err := t.ready()
+	cl, err := t.readyForThread(ctx, th)
 	if err != nil {
 		return nil, err
 	}
@@ -724,12 +749,18 @@ func (t *T3Home) resumeWatchers() {
 // startWatch long-polls the thread's run with t3_thread_wait until it ends, then emits the finished-turn item; a
 // message sent meanwhile starts another run, which it waits for in turn. One watch per thread.
 func (t *T3Home) startWatch(id string) {
+	th, _ := t.threads.get(id)
+	projectBase := t.baseCtx()
 	t.mu.Lock()
-	if _, on := t.watch[id]; on || t.runCtx == nil {
+	parent := t.runCtx
+	if th.Provider == "cursor" {
+		parent = projectBase
+	}
+	if _, on := t.watch[id]; on || parent == nil {
 		t.mu.Unlock()
 		return
 	}
-	ctx, cancel := context.WithCancel(t.runCtx)
+	ctx, cancel := context.WithCancel(parent)
 	t.watch[id] = cancel
 	t.mu.Unlock()
 	go func() {
@@ -759,8 +790,8 @@ func (t *T3Home) watchThread(ctx context.Context, id string) {
 		if !ok || th.Closed || !th.Running {
 			return
 		}
-		cl := t.client()
-		if cl == nil {
+		cl, readyErr := t.readyForThread(ctx, th)
+		if readyErr != nil {
 			return // T3 went away; the next start resumes the watch
 		}
 		w, err := cl.WaitRun(ctx, id, th.RunID, t3WaitSlice)
@@ -844,4 +875,11 @@ func (t *T3Home) finishTurn(ctx context.Context, cl *t3.Client, id string, w t3.
 		t.emitStatus(cur, "idle")
 	}
 	return over
+}
+
+func environmentFor(provider, dir string) string {
+	if provider == "cursor" {
+		return roles.DirHash(dir)
+	}
+	return ""
 }

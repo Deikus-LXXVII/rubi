@@ -52,7 +52,11 @@ const (
 
 // T3Home is Rubi Home's T3: installation, server, pairing and the paired client.
 type T3Home struct {
-	h *Helper
+	projectMu      sync.Mutex
+	projectServers map[string]*projectT3
+	projectStop    context.CancelFunc
+	projectDone    chan struct{}
+	h              *Helper
 
 	// Seams, set by tests. The zero values are the real thing.
 	Fetch FetchFunc
@@ -195,6 +199,11 @@ func (t *T3Home) Run(ctx context.Context) {
 				log.Printf("T3 sessions: %v", err)
 			}
 		}()
+	}
+	for _, th := range t.threads.open("", "") {
+		if th.Provider == "cursor" && th.Running {
+			t.startWatch(th.ID)
+		}
 	}
 	<-ctx.Done()
 	t.Wait()
@@ -436,6 +445,7 @@ func (t *T3Home) startSessions() {
 
 // Stop ends the session socket, the watchers and the server, and forgets the client. It is safe to call twice.
 func (t *T3Home) Stop() {
+	t.stopProjectServers()
 	t.opMu.Lock()
 	defer t.opMu.Unlock()
 	t.stopLocked()
