@@ -62,8 +62,12 @@ func TestHelperProcess(t *testing.T) {
 		os.Stdout.WriteString("Pairing link: http://127.0.0.1/pair#token=FAKE-QR-TOKEN\n")
 		os.Stderr.WriteString("QR FAKE-QR-BLOCK\n")
 		os.Exit(3)
-	case "grandchild", "detached":
+	case "grandchild", "detached", "runtime-child":
 		gc := exec.Command("/bin/sleep", "60")
+		if string(mode) == "runtime-child" {
+			// Like the T3 runtime the launcher starts: in the group, its command line naming the base dir.
+			gc = exec.Command("/bin/sh", "-c", "sleep 60; :", "sh", "--base-dir", dir)
+		}
 		if string(mode) == "detached" {
 			// Out of the group, holding the server's output open.
 			gc.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -80,6 +84,10 @@ func TestHelperProcess(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 	pid := os.Getpid()
+	if string(mode) == "runtime-child" {
+		b, _ := os.ReadFile(filepath.Join(dir, "child.pid"))
+		pid, _ = strconv.Atoi(string(b))
+	}
 	if string(mode) == "sibling-pid" {
 		b, _ := os.ReadFile(filepath.Join(dir, "sibling.pid"))
 		pid, _ = strconv.Atoi(string(b))

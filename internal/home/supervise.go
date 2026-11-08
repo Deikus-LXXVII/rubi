@@ -72,9 +72,16 @@ func LockRun(dir string) (*os.File, error) {
 	return lockExclusive(filepath.Join(dir, "run.lock"), ErrAlreadyRunning)
 }
 
-// lockSupervisor takes the folder's supervisor lock without waiting.
+// lockSupervisor takes the folder's supervisor lock. SupervisorRunning probes by taking the same lock for a moment,
+// so a busy lock is tried again for a short while before it counts as another supervisor's: a probe by `start`
+// must never make the supervisor it just started give up.
 func lockSupervisor(dir string) (*os.File, error) {
-	return lockExclusive(SupervisorLockPath(dir), ErrSupervisorRunning)
+	f, err := lockExclusive(SupervisorLockPath(dir), ErrSupervisorRunning)
+	for i := 0; i < 20 && errors.Is(err, ErrSupervisorRunning); i++ {
+		time.Sleep(25 * time.Millisecond)
+		f, err = lockExclusive(SupervisorLockPath(dir), ErrSupervisorRunning)
+	}
+	return f, err
 }
 
 // lockExclusive locks path without waiting (busy when someone holds it) and writes this process's id into it.

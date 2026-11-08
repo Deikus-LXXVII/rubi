@@ -27,3 +27,7 @@ func ours(pid, root int) bool { return pid == root }
 func stopAdopted(int, <-chan struct{}, func() bool) {}
 
 func sameUser(int) bool { return false }
+
+func killGroup(int) {}
+
+func isRoot() bool { return false }

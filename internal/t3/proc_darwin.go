@@ -18,3 +18,13 @@ func argvOf(pid int) ([]string, error) {
 	}
 	return parseProcArgs2(b)
 }
+
+// groupOf lists the processes of process group pgid.
+func groupOf(pgid int) []int {
+	kps, _ := unix.SysctlKinfoProcSlice("kern.proc.pgrp", pgid)
+	out := make([]int, 0, len(kps))
+	for _, kp := range kps {
+		out = append(out, int(kp.Proc.P_pid))
+	}
+	return out
+}

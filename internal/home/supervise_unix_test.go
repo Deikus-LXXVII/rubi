@@ -311,3 +311,17 @@ func TestSupervisorLogIsMadePrivate(t *testing.T) {
 		t.Errorf("an earlier readable log stays readable: %v %v", fi, err)
 	}
 }
+
+func TestSupervisorLockOutlastsAProbe(t *testing.T) {
+	dir := t.TempDir()
+	probe, err := lockExclusive(SupervisorLockPath(dir), ErrSupervisorRunning) // what SupervisorRunning holds for a moment
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { time.Sleep(100 * time.Millisecond); probe.Close() }()
+	l, err := lockSupervisor(dir)
+	if err != nil {
+		t.Fatalf("a supervisor gave up because of a probe: %v", err)
+	}
+	l.Close()
+}

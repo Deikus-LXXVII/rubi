@@ -302,7 +302,34 @@ func (s *Server) stopLocked() {
 	default:
 		return
 	}
+	s.sweep(s.pid)
 	s.cmd, s.pid, s.done, s.version, s.adoptedStart = nil, 0, nil, "", 0
+}
+
+// sweep kills what is left of the server's process group once its leader is gone: the T3 runtime the launcher
+// started can outlive it, holding the port and T3's state folder. Stop signals the group only while the leader
+// is alive (only then is the group id surely still the server's), so here the group is killed only when one of its
+// members' command line names this server's base folder.
+func (s *Server) sweep(pgid int) {
+	if pgid <= 1 {
+		return
+	}
+	for _, m := range groupOf(pgid) { // another user's group can't be signalled anyway (Adopt refuses to run as root)
+		if argv, err := argvOf(m); err == nil && namesBase(argv, s.BaseDir) {
+			killGroup(pgid)
+			return
+		}
+	}
+}
+
+// namesBase reports whether argv has "--base-dir base".
+func namesBase(argv []string, base string) bool {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--base-dir" && argv[i+1] == base {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) settings() error {
@@ -351,6 +378,9 @@ func (s *Server) Adopt(ctx context.Context) (version string, ok bool, err error)
 	if err := s.settings(); err != nil {
 		return "", false, err
 	}
+	if isRoot() {
+		return "", false, errors.New("t3: Rubi Home runs as root, so it doesn't take over a server an earlier run left")
+	}
 	var ri runtimeInfo
 	b, err := os.ReadFile(s.runtimeFile())
 	if err != nil || json.Unmarshal(b, &ri) != nil || ri.ServerVersion == "" || ri.PID <= 1 {
@@ -362,7 +392,11 @@ func (s *Server) Adopt(ctx context.Context) (version string, ok bool, err error)
 	}
 	leader := st.PGID // the runtime file may name a child of the leader (the launcher runs the T3 runtime)
 	lst, err := procOf(leader)
-	if err != nil || !s.isServer(leader, lst.Start) {
+	if err != nil {
+		s.sweep(leader) // the launcher died and left the runtime running: it would hold the port and the state folder
+		return "", false, nil
+	}
+	if !s.isServer(leader, lst.Start) {
 		return "", false, nil
 	}
 	done := make(chan struct{})

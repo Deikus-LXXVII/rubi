@@ -76,3 +76,7 @@ func stopAdopted(pgid int, done <-chan struct{}, still func() bool) {
 
 // sameUser reports whether this process may signal pid (as a non-root user: pid is the same user's).
 func sameUser(pid int) bool { return syscall.Geteuid() != 0 && syscall.Kill(pid, 0) == nil }
+
+func killGroup(pgid int) { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
+
+func isRoot() bool { return syscall.Geteuid() == 0 }

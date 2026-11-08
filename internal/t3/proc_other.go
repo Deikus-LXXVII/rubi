@@ -9,3 +9,5 @@ var errNoProc = errors.New("t3: reading other processes isn't supported on this 
 func procOf(int) (procStat, error) { return procStat{}, errNoProc }
 
 func argvOf(int) ([]string, error) { return nil, errNoProc }
+
+func groupOf(int) []int { return nil }

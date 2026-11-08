@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -205,5 +206,71 @@ func TestStopAdoptedSignalsNothingOnceTheIdIsSomeoneElses(t *testing.T) {
 func TestProcOfAMissingProcess(t *testing.T) {
 	if _, err := procOf(1 << 30); err == nil {
 		t.Error("a missing process reads as one")
+	}
+}
+
+// killLeader kills only the server's leader (the launcher), as a crash of it would, and waits for s to notice.
+func killLeader(t *testing.T, s *Server) {
+	t.Helper()
+	done := s.Done()
+	_ = syscall.Kill(s.Pid(), syscall.SIGKILL)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the leader's end was not noticed")
+	}
+}
+
+func TestStopKillsTheRuntimeTheLeaderLeft(t *testing.T) {
+	s := helperServer(t)
+	_ = os.WriteFile(filepath.Join(s.BaseDir, "mode"), []byte("runtime-child"), 0o600)
+	if _, err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	child := readPid(t, filepath.Join(s.BaseDir, "child.pid"))
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	killLeader(t, s)
+	if gone(child) {
+		t.Fatal("the runtime died with the leader; the test shows nothing")
+	}
+	s.Stop()
+	waitDead(t, child, "the runtime the leader left")
+}
+
+func TestStopLeavesAGroupThatIsntTheServers(t *testing.T) {
+	s := helperServer(t)
+	_ = os.WriteFile(filepath.Join(s.BaseDir, "mode"), []byte("grandchild"), 0o600) // a child that doesn't name the base dir
+	if _, err := s.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	child := readPid(t, filepath.Join(s.BaseDir, "child.pid"))
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	killLeader(t, s)
+	s.Stop()
+	time.Sleep(200 * time.Millisecond)
+	if gone(child) {
+		t.Error("a group with no member naming the base dir was killed after its leader died")
+	}
+}
+
+func TestAdoptClearsTheRuntimeOfADeadLauncher(t *testing.T) {
+	first, next := orphan(t, "runtime-child")
+	child := readPid(t, filepath.Join(first.BaseDir, "child.pid"))
+	t.Cleanup(func() { _ = syscall.Kill(child, syscall.SIGKILL) })
+	killLeader(t, first)
+	if _, ok, err := next.Adopt(context.Background()); ok || err != nil {
+		t.Fatalf("Adopt with the launcher dead = %v %v", ok, err)
+	}
+	waitDead(t, child, "the runtime of a dead launcher")
+}
+
+func TestNamesBase(t *testing.T) {
+	if !namesBase([]string{"t3", "serve", "--base-dir", "/b", "--port", "1"}, "/b") {
+		t.Error("the base dir isn't found")
+	}
+	for _, argv := range [][]string{{"t3", "--base-dir"}, {"t3", "--base-dir", "/b2"}, {"t3", "/b"}, {"--base-dir=/b"}} {
+		if namesBase(argv, "/b") {
+			t.Errorf("%q names /b", argv)
+		}
 	}
 }
