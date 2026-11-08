@@ -130,3 +130,7 @@ All fixtures use a disposable HOME. No real provider credentials are used.
 - Define signal forwarding/process-group cleanup before daemon supervision.
 - Add upstream-supported confinement hooks for Cursor and a transport solution
   for OpenCode before exposing either as a Rubi-managed provider.
+
+Directory bindings hash the canonical existing absolute directory, not its lexical
+alias. This matches project discovery on macOS symlinked temporary roots. Missing
+paths refuse; a retargeted symlink cannot reuse another directory's binding.

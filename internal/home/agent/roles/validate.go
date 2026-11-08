@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -100,12 +101,22 @@ func (p *problems) scanText(field, s string, hosts []string) {
 	p.addf("%s refused by the text scan: %s", field, strings.Join(ids, ", "))
 }
 
-// DirHash is the binding of a role to a project directory: the SHA-256 of the directory's path ("" for no directory).
+// DirHash binds an existing absolute project directory to its canonical path.
+// Aliases (including macOS /var) must agree with ConfiguredProjects; unresolved
+// paths have no binding and never fall back to a lexical hash.
 func DirHash(dir string) string {
-	if dir == "" {
+	if !filepath.IsAbs(dir) {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(filepath.Clean(dir)))
+	real, err := filepath.EvalSymlinks(filepath.Clean(dir))
+	if err != nil {
+		return ""
+	}
+	st, err := os.Stat(real)
+	if err != nil || !st.IsDir() {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(real)))
 	return hex.EncodeToString(sum[:])
 }
 

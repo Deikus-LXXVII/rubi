@@ -151,3 +151,34 @@ func TestSandboxRejectsWritableShimTree(t *testing.T) {
 		t.Fatal("writable shim tree accepted")
 	}
 }
+
+func TestSandboxBindingCanonicalizesSymlinkedTemporaryRoot(t *testing.T) {
+	b, c, path, _ := sandboxFixture(t)
+	root := filepath.Dir(b.HomeDir)
+	alias := filepath.Join(t.TempDir(), "var")
+	if err := os.Symlink(root, alias); err != nil {
+		t.Skip(err)
+	}
+	canonical := c.AgentProjects[0]
+	c.AgentProjects = []string{filepath.Join(alias, "project-a"), filepath.Join(alias, "project-b")}
+	b.HomeDir = filepath.Join(alias, "rubi")
+	b.DirHash = roles.DirHash(c.AgentProjects[0])
+	r := roles.Role{ID: b.Role, Project: b.Project, DirHash: b.DirHash, Status: "active", Version: 1}
+	writeSandboxJSON(t, filepath.Join(b.HomeDir, agent.RolesDir, b.Role, "index.json"), r)
+	writeSandboxJSON(t, filepath.Join(b.HomeDir, agent.RolesDir, b.Role, "versions", "1.json"), r)
+	writeSandboxJSON(t, filepath.Join(b.HomeDir, "config.json"), c)
+	l, err := ResolveAgentLaunch(b, path)
+	if err != nil {
+		t.Fatal("symlink-root binding failed", err)
+	}
+	real, err := filepath.EvalSymlinks(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(l.Policy.Projects) != 1 || l.Policy.Projects[0] != real || b.DirHash != roles.DirHash(real) {
+		t.Fatal("binding and project resolution disagree")
+	}
+	if _, err := agentsandbox.Build(l.Policy, l.Protected); err != nil {
+		t.Fatal(err)
+	}
+}
