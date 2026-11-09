@@ -1,18 +1,18 @@
 {
   "package": "t3",
-  "version": "0.1.7-nightly.20261102.4093",
-  "tag": "v0.1.7-nightly.20261102.4093",
-  "commit": "84537c4dd976a89b6ec094f43ae3ef7bee12cb1a",
-  "integrity": "sha512-HLYtCLtIQZNMp9uKYYHoiqGe8VIwYgHtSC0qte9xiLSQ3ktotZwtWEo41thNl6AUbZWZN3TICySROOEkTw5xlg==",
+  "version": "0.1.8-nightly.20261109.4399",
+  "tag": "v0.1.8-nightly.20261109.4399",
+  "commit": "357fb754fa9dae4111f0945fb8a13d30b012a62a",
+  "integrity": "sha512-XjChV2azK4Jg5T5LYLFjWjzFhTEeaGst2yiFNTtrmv+pIkDpDxX0zyXkeBEEMsu2I4vxWriyQSwgv5OyHvtEyQ==",
   "license": "MIT, Copyright (c) 2026 T3 Tools Inc.",
-  "checked": "2026-11-04",
+  "checked": "2026-11-09",
   "runtime": {
     "note": "SHA-256 of the release archives the npm launcher would download (SHA256SUMS of the tag; .tar.gz, and .zip for win32); Rubi Home installs the archive itself, checked against these. darwin-x64 is not here: upstream publishes no runtime archive for Intel Macs",
     "sha256": {
-      "darwin-arm64": "8518d51a892ffed4d9799dfdd28c95bc4374cd6445383ae2581fb36843847d74",
-      "linux-arm64": "bf211f381e642de5f416935e36c1c9b40d0548cc683c9b251bfa4fa6cf241dbd",
-      "linux-x64": "f3b1c3b6ec656c1ef0b9a838fdfbffd36bb452b8785c4f97197a7024a71d7d8b",
-      "win32-x64": "2ffef4de4a3087fba1d2d4a033b6a0a25ebc167075559064aa06f47fe1db59e0"
+      "darwin-arm64": "a24c05357bd566b73f82b157335949324c36b85677024aefe9393b1f740fb3c9",
+      "linux-arm64": "5aecdfebe8a2be059f73d35a8ec7aa96843fca70bef8fab57702806580100e84",
+      "linux-x64": "916e333277e79ddceb3d286d2cd722dbd8c1e812ec94917b970b33afa0008a56",
+      "win32-x64": "65bb0dd0ec55e1a1f58470c707f2cfb5aa87694fc5d4e8ba13481b7177fea3d5"
     }
   },
   "node": {
