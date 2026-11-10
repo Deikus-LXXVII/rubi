@@ -308,7 +308,7 @@ func (t *T3Home) handleTask(ctx context.Context, op string, args json.RawMessage
 				return nil, err
 			}
 		}
-		done, err := (agenttask.Publisher{Store: t.taskStore(), Helper: helper}).Publish(ctx, in.ID, in.Token)
+		done, err := taskPublisher(t.taskStore(), helper).Publish(ctx, in.ID, in.Token)
 		if err != nil {
 			return nil, err
 		}

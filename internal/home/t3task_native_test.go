@@ -69,7 +69,7 @@ func TestNativeT3TaskCopyCommitsThroughSandboxedCodex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &t3.Server{Node: node, Bin: launcher, BaseDir: filepath.Join(t.TempDir(), "t3"), Port: port, RuntimeHome: t.TempDir()}
+	server := &t3.Server{Home: t.TempDir(), Node: node, Bin: launcher, BaseDir: filepath.Join(t.TempDir(), "t3"), Port: port, RuntimeHome: t.TempDir()}
 	t.Cleanup(server.Stop)
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()

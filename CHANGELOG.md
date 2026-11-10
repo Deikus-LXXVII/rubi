@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Linux T3 Agents now advertise native host-sandbox availability independently
+  of the retired VM backend, fixing real companion task starts that fake-VM
+  lifecycle tests had incorrectly allowed.
+- Add repeatable account-free companion/Core → encrypted Home → unmodified T3
+  → srt/bwrap acceptance: private repository copy/branch, commit, exact local
+  push, mock GitHub PR, panel/requester result, append/stop, unknown-receipt
+  cancellation, provider failure and daemon-state recovery.
+- Disposable native servers use an explicit isolated provider HOME, never the
+  operator's provider login profile. Runtime/policy behavior is unchanged.
+
 - Repository task stop now fences and drains trusted launcher leases even when a native launch receipt is lost; publishing drains before snapshotting. Task runtimes use a private outer Linux PID/user namespace (util-linux unshare mounts procfs); cleanup retains child identity until reaping, and SIGTERM leaves a cleanup receipt. Legacy/mixed-version launches refuse; macOS repository tasks now explicitly refuse until equivalent descendant supervision exists (standalone macOS sandbox sessions are unchanged).
 - Durable task list/status/append/capabilities and terminal delivery acknowledgements support the companion official plugin's one-confirmation MCP task actions, phone task cards, original-requester messages and explicit-report-gated automatic finalization/retry. Cards label test evidence as agent-reported; full panel links are minted by Core, and browser RPC rejects foreign Origins.
 

@@ -931,10 +931,13 @@ func (c *Core) discardBotRequest(id string) {
 			it.sealed = nil
 		}
 	}
-	b.mu.Unlock()
+	// LockWith joins this mutex before its final audit/key wipe. Complete the
+	// discard audit inside the same boundary, so a cancelled approval callback
+	// cannot write it after LockWith has returned (or after fixture cleanup).
 	if bundle != nil {
 		c.Audit.Record("bot.request.discarded", audit.Fields{"approval_id": id, "agent": bundle.agent})
 	}
+	b.mu.Unlock()
 }
 
 // discardBotRequests wipes every waiting request (Rubi locks).

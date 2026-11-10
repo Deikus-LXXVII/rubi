@@ -22,6 +22,9 @@ import (
 
 // Server is a T3 server Rubi starts and stops (Rubi Home on the PC, or the daemon on a server host).
 type Server struct {
+	// Home optionally isolates provider discovery/authentication for disposable servers.
+	// Empty preserves the existing user-profile behavior.
+	Home    string
 	Node    string // the node binary
 	Bin     string // the pinned t3 bin (a JS file)
 	BaseDir string // T3's data folder
@@ -100,7 +103,7 @@ func (s *Server) Base() string { return "http://127.0.0.1:" + strconv.Itoa(s.Por
 func (s *Server) Env() []string {
 	env := []string{
 		"PATH=" + filepath.Dir(s.Node) + ":/usr/bin:/bin",
-		"HOME=" + os.Getenv("HOME"),
+		"HOME=" + s.home(),
 		"T3CODE_TELEMETRY_ENABLED=false",
 		"OTEL_SDK_DISABLED=true",
 	}
@@ -474,4 +477,11 @@ func ttlArg(d time.Duration) string {
 		return strconv.Itoa(s) + "s"
 	}
 	return "1s"
+}
+
+func (s *Server) home() string {
+	if s.Home != "" {
+		return s.Home
+	}
+	return os.Getenv("HOME")
 }
