@@ -23,7 +23,7 @@ RUBI_APP_SIGN=adhoc sh scripts/build-home-app.sh "$version" universal work/home-
 mkdir -p work/mac-app-smoke
 unzip -q "app/rubi-home-${version}-macos-universal.zip" -d work/mac-app-smoke
 pin=$(python3 -c 'import runpy; print(runpy.run_path("scripts/srt-runtime/build.py")["identity"]())')
-"work/mac-app-smoke/Rubi Home.app/Contents/MacOS/srt-runtime/$pin/darwin-$(go env GOARCH)/bin/node" -e 'let f=x=>x+1; for(let i=0;i<100000;i++) if(f(i)!==i+1) process.exit(1)'
+"work/mac-app-smoke/Rubi Home.app/Contents/Resources/srt-runtime/$pin/darwin-$(go env GOARCH)/bin/node" -e 'let f=x=>x+1; for(let i=0;i<100000;i++) if(f(i)!==i+1) process.exit(1)'
 # The app is signed ad hoc only: the project does not plan a Developer ID signature, so macOS asks for
 # "Open Anyway" on the first open. The Mac app is the fallback for users without a Bot; the Bot installs
 # Rubi Home without it. See docs/design/rubi-home.md ("The Mac app")

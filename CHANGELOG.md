@@ -4,7 +4,7 @@
 
 Ships v0.15.0, whose release build failed before publishing anything.
 
-- **Mac app:** the sealing step signs the bundled runtime helpers (node, rg, socat) before the executables that contain them, so `codesign` no longer rejects the app.
+- **Mac app:** the sandbox runtime moves to `Contents/Resources`, because `codesign` treats every file in `Contents/MacOS` as code and rejected its scripts. Helpers are signed before the executables, and the build refuses anything but Mach-O code in `Contents/MacOS`.
 - **CI:** every change now builds and seals the universal Mac app with the same script the release uses.
 
 ## v0.15.0 (2026-11-10)

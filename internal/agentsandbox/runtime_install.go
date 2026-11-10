@@ -89,12 +89,23 @@ func VerifyRuntimeFiles(root string) error {
 	})
 }
 
+// runtimeCarrier is where a release keeps srt-runtime next to the launcher in src. The Mac app keeps it in
+// Contents/Resources: codesign treats every file in Contents/MacOS as code, and the runtime's scripts and
+// Linux-only helpers can't carry a Mach-O signature.
+func runtimeCarrier(src string) string {
+	if filepath.Base(src) == "MacOS" && filepath.Base(filepath.Dir(src)) == "Contents" {
+		return filepath.Join(filepath.Dir(src), "Resources")
+	}
+	return src
+}
+
 // InstallRuntimeCompanions is shared by the signed-archive and Mac-app installers.
 // Immutable pin/platform trees are staged before rename. Existing valid trees
 // stay in use; incomplete ones refuse instead of modifying running executables.
 func InstallRuntimeCompanions(src, dst string) error {
-	source := filepath.Join(src, "srt-runtime", RuntimeID())
-	st, err := os.Lstat(filepath.Join(src, "srt-runtime"))
+	carrier := runtimeCarrier(src)
+	source := filepath.Join(carrier, "srt-runtime", RuntimeID())
+	st, err := os.Lstat(filepath.Join(carrier, "srt-runtime"))
 	if os.IsNotExist(err) {
 		return nil
 	} // old release/development app

@@ -182,6 +182,38 @@ func TestRuntimeInstallCopiesImmutableCompanions(t *testing.T) {
 		t.Fatal("incomplete installed runtime reused")
 	}
 }
+
+// The Mac app keeps the launcher in Contents/MacOS and the runtime in Contents/Resources (codesign accepts only
+// code in MacOS); installing from the app must find both.
+func TestRuntimeInstallFromMacAppBundle(t *testing.T) {
+	exe, _ := runtimeFixture(t)
+	base := filepath.Dir(exe)
+	mac := filepath.Join(base, "Rubi Home.app", "Contents", "MacOS")
+	res := filepath.Join(base, "Rubi Home.app", "Contents", "Resources")
+	if err := os.MkdirAll(mac, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(res, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(base, "srt-runtime"), filepath.Join(res, "srt-runtime")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(base, "rubi-agent-exec"), filepath.Join(mac, "rubi-agent-exec")); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "install")
+	if err := InstallRuntimeCompanions(mac, dst); err != nil {
+		t.Fatal(err)
+	}
+	installed := runtimeRoot(filepath.Join(dst, "rubi-home"))
+	if err := VerifyRuntimeFiles(installed); err != nil {
+		t.Fatal("runtime not installed from Contents/Resources:", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "rubi-agent-exec")); err != nil {
+		t.Fatal("launcher not installed from Contents/MacOS:", err)
+	}
+}
 func TestRuntimeInstallRefusesTamperAndSymlinks(t *testing.T) {
 	for _, scenario := range []string{"checksum", "unmanifested", "traversal", "symlink-file", "symlink-target", "missing-launcher"} {
 		t.Run(scenario, func(t *testing.T) {
