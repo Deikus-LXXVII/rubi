@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.15.0 (2026-11-10)
+
+T3 Agents now run natively alongside Rubi in per-project host sandboxes. Linux microVMs and the Apple container backend are retired.
+
+- **Store:** T3 Agents v0.3.0 (min Rubi v0.15.0). Native Home setup no longer needs the retired container tool; one-confirmation repository tasks and requester-only result cards ship in the official plugin.
 
 ### T3 Agents: retire VM execution
 - Native T3 runs alongside Rubi, with per-project host sandboxes; startup no longer serves VM sockets or sweeps/starts VMs.

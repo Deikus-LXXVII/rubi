@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated_at": "2026-11-07T17:00:00Z",
+  "updated_at": "2026-11-10T01:00:00Z",
   "plugins": [
     {
       "id": "icloud-mail",
@@ -226,7 +226,7 @@
     {
       "id": "t3agents",
       "name": "T3 Agents",
-      "summary": "Bots start and steer agent threads that run in T3 Code on your computer, each in a role VM; you approve what matters.",
+      "summary": "Bots start and steer native T3 tasks in per-project host sandboxes; you approve what matters.",
       "publisher": {
         "name": "Rubi-Project",
         "key": "MCowBQYDK2VwAyEAxeDfKAkO77JdARN7Y2jJT3tXw9mN+GqqH8R5mhcxt8c="
@@ -242,6 +242,11 @@
           "version": "v0.2.0",
           "sums_sha256": "5ba561015955c8ed14162e887242a3a4768987ea19bc7c01e79ed3b0aa49e790",
           "min_rubi": "v0.14.0"
+        },
+        {
+          "version": "v0.3.0",
+          "sums_sha256": "9c6b7cf190d7cda475f857d66f8d6382f38e68485b12bd5d1dad5d2b6ea2c9d2",
+          "min_rubi": "v0.15.0"
         }
       ]
     }
