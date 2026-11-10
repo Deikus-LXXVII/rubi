@@ -80,8 +80,12 @@ func TestHomeAppCarriesSandboxCompanions(t *testing.T) {
 		names[f.Name] = true
 	}
 	for _, name := range files {
-		if !names["Rubi Home.app/Contents/MacOS/"+name] {
-			t.Fatal("missing companion", name)
+		where := "Rubi Home.app/Contents/MacOS/" + name
+		if strings.HasPrefix(name, "srt-runtime/") {
+			where = "Rubi Home.app/Contents/Resources/" + name // codesign treats all of MacOS as code
+		}
+		if !names[where] {
+			t.Fatal("missing companion", where)
 		}
 	}
 	if err := os.Remove(filepath.Join(dir, "rubi-agent-exec")); err != nil {
@@ -102,7 +106,7 @@ func TestMacRuntimeManifestMatchesSignedHelperBytes(t *testing.T) {
 	script := `
 import pathlib,tempfile,subprocess,os,hashlib,sys
 with tempfile.TemporaryDirectory() as tmp:
- p=pathlib.Path(tmp);app=p/'Rubi Home.app';rt=app/'Contents/MacOS/srt-runtime/pin/darwin-arm64';(rt/'bin').mkdir(parents=True)
+ p=pathlib.Path(tmp);app=p/'Rubi Home.app';rt=app/'Contents/Resources/srt-runtime/pin/darwin-arm64';(rt/'bin').mkdir(parents=True);(app/'Contents/MacOS').mkdir()
  node=rt/'bin/node';node.write_bytes(bytes.fromhex('cffaedfe')+b'fixture');(rt/'COMPLETE').write_text('pin')
  fake=p/'fake';fake.mkdir();cs=fake/'codesign';cs.write_text('#!/bin/sh\ncase \" $* \" in *\" --preserve-metadata=entitlements,flags,runtime \"*) ;; *) exit 91;; esac\nfor arg do last=$arg; done\nprintf sealed >> "$last"\n');cs.chmod(0o755)
  env=dict(os.environ,PATH=str(fake)+os.pathsep+os.environ['PATH'])
@@ -114,5 +118,36 @@ with tempfile.TemporaryDirectory() as tmp:
 	cmd := exec.Command(python, "-c", script, root(t))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("manifest sealing: %v\n%s", err, out)
+	}
+}
+
+// codesign treats every file in Contents/MacOS as code and validates it when rubi-home is signed; v0.15.0's
+// release failed on the runtime's srt script there. The runtime lives in Contents/Resources, helpers are
+// signed before the executables, and the sealer refuses non-code in Contents/MacOS.
+func TestMacSealKeepsOnlyCodeInMacOSAndSignsHelpersFirst(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python release tooling unavailable")
+	}
+	script := `
+import pathlib,tempfile,subprocess,os,sys
+with tempfile.TemporaryDirectory() as tmp:
+ p=pathlib.Path(tmp);app=p/'Rubi Home.app';mac=app/'Contents/MacOS';rt=app/'Contents/Resources/srt-runtime/pin/darwin-amd64';(rt/'bin').mkdir(parents=True);mac.mkdir(parents=True)
+ for f in [mac/'rubi-home',mac/'rubi-agent-exec',rt/'bin/node',rt/'bin/rg']: f.write_bytes(bytes.fromhex('cffaedfe')+b'fixture')
+ (rt/'bin/srt').write_text('#!/bin/sh\\n');(rt/'COMPLETE').write_text('pin')
+ fake=p/'fake';fake.mkdir();cs=fake/'codesign'
+ cs.write_text('#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */srt-runtime/*) ;; *) for h in "'+str(rt)+'"/bin/node "'+str(rt)+'"/bin/rg; do tail -c 6 "$h" | grep -q sealed || { echo "nested $h unsigned" >&2; exit 1; }; done;; esac\nprintf sealed >> "$last"\n');cs.chmod(0o755)
+ env=dict(os.environ,PATH=str(fake)+os.pathsep+os.environ['PATH'])
+ seal=[sys.executable,str(pathlib.Path(sys.argv[1])/'scripts/srt-runtime/seal-macos.py'),str(app)]
+ subprocess.run(seal,check=True,env=env)
+ for h in [rt/'bin/node',rt/'bin/rg']: assert h.read_bytes().endswith(b'sealed'),str(h)+' unsigned'
+ assert not (rt/'bin/srt').read_bytes().endswith(b'sealed'),'script signed as code'
+ (mac/'srt-runtime').mkdir()
+ r=subprocess.run(seal,env=env,capture_output=True,text=True)
+ assert r.returncode!=0 and 'only executables belong in Contents/MacOS' in r.stderr,'a runtime folder in Contents/MacOS was accepted'
+`
+	cmd := exec.Command(python, "-c", script, root(t))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seal layout: %v\n%s", err, out)
 	}
 }

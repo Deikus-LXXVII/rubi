@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.15.1 (2026-11-10)
+
+Ships v0.15.0, whose release build failed before publishing anything.
+
+- **Mac app:** the sandbox runtime moves to `Contents/Resources`, because `codesign` treats every file in `Contents/MacOS` as code and rejected its scripts. Helpers are signed before the executables, and the build refuses anything but Mach-O code in `Contents/MacOS`.
+- **CI:** every change now builds and seals the universal Mac app with the same script the release uses.
+
 ## v0.15.0 (2026-11-10)
 
 T3 Agents now run natively alongside Rubi in per-project host sandboxes. Linux microVMs and the Apple container backend are retired.

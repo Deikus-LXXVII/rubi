@@ -46,13 +46,16 @@ app="$work/Rubi Home.app"
 mkdir -p "$app/Contents/MacOS"
 cp "$binary" "$app/Contents/MacOS/rubi-home"
 chmod 755 "$app/Contents/MacOS/rubi-home"
-# Release companions stay adjacent to the executable, just as in the tarball.
+# The launcher stays next to the executable, as in the tarball. The runtime goes to Contents/Resources:
+# codesign treats every file in Contents/MacOS as code, and the runtime holds scripts and Linux-only helpers.
 # Bare development binaries retain the existing two-file app build.
 companions=$(dirname "$binary")
 if [ -d "$companions/srt-runtime" ]; then
   [ -x "$companions/rubi-agent-exec" ] || fail "sandbox launcher is missing"
   cp "$companions/rubi-agent-exec" "$app/Contents/MacOS/rubi-agent-exec"
-  cp -R "$companions/srt-runtime" "$app/Contents/MacOS/srt-runtime"
+  mkdir -p "$app/Contents/Resources"
+  chmod 755 "$app/Contents/Resources"
+  cp -R "$companions/srt-runtime" "$app/Contents/Resources/srt-runtime"
 fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
