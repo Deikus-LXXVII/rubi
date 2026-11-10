@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/agenttest"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -63,7 +64,7 @@ var (
 func backendOf(goos string) agent.VMBackend {
 	switch goos {
 	case "darwin":
-		return agent.NewAppleBackend(agent.BackendConfig{})
+		return agenttest.NewAppleBackend(agent.BackendConfig{})
 	case "linux":
 		return agent.NoBackend("agents don't run on Linux yet")
 	case "windows":
@@ -190,9 +191,9 @@ func TestFeaturesOfThisSystem(t *testing.T) {
 		}
 	}
 	// on Linux the microvm backend says (KVM and Landlock), and T3 has no session host there yet
-	agents, t3 := silicon, runtime.GOOS == "linux" || mac
+	agents, t3 := false, runtime.GOOS == "linux" || mac
 	if runtime.GOOS == "linux" {
-		agents, t3 = agent.PlatformBackend(agent.BackendConfig{}).Available(context.Background()).OK, true
+		agents, t3 = false, true
 	}
 	if got[FeatureAgent].Available != agents || got[FeatureT3].Available != t3 {
 		t.Errorf("on %s (Apple silicon %v): agent %+v, t3 %+v", runtime.GOOS, silicon, got[FeatureAgent], got[FeatureT3])
@@ -371,7 +372,7 @@ func TestFeaturesAreCachedAndRefreshed(t *testing.T) {
 // Apple silicon, Linux and Windows have builds (the pins list them), and where a backend exists T3 is then available.
 func TestT3NeedsABuildForThePlatform(t *testing.T) {
 	ctx := context.Background()
-	mac := agent.NewAppleBackend(agent.BackendConfig{})
+	mac := agenttest.NewAppleBackend(agent.BackendConfig{})
 	for name, c := range map[string]struct {
 		plat    string
 		backend agent.VMBackend

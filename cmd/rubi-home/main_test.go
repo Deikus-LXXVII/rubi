@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -76,10 +75,10 @@ func TestAgentVMSubcommandFailsPlainlyWithoutHome(t *testing.T) {
 		}
 		return code, stderr.String()
 	}
-	if code, msg := run("agent-vm", "--role", "r_aaaaaa01", "--", "--verbose"); code != 1 || !strings.Contains(msg, "isn't reachable") {
+	if code, msg := run("agent-vm", "--role", "r_aaaaaa01", "--", "--verbose"); code != 2 || !strings.Contains(msg, "retired") {
 		t.Errorf("no Home: exit %d, %q", code, msg)
 	}
-	if code, msg := run("agent-vm", "--", "--verbose"); code != 2 || !strings.Contains(msg, "usage") {
+	if code, msg := run("agent-vm", "--", "--verbose"); code != 2 || !strings.Contains(msg, "retired") {
 		t.Errorf("no role: exit %d, %q", code, msg)
 	}
 }
@@ -106,14 +105,14 @@ func TestVMConfineRunsNothingUnconfined(t *testing.T) {
 		}
 		return 0, string(out)
 	}
-	if code, msg := run("", "--", "/usr/bin/touch", marker); code != 2 || !strings.Contains(msg, "RUBI_VM_CONFINE") {
+	if code, msg := run("", "--", "/usr/bin/touch", marker); code != 2 || !strings.Contains(msg, "retired") {
 		t.Errorf("no rules: exit %d, %q", code, msg)
 	}
-	if code, msg := run(`[{"Path":"`+d+`","Access":3}]`, "/usr/bin/touch", marker); code != 2 || !strings.Contains(msg, "usage") {
+	if code, msg := run(`[{"Path":"`+d+`","Access":3}]`, "/usr/bin/touch", marker); code != 2 || !strings.Contains(msg, "retired") {
 		t.Errorf("no --: exit %d, %q", code, msg)
 	}
-	if runtime.GOOS != "linux" {
-		if code, msg := run(`[{"Path":"`+d+`","Access":3}]`, "--", "/usr/bin/touch", marker); code != 3 || !strings.Contains(msg, "Landlock") {
+	{
+		if code, msg := run(`[{"Path":"`+d+`","Access":3}]`, "--", "/usr/bin/touch", marker); code != 2 || !strings.Contains(msg, "retired") {
 			t.Errorf("no Landlock: exit %d, %q", code, msg)
 		}
 	}

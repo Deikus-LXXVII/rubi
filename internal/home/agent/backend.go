@@ -5,23 +5,10 @@ import (
 	"path/filepath"
 )
 
-// The VM backend: what Rubi Home runs agents' VMs with (docs/plans/home-platforms.md, stage P8 and section 2.7). Home asks a
-// backend for everything that depends on how VMs are made, and never names a tool: Apple's container on macOS today, a QEMU/KVM
-// microvm on Linux later (stage P9), and "none" where there is no backend, which makes agents and T3 sessions "not available on
-// this computer" (package home: features.go).
-//
-// What a backend has to give, and where the interface says so:
-//
-//   - lifecycle and exec with stdio: New returns a VM (Start, Exec, Stop, State; vm.go). Exec and Start hand back a Conn, a
-//     process's stdin and stdout, whatever carries them (a CLI's pipes, a guest agent's channel).
-//   - shared folders: Project.Mounts, the one list of host folders a VM shows (the project read-write, the role's content and
-//     the shield read-only). A backend turns each into its own kind of mount (a bind mount, a virtio-fs share).
-//   - a control channel with no network card: StartSpec.Pipe and package netpipe. The VM has no network at all; the proxy, the
-//     hook gate and T3's port are streams over the channel the backend provides.
-//   - resource limits: VMLimits.
-//   - image: Provisioner.Image and BuildImage (a built image today, a downloaded kernel and root file system later).
-//   - setup: Provisioner, the wizard's steps for this backend.
-//   - sessions of T3 and the provider sign-in, which also run in VMs: Sessions and Login.
+// Legacy SDK/setup compatibility interfaces. There is no production VM backend:
+// DefaultBackend always refuses. Native T3 sessions use agentsandbox instead.
+// Retained to decode existing settings and exercise the legacy protocol with fakes;
+// they must not be reintroduced into the T3 startup path.
 
 // Availability says whether a backend can run on this computer, and if not, why. Reason is the inside of the sentence
 // "That isn't available on this computer (...)." and is empty when OK.

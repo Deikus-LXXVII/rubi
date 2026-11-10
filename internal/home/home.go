@@ -29,7 +29,6 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/hostpaths"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
 	"github.com/Deikus-LXXVII/rubi/internal/homeproto"
@@ -196,7 +195,6 @@ type Helper struct {
 	featureEnv func() FeatureEnv
 
 	sessMu sync.Mutex
-	sess   *t3vm.Server // the T3 session server while it serves (see ServeAgentVM)
 }
 
 // DefaultDir is Rubi Home's folder: "Rubi Home" in hostpaths.DataBase (~/Library/Application Support on a Mac, the XDG

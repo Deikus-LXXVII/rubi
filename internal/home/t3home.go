@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
+	"github.com/Deikus-LXXVII/rubi/internal/home/t3instances"
 	"github.com/Deikus-LXXVII/rubi/internal/hostguard"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 	"github.com/Deikus-LXXVII/rubi/internal/vault"
@@ -80,10 +80,8 @@ type T3Home struct {
 	Pair func(ctx context.Context, base, code, access string) (t3.Token, error)
 	// PickPort chooses a free port on loopback (a random free one when nil).
 	PickPort func() (int, error)
-	// ServeSessions serves the session socket until ctx ends (Helper.ServeAgentVM when nil).
-	ServeSessions func(ctx context.Context) error
 	// syncInstances writes T3's role instances (Helper.SyncT3Instances when nil; tests replace it).
-	syncInstances func() (t3vm.SyncResult, error)
+	syncInstances func() (t3instances.SyncResult, error)
 	// SelfPath is the rubi-home binary the role shims run (os.Executable when nil; a live test builds its own).
 	SelfPath func() (string, error)
 	// MemAvailable is the computer's free memory in MiB, ok false when unknown (hostguard.MemAvailable when nil).
@@ -111,7 +109,6 @@ type T3Home struct {
 	cl          *t3.Client
 	runCtx      context.Context // lives while the server does; the watchers and the session server belong to it
 	runStop     context.CancelFunc
-	sessDone    chan struct{}
 	base        context.Context // Home's lifetime (Run); Background until Run is called
 	job         *t3Job
 	pendingSelf bool // a self-test waiting for the job that was running when sign-in finished
@@ -202,14 +199,8 @@ func (t *T3Home) Run(ctx context.Context) {
 		if err := t.Start(ctx); err != nil {
 			log.Printf("T3: %v", err)
 		}
-	} else if c.T3Port != 0 && c.T3BaseDir != "" {
-		// A T3 server that someone else runs, named in the configuration: serve its sessions as before.
-		go func() {
-			if err := t.h.ServeAgentVM(ctx); err != nil {
-				log.Printf("T3 sessions: %v", err)
-			}
-		}()
 	}
+
 	t.recoverTasks(ctx)
 	for _, th := range t.threads.open("", "") {
 		if th.Provider == "cursor" && th.Running {
@@ -422,7 +413,7 @@ func (t *T3Home) adoptServer(ctx context.Context, version string) bool {
 
 // syncProjects is T3's projects for the instance sync (nil while T3 isn't paired or doesn't answer: then no project
 // setting is changed).
-func (t *T3Home) syncProjects() []t3vm.T3Project {
+func (t *T3Home) syncProjects() []t3instances.T3Project {
 	cl := t.client()
 	if cl == nil {
 		return nil
@@ -434,40 +425,20 @@ func (t *T3Home) syncProjects() []t3vm.T3Project {
 		log.Printf("T3 projects (for the role instances): %v", err)
 		return nil
 	}
-	out := make([]t3vm.T3Project, 0, len(ps))
+	out := make([]t3instances.T3Project, 0, len(ps))
 	for _, p := range ps {
-		out = append(out, t3vm.T3Project{ID: p.ID, Root: p.WorkspaceRoot})
+		out = append(out, t3instances.T3Project{ID: p.ID, Root: p.WorkspaceRoot})
 	}
 	return out
 }
 
-// startSessions serves the session socket (and writes the role instances) while the server runs.
+// startSessions writes native sandbox instances; no VM/socket/service is started.
 func (t *T3Home) startSessions() {
-	t.mu.Lock()
-	if t.sessDone != nil || t.runCtx == nil {
-		t.mu.Unlock()
-		return
-	}
-	done := make(chan struct{})
-	t.sessDone = done
-	ctx := t.runCtx
-	t.mu.Unlock()
-	// The roles' instances first, so T3 has them when the first thread is started.
 	if res, err := t.h.SyncT3Instances(); err != nil {
 		log.Printf("T3 role instances: %v", err)
 	} else if res.Changed() {
 		log.Printf("T3 role instances: added %v, updated %v, removed %v", res.Added, res.Updated, res.Removed)
 	}
-	serve := t.ServeSessions
-	if serve == nil {
-		serve = t.h.ServeAgentVM
-	}
-	go func() {
-		defer close(done)
-		if err := serve(ctx); err != nil && ctx.Err() == nil {
-			log.Printf("T3 sessions: %v", err)
-		}
-	}()
 }
 
 // Stop ends the session socket, the watchers and the server, and forgets the client. It is safe to call twice.
@@ -479,8 +450,8 @@ func (t *T3Home) Stop() {
 
 func (t *T3Home) stopLocked() {
 	t.mu.Lock()
-	stop, srv, cl, done := t.runStop, t.srv, t.cl, t.sessDone
-	t.runStop, t.runCtx, t.srv, t.cl, t.sessDone = nil, nil, nil, nil, nil
+	stop, srv, cl := t.runStop, t.srv, t.cl
+	t.runStop, t.runCtx, t.srv, t.cl = nil, nil, nil, nil
 	t.watchPaused = true
 	watches := make([]*t3Watch, 0, len(t.watch))
 	for _, w := range t.watch {
@@ -495,12 +466,7 @@ func (t *T3Home) stopLocked() {
 	}
 	t.watchWG.Wait()
 	t.stopProjectServers()
-	if done != nil {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-		}
-	}
+
 	if cl != nil {
 		_ = cl.Close()
 	}
@@ -829,7 +795,7 @@ func (t *T3Home) Status() map[string]any {
 }
 
 // agentSetupStep are the steps t3-setup.run passes to the agent setup.
-var agentSetupStep = map[string]bool{"container": true, "service": true, "network": true, "image": true, "projects": true}
+var agentSetupStep = map[string]bool{"projects": true}
 
 // t3Step says whether a t3-setup.run step is one of T3's own (the others belong to the agent setup).
 func t3Step(s string) bool {
@@ -861,12 +827,19 @@ func (t *T3Home) setupStatus(ctx context.Context) (any, error) {
 		_ = json.Unmarshal(b, &out)
 	}
 	steps, _ := out["steps"].([]any)
-	at := len(steps)
-	for i, s := range steps {
-		if m, ok := s.(map[string]any); ok && m["id"] == "image" {
-			at = i + 1
+	nativeSteps := steps[:0]
+	for _, step := range steps {
+		m, _ := step.(map[string]any)
+		switch m["id"] {
+		case "container", "service", "network", "image":
+			continue
 		}
+		nativeSteps = append(nativeSteps, step)
 	}
+	steps = nativeSteps
+	out["backend"] = "host-sandbox"
+
+	at := 0 // Native runtime and pairing precede project/provider setup.
 	merged := append([]any{}, steps[:at]...)
 	for _, s := range t3steps {
 		merged = append(merged, s)
@@ -968,6 +941,9 @@ func noteLoginWaiting(step map[string]any, before []any) {
 // sign-in folder is shared by every role (docs/plans/t3-integration.md decision 4). While a sign-in runs the rows carry
 // its link and whether it waits for the code.
 func (t *T3Home) loginStep() map[string]any {
+	if t.LoginAgents == nil {
+		return map[string]any{"id": "login", "title": "Provider credentials", "state": "unsupported", "reason": "VM sign-in was retired. Provision the project's native provider login/credentials explicitly; no host profile is imported.", "action": "", "action2": "", "projects": []map[string]any{}, "progress": []string{}}
+	}
 	in := agent.SignedInAt(t.signInDir())
 	li := t.login().LoginProgress()
 	state, reason, action := "todo", "No credential file yet. One sign-in serves every role.", "login"
@@ -1031,6 +1007,8 @@ func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessag
 			return nil, err
 		}
 		return map[string]any{"started": true}, nil
+	case t.LoginAgents == nil && ((name == "run" && in.Step == "login") || name == "login.code" || name == "login.open"):
+		return nil, errors.New("VM sign-in was retired; provision the project's native provider credentials explicitly")
 	case name == "run" && in.Step == "login":
 		// Without a method it only checks (the status above looks at the folder).
 		if in.Method == "" {
@@ -1070,7 +1048,7 @@ func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessag
 		if err := t.RunStep(T3StepAll); err != nil {
 			log.Printf("T3 setup: %v", err)
 		}
-		return t.agentSetup(ctx, "agent-setup.run", args)
+		return map[string]any{"started": true}, nil
 	case name == "run" && !agentSetupStep[in.Step]:
 		return nil, fmt.Errorf("unknown setup step %q", clipStr(in.Step, 32))
 	case name == "run", name == "project.add", name == "project.resolve", name == "project.remove":

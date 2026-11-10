@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### T3 Agents: retire VM execution
+- Native T3 runs alongside Rubi, with per-project host sandboxes; startup no longer serves VM sockets or sweeps/starts VMs.
+- Remove Linux microVM/KVM guest code, release workflow/artifacts and concrete Apple container backend. Home no longer embeds the legacy VM runner image sources.
+- Retired SDK/VM execution, sign-in and VM self-test entry points refuse explicitly. Existing project/role settings remain readable; no installed VM or live setting is modified automatically.
+- macOS native T3 sessions retain their existing sandbox path; repository tasks remain Linux-only until equivalent descendant supervision is available. Windows and unpinned platforms refuse unsupported execution.
+- Rollout prerequisites and manual migration/rollback: `docs/releases/t3-agents-rollout.md`.
+
 - Linux T3 Agents now advertise native host-sandbox availability independently
   of the retired VM backend, fixing real companion task starts that fake-VM
   lifecycle tests had incorrectly allowed.

@@ -1,3 +1,5 @@
+> Legacy SDK protocol/test sources only. Rubi Home no longer embeds this runner or builds/runs its Apple container image. Native T3 provider CLIs use per-project host sandboxes; see `docs/srt-launcher.md`.
+
 # Rubi agent runner
 
 TypeScript (ESM, strict) process that sits between Rubi Home and the Claude Agent SDK. It speaks

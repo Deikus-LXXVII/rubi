@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -61,4 +62,32 @@ func TestProcListenersSeesOwnListener(t *testing.T) {
 	if n := len(procListeners()); n != before {
 		t.Fatalf("listeners %d after closing", n)
 	}
+}
+
+func procListeners() []string {
+	mine := map[string]bool{}
+	fds, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return nil
+	}
+	for _, fd := range fds {
+		if l, err := os.Readlink("/proc/self/fd/" + fd.Name()); err == nil && strings.HasPrefix(l, "socket:[") {
+			mine[strings.TrimSuffix(strings.TrimPrefix(l, "socket:["), "]")] = true
+		}
+	}
+	l := []string{}
+	for _, f := range []string{"/proc/self/net/tcp", "/proc/self/net/tcp6"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n")[1:] {
+			c := strings.Fields(line)
+			if len(c) > 9 && c[3] == "0A" && mine[c[9]] {
+				l = append(l, c[1])
+			}
+		}
+	}
+	sort.Strings(l)
+	return l
 }

@@ -236,7 +236,7 @@ func TestReleaseBuildsTheUniversalMacAppBeforeTheSums(t *testing.T) {
 	if loop < 0 || lipo < loop || call < lipo {
 		t.Fatal("the mac-app job must build arm64 and amd64, lipo them, then build the sealed universal app, in that order")
 	}
-	if !strings.Contains(s[rel:rel+200], "needs: [mac-app, windows-check, microvm]") {
+	if !strings.Contains(s[rel:rel+200], "needs: [mac-app, windows-check]") {
 		t.Fatal("the release job does not wait for the mac-app and Windows jobs")
 	}
 	dl := strings.Index(s[rel:], "actions/download-artifact")

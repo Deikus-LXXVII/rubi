@@ -38,3 +38,10 @@ builds cannot configure a local publication API/remote or invoke those hooks.
 Default tests remain account-free and platform portable. Linux CI can run the
 script with pinned native T3 and companion source supplied; unsupported runners
 skip cleanly rather than weakening the sandbox.
+
+
+## Combined cleanup acceptance
+
+The native test was rerun with VM startup/backend/image embedding removed and the companion's native setup correction applied. All five scenarios passed on the box: publish/card/requester, append and confirmed stop, provider failure, Home restart/recovery and publication, and stop after a masked native admission response before the thread ID is available. A second subscribed Bot received no task results; card text contained no fixture credential. This is an RPC/panel-data acceptance run, not a phone browser or real-provider-account test.
+
+The disposable combined proof applies the independent VM-cleanup slice alongside the acceptance slice, retaining the native feature-gate regression and discard-audit shutdown fix. Overlapping platform-test/changelog changes are reconciled without altering product behavior. The resulting Home binary has no dependency on the retired VM packages, the embedded SDK runner image or legacy wizard test fixtures. Legacy serializers/protocol fixtures remain for settings compatibility only.

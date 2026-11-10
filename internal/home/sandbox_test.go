@@ -10,7 +10,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
+	"github.com/Deikus-LXXVII/rubi/internal/home/t3instances"
 )
 
 func sandboxFixture(t *testing.T) (agentsandbox.Binding, Config, string, string) {
@@ -34,7 +34,7 @@ func sandboxFixture(t *testing.T) (agentsandbox.Binding, Config, string, string)
 	rd := filepath.Join(dir, agent.RolesDir, r.ID)
 	writeSandboxJSON(t, filepath.Join(rd, "versions", "1.json"), r)
 	writeSandboxJSON(t, filepath.Join(rd, "index.json"), r)
-	_, err = t3vm.SyncSandboxInstances(t3vm.InstanceOptions{T3Base: filepath.Join(root, "t3"), Dir: dir, Projects: []t3vm.T3Project{{ID: "ta", Root: a}, {ID: "tb", Root: b}}}, "/usr/bin/true", []t3vm.SandboxRole{{ID: r.ID, Name: "Test", Project: r.Project, ProjectDir: a, ClaudeDir: filepath.Join(rd, "claude")}})
+	_, err = t3instances.SyncSandboxInstances(t3instances.InstanceOptions{T3Base: filepath.Join(root, "t3"), Dir: dir, Projects: []t3instances.T3Project{{ID: "ta", Root: a}, {ID: "tb", Root: b}}}, "/usr/bin/true", []t3instances.SandboxRole{{ID: r.ID, Name: "Test", Project: r.Project, ProjectDir: a, ClaudeDir: filepath.Join(rd, "claude")}})
 	if err != nil {
 		t.Fatal(err)
 	}

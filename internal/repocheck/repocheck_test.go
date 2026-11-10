@@ -80,13 +80,8 @@ var allowed = map[string]struct {
 	"internal/repocheck/repocheck_test.go":        {retired, "this test names what it looks for"},
 	"internal/home/agent/netpipe/mux.go":          {[]string{"SvcGateway"}, "service 2 is reserved and refused: the number is never reused"},
 	"internal/home/agent/netpipe/doc.go":          {[]string{"SvcGateway"}, "the package documentation says service 2 is reserved"},
-	"internal/home/agent/auth_test.go":            {[]string{"SvcGateway"}, "proves the sign-in container offers no service 2"},
-	"internal/home/agent/pipe_test.go":            {[]string{"SvcGateway"}, "proves a netless VM's pipe offers no service 2"},
 	"internal/home/agent/manager_netless_test.go": {[]string{"SvcGateway"}, "proves a runner VM's pipe offers no service 2"},
-	"internal/home/agent/t3vm/server_test.go":     {[]string{"CLAUDE_CODE_OAUTH_TOKEN"}, "T3's environment may hold the variable; the test proves it never reaches the VM"},
-	"internal/home/agent/t3vm/env_test.go":        {[]string{"CLAUDE_CODE_OAUTH_TOKEN"}, "T3's environment may hold the variable; the test proves it is dropped"},
 	"sdk/skillscan/scan.go":                       {[]string{"CLAUDE_CODE_OAUTH_TOKEN"}, "the skill scanner flags a skill that names the variable"},
-	"runner/embed_test.go":                        {[]string{"CLAUDE_CODE_OAUTH_TOKEN"}, "proves the image bakes no credential in"},
 	"runner/test/netpipe.test.ts":                 {[]string{"SVC_GATEWAY"}, "proves the forwarder has no service 2"},
 	"internal/home/agent/retired_test.go":         {nil, "(no retired name; listed so a future one is a conscious choice)"},
 }

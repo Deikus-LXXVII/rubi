@@ -394,7 +394,7 @@ func TestReleaseCarriesTheWindowsZips(t *testing.T) {
 	if !strings.Contains(check, "runs-on: windows-latest") || !strings.Contains(check, "rubi-home.exe version") {
 		t.Error("the Windows zip is not run on Windows before the release")
 	}
-	if !strings.Contains(s[rel:rel+200], "needs: [mac-app, windows-check, microvm]") {
+	if !strings.Contains(s[rel:rel+200], "needs: [mac-app, windows-check]") {
 		t.Error("the release does not wait for the Windows check")
 	}
 	dl := strings.Index(s[rel:], "name: windows-home")

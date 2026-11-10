@@ -97,7 +97,12 @@ func TestBusyAndCancel(t *testing.T) {
 	if err != nil || res["started"] != true {
 		t.Fatalf("run: %v %v", res, err)
 	}
-	<-started
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		close(release)
+		t.Fatal("fake image build never started")
+	}
 	if _, err := e.op("run", map[string]any{"step": "image"}); err == nil || !strings.HasPrefix(err.Error(), "busy") {
 		t.Errorf("second run: %v", err)
 	}
@@ -220,8 +225,8 @@ func TestImageJob(t *testing.T) {
 	if filepath.Dir(dir) != filepath.Join(e.dir, "runner-build") || build[0] != "container" || build[len(build)-2] != filepath.Join(dir, "container", "Dockerfile") {
 		t.Errorf("build: %v", build)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "src", "main.ts")); err != nil {
-		t.Errorf("the bundled runner wasn't written: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "src", "main.ts")); !os.IsNotExist(err) {
+		t.Errorf("inert compatibility fixture wrote a retired VM runner: %v", err)
 	}
 	e.op("run", map[string]any{"step": "image"})
 	e.wait()

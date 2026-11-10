@@ -38,21 +38,20 @@ import (
 
 // userTextExempt are paths whose texts are for the people who build, release and host Rubi, never for its users.
 var userTextExempt = map[string]string{
-	"docs/ops/":                          "maintainer docs: hosting the gateway, releasing, signing plugins",
-	"cmd/t3-bump/":                       "CI tool that opens the T3 pin pull request",
-	"internal/t3bump/":                   "CI tool that opens the T3 pin pull request",
-	"cmd/rubi-gateway/":                  "the hosted gateway's own command line, run by the host operator",
-	"cmd/rubi-sandbox/":                  "the maintainer sandbox, not shipped to people using Rubi",
-	"internal/sandbox/":                  "the maintainer sandbox, not shipped to people using Rubi",
-	"cmd/rubi-announce/":                 "release tool run by the maintainer",
-	"cmd/rubi/usage.go":                  "rubi's --help, read by the Bot that runs Rubi on its machine, not by the user",
-	"skills/":                            "Bot skills (also served as rubi-panel.com/install.md): written for the Bot, which runs the commands while the user only confirms",
-	"internal/mcpserver/":                "the MCP server speaks only to the Bot: its tool descriptions and results are instructions for the Bot to run",
-	"internal/plugins/plugintest/":       "test helper plugins, never shipped",
-	"internal/e2e/":                      "test support",
-	"sdk/skillscan/":                     "the skill scanner's own rules: it names sudo and friends to flag them",
-	"internal/home/localsend.go":         "claude-send is run by a Claude session, never typed by a person: its output goes to a program",
-	"internal/home/agent/t3vm/client.go": "agent-vm is run by T3 in place of the claude binary: its output goes to a program",
+	"docs/ops/":                    "maintainer docs: hosting the gateway, releasing, signing plugins",
+	"cmd/t3-bump/":                 "CI tool that opens the T3 pin pull request",
+	"internal/t3bump/":             "CI tool that opens the T3 pin pull request",
+	"cmd/rubi-gateway/":            "the hosted gateway's own command line, run by the host operator",
+	"cmd/rubi-sandbox/":            "the maintainer sandbox, not shipped to people using Rubi",
+	"internal/sandbox/":            "the maintainer sandbox, not shipped to people using Rubi",
+	"cmd/rubi-announce/":           "release tool run by the maintainer",
+	"cmd/rubi/usage.go":            "rubi's --help, read by the Bot that runs Rubi on its machine, not by the user",
+	"skills/":                      "Bot skills (also served as rubi-panel.com/install.md): written for the Bot, which runs the commands while the user only confirms",
+	"internal/mcpserver/":          "the MCP server speaks only to the Bot: its tool descriptions and results are instructions for the Bot to run",
+	"internal/plugins/plugintest/": "test helper plugins, never shipped",
+	"internal/e2e/":                "test support",
+	"sdk/skillscan/":               "the skill scanner's own rules: it names sudo and friends to flag them",
+	"internal/home/localsend.go":   "claude-send is run by a Claude session, never typed by a person: its output goes to a program",
 }
 
 type textPattern struct {
