@@ -195,62 +195,6 @@ func TestT3Caps(t *testing.T) {
 	}
 }
 
-func TestSessionPipeAndContainerHelpersUseTheSeams(t *testing.T) {
-	f := &authFake{}
-	a, _ := newAuthVM(t, f)
-	if err := a.RunDetached(context.Background(), []string{"container", "run", "-d", "x"}); err != nil {
-		t.Fatal(err)
-	}
-	if f.find("run -d x") == nil {
-		t.Errorf("commands: %v", f.cmds)
-	}
-	if err := a.RemoveContainer(context.Background(), "rubi-t3-x"); err != nil {
-		t.Fatal(err)
-	}
-	if f.find("stop --time 5 rubi-t3-x") == nil || f.find("delete --force rubi-t3-x") == nil {
-		t.Errorf("commands: %v", f.cmds)
-	}
-	if err := a.RunDetached(context.Background(), nil); err == nil {
-		t.Error("an empty command ran")
-	}
-}
-
-// The forwarder of a session VM starts with the T3 port in its environment, and its streams go to the listeners.
-func TestStartSessionPipeGivesTheForwarderItsEnvironment(t *testing.T) {
-	fastPipe(t)
-	vm := newVMPipes(t, nil)
-	f := &authFake{}
-	a, _ := newAuthVM(t, f)
-	a.spawn = vm.spawn
-	spec := &PipeSpec{Proxy: netpipe.NewListener("p", 1), Hook: netpipe.NewListener("h", 1), T3: netpipe.NewListener("t", 1)}
-	stop, err := a.StartSessionPipe(context.Background(), "rubi-t3-x", spec, map[string]string{"RUBI_T3_PORT": "4411"}, func() {})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer stop()
-	if len(vm.argvs) != 1 || !strings.Contains(strings.Join(vm.argvs[0], " "), "exec -i --user 10001 --workdir /work --env-file") || vm.argvs[0][len(vm.argvs[0])-2] != "rubi-t3-x" {
-		t.Fatalf("forwarder command: %q", vm.argvs)
-	}
-	s, _ := vm.latest().Open(netpipe.SvcT3)
-	got := make(chan byte, 1)
-	go func() {
-		c, err := spec.T3.Accept()
-		if err == nil {
-			got <- c.(*netpipe.Stream).Service()
-		}
-	}()
-	select {
-	case svc := <-got:
-		if svc != netpipe.SvcT3 {
-			t.Fatalf("service %d", svc)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("the T3 listener got no stream")
-	}
-	s.Close()
-}
-
-// A role made for one directory is not used for another that now has the same project id.
 func TestT3RoleRefusesARoleMadeForAnotherDirectory(t *testing.T) {
 	var dirs []string
 	re := newRoleEnv(t, func(o *Options) { o.Projects = func() []string { return dirs } })
@@ -275,38 +219,5 @@ func TestT3RoleRefusesARoleMadeForAnotherDirectory(t *testing.T) {
 	// listed for T3 still (its instance exists), but pinned to no folder: no project turns it on
 	if got := re.m.T3Roles(); len(got) != 1 || got[0].ProjectDir != "" {
 		t.Fatalf("roles: %+v", got)
-	}
-}
-
-func TestInspectMountsAndListContainersReadTheToolsJSON(t *testing.T) {
-	a, _ := newAuthVM(t, &authFake{})
-	a.run = func(ctx context.Context, argv []string) ([]byte, error) {
-		switch argv[1] {
-		case "inspect":
-			if argv[2] != "rubi-t3-x" {
-				t.Errorf("inspect %v", argv)
-			}
-			return []byte(`[{"id":"rubi-t3-x","configuration":{"mounts":[
-				{"source":"/p/w","destination":"/p/w","options":[],"type":{"virtiofs":{}}},
-				{"source":"/h/m.json","destination":"/etc/claude-code/managed-settings.json","options":["ro"],"type":{"virtiofs":{}}}]}}]`), nil
-		case "ls":
-			return []byte(`[{"configuration":{"id":"buildkit"}},{"configuration":{"id":"rubi-t3-x"}},{"configuration":{"id":""}}]`), nil
-		}
-		return nil, nil
-	}
-	ms, err := a.InspectMounts(context.Background(), "rubi-t3-x")
-	if err != nil || len(ms) != 2 || ms[0].ReadOnly || !ms[1].ReadOnly || ms[1].Source != "/h/m.json" || ms[0].Type != "virtiofs" || ms[1].Destination != "/etc/claude-code/managed-settings.json" {
-		t.Fatalf("%+v %v", ms, err)
-	}
-	names, err := a.ListContainers(context.Background())
-	if err != nil || len(names) != 2 || names[1] != "rubi-t3-x" {
-		t.Fatalf("%v %v", names, err)
-	}
-	a.run = func(context.Context, []string) ([]byte, error) { return []byte("not json"), nil }
-	if _, err := a.InspectMounts(context.Background(), "x"); err == nil {
-		t.Error("garbage accepted")
-	}
-	if _, err := a.ListContainers(context.Background()); err == nil {
-		t.Error("garbage accepted")
 	}
 }

@@ -943,10 +943,7 @@ func TestProjectsRefuseSensitiveDirsAndMountPaths(t *testing.T) {
 	if len(ps) != 1 || ps[0].Dir != filepath.Join(rhome, "work/ok") {
 		t.Fatalf("%+v", ps)
 	}
-	a := &AppleContainer{}
-	if _, err := a.Start(context.Background(), StartSpec{Project: Project{ID: "p", Dir: "/x/a,b"}}); err == nil || a.State() != StateFailed {
-		t.Fatalf("comma in mount path: %v", err)
-	}
+
 }
 
 func TestCredAskPathIsCleaned(t *testing.T) {

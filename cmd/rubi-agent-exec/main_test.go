@@ -16,7 +16,7 @@ import (
 
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
+	"github.com/Deikus-LXXVII/rubi/internal/home/t3instances"
 )
 
 func TestMain(m *testing.M) {
@@ -93,12 +93,25 @@ func TestBoundShimSRTIntegration(t *testing.T) {
 	roleDir := filepath.Join(dir, "agent-roles", r.ID)
 	write(filepath.Join(roleDir, "index.json"), r)
 	write(filepath.Join(roleDir, "versions", "1.json"), r)
-	o := t3vm.InstanceOptions{Dir: dir, T3Base: filepath.Join(root, "t3"), Projects: []t3vm.T3Project{{ID: "a", Root: a}, {ID: "b", Root: b}}}
-	_, err = t3vm.SyncSandboxInstances(o, self, []t3vm.SandboxRole{{ID: r.ID, Project: r.Project, ProjectDir: a, Name: "Test", ClaudeDir: filepath.Join(roleDir, "claude")}})
+	o := t3instances.InstanceOptions{Dir: dir, T3Base: filepath.Join(root, "t3"), Projects: []t3instances.T3Project{{ID: "a", Root: a}, {ID: "b", Root: b}}}
+	_, err = t3instances.SyncSandboxInstances(o, self, []t3instances.SandboxRole{{ID: r.ID, Project: r.Project, ProjectDir: a, Name: "Test", ClaudeDir: filepath.Join(roleDir, "claude")}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	shim := o.ShimPath(r.ID)
+	settings, err := os.ReadFile(filepath.Join(o.T3Base, "userdata", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var providers struct {
+		ProviderInstances map[string]struct{ Config struct{ BinaryPath string } }
+	}
+	if err := json.Unmarshal(settings, &providers); err != nil {
+		t.Fatal(err)
+	}
+	shim := providers.ProviderInstances[t3instances.InstancePrefix+r.ID].Config.BinaryPath
+	if shim == "" {
+		t.Fatal("native Claude instance has no sandbox shim")
+	}
 	if err = os.WriteFile(filepath.Join(b, "marker"), []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}

@@ -130,16 +130,8 @@ jobs:
             if ($machine -ne $case[1]) { throw ("{0}: machine type {1:X} is not {2:X}" -f $zip, $machine, $case[1]) }
           }
 
-  # The Linux VM backend's files (docs/design/linux-microvm.md): per CPU the guest kernel, the root file system, QEMU and
-  # virtiofsd, and the source archive their licences ask for, named by this tag. They go into the signed SHA256SUMS,
-  # which is what Rubi Home's setup checks them against before it installs them.
-  microvm:
-    uses: ./.github/workflows/microvm.yml
-    with:
-      version: ${{ github.ref_name }}
-
   release:
-    needs: [mac-app, windows-check, microvm]
+    needs: [mac-app, windows-check]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -166,22 +158,9 @@ jobs:
           name: windows-home
           path: dist
 
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: microvm-*
-          path: dist
-          merge-multiple: true
-
       - name: Build
         run: |
           set -euo pipefail
-          # the VM files of both CPUs (four archives each) and their source archive, from the microvm job
-          for arch in x86_64 aarch64; do
-            for part in kernel rootfs qemu virtiofsd; do
-              ls "dist/rubi-vm-${GITHUB_REF_NAME}-linux-$arch-$part.tar.gz"
-            done
-          done
-          ls "dist/rubi-vm-${GITHUB_REF_NAME}-sources.tar.gz"
           mkdir -p dist/bin
           for target in linux/amd64 linux/arm64 darwin/arm64; do
             os=${target%/*}; arch=${target#*/}

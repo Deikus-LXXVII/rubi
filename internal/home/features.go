@@ -154,9 +154,6 @@ func ComputeFeatures(ctx context.Context, env FeatureEnv) map[string]Feature {
 	return out
 }
 
-// noSessionHost is why T3 is not available where agents are: the backend can't run T3's session VMs yet.
-const noSessionHost = "T3 sessions don't run in this computer's VMs yet"
-
 func systemName(goos string) string {
 	switch goos {
 	case "darwin":

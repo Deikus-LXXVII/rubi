@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/agenttest"
 	"io"
 	"os"
 	"path/filepath"
@@ -254,7 +255,7 @@ func newTestEnv(t *testing.T, mods ...func(*Options)) *testEnv {
 			return nil
 		}}
 	opt.Backend = func() agent.VMBackend {
-		return agent.NewAppleBackend(agent.BackendConfig{Bin: "container", RunnerDir: e.cfg.RunnerDir, EnvDir: e.dir})
+		return agenttest.NewAppleBackend(agent.BackendConfig{Bin: "container", RunnerDir: e.cfg.RunnerDir, EnvDir: e.dir})
 	}
 	for _, f := range mods {
 		f(&opt)

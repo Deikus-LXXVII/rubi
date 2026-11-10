@@ -121,14 +121,7 @@ func newLife(t *testing.T) *life {
 		}
 		return freePort()
 	}
-	th.ServeSessions = func(ctx context.Context) error {
-		l.mu.Lock()
-		l.served++
-		l.serveCtx = ctx
-		l.mu.Unlock()
-		<-ctx.Done()
-		return nil
-	}
+
 	th.AgentSetup = func(ctx context.Context, op string, args json.RawMessage) (any, error) {
 		return map[string]any{"steps": []any{}}, nil
 	}
@@ -199,7 +192,9 @@ func TestT3StartBringsEverythingUp(t *testing.T) {
 	if err != nil || !strings.Contains(string(sb), "claude-"+role) {
 		t.Errorf("settings: %v %s", err, sb)
 	}
-	waitUntil(t, func() bool { l.mu.Lock(); defer l.mu.Unlock(); return l.served == 1 })
+	if l.served != 0 {
+		t.Fatal("native startup launched a retired VM session server")
+	}
 	if l.h.T3Pid() != 4242 {
 		t.Errorf("T3Pid = %d", l.h.T3Pid())
 	}
@@ -207,7 +202,7 @@ func TestT3StartBringsEverythingUp(t *testing.T) {
 	if err := l.t3.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if l.srv.started != 1 || len(l.pairs) != 1 || l.served != 1 {
+	if l.srv.started != 1 || len(l.pairs) != 1 || l.served != 0 {
 		t.Errorf("a second start did work: started %d, trades %d, served %d", l.srv.started, len(l.pairs), l.served)
 	}
 	// Stop ends the session server and the server, and the pid is gone.
@@ -215,11 +210,7 @@ func TestT3StartBringsEverythingUp(t *testing.T) {
 	if l.srv.stopped != 1 || l.h.T3Pid() != 0 || l.t3.srvAlive() || l.t3.client() != nil {
 		t.Errorf("after stop: stopped %d, pid %d", l.srv.stopped, l.h.T3Pid())
 	}
-	select {
-	case <-l.serveCtx.Done():
-	case <-time.After(5 * time.Second):
-		t.Error("the session server's context was not cancelled")
-	}
+
 }
 
 func waitUntil(t *testing.T, ok func() bool) {
@@ -436,7 +427,7 @@ func TestT3DeadServerIsNotReady(t *testing.T) {
 
 func TestT3SetupStatusShape(t *testing.T) {
 	l := newLife(t)
-	role := putRole(t, l.h, "reviewer")
+	putRole(t, l.h, "reviewer")
 	l.t3.AgentSetup = func(ctx context.Context, op string, args json.RawMessage) (any, error) {
 		return map[string]any{"steps": []any{map[string]any{"id": "container"}, map[string]any{"id": "image"}, map[string]any{"id": "projects"},
 			map[string]any{"id": "login"}, map[string]any{"id": "selftest"}}, "job": nil, "login": nil}, nil
@@ -456,7 +447,7 @@ func TestT3SetupStatusShape(t *testing.T) {
 		return strings.Join(out, ",")
 	}
 	// T3's own steps sit after the image, the agent setup's steps keep their order.
-	if got := ids(st); got != "container,image,t3,pair,projects,login,selftest" {
+	if got := ids(st); got != "t3,pair,projects,login,selftest" {
 		t.Errorf("steps: %s", got)
 	}
 	l.up(t)
@@ -481,24 +472,28 @@ func TestT3SetupStatusShape(t *testing.T) {
 			}
 		}
 	}
-	// The login row: one row per role, all with the one shared state, from the folder (the file is never read).
+
+	// Retired VM sign-in is not offered, even when its old credential file exists.
 	login := stepByID(t, st, "login")
-	rows := login["projects"].([]any)
-	// Container and image are not done yet, so the row says what it is waiting on and does not offer Sign in.
-	if login["state"] != "todo" || login["action"] != "" || !strings.Contains(login["reason"].(string), "Waiting for earlier steps") ||
-		len(rows) != 1 || rows[0].(map[string]any)["id"] != role || rows[0].(map[string]any)["state"] != "todo" || rows[0].(map[string]any)["action"] != "" {
-		t.Errorf("login before: %v", login)
+	if login["state"] != "unsupported" || login["action"] != "" || !strings.Contains(login["reason"].(string), "retired") {
+		t.Errorf("native provider provisioning: %v", login)
 	}
-	if err := os.MkdirAll(filepath.Join(l.h.Dir, "agent-signin"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(l.h.Dir, "agent-signin"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(l.h.Dir, "agent-signin", ".credentials.json"), []byte(`{"x":1}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(l.h.Dir, "agent-signin", ".credentials.json"), []byte(`{"fixture":true}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	st, _ = handle(t, l.h, "tok", "t3-setup.status", nil)
 	login = stepByID(t, st, "login")
-	if login["state"] != "done" || login["action"] != "login_again" || login["projects"].([]any)[0].(map[string]any)["state"] != "done" || st["login"] != nil {
-		t.Errorf("login after: %v", login)
+	if login["state"] != "unsupported" || login["action"] != "" {
+		t.Fatal("legacy VM credential file re-enabled VM login")
+	}
+
+	for _, op := range []string{"t3-setup.login.open", "t3-setup.login.code", "t3-setup.run"} {
+		if _, err := handle(t, l.h, "tok", op, map[string]any{"step": "login"}); err == nil || !strings.Contains(err.Error(), "retired") {
+			t.Errorf("retired login %s: %v", op, err)
+		}
 	}
 	// The agent setup being unavailable doesn't hide T3's facts.
 	l.t3.AgentSetup = func(context.Context, string, json.RawMessage) (any, error) {
@@ -601,14 +596,14 @@ func TestT3SetupPassesTheAgentSetupOn(t *testing.T) {
 		return map[string]any{"ok": true}, nil
 	}
 	for _, c := range []struct{ op, args string }{
-		{"run", `{"step":"image"}`}, {"run", `{"step":"projects"}`},
+		{"run", `{"step":"projects"}`},
 		{"project.add", `{}`}, {"project.remove", `{"dir":"/x"}`}, {"cancel", `{}`},
 	} {
 		if _, err := handle(t, l.h, "tok", "t3-setup."+c.op, json.RawMessage(c.args)); err != nil {
 			t.Fatalf("%s: %v", c.op, err)
 		}
 	}
-	want := []string{`agent-setup.run {"step":"image"}`, `agent-setup.run {"step":"projects"}`,
+	want := []string{`agent-setup.run {"step":"projects"}`,
 		`agent-setup.project.add {}`, `agent-setup.project.remove {"dir":"/x"}`, `agent-setup.cancel {}`}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("passed on:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -621,7 +616,7 @@ func TestT3SetupPassesTheAgentSetupOn(t *testing.T) {
 	l.t3.Wait()
 	mu.Lock()
 	defer mu.Unlock()
-	if len(got) != 1 || !strings.HasPrefix(got[0], "agent-setup.run") {
+	if len(got) != 0 {
 		t.Errorf("all: %v", got)
 	}
 	if st := l.t3.Status(); st["installed"] != true || st["running"] != true || st["paired"] != true {
@@ -663,7 +658,6 @@ func TestT3ResumesWatchingRunningThreads(t *testing.T) {
 	// Home restarts: a new T3Home reads the thread list from the file.
 	th2 := newT3Home(l.h)
 	th2.Fetch, th2.Pin, th2.Platform, th2.NewServer, th2.Pair = l.t3.Fetch, l.t3.Pin, l.t3.Platform, l.t3.NewServer, l.t3.Pair
-	th2.ServeSessions = func(ctx context.Context) error { <-ctx.Done(); return nil }
 	th2.base = l.t3.base
 	l.h.T3 = th2
 	t.Cleanup(th2.Stop)

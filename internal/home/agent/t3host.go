@@ -1,12 +1,9 @@
 package agent
 
-// What the T3 session server (package t3vm) borrows from the manager and the container supervisor, so that a T3
-// session's VM follows the same rules as a runner's: the role must exist and be pinned to the folder, the proxy is the
-// same allow-list proxy with the same net.ask, and a stop is the same stop.
+// Native T3 borrows role metadata, project permissions and limits from the manager.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -38,7 +35,7 @@ type T3Role struct {
 
 // T3Role finds the role for a session in cwd: it must exist, be active and be made for the project directory as it is
 // now (the same check a runner's start makes); the role's version is pinned until Release. Whether cwd lies inside
-// ProjectDir is checked with the rest of the mounts, after symlinks (t3vm.SessionSpec).
+// ProjectDir is checked against the role and configured project after resolving symlinks.
 func (m *Manager) T3Role(id string) (*T3Role, error) {
 	if m.roles == nil || m.opt.Dir == "" {
 		return nil, errors.New("roles aren't available here")
@@ -228,104 +225,10 @@ func (m *Manager) T3Roles() []T3RoleRef {
 
 // ---- the container supervisor ----
 
-// RunDetached runs a `container run -d` command line (t3vm.SessionSpec.RunArgs) and waits for it.
-func (a *AppleContainer) RunDetached(ctx context.Context, argv []string) error {
-	if len(argv) == 0 {
-		return errors.New("no command")
-	}
-	_, err := a.do(ctx, argv)
-	return err
-}
-
-// RunOutput runs a command line of the container tool and returns what it printed.
-func (a *AppleContainer) RunOutput(ctx context.Context, argv []string) ([]byte, error) {
-	if len(argv) == 0 {
-		return nil, errors.New("no command")
-	}
-	return a.do(ctx, argv)
-}
-
-// StartSessionPipe starts the forwarder (rubi-netpipe) in the container name and serves its streams to spec's
-// listeners; env is the forwarder's environment (RUBI_T3_PORT). A forwarder that keeps dying calls giveUp. The
-// returned function ends the forwarder.
-func (a *AppleContainer) StartSessionPipe(ctx context.Context, name string, spec *PipeSpec, env map[string]string, giveUp func()) (stop func(), err error) {
-	s, err := a.startPipeEnv(ctx, name, spec, env, giveUp)
-	if err != nil {
-		return nil, err
-	}
-	return s.stop, nil
-}
-
-// RemoveContainer stops and deletes a container by name (best effort, both are tried).
-func (a *AppleContainer) RemoveContainer(ctx context.Context, name string) error {
-	_, err := a.do(ctx, []string{a.bin(), "stop", "--time", "5", name})
-	_, derr := a.do(ctx, []string{a.bin(), "delete", "--force", name})
-	return errors.Join(err, derr)
-}
-
-// ContainerMount is one mount of a container as the tool reports it.
+// ContainerMount is retained for legacy setup/protocol interfaces; no VM backend is available.
 type ContainerMount struct {
 	Source, Destination string
 	ReadOnly            bool
 	// Type is the kind of mount the tool reports: "virtiofs" for a folder or file of the Mac, "tmpfs" for memory.
 	Type string
 }
-
-// InspectMounts says what a container has mounted.
-func (a *AppleContainer) InspectMounts(ctx context.Context, name string) ([]ContainerMount, error) {
-	out, err := a.do(ctx, []string{a.bin(), "inspect", name})
-	if err != nil {
-		return nil, err
-	}
-	var rows []struct {
-		Configuration struct {
-			Mounts []struct {
-				Source      string                     `json:"source"`
-				Destination string                     `json:"destination"`
-				Options     []string                   `json:"options"`
-				Type        map[string]json.RawMessage `json:"type"`
-			} `json:"mounts"`
-		} `json:"configuration"`
-	}
-	if err := json.Unmarshal(out, &rows); err != nil || len(rows) != 1 {
-		return nil, errors.New("the container tool's answer wasn't understood")
-	}
-	var ms []ContainerMount
-	for _, m := range rows[0].Configuration.Mounts {
-		cm := ContainerMount{Source: m.Source, Destination: m.Destination}
-		for k := range m.Type {
-			cm.Type = k
-		}
-		for _, o := range m.Options {
-			cm.ReadOnly = cm.ReadOnly || o == "ro" || o == "readonly"
-		}
-		ms = append(ms, cm)
-	}
-	return ms, nil
-}
-
-// ListContainers names every container, running or not.
-func (a *AppleContainer) ListContainers(ctx context.Context) ([]string, error) {
-	out, err := a.do(ctx, []string{a.bin(), "ls", "--all", "--format", "json"})
-	if err != nil {
-		return nil, err
-	}
-	var rows []struct {
-		Configuration struct {
-			ID string `json:"id"`
-		} `json:"configuration"`
-	}
-	if err := json.Unmarshal(out, &rows); err != nil {
-		return nil, errors.New("the container tool's list wasn't understood")
-	}
-	var names []string
-	for _, r := range rows {
-		if r.Configuration.ID != "" {
-			names = append(names, r.Configuration.ID)
-		}
-	}
-	return names, nil
-}
-
-// ContainerBin is the container CLI's name or path.
-func (a *AppleContainer) ContainerBin() string { return a.bin() }

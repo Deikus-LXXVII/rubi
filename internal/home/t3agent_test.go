@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
+	"github.com/Deikus-LXXVII/rubi/internal/home/t3instances"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
 
@@ -340,7 +340,7 @@ func TestT3AgentStartRefusedWhenTheInstanceSyncFails(t *testing.T) {
 // A sync that couldn't read T3's projects wrote no project switch: the session doesn't start either.
 func TestT3AgentStartRefusedWhenTheSyncKnewNoProjects(t *testing.T) {
 	l, role := agentLife(t)
-	l.t3.syncInstances = func() (t3vm.SyncResult, error) { return t3vm.SyncResult{}, nil }
+	l.t3.syncInstances = func() (t3instances.SyncResult, error) { return t3instances.SyncResult{}, nil }
 	_, err := handle(t, l.h, "tok", "t3-agent.start", map[string]any{"project": "my-project", "role": role, "prompt": "do the work"})
 	if err == nil || !strings.Contains(err.Error(), "didn't start") {
 		t.Fatalf("start with no projects known: %v", err)

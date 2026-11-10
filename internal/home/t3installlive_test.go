@@ -29,7 +29,6 @@ func TestLiveT3Install(t *testing.T) {
 	if th.platform() == "" {
 		t.Skip("no T3 build for this platform")
 	}
-	th.ServeSessions = func(ctx context.Context) error { <-ctx.Done(); return nil }
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	t.Cleanup(th.Stop)

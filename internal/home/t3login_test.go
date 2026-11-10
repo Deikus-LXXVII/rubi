@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent/agenttest"
 	"io"
 	"log"
 	"os"
@@ -162,7 +163,7 @@ func loginLife(t *testing.T) (*life, *loginBox, *fakeOpen, string) {
 	l.t3.LoginAgents = box
 	l.t3.LoginOptions = func(o *setup.Options) {
 		o.Cmd, o.Opener = op, op
-		o.Backend = func() agent.VMBackend { return agent.NewAppleBackend(agent.BackendConfig{}) } // the sign-in runs as on a Mac
+		o.Backend = func() agent.VMBackend { return agenttest.NewAppleBackend(agent.BackendConfig{}) } // the sign-in runs as on a Mac
 	}
 	t.Cleanup(func() { l.t3.login().Cancel() })
 	return l, box, op, role

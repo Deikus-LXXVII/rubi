@@ -284,7 +284,7 @@ this version uses a child process, not Unix process replacement.
 go vet ./...
 go test ./... -count=1
 go test -race ./internal/agentbridge ./internal/agentsandbox ./internal/home \
-  ./internal/home/agent/t3vm ./internal/t3 ./cmd/rubi-agent-exec -count=1
+  ./internal/home/t3instances ./internal/t3 ./cmd/rubi-agent-exec -count=1
 PATH=/workspace/srt-spike/bin:/workspace/srt-spike/node_modules/.bin:$PATH \
   go test -v ./cmd/rubi-agent-exec -run TestBoundShimSRTIntegration -count=1
 PATH=/workspace/srt-spike/bin:/workspace/srt-spike/node_modules/.bin:$PATH \
@@ -560,3 +560,10 @@ project-context watchers) before returning or removing project servers. Watcher
 generation ownership prevents an older cancelled watcher from deleting a newer
 watch. The regression test also repeats the damaged-copy stop case under the
 race detector, which exposed the earlier write-after-shutdown cleanup race.
+
+
+## VM retirement and rollout
+
+Home startup no longer launches/sweeps Apple containers or microVMs, serves VM session sockets, or embeds the VM runner. Retired `agent-vm`, `vm-confine`, `microvm-confine`, VM sign-in and VM self-test paths refuse; there is no unsandboxed fallback. Project/role settings and legacy protocol fixtures remain readable for migration/testing only.
+
+Native macOS sessions keep the existing sandbox-exec path; repository tasks explicitly require Linux descendant supervision. Windows and platforms without a pinned native T3 build refuse execution. Native provider credentials must be provisioned explicitly: the removed VM login wizard is not a native login mechanism. No installed Home, live daemon, settings, VM or provider login was changed during this work. See `docs/releases/t3-agents-rollout.md` for the pending rollout checklist.

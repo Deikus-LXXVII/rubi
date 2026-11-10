@@ -24,7 +24,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
+	"github.com/Deikus-LXXVII/rubi/internal/home/t3instances"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
 
@@ -558,7 +558,7 @@ func (t *T3Home) startOnPlatform(ctx context.Context, in startIn, goos string) (
 	if model == "" {
 		model = t.Model
 	}
-	instance := t3vm.InstancePrefix + r.ID
+	instance := t3instances.InstancePrefix + r.ID
 	if provider != "claudeAgent" {
 		instance = "rubi-" + strings.ToLower(provider) + "-" + r.ID
 	}

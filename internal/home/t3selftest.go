@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
-	"github.com/Deikus-LXXVII/rubi/internal/home/agent/t3vm"
 	"github.com/Deikus-LXXVII/rubi/internal/home/setup"
+	"github.com/Deikus-LXXVII/rubi/internal/home/t3instances"
 )
 
 // T3StepSelfTest is the setup page's self-test row.
@@ -133,22 +133,14 @@ func (t *T3Home) vmVersion(ctx context.Context, role string) (string, error) {
 	if t.VMVersion != nil {
 		return t.VMVersion(ctx, role)
 	}
-	s := t.h.sessionServer()
-	if s == nil {
-		return "", errors.New("the session server isn't running")
-	}
-	return s.Version(ctx, role)
+	return "", errors.New("VM self-test was retired; use the native srt acceptance/runtime checks")
 }
 
 func (t *T3Home) vmProbe(ctx context.Context, role string, cmd []string) ([]byte, error) {
 	if t.VMProbe != nil {
 		return t.VMProbe(ctx, role, cmd)
 	}
-	s := t.h.sessionServer()
-	if s == nil {
-		return nil, errors.New("the session server isn't running")
-	}
-	return s.Probe(ctx, role, cmd)
+	return nil, errors.New("VM self-test was retired; use the native srt acceptance/runtime checks")
 }
 
 func parseProbe(out []byte) map[string]string {
@@ -199,7 +191,7 @@ func (t *T3Home) selfTestRole(ctx context.Context, r agent.T3ProjectRow) selfRow
 	if agentExec == "" {
 		agentExec = filepath.Join(filepath.Dir(self), "rubi-agent-exec")
 	}
-	want, err := t3vm.SandboxShimScript(agentExec, filepath.Join(t.h.Dir, "t3", "sandbox", r.Role, "claudeAgent", "binding.json"))
+	want, err := t3instances.SandboxShimScript(agentExec, filepath.Join(t.h.Dir, "t3", "sandbox", r.Role, "claudeAgent", "binding.json"))
 	if err != nil {
 		return fail("%v", err)
 	}
