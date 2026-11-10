@@ -173,12 +173,14 @@ func TestSeveralSessionsPerProject(t *testing.T) {
 	fr := mu.fakes["my-project"].Runner()
 	// An event for one session leaves the other's slot alone.
 	fr.Emit(statusEv("sess-2", "idle"))
-	eventually(t, "third started", func() bool { return mu.startsOf("my-project") == 3 })
-	mu.m.mu.Lock()
-	defer mu.m.mu.Unlock()
-	if mu.m.exactLocked("my-project", "sess-1") == nil || mu.m.exactLocked("my-project", "sess-3") == nil || len(mu.m.slots) != 2 {
-		t.Fatalf("slots: %+v", mu.m.slots)
+	// The start reaches the runner before its slot is keyed by the new
+	// session id, so wait for the slots themselves, not the start count.
+	slotsSettled := func() bool {
+		mu.m.mu.Lock()
+		defer mu.m.mu.Unlock()
+		return mu.m.exactLocked("my-project", "sess-1") != nil && mu.m.exactLocked("my-project", "sess-3") != nil && len(mu.m.slots) == 2
 	}
+	eventually(t, "third started", func() bool { return mu.startsOf("my-project") == 3 && slotsSettled() })
 }
 
 func TestGlobalCapWaitsAndReleases(t *testing.T) {
