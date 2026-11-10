@@ -229,12 +229,29 @@ func TestReleaseBuildsTheUniversalMacAppBeforeTheSums(t *testing.T) {
 	if rel < job {
 		t.Fatal("the release job should follow the mac-app job")
 	}
-	mac := s[job:rel]
+	if !strings.Contains(s[job:rel], `run: bash scripts/build-mac-app.sh "$GITHUB_REF_NAME"`) {
+		t.Fatal("the mac-app job must build the app with scripts/build-mac-app.sh for the tag")
+	}
+	sb, err := os.ReadFile(filepath.Join(root(t), "scripts", "build-mac-app.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := string(sb)
 	loop := strings.Index(mac, "for arch in arm64 amd64; do")
 	lipo := strings.Index(mac, "lipo -create -output work/home-darwin-universal/rubi-home work/home-darwin-arm64/rubi-home work/home-darwin-amd64/rubi-home")
-	call := strings.Index(mac, `RUBI_APP_SIGN=adhoc sh scripts/build-home-app.sh "$GITHUB_REF_NAME" universal work/home-darwin-universal/rubi-home app`)
+	call := strings.Index(mac, `RUBI_APP_SIGN=adhoc sh scripts/build-home-app.sh "$version" universal work/home-darwin-universal/rubi-home app`)
 	if loop < 0 || lipo < loop || call < lipo {
-		t.Fatal("the mac-app job must build arm64 and amd64, lipo them, then build the sealed universal app, in that order")
+		t.Fatal("build-mac-app.sh must build arm64 and amd64, lipo them, then build the sealed universal app, in that order")
+	}
+	// The same build runs in CI on every change, so a sealing failure can't first show up at a tag.
+	cb, err := os.ReadFile(filepath.Join(root(t), ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ci := string(cb)
+	cj := strings.Index(ci, "\n  mac-app:\n")
+	if cj < 0 || !strings.Contains(ci[cj:], "runs-on: macos-latest") || !strings.Contains(ci[cj:], "run: bash scripts/build-mac-app.sh ") {
+		t.Fatal("CI must build and seal the Mac app with scripts/build-mac-app.sh on macOS")
 	}
 	if !strings.Contains(s[rel:rel+200], "needs: [mac-app, windows-check]") {
 		t.Fatal("the release job does not wait for the mac-app and Windows jobs")

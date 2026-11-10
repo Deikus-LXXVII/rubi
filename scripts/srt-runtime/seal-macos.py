@@ -3,7 +3,9 @@
 import hashlib,pathlib,subprocess,sys
 app=pathlib.Path(sys.argv[1]);mac=app/"Contents/MacOS"
 magics={bytes.fromhex(x) for x in ["cffaedfe","cefaedfe","feedfacf","feedface","cafebabe","bebafeca","cafebabf","bfbafeca"]}
-for path in sorted(mac.rglob("*")):
+# Deepest first: signing an executable in Contents/MacOS validates the code nested below it, so the runtime
+# helpers (node, rg, socat) must already carry a signature when rubi-home and rubi-agent-exec are signed.
+for path in sorted(mac.rglob("*"),key=lambda p:(-len(p.parts),str(p))):
  if path.is_file():
   with path.open("rb") as f: magic=f.read(4)
   if magic in magics: subprocess.run(["codesign","--sign","-","--force","--timestamp=none","--preserve-metadata=entitlements,flags,runtime",str(path)],check=True)

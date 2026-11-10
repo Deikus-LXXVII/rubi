@@ -83,6 +83,20 @@ jobs:
       - name: Test Home
         run: go test ./internal/home/... ./internal/homeproto ./cmd/rubi-home
 
+  # The sealed Mac app, built exactly as the release builds it (v0.15.0's release failed here only at the tag).
+  mac-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+      - name: Build and seal the Mac app
+        run: bash scripts/build-mac-app.sh v0.0.0-ci
+
   # The Windows installer (panel/install-home.ps1) runs on a clean Windows runner against a release made here: a zip with the
   # program built from this commit, SHA256SUMS signed with a throwaway key (the copy of the script under test gets that key's
   # public half in place of the release key), served from this computer. It must install and set up the Scheduled Task, and it

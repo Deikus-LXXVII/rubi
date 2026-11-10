@@ -116,3 +116,27 @@ with tempfile.TemporaryDirectory() as tmp:
 		t.Fatalf("manifest sealing: %v\n%s", err, out)
 	}
 }
+
+// codesign validates the code nested under an executable in Contents/MacOS, so the
+// runtime helpers must be sealed before rubi-home; v0.15.0's release failed on this order.
+func TestMacSealSignsNestedHelpersBeforeTopLevelExecutables(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python release tooling unavailable")
+	}
+	script := `
+import pathlib,tempfile,subprocess,os,sys
+with tempfile.TemporaryDirectory() as tmp:
+ p=pathlib.Path(tmp);app=p/'Rubi Home.app';mac=app/'Contents/MacOS';rt=mac/'srt-runtime/pin/darwin-amd64';(rt/'bin').mkdir(parents=True)
+ for f in [mac/'rubi-home',mac/'rubi-agent-exec',rt/'bin/node',rt/'bin/rg']: f.write_bytes(bytes.fromhex('cffaedfe')+b'fixture')
+ (rt/'COMPLETE').write_text('pin')
+ fake=p/'fake';fake.mkdir();cs=fake/'codesign'
+ cs.write_text('#!/bin/sh\nfor arg do last=$arg; done\ncase "$last" in */srt-runtime/*) ;; *) for h in "'+str(rt)+'"/bin/*; do tail -c 6 "$h" | grep -q sealed || { echo "nested $h unsigned" >&2; exit 1; }; done;; esac\nprintf sealed >> "$last"\n');cs.chmod(0o755)
+ env=dict(os.environ,PATH=str(fake)+os.pathsep+os.environ['PATH'])
+ subprocess.run([sys.executable,str(pathlib.Path(sys.argv[1])/'scripts/srt-runtime/seal-macos.py'),str(app)],check=True,env=env)
+`
+	cmd := exec.Command(python, "-c", script, root(t))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("seal order: %v\n%s", err, out)
+	}
+}
