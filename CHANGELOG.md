@@ -6,6 +6,7 @@ Ships v0.15.0. The v0.15.1 release build failed before publishing anything.
 
 - **Release:** unpacking the pinned Node and ripgrep archives skips their links (npm, npx, corepack shims), which the release runner's Python refused. The runtime never shipped links.
 - **CI:** every change now stages the sandbox runtime for all four platforms on the same runner the release uses.
+- **T3 Agents:** Rubi's git no longer starts git's automatic maintenance after a commit. Running in the background, it changed files under `.git` while the task's repository was being checked, so a task could be refused for no reason.
 
 ## v0.15.1 (2026-11-10)
 

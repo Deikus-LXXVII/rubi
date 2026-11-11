@@ -2,6 +2,7 @@ package agenttask
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -259,5 +260,27 @@ func TestTaskPlatformRequiresProvedProcessSupervision(t *testing.T) {
 		if CheckPlatform(goos) == nil {
 			t.Fatalf("unsupported %q allowed repository creation", goos)
 		}
+	}
+}
+
+// A commit must not start git's automatic maintenance: run in the background it keeps writing under .git while the
+// task's metadata is checked (CI refused a task for a file that vanished mid-walk). The repository asks for gc on
+// every commit; with Rubi's git it must still hold only loose objects afterwards.
+func TestTaskGitNeverRunsAutomaticMaintenance(t *testing.T) {
+	_, src := repository(t)
+	runGit(t, src, "config", "gc.auto", "1")
+	runGit(t, src, "config", "gc.autoDetach", "false")
+	runGit(t, src, "config", "maintenance.auto", "true")
+	// gc --auto estimates loose objects from .git/objects/17; about 1000 blobs put several there.
+	for i := 0; i < 1000; i++ {
+		if err := os.WriteFile(filepath.Join(src, fmt.Sprint("f", i)), []byte(fmt.Sprint("blob ", i, "\n")), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, src, "add", ".")
+	runGit(t, src, "commit", "-m", "many objects")
+	packs, _ := filepath.Glob(filepath.Join(src, ".git", "objects", "pack", "*.pack"))
+	if len(packs) != 0 {
+		t.Fatalf("automatic maintenance ran: %v", packs)
 	}
 }

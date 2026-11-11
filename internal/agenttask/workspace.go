@@ -71,13 +71,19 @@ func paths(home, id string) (state, dir string, err error) {
 	return filepath.Join(home, "t3", "tasks", id+".json"), filepath.Join(home, "t3", "workspaces", id), nil
 }
 func git(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "/usr/bin/git", append([]string{"-c", "core.hooksPath=/dev/null", "-c", "init.templateDir=", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-c", "uploadpack.packObjectsHook=", "-C", dir}, args...)...)
+	cmd := exec.CommandContext(ctx, "/usr/bin/git", append(append(noBackgroundGit(), "-c", "core.hooksPath=/dev/null", "-c", "init.templateDir=", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-c", "uploadpack.packObjectsHook=", "-C", dir), args...)...)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "LANG=C", "LC_ALL=C", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ATTR_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=file"}
 	out, err := cmd.Output()
 	if err != nil {
 		return "", errors.New("task: local git operation failed (no hooks, credentials or network used)")
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// noBackgroundGit keeps git from leaving a detached "maintenance run --auto" (or "gc --auto") behind after a commit: it
+// would keep writing under .git while validateGitTree walks it, and the task would be refused for a file that vanished.
+func noBackgroundGit() []string {
+	return []string{"-c", "maintenance.auto=false", "-c", "gc.auto=0", "-c", "gc.autoDetach=false"}
 }
 func configHash(dir string) (string, error) {
 	root, err := os.OpenRoot(dir)
@@ -301,6 +307,9 @@ func validateGitTree(dir string) error {
 		}
 		if !d.IsDir() {
 			st, e := d.Info()
+			if errors.Is(e, fs.ErrNotExist) {
+				return errors.New("task: git metadata changed during the check (a git process is still running)")
+			}
 			if e != nil || !st.Mode().IsRegular() {
 				return errors.New("task: non-regular git metadata refused")
 			}
