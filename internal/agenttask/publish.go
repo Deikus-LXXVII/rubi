@@ -57,7 +57,7 @@ func trustedGit(ctx context.Context, dir string, args ...string) (string, error)
 	return publishGit(ctx, dir, "", "", false, args...)
 }
 func publishGit(ctx context.Context, dir, helper, token string, local bool, args ...string) (string, error) {
-	prefix := []string{"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "http.sslVerify=true", "-c", "protocol.ext.allow=never", "-C", dir}
+	prefix := append(noBackgroundGit(), "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.attributesFile=/dev/null", "-c", "credential.helper=", "-c", "http.followRedirects=false", "-c", "http.sslVerify=true", "-c", "protocol.ext.allow=never", "-C", dir)
 	if helper != "" {
 		prefix = append(prefix, "-c", "credential.helper=!"+shellQuote(helper)+" --git-credential-helper")
 	}
