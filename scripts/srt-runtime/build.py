@@ -16,8 +16,13 @@ def download(asset, cache):
         subprocess.run(["curl","--proto","=https","--tlsv1.2","--fail","--location","--silent","--show-error","--retry","2","--output",str(dest),asset["url"]],check=True)
     if digest(dest)!=asset["sha256"]: raise ValueError("runtime artifact checksum mismatch: "+dest.name)
     return dest
+def keep_regular(member,path):
+    # The runtime never ships links, and the upstream links (node's npm, npx, corepack shims) aren't needed.
+    # Dropping them also avoids Python builds whose "data" filter misjudges a relative link as escaping.
+    if member.issym() or member.islnk(): return None
+    return tarfile.data_filter(member,path)
 def unpack(source,dest):
-    with tarfile.open(source) as t: t.extractall(dest,filter="data")
+    with tarfile.open(source) as t: t.extractall(dest,filter=keep_regular)
 def stage(target, dest, cache, cc):
     if target not in ["linux-amd64","linux-arm64","darwin-amd64","darwin-arm64"]: raise ValueError("unsupported runtime target")
     pins=json.loads((PINS/"sources.json").read_text()); assets=pins["assets"]

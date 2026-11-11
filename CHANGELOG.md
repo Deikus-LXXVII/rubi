@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.15.2 (2026-11-11)
+
+Ships v0.15.0. The v0.15.1 release build failed before publishing anything.
+
+- **Release:** unpacking the pinned Node and ripgrep archives skips their links (npm, npx, corepack shims), which the release runner's Python refused. The runtime never shipped links.
+- **CI:** every change now stages the sandbox runtime for all four platforms on the same runner the release uses.
+
 ## v0.15.1 (2026-11-10)
 
 Ships v0.15.0, whose release build failed before publishing anything.

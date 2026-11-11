@@ -41,7 +41,7 @@
     }
   },
   "recipes": {
-    "build.py": "43519617d1ff2a42af66720a6f4032149eea1fe6679f99c229f38af990442596",
+    "build.py": "fb07ee8b414e27e6c97ec1784efbb622f30ba5e38838e0b7321497f937708596",
     "seal-macos.py": "4f8e53c366b41c0999f3fdefa4e73638b7852aecb3aa9ffba1dcbc565d7ed837"
   }
 }

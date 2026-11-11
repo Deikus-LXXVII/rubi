@@ -151,3 +151,30 @@ with tempfile.TemporaryDirectory() as tmp:
 		t.Fatalf("seal layout: %v\n%s", err, out)
 	}
 }
+
+// Upstream tarballs carry relative links (node's corepack, npm, npx); the Python on the release runner
+// misjudged one as escaping and failed v0.15.1's release. The runtime ships no links, so unpack drops them.
+func TestRuntimeUnpackDropsUpstreamLinks(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("Python release tooling unavailable")
+	}
+	script := `
+import io,pathlib,runpy,sys,tarfile,tempfile
+build=runpy.run_path(str(pathlib.Path(sys.argv[1])/'scripts/srt-runtime/build.py'))
+with tempfile.TemporaryDirectory() as tmp:
+ p=pathlib.Path(tmp);src=p/'node.tar.gz'
+ with tarfile.open(src,'w:gz') as t:
+  for name,data in [('node-v1/bin/node',b'node'),('node-v1/lib/node_modules/corepack/dist/corepack.js',b'js')]:
+   i=tarfile.TarInfo(name);i.size=len(data);i.mode=0o755;t.addfile(i,io.BytesIO(data))
+  for kind,name,target in [(tarfile.SYMTYPE,'node-v1/bin/corepack','../lib/node_modules/corepack/dist/corepack.js'),(tarfile.SYMTYPE,'node-v1/bin/evil','/etc/passwd'),(tarfile.LNKTYPE,'node-v1/bin/hard','node-v1/bin/node')]:
+   i=tarfile.TarInfo(name);i.type=kind;i.linkname=target;t.addfile(i)
+ out=p/'out';out.mkdir();build['unpack'](src,out)
+ assert (out/'node-v1/bin/node').read_bytes()==b'node','regular file lost'
+ for n in ['corepack','evil','hard']: assert not (out/'node-v1/bin'/n).exists() and not (out/'node-v1/bin'/n).is_symlink(),n+' extracted'
+`
+	cmd := exec.Command(python, "-c", script, root(t))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("unpack: %v\n%s", err, out)
+	}
+}

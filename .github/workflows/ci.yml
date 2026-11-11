@@ -97,6 +97,24 @@ jobs:
       - name: Build and seal the Mac app
         run: bash scripts/build-mac-app.sh v0.0.0-ci
 
+  # The release job stages every platform's runtime on this runner and Python; v0.15.1's release failed there.
+  runtime-stage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.2'
+      - name: Runtime build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu make
+      - name: Stage the runtime for every platform
+        run: |
+          set -euo pipefail
+          for target in darwin-arm64 darwin-amd64 linux-amd64 linux-arm64; do
+            cc=cc; if [ "$target" = linux-arm64 ]; then cc=aarch64-linux-gnu-gcc; fi
+            python3 scripts/srt-runtime/build.py --platform "$target" --dest "work/$target" --cc "$cc"
+          done
+
   # The Windows installer (panel/install-home.ps1) runs on a clean Windows runner against a release made here: a zip with the
   # program built from this commit, SHA256SUMS signed with a throwaway key (the copy of the script under test gets that key's
   # public half in place of the release key), served from this computer. It must install and set up the Scheduled Task, and it
