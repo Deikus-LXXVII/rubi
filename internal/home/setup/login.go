@@ -209,9 +209,6 @@ func (s *Setup) LoginCode(code string) error {
 // is holding (a phone, usually). It does not open a browser on this computer: that browser is the
 // home computer's, and the person approving the sign-in is somewhere else.
 func (s *Setup) LoginOpen(ctx context.Context) (string, error) {
-	if av := s.agentsHere(ctx); !av.OK {
-		return "", errNoBackend(av)
-	}
 	s.mu.Lock()
 	raw := ""
 	if s.job != nil && s.job.login != nil {

@@ -473,10 +473,10 @@ func TestT3SetupStatusShape(t *testing.T) {
 		}
 	}
 
-	// Retired VM sign-in is not offered, even when its old credential file exists.
+	// Native sign-in is offered; a credential file (stat only) is what "signed in" means.
 	login := stepByID(t, st, "login")
-	if login["state"] != "unsupported" || login["action"] != "" || !strings.Contains(login["reason"].(string), "retired") {
-		t.Errorf("native provider provisioning: %v", login)
+	if login["state"] != "todo" || login["action"] != "login" {
+		t.Errorf("native provider sign-in: %v", login)
 	}
 	if err := os.MkdirAll(filepath.Join(l.h.Dir, "agent-signin"), 0700); err != nil {
 		t.Fatal(err)
@@ -486,13 +486,13 @@ func TestT3SetupStatusShape(t *testing.T) {
 	}
 	st, _ = handle(t, l.h, "tok", "t3-setup.status", nil)
 	login = stepByID(t, st, "login")
-	if login["state"] != "unsupported" || login["action"] != "" {
-		t.Fatal("legacy VM credential file re-enabled VM login")
+	if login["state"] != "done" || login["action"] != "login_again" {
+		t.Fatal("credential file was not treated as signed in", login)
 	}
 
-	for _, op := range []string{"t3-setup.login.open", "t3-setup.login.code", "t3-setup.run"} {
-		if _, err := handle(t, l.h, "tok", op, map[string]any{"step": "login"}); err == nil || !strings.Contains(err.Error(), "retired") {
-			t.Errorf("retired login %s: %v", op, err)
+	for _, op := range []string{"t3-setup.login.open", "t3-setup.login.code"} {
+		if _, err := handle(t, l.h, "tok", op, map[string]any{"step": "login"}); err == nil || strings.Contains(err.Error(), "retired") {
+			t.Errorf("login %s: %v", op, err)
 		}
 	}
 	// The agent setup being unavailable doesn't hide T3's facts.

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **T3 Agents GitHub token:** a plugin with its own page that declares account secrets (T3 Agents' `github_token`) now has a way to enter them. Settings "Connect" / "Add account" and a "GitHub token" button on the plugin page open the existing account form (`integration.setup`, passkey confirmation). Updating a connected account keeps its settings.
+- **T3 Agents provider sign-in:** one Claude sign-in on the T3 server, shared by every project (not a per-project or per-role folder). The setup page offers "Sign in to Claude" again (link and paste-code), running unmodified `claude auth login --claudeai` under srt with only the shared folder writable and the network limited to the sign-in hosts. The shared folder is read-write so Claude can refresh tokens: sessions in every project share that login, and agent code in a project can read it. This is the tradeoff already accepted for one server-level sign-in.
+
 ## v0.15.2 (2026-11-11)
 
 Ships v0.15.0. The v0.15.1 release build failed before publishing anything.
