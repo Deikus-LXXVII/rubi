@@ -215,7 +215,7 @@ const PLUGINS = [
     accounts: [{ id: "alex.k@gmail.com", label: "alex.k@gmail.com", default: true }] },
   { id: "claude-code", latest: "v0.4.0", publisher: "Rubi-Project", summary: "Claude Code sessions: approvals, trusts, and the agent's projects and chats.", name: "Claude Code", version: "v0.4.0", installed: true, reviewed: true, connected: true, panel: "view",
     accounts: [{ id: "claude-code", label: "Claude Code", default: true }] },
-  { id: "t3agents", latest: "v0.3.0", publisher: "Rubi-Project", summary: "Claude in a VM per project on your computer: setup, roles, sessions with their chat, SSH targets, project trust.", name: "T3 Agents", version: "v0.3.0", installed: true, reviewed: true, connected: true, panel: "view",
+  { id: "t3agents", latest: "v0.3.0", publisher: "Rubi-Project", summary: "Claude in a VM per project on your computer: setup, roles, sessions with their chat, SSH targets, project trust.", name: "T3 Agents", version: "v0.3.0", installed: true, reviewed: true, connected: true, panel: "view", setup: true,
     accounts: [{ id: "t3agents", label: "T3 Agents", default: true }] },
   { id: "steam", latest: "v1.0.0", publisher: "Rubi-Project", summary: "Prices, sales and your wishlist; deal alerts.", name: "Steam", version: "v1.0.0", installed: true, reviewed: true, connected: true, has_config: true,
     update_available: "v1.1.0", accounts: [{ id: "76561198000000000", label: "Alex", default: true }] },
