@@ -1,0 +1,159 @@
+#!/usr/bin/env node
+// Signs Claude in for the T3 roles from inside the sign-in container of Rubi Home, without a terminal on the Mac: it
+// runs `claude auth login --claudeai` under a pty (`script`), relays stdin, and speaks a small line protocol on stdout.
+// It prints only these lines (nothing of claude's own output, never the credential):
+//   URL <https sign-in link>     the first link of an allowed sign-in host
+//   CODE?                        claude asks for the code the browser shows
+//   SAVED                        claude ended well and the credential file is in the sign-in folder (claude gets a few
+//                                seconds to end by itself; a file that is there and has stopped changing is enough after that)
+//   FAILED <short reason>
+// claude writes the credential itself, to $CLAUDE_SECURESTORAGE_CONFIG_DIR/.credentials.json (the folder Rubi Home
+// shares between the roles, decision 4 of docs/plans/t3-integration.md). This helper only looks at whether that file is
+// there and how big it is; it never opens it.
+// claude draws its prompt with cursor moves instead of spaces ("Paste\x1b[8Gcode\x1b[13Ghere"),, as the terminal UIs of claude do.
+// Plain script, no imports: runs as CommonJS (the image) or ESM (a checkout), Node >= 22.
+const fs = process.getBuiltinModule("fs");
+const path = process.getBuiltinModule("path");
+const cp = process.getBuiltinModule("child_process");
+
+// Fixed here, not taken from the environment: nothing that can set a variable chooses what this runs. The tests run a
+// copy of this file with these two lines changed (test/login.test.ts).
+const CLAUDE = "/opt/rubi-runner/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64/claude";
+const GRACE_MS = 10000; // how long claude may take to end after it has written the credential
+const SIGNIN = process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR || "";
+const CRED = SIGNIN ? path.join(SIGNIN, ".credentials.json") : "";
+const LIMIT_MS = 16 * 60 * 1000;
+const HOSTS = ["claude.com", "claude.ai", "platform.claude.com", "console.anthropic.com"];
+
+function emit(line) {
+  if (/sk-ant/i.test(line)) return; // a credential never leaves through the protocol
+  process.stdout.write(line.replace(/[\r\n]+/g, " ") + "\n");
+}
+
+let finished = false;
+let child = null;
+function finish(line, code) {
+  if (finished) return;
+  finished = true;
+  emit(line);
+  if (child) {
+    try {
+      child.kill("SIGTERM");
+    } catch {}
+  }
+  setTimeout(() => process.exit(code), 100);
+}
+
+function allowed(raw) {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" && !u.username && !u.password && u.port === "" && HOSTS.includes(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+// Everything the terminal UI draws besides text: CSI sequences (colors, cursor), OSC (hyperlinks, titles), others.
+const ESC = /\x1b\[[0-9;?<=>]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+const OSC8 = /\x1b\]8;[^;\x07\x1b]*;(https:\/\/[^\x07\x1b]+)(?:\x07|\x1b\\)/;
+// Cursor moves along the line (CHA "ESC[nG", CUF "ESC[nC"): claude draws the gaps between words with them, not with
+// spaces, so they read as a space.
+const MOVE = /\x1b\[[0-9]*[GC]/g;
+
+// The credential file's size and mtime, or null (never its content).
+function credStat() {
+  if (!CRED) return null;
+  try {
+    const st = fs.lstatSync(CRED);
+    return st.isFile() && st.size > 0 ? { size: st.size, mtime: st.mtimeMs } : null;
+  } catch {
+    return null;
+  }
+}
+
+function main() {
+  if (!CRED) return finish("FAILED no sign-in folder is mounted", 1);
+  const before = credStat(); // a credential from an earlier sign-in is not this one
+  const started = Date.now();
+  const fresh = (s) => s && (!before || s.mtime !== before.mtime || s.size !== before.size) && s.mtime >= started - 2000;
+  // A wide pty, so the link is not wrapped. The command line is a fixed string; the path reaches it as a variable, so it
+  // is never part of shell syntax.
+  const inner = 'stty cols 2000 rows 50 2>/dev/null; exec "$RUBI_CLAUDE" auth login --claudeai';
+  child = cp.spawn("script", ["-qfc", inner, "/dev/null"], {
+    stdio: ["pipe", "pipe", "ignore"],
+    env: { ...process.env, RUBI_CLAUDE: CLAUDE, TERM: "xterm-256color", NO_COLOR: "1", BROWSER: "false" },
+  });
+  child.on("error", () => finish("FAILED could not start claude", 1));
+  child.stdin.on("error", () => {});
+
+  let raw = ""; // the child's output, bounded
+  let urlSent = false;
+  let promptShown = false;
+  child.stdout.on("data", (d) => {
+    if (finished) return;
+    raw = (raw + d.toString("utf8")).slice(-65536);
+    const text = raw.replace(OSC8, "$1 ").replace(MOVE, " ").replace(ESC, "").replace(/\r/g, "");
+    if (!urlSent) {
+      const m = OSC8.exec(raw) || /(https:\/\/[^\s\x1b]+)/.exec(text);
+      const url = m && m[1].replace(/[.,;:)]+$/, "");
+      if (url) {
+        // a link that would be dropped by the output filter can't be shown: fail rather than wait for nothing
+        if (!allowed(url) || /sk-ant/i.test(url)) return finish("FAILED unexpected sign-in link", 1);
+        urlSent = true;
+        emit("URL " + url);
+      }
+    }
+    if (!promptShown && /paste\s+code\s+here/i.test(text)) {
+      promptShown = true;
+      emit("CODE?");
+    }
+  });
+  child.on("close", (code) => {
+    if (finished) return;
+    if (code === 0 && fresh(credStat())) return finish("SAVED", 0);
+    finish(code === 0 ? "FAILED the sign-in ended but no credential was stored" : "FAILED the sign-in ended without finishing", 1);
+  });
+  // claude may stay up after it has written the credential: it gets GRACE_MS to end by itself (its exit is what says it is
+  // done); only then a fresh file that has stopped changing is taken as enough.
+  let last = null;
+  let freshSince = 0;
+  const poll = setInterval(() => {
+    if (finished) return clearInterval(poll);
+    const s = credStat();
+    if (!fresh(s)) {
+      last = null;
+      freshSince = 0;
+      return;
+    }
+    if (!last || last.size !== s.size || last.mtime !== s.mtime) {
+      last = s;
+      freshSince = Date.now();
+      return;
+    }
+    if (Date.now() - freshSince >= GRACE_MS) finish("SAVED", 0);
+  }, 250);
+  poll.unref();
+  // The code goes to claude as one line. A chunk is the code and at most one line end: anything else (spaces, a second
+  // line, other characters) is refused, and the user is asked again, so the mistake shows. A terminal's Enter is \r.
+  let pending = "";
+  process.stdin.on("data", (d) => {
+    if (finished) return;
+    pending = (pending + d.toString("utf8")).slice(-4096);
+    if (!/[\r\n]/.test(pending)) return; // the chunk is not complete yet
+    const chunk = pending;
+    pending = "";
+    const body = chunk.replace(/(\r\n|\n|\r)$/, "");
+    if (!/^[\x21-\x7e]{1,512}$/.test(body)) {
+      emit("FAILED the code had spaces, line breaks or other characters it can't have; paste it again");
+      emit("CODE?");
+      return;
+    }
+    child.stdin.write(body + "\r");
+    promptShown = false; // the prompt may come back after a wrong code
+    raw = ""; // what was drawn before the code is not looked at again
+  });
+  process.stdin.on("end", () => {});
+  setTimeout(() => finish("FAILED the sign-in timed out", 1), LIMIT_MS).unref();
+}
+
+main();

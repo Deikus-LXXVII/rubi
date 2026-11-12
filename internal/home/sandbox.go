@@ -95,12 +95,17 @@ func resolveAgentLaunch(b agentsandbox.Binding, bindingPath string, projectServe
 		return l, fmt.Errorf("sandbox: provider %s is not provisioned", b.Provider)
 	}
 	base := filepath.Join(b.HomeDir, "t3", "sandbox", b.Role, b.Provider)
-	login := filepath.Join(base, "login")
 	if b.Task != "" {
 		base = filepath.Join(base, "tasks", b.Task)
 	}
-	if b.Provider == "claudeAgent" {
-		login = filepath.Join(b.HomeDir, agent.RolesDir, b.Role, "claude")
+	// One server-level provider credential folder, shared by every project and
+	// role (decision 4 of docs/plans/t3-integration.md). It is read-write so a
+	// provider can refresh tokens; sessions in every project therefore share
+	// that login. The folder is outside project trees and the supervisor's
+	// settings/shims.
+	login, err := agent.EnsureSignInDir(agent.SignInDirOf(b.HomeDir))
+	if err != nil {
+		return l, err
 	}
 	var credentialFiles []string
 	for _, entry := range install.Providers {

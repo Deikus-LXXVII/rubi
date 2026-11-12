@@ -1413,21 +1413,59 @@ function confirmChange(ctx, res, onDone, doneLabel, more = {}) {
   return approveScreen(approvalCtx, res.approval_id, { eyebrow: "Confirm this change", declineLabel: "Cancel", onDone, doneLabel, ...more });
 }
 
-async function setupScreen(ctx, id, back) {
-  const err = errorBox();
+async function loadCatalogEntry(ctx, id) {
   let entry;
   try {
     entry = (await ctx.client.call("integration.catalog")).integrations.find((i) => i.id === id);
   } catch (e) {
-    return fatal(e instanceof UserError ? e.message : friendly(e));
+    return { error: e };
   }
-  if (!entry) return fatal("This plugin isn't installed. Ask your agent to install it from the store first.");
+  if (!entry) return { error: new UserError("This plugin isn't installed. Ask your agent to install it from the store first.") };
+  return { entry };
+}
+
+// accountSecrets are the secrets a person can enter (internal ones are for the plugin itself).
+function accountSecrets(entry) {
+  return (entry && entry.secrets || []).filter((sec) => !sec.internal);
+}
+
+// accountSetupLabel is the settings/plugin-page button for a plugin's account form.
+function accountSetupLabel(entry) {
+  const secs = accountSecrets(entry);
+  if (secs.length === 1 && secs[0].key === "github_token") return "GitHub token";
+  if (secs.length === 1 && secs[0].label) return secs[0].label;
+  return "Account";
+}
+
+function pluginHasAccountForm(entry) {
+  return !!(entry && ((entry.fields || []).length || accountSecrets(entry).length));
+}
+
+async function setupScreen(ctx, id, back) {
+  const got = await loadCatalogEntry(ctx, id);
+  if (got.error) return fatal(got.error instanceof UserError ? got.error.message : friendly(got.error));
+  const entry = got.entry;
   // A plugin with its own page (T3 Agents) does its first-time setup there. The generic Connect
-  // form would only end on a Saved card and never show that page.
+  // form would only end on a Saved card and never show that page. The account/secrets form is
+  // accountSetupScreen, reached from Settings and from a button on that page.
   if (entry.panel === "view") {
     const backTo = back || (() => openSettings(ctx));
     return pluginViewScreen(ctx, id, entry.name, backTo, { page: "setup" });
   }
+  return accountSetupScreen(ctx, id, back, entry);
+}
+
+// accountSetupScreen is the generic Connect form: fields and secrets, then integration.setup
+// and the passkey confirmChange. A view-panel plugin (T3 Agents) reaches it from Settings
+// ("GitHub token" / "Add account") or from a button on its own page. Signing in to an account
+// that is already connected updates its secret and keeps its settings.
+async function accountSetupScreen(ctx, id, back, entry) {
+  if (!entry) {
+    const got = await loadCatalogEntry(ctx, id);
+    if (got.error) return fatal(got.error instanceof UserError ? got.error.message : friendly(got.error));
+    entry = got.entry;
+  }
+  const err = errorBox();
   const connected = () => screen(header(ctx.hello), h("h1", {}, `${entry.name} is connected`),
     h("p", {}, "You can close this page and go back to your agent."));
   const finish = back || connected;
@@ -1770,7 +1808,7 @@ async function settingsScreen(ctx, tab) {
         ])))) : h("p", { class: "muted small" }, "Not connected yet."),
       p.panel === "notes" ? h("button", { class: "secondary small", onclick: () => notesScreen(ctx, p.id, back) }, icon("doc", 16), "Open notes") : null,
       p.panel === "view" ? h("button", { class: "secondary small", onclick: () => pluginViewScreen(ctx, p.id, p.name, back) }, icon("doc", 16), "Open " + p.name) : null,
-      p.panel && !p.setup ? null : h("button", { class: "ghost small", onclick: () => setupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
+      p.panel && !p.setup ? null : h("button", { class: "ghost small", onclick: () => accountSetupScreen(ctx, p.id, back) }, icon("plus", 16), p.connected ? "Add account" : "Connect"));
   };
 
   // ----- approval levels, grouped by plugin
@@ -2558,8 +2596,12 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
   const err = errorBox();
   const call = (op, args) => ctx.client.call("plugin.panel", { id, op, args });
   let data;
+  let accountEntry = null;
   try {
+    const catalogP = ctx.client.call("integration.catalog").catch(() => null);
     data = await call("view", viewArgs);
+    const cat = await catalogP;
+    accountEntry = ((cat && cat.integrations) || []).find((i) => i.id === id) || null;
   } catch (e) {
     if (currentView !== mine) return;
     return fatal(e instanceof UserError ? e.message : friendly(e));
@@ -2827,7 +2869,9 @@ async function pluginViewScreen(ctx, id, name, back, viewArgs = {}, byRefresh = 
     { cls: "wide", focus: false, keepScroll: pageTop, quiet: same && byRefresh, refocus },
     header(ctx.hello),
     up ? backBar(backLabel, () => go(up.open)) : backBar("Settings", back),
-    h("div", { class: "section-head" }, h("h1", {}, heading)),
+    h("div", { class: "section-head" }, h("h1", {}, heading),
+      pluginHasAccountForm(accountEntry) ? h("button", { class: "ghost small", type: "button",
+        onclick: () => accountSetupScreen(ctx, id, mine, accountEntry) }, icon("plus", 16), accountSetupLabel(accountEntry)) : null),
     allStepsDone ? h("div", { class: "ready-banner", role: "status" },
       h("strong", {}, `${name} is ready`),
       h("p", {}, "Ask a Bot to start a session in a role on this computer."),

@@ -118,7 +118,7 @@ func TestBoundShimSRTIntegration(t *testing.T) {
 	probe := `import os,sys
 project,other,shim,config=sys.argv[1:]
 assert os.getcwd()==project
-assert os.environ['CLAUDE_CONFIG_DIR'].endswith('/claude')
+assert os.environ['CLAUDE_CONFIG_DIR'].endswith('/agent-signin')
 assert 'RUBI_UNTRUSTED' not in os.environ
 open(project+'/written','w').write('ok')
 try: open(other+'/marker').read()

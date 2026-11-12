@@ -941,9 +941,6 @@ func noteLoginWaiting(step map[string]any, before []any) {
 // sign-in folder is shared by every role (docs/plans/t3-integration.md decision 4). While a sign-in runs the rows carry
 // its link and whether it waits for the code.
 func (t *T3Home) loginStep() map[string]any {
-	if t.LoginAgents == nil {
-		return map[string]any{"id": "login", "title": "Provider credentials", "state": "unsupported", "reason": "VM sign-in was retired. Provision the project's native provider login/credentials explicitly; no host profile is imported.", "action": "", "action2": "", "projects": []map[string]any{}, "progress": []string{}}
-	}
 	in := agent.SignedInAt(t.signInDir())
 	li := t.login().LoginProgress()
 	state, reason, action := "todo", "No credential file yet. One sign-in serves every role.", "login"
@@ -1007,8 +1004,6 @@ func (t *T3Home) handleSetup(ctx context.Context, op string, args json.RawMessag
 			return nil, err
 		}
 		return map[string]any{"started": true}, nil
-	case t.LoginAgents == nil && ((name == "run" && in.Step == "login") || name == "login.code" || name == "login.open"):
-		return nil, errors.New("VM sign-in was retired; provision the project's native provider credentials explicitly")
 	case name == "run" && in.Step == "login":
 		// Without a method it only checks (the status above looks at the folder).
 		if in.Method == "" {

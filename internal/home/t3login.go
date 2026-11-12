@@ -1,9 +1,9 @@
 package home
 
 // The sign-in of the T3 roles: one `claude auth login --claudeai` for every role (decision 4 of
-// docs/plans/t3-integration.md). It runs in a sign-in container (no project; the shared folder <helper>/agent-signin
-// mounted read-write at its own path as CLAUDE_SECURESTORAGE_CONFIG_DIR; the network only through the allow-list proxy
-// for the sign-in hosts), driven by the same job engine as the agent setup's sign-in (setup.Setup: the helper's link and
+// docs/plans/t3-integration.md). It runs natively under srt (no project; the shared folder <helper>/agent-signin
+// is the only credential folder, mounted read-write so a token can be refreshed; the network only for the
+// sign-in hosts), driven by the same job engine as the earlier sign-in (setup.Setup: the helper's link and
 // code prompt, the code relay, cancel). Home never reads the credential claude writes; "signed in" is the file being
 // there and not empty.
 
@@ -21,19 +21,24 @@ func (t *T3Home) login() *setup.Setup {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.loginSetup == nil {
-		var agents setup.Agents = setup.ManagerAgents{M: t.h.Agent, SignInDir: t.signInDir, Login: func() agent.LoginHost {
-			return t.h.backend().Login()
-		}}
+		var agents setup.Agents = nativeLoginAgents{t: t}
 		if t.LoginAgents != nil {
 			agents = t.LoginAgents
 		}
-		opt := setup.Options{Dir: t.h.Dir, Agents: agents, Backend: t.h.backend, LoginHelper: agent.LoginHelper, Opener: NewDesktop(DesktopEnv{}).Opener,
+		helper := nativeLoginHelper
+		envFn := nativeLoginEnv
+		if t.LoginAgents != nil {
+			// Tests (and any remaining injected Agents) keep the container helper and its env.
+			helper = agent.LoginHelper
+			envFn = agent.LoginEnv
+		}
+		opt := setup.Options{Dir: t.h.Dir, Agents: agents, Backend: t.h.backend, LoginHelper: helper, Opener: NewDesktop(DesktopEnv{}).Opener,
 			LoginEnv: func() map[string]string {
 				dir := t.signInDir()
 				if real, err := agent.EnsureSignInDir(dir); err == nil {
 					dir = real
 				}
-				return agent.LoginEnv(dir)
+				return envFn(dir)
 			},
 			// The code handler only writes the code. When the helper then saves the credential,
 			// this starts the self-test. A panel does not have to.

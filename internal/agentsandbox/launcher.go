@@ -202,7 +202,7 @@ func Run(ctx context.Context, l Launch, in io.Reader, out, stderr io.Writer) (in
 	cmd.Env = environment(os.Environ(), home, proxyTmp, strings.Join(l.SearchPath, string(os.PathListSeparator)))
 	switch l.Provider {
 	case "claudeAgent":
-		cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+l.Policy.Login)
+		cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+l.Policy.Login, "CLAUDE_SECURESTORAGE_CONFIG_DIR="+l.Policy.Login)
 	case "codex":
 		cmd.Env = append(cmd.Env, "CODEX_HOME="+l.Policy.Login)
 	}

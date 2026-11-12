@@ -15,6 +15,7 @@ import (
 	"github.com/Deikus-LXXVII/rubi/internal/agentbridge"
 	"github.com/Deikus-LXXVII/rubi/internal/agentsandbox"
 	"github.com/Deikus-LXXVII/rubi/internal/agenttask"
+	"github.com/Deikus-LXXVII/rubi/internal/home/agent"
 	"github.com/Deikus-LXXVII/rubi/internal/home/agent/roles"
 	"github.com/Deikus-LXXVII/rubi/internal/t3"
 )
@@ -145,8 +146,12 @@ func (t *T3Home) readyForTaskProvider(ctx context.Context, project, role, provid
 		}
 		relay = filepath.Join(filepath.Dir(self), "rubi-agent-exec")
 	}
+	login, err := agent.EnsureSignInDir(t.signInDir())
+	if err != nil {
+		return nil, err
+	}
 	l.Policy.Home = filepath.Join(base, "hidden-home")
-	l.Policy.Login = state
+	l.Policy.Login = login
 	l.Policy.Tmp = filepath.Join(base, "tmp")
 	l.SettingsDir = filepath.Join(base, "settings")
 	native := t.exePath(pin.Version)
